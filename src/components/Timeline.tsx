@@ -1,8 +1,8 @@
 import { convertFileSrc } from '@tauri-apps/api/core';
-import type { ClipMetadata } from '../types';
+import type { Clip } from '../types';
 
 interface TimelineProps {
-  clips: ClipMetadata[];
+  clips: Clip[];
   selectedClipId: string | null;
   onSelectClip: (id: string) => void;
   thumbnails?: Record<string, string>;

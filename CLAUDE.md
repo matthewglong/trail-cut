@@ -66,10 +66,12 @@ Source videos are linked (absolute paths), not copied into the bundle.
 - ExifTool (`brew install exiftool`)
 
 ## Phase status
-- **Phase 1 (Foundation)**: COMPLETE — import, chronological timeline, map, GPX route, project bundle save/load
-- **Phase 2 (Editing)**: IN PROGRESS — proxy generation, video preview, clip removal done; trim UI, focal point, color grading, speed adjustment remaining. Stabilization deferred to later phase.
+- **Phase 1 (Foundation)**: COMPLETE — file/folder import via ExifTool, chronological timeline, MapLibre map with clip markers, GPX route drawing, project bundle save/load, home screen with project gallery. Only missing: drag-and-drop import (low priority).
+- **Phase 2 (Editing)**: COMPLETE
+  - Done: proxy generation, video preview player, clip removal, trim UI (in/out handles on seek bar + numeric inputs), focal point UI (draggable crosshair + 9:16 crop preview), speed adjustment (0.25x–4x slider + playbackRate), color grading (LUT file picker, applied at export), edit state persistence (Clip[] throughout, survives save/load)
+  - Deferred: stabilization (vidstab) pushed to Phase 4 — requires FFmpeg two-pass, not real-time previewable
 - **Phase 3 (Export)**: NOT STARTED — map frame rendering, FFmpeg compositing, layout configurator
-- **Phase 4 (Polish)**: NOT STARTED — audio, map styles, batch export, undo/redo, performance, stabilization, sidecar bundling
+- **Phase 4 (Polish)**: NOT STARTED — audio, map styles, batch export, undo/redo, performance, stabilization, sidecar bundling of FFmpeg/ExifTool
 
 ## App flow
 1. **Home screen**: "New Project" button + "Open Project" button + project gallery (all known projects from `~/.trailcut/recent.json`, filtered to still-existing bundles)

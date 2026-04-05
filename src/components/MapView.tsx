@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { ClipMetadata, Route } from '../types';
+import type { Clip, Route } from '../types';
 
 interface MapViewProps {
-  clips: ClipMetadata[];
+  clips: Clip[];
   selectedClipId: string | null;
   route: Route | null;
 }

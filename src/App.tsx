@@ -5,12 +5,13 @@ import Timeline from './components/Timeline';
 import MapView from './components/MapView';
 import ClipInfo from './components/ClipInfo';
 import VideoPreview from './components/VideoPreview';
-import type { ClipMetadata, Clip, Project, Route, RecentProject } from './types';
+import type { ClipMetadata, Clip, Project, Route, RecentProject, TrimRange, FocalPoint, Effects } from './types';
 
 type ProxyMap = Record<string, string | 'generating' | null>;
 type ThumbnailMap = Record<string, string>;
 
-function clipMetadataToClip(meta: ClipMetadata): Clip {
+/** Convert freshly-imported metadata into a Clip with default editing fields. */
+function newClipFromMetadata(meta: ClipMetadata): Clip {
   return {
     ...meta,
     trim: meta.duration_ms ? { in_ms: 0, out_ms: meta.duration_ms } : null,
@@ -23,38 +24,26 @@ function clipMetadataToClip(meta: ClipMetadata): Clip {
   };
 }
 
-function clipToMetadata(clip: Clip): ClipMetadata {
-  return {
-    id: clip.id,
-    path: clip.path,
-    filename: clip.filename,
-    created_at: clip.created_at,
-    duration_ms: clip.duration_ms,
-    gps: clip.gps,
-    resolution: clip.resolution,
-    frame_rate: clip.frame_rate,
-  };
-}
-
-function mergeClips(existing: ClipMetadata[], incoming: ClipMetadata[]): ClipMetadata[] {
+function mergeClips(existing: Clip[], incoming: ClipMetadata[]): Clip[] {
   const incomingByPath = new Map(incoming.map((c) => [c.path, c]));
-  // Update existing clips with fresh metadata, keep their IDs
+  // Update existing clips with fresh metadata, preserve editing state
   const updated = existing.map((c) => {
     const fresh = incomingByPath.get(c.path);
     if (fresh) {
       incomingByPath.delete(c.path);
-      return { ...fresh, id: c.id };
+      return { ...c, ...fresh, id: c.id };
     }
     return c;
   });
-  // Add genuinely new clips
-  const merged = [...updated, ...incomingByPath.values()];
+  // Add genuinely new clips with default editing fields
+  const newClips = [...incomingByPath.values()].map(newClipFromMetadata);
+  const merged = [...updated, ...newClips];
   merged.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
   return merged;
 }
 
 export default function App() {
-  const [clips, setClips] = useState<ClipMetadata[]>([]);
+  const [clips, setClips] = useState<Clip[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [loading, setLoading] = useState(false);
@@ -91,7 +80,7 @@ export default function App() {
     };
   }, [showImportMenu]);
 
-  const generateProxiesAndThumbnails = useCallback(async (clipList: ClipMetadata[], dir: string) => {
+  const generateProxiesAndThumbnails = useCallback(async (clipList: Clip[], dir: string) => {
     for (const clip of clipList) {
       invoke<string>('generate_thumbnail', { sourcePath: clip.path, projectDir: dir })
         .then((thumbPath) => {
@@ -118,7 +107,7 @@ export default function App() {
     autoSaveTimer.current = setTimeout(() => {
       const project: Project = {
         version: 1,
-        clips: clips.map(clipMetadataToClip),
+        clips,
         route,
         exports: [],
       };
@@ -138,15 +127,14 @@ export default function App() {
       const project = await invoke<Project>('load_project', { projectDir: dir });
       setProjectDir(dir);
 
-      const loadedClips = project.clips.map(clipToMetadata);
-      setClips(loadedClips);
+      setClips(project.clips);
       setRoute(project.route);
 
       await invoke('register_recent_project', { projectDir: dir });
 
-      if (loadedClips.length > 0) {
-        setSelectedClipId(loadedClips[0].id);
-        generateProxiesAndThumbnails(loadedClips, dir);
+      if (project.clips.length > 0) {
+        setSelectedClipId(project.clips[0].id);
+        generateProxiesAndThumbnails(project.clips, dir);
       }
     } catch (err) {
       setError(String(err));
@@ -275,6 +263,25 @@ export default function App() {
     });
   }
 
+  function updateSelectedClip(patch: Partial<Clip>) {
+    if (!selectedClipId) return;
+    setClips((prev) => prev.map((c) =>
+      c.id === selectedClipId ? { ...c, ...patch } : c
+    ));
+  }
+
+  function handleUpdateTrim(trim: TrimRange) {
+    updateSelectedClip({ trim });
+  }
+
+  function handleUpdateFocalPoint(focal_point: FocalPoint) {
+    updateSelectedClip({ focal_point });
+  }
+
+  function handleUpdateEffects(effects: Effects) {
+    updateSelectedClip({ effects });
+  }
+
   function handleCloseProject() {
     setProjectDir(null);
     setClips([]);
@@ -395,6 +402,8 @@ export default function App() {
           <ClipInfo
             clip={selectedClip}
             onRemove={selectedClip ? () => handleRemoveClip(selectedClip.id) : undefined}
+            onUpdateTrim={handleUpdateTrim}
+            onUpdateEffects={handleUpdateEffects}
           />
           {selectedClip && proxies[selectedClip.id] === 'generating' && (
             <div style={styles.proxyStatus}>Generating proxy...</div>
@@ -402,8 +411,10 @@ export default function App() {
         </div>
         <div style={styles.centerPane}>
           <VideoPreview
+            clip={selectedClip}
             proxyPath={selectedProxyPath}
-            clipFilename={selectedClip?.filename ?? ''}
+            onUpdateTrim={handleUpdateTrim}
+            onUpdateFocalPoint={handleUpdateFocalPoint}
           />
         </div>
         <div style={styles.rightPane}>
