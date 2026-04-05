@@ -140,3 +140,11 @@ impl Default for Project {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentProject {
+    pub path: String,
+    pub name: String,
+    pub clip_count: u32,
+    pub last_opened: String,
+}

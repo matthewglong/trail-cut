@@ -88,3 +88,10 @@ export interface Project {
   route: Route | null;
   exports: ExportConfig[];
 }
+
+export interface RecentProject {
+  path: string;
+  name: string;
+  clip_count: number;
+  last_opened: string;
+}

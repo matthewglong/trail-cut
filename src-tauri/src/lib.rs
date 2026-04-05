@@ -12,9 +12,15 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             commands::scan_directory,
+            commands::import_media,
+            commands::create_project,
             commands::parse_gpx,
             commands::save_project,
             commands::load_project,
+            commands::generate_proxy,
+            commands::generate_thumbnail,
+            commands::get_recent_projects,
+            commands::register_recent_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

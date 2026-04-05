@@ -1,50 +1,54 @@
 use crate::models::*;
 use serde_json::Value;
-use std::path::Path;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
-/// Scan a directory for video files and extract metadata via ExifTool
-#[tauri::command]
-pub fn scan_directory(path: String) -> Result<Vec<ClipMetadata>, String> {
-    let dir = Path::new(&path);
-    if !dir.is_dir() {
-        return Err(format!("Not a directory: {}", path));
-    }
+const VIDEO_EXTENSIONS: &[&str] = &["mov", "mp4", "m4v", "MOV", "MP4", "M4V"];
 
-    // Collect video files
-    let video_extensions = ["mov", "mp4", "m4v", "MOV", "MP4", "M4V"];
-    let mut video_files: Vec<String> = Vec::new();
+fn global_config_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "Cannot determine home directory")?;
+    let dir = PathBuf::from(home).join(".trailcut");
+    ensure_dir(&dir)?;
+    Ok(dir)
+}
 
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {}", e))?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if video_extensions.contains(&ext) {
-                if let Some(p) = path.to_str() {
-                    video_files.push(p.to_string());
-                }
-            }
-        }
-    }
+fn recent_projects_path() -> Result<PathBuf, String> {
+    Ok(global_config_dir()?.join("recent.json"))
+}
 
+fn path_hash(path: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn ensure_dir(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| format!("Failed to create directory {}: {}", dir.display(), e))
+}
+
+/// Shared ExifTool runner — takes a list of video file paths, returns metadata
+fn run_exiftool(video_files: &[String]) -> Result<Vec<ClipMetadata>, String> {
     if video_files.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Run ExifTool in batch JSON mode
     let mut cmd = Command::new("exiftool");
     cmd.arg("-json")
         .arg("-GPSLatitude")
         .arg("-GPSLongitude")
+        .arg("-CreationDate")
         .arg("-CreateDate")
         .arg("-MediaCreateDate")
         .arg("-Duration")
         .arg("-ImageSize")
         .arg("-VideoFrameRate")
-        .arg("-n"); // numeric GPS output
+        .arg("-n");
 
-    for file in &video_files {
+    for file in video_files {
         cmd.arg(file);
     }
 
@@ -69,8 +73,11 @@ pub fn scan_directory(path: String) -> Result<Vec<ClipMetadata>, String> {
                 .unwrap_or("")
                 .to_string();
 
-            let created_at = item["CreateDate"]
+            // CreationDate has the actual filming time with timezone (iPhone).
+            // CreateDate/MediaCreateDate can be corrupted by AirDrop/file transfer.
+            let created_at = item["CreationDate"]
                 .as_str()
+                .or_else(|| item["CreateDate"].as_str())
                 .or_else(|| item["MediaCreateDate"].as_str())
                 .map(|s| s.to_string());
 
@@ -99,19 +106,16 @@ pub fn scan_directory(path: String) -> Result<Vec<ClipMetadata>, String> {
         })
         .collect();
 
-    // Sort by creation timestamp
     clips.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
     Ok(clips)
 }
 
 fn parse_duration_ms(item: &Value) -> Option<u64> {
-    // ExifTool returns duration in various formats
     if let Some(dur) = item["Duration"].as_f64() {
         return Some((dur * 1000.0) as u64);
     }
     if let Some(dur_str) = item["Duration"].as_str() {
-        // Parse "0:00:12" or "12.4 s" formats
         if dur_str.contains(':') {
             let parts: Vec<&str> = dur_str.split(':').collect();
             if parts.len() == 3 {
@@ -129,11 +133,93 @@ fn parse_duration_ms(item: &Value) -> Option<u64> {
     None
 }
 
-/// Parse a GPX file into trackpoints
+fn is_video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| VIDEO_EXTENSIONS.contains(&ext))
+        .unwrap_or(false)
+}
+
+/// Scan a directory for video files and extract metadata via ExifTool
 #[tauri::command]
-pub fn parse_gpx(file_path: String) -> Result<Route, String> {
+pub fn scan_directory(path: String) -> Result<Vec<ClipMetadata>, String> {
+    let dir = Path::new(&path);
+    if !dir.is_dir() {
+        return Err(format!("Not a directory: {}", path));
+    }
+
+    let mut video_files: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {}", e))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_video_file(&path) {
+            if let Some(p) = path.to_str() {
+                video_files.push(p.to_string());
+            }
+        }
+    }
+
+    run_exiftool(&video_files)
+}
+
+/// Import videos from any mix of files and directories
+#[tauri::command]
+pub fn import_media(paths: Vec<String>) -> Result<Vec<ClipMetadata>, String> {
+    let mut video_files: Vec<String> = Vec::new();
+
+    for p in paths {
+        let path = Path::new(&p);
+        if !path.exists() {
+            continue;
+        }
+        if path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    let entry_path = entry.path();
+                    if is_video_file(&entry_path) {
+                        if let Some(s) = entry_path.to_str() {
+                            video_files.push(s.to_string());
+                        }
+                    }
+                }
+            }
+        } else if is_video_file(path) {
+            video_files.push(p);
+        }
+    }
+
+    run_exiftool(&video_files)
+}
+
+/// Create a new project bundle directory
+#[tauri::command]
+pub fn create_project(project_dir: String) -> Result<(), String> {
+    let dir = Path::new(&project_dir);
+    ensure_dir(dir)?;
+    ensure_dir(&dir.join("proxies"))?;
+    ensure_dir(&dir.join("thumbnails"))?;
+
+    let project = Project::default();
+    let json = serde_json::to_string_pretty(&project)
+        .map_err(|e| format!("Failed to serialize project: {}", e))?;
+    std::fs::write(dir.join("project.json"), json)
+        .map_err(|e| format!("Failed to write project.json: {}", e))?;
+
+    Ok(())
+}
+
+/// Parse a GPX file into trackpoints, optionally copying into the project bundle
+#[tauri::command]
+pub fn parse_gpx(file_path: String, project_dir: Option<String>) -> Result<Route, String> {
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read GPX file: {}", e))?;
+
+    // Copy GPX into project bundle if project_dir is provided
+    if let Some(ref dir) = project_dir {
+        let dest = PathBuf::from(dir).join("route.gpx");
+        std::fs::write(&dest, &content)
+            .map_err(|e| format!("Failed to copy GPX to project: {}", e))?;
+    }
 
     let doc = roxmltree::Document::parse(&content)
         .map_err(|e| format!("Failed to parse GPX XML: {}", e))?;
@@ -179,21 +265,191 @@ pub fn parse_gpx(file_path: String) -> Result<Route, String> {
     })
 }
 
-/// Save project to JSON file
+/// Save project to project bundle
 #[tauri::command]
-pub fn save_project(project: Project, path: String) -> Result<(), String> {
+pub fn save_project(project: Project, project_dir: String) -> Result<(), String> {
+    let path = Path::new(&project_dir).join("project.json");
     let json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {}", e))?;
     std::fs::write(&path, json).map_err(|e| format!("Failed to write project file: {}", e))?;
     Ok(())
 }
 
-/// Load project from JSON file
+/// Load project from project bundle
 #[tauri::command]
-pub fn load_project(path: String) -> Result<Project, String> {
+pub fn load_project(project_dir: String) -> Result<Project, String> {
+    let path = Path::new(&project_dir).join("project.json");
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read project file: {}", e))?;
     let project: Project =
         serde_json::from_str(&content).map_err(|e| format!("Failed to parse project: {}", e))?;
     Ok(project)
+}
+
+/// Generate a 720p H.264 proxy video via FFmpeg, stored in project bundle
+#[tauri::command]
+pub async fn generate_proxy(source_path: String, project_dir: String) -> Result<String, String> {
+    let proxies_dir = PathBuf::from(&project_dir).join("proxies");
+    ensure_dir(&proxies_dir)?;
+
+    let hash = path_hash(&source_path);
+    let proxy_path = proxies_dir.join(format!("{}.mp4", hash));
+
+    if proxy_path.exists() {
+        return proxy_path
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Invalid proxy path".to_string());
+    }
+
+    if !Path::new(&source_path).exists() {
+        return Err(format!("Source file not found: {}", source_path));
+    }
+
+    let proxy_str = proxy_path
+        .to_str()
+        .ok_or("Invalid proxy path")?
+        .to_string();
+
+    let output = Command::new("ffmpeg")
+        .arg("-i")
+        .arg(&source_path)
+        .arg("-vf")
+        .arg("scale=-2:720")
+        .arg("-c:v")
+        .arg("libx264")
+        .arg("-preset")
+        .arg("fast")
+        .arg("-crf")
+        .arg("28")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("128k")
+        .arg("-y")
+        .arg(&proxy_str)
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&proxy_path);
+        return Err(format!("FFmpeg proxy generation failed: {}", stderr));
+    }
+
+    Ok(proxy_str)
+}
+
+/// Extract a thumbnail frame from a video via FFmpeg, stored in project bundle
+#[tauri::command]
+pub async fn generate_thumbnail(source_path: String, project_dir: String) -> Result<String, String> {
+    let thumbs_dir = PathBuf::from(&project_dir).join("thumbnails");
+    ensure_dir(&thumbs_dir)?;
+
+    let hash = path_hash(&source_path);
+    let thumb_path = thumbs_dir.join(format!("{}_thumb.jpg", hash));
+
+    if thumb_path.exists() {
+        return thumb_path
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Invalid thumbnail path".to_string());
+    }
+
+    if !Path::new(&source_path).exists() {
+        return Err(format!("Source file not found: {}", source_path));
+    }
+
+    let thumb_str = thumb_path
+        .to_str()
+        .ok_or("Invalid thumbnail path")?
+        .to_string();
+
+    let output = Command::new("ffmpeg")
+        .arg("-i")
+        .arg(&source_path)
+        .arg("-ss")
+        .arg("1")
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg("scale=-2:160")
+        .arg("-y")
+        .arg(&thumb_str)
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&thumb_path);
+        return Err(format!("FFmpeg thumbnail extraction failed: {}", stderr));
+    }
+
+    Ok(thumb_str)
+}
+
+/// Get list of recent projects
+#[tauri::command]
+pub fn get_recent_projects() -> Result<Vec<RecentProject>, String> {
+    let path = recent_projects_path()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read recent projects: {}", e))?;
+    let projects: Vec<RecentProject> = serde_json::from_str(&content).unwrap_or_default();
+    // Filter out projects whose directories no longer exist
+    let valid: Vec<RecentProject> = projects
+        .into_iter()
+        .filter(|p| Path::new(&p.path).join("project.json").exists())
+        .collect();
+    Ok(valid)
+}
+
+/// Register a project as recently opened
+#[tauri::command]
+pub fn register_recent_project(project_dir: String) -> Result<(), String> {
+    let path = recent_projects_path()?;
+    let mut projects: Vec<RecentProject> = if path.exists() {
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    // Remove existing entry for this path
+    projects.retain(|p| p.path != project_dir);
+
+    // Read clip count from project.json
+    let project_json_path = Path::new(&project_dir).join("project.json");
+    let clip_count = if project_json_path.exists() {
+        let content = std::fs::read_to_string(&project_json_path).unwrap_or_default();
+        let project: Project = serde_json::from_str(&content).unwrap_or_default();
+        project.clips.len() as u32
+    } else {
+        0
+    };
+
+    let name = Path::new(&project_dir)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+
+    projects.insert(0, RecentProject {
+        path: project_dir,
+        name,
+        clip_count,
+        last_opened: now,
+    });
+
+
+    let json = serde_json::to_string_pretty(&projects)
+        .map_err(|e| format!("Failed to serialize recent projects: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write recent projects: {}", e))?;
+
+    Ok(())
 }

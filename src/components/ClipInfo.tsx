@@ -2,9 +2,10 @@ import type { ClipMetadata } from '../types';
 
 interface ClipInfoProps {
   clip: ClipMetadata | null;
+  onRemove?: () => void;
 }
 
-export default function ClipInfo({ clip }: ClipInfoProps) {
+export default function ClipInfo({ clip, onRemove }: ClipInfoProps) {
   if (!clip) {
     return (
       <div style={styles.container}>
@@ -50,6 +51,11 @@ export default function ClipInfo({ clip }: ClipInfoProps) {
           </div>
         )}
       </div>
+      {onRemove && (
+        <button onClick={onRemove} style={styles.removeBtn}>
+          Remove Clip
+        </button>
+      )}
     </div>
   );
 }
@@ -88,5 +94,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   value: {
     color: '#ccc',
+  },
+  removeBtn: {
+    marginTop: '12px',
+    width: '100%',
+    padding: '6px',
+    backgroundColor: 'transparent',
+    color: '#ff4444',
+    border: '1px solid #ff4444',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
   },
 };

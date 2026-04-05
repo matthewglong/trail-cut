@@ -1,9 +1,12 @@
+import { convertFileSrc } from '@tauri-apps/api/core';
 import type { ClipMetadata } from '../types';
 
 interface TimelineProps {
   clips: ClipMetadata[];
   selectedClipId: string | null;
   onSelectClip: (id: string) => void;
+  thumbnails?: Record<string, string>;
+  proxies?: Record<string, string | 'generating' | null>;
 }
 
 function formatDuration(ms: number | null): string {
@@ -14,7 +17,7 @@ function formatDuration(ms: number | null): string {
   return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
-export default function Timeline({ clips, selectedClipId, onSelectClip }: TimelineProps) {
+export default function Timeline({ clips, selectedClipId, onSelectClip, thumbnails = {}, proxies = {} }: TimelineProps) {
   if (clips.length === 0) {
     return (
       <div style={styles.empty}>
@@ -35,12 +38,23 @@ export default function Timeline({ clips, selectedClipId, onSelectClip }: Timeli
               ...(selectedClipId === clip.id ? styles.clipSelected : {}),
             }}
           >
-            <div style={styles.clipIndex}>{index + 1}</div>
+            {thumbnails[clip.id] ? (
+              <img
+                src={convertFileSrc(thumbnails[clip.id])}
+                alt={clip.filename}
+                style={styles.thumbnail}
+              />
+            ) : (
+              <div style={styles.clipIndex}>{index + 1}</div>
+            )}
             <div style={styles.clipName} title={clip.filename}>
               {clip.filename}
             </div>
-            <div style={styles.clipDuration}>{formatDuration(clip.duration_ms)}</div>
-            {clip.gps && <div style={styles.clipGps}>GPS</div>}
+            <div style={styles.clipMeta}>
+              <span style={styles.clipDuration}>{formatDuration(clip.duration_ms)}</span>
+              {clip.gps && <span style={styles.clipGps}>GPS</span>}
+              {proxies[clip.id] === 'generating' && <span style={styles.clipProxy}>...</span>}
+            </div>
           </button>
         ))}
       </div>
@@ -99,11 +113,27 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#888',
     fontSize: '10px',
   },
+  clipMeta: {
+    display: 'flex',
+    gap: '4px',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   clipGps: {
     color: '#4a9eff',
     fontSize: '9px',
-    marginTop: '2px',
     fontWeight: 'bold',
+  },
+  clipProxy: {
+    color: '#ff6b35',
+    fontSize: '9px',
+  },
+  thumbnail: {
+    width: '100%',
+    height: '56px',
+    objectFit: 'cover',
+    borderRadius: '3px',
+    marginBottom: '4px',
   },
   empty: {
     display: 'flex',
