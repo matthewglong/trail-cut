@@ -86,6 +86,8 @@ export interface ExportConfig {
 
 export interface Project {
   version: number;
+  name: string;
+  thumbnail: string | null;
   clips: Clip[];
   route: Route | null;
   exports: ExportConfig[];
@@ -96,4 +98,6 @@ export interface RecentProject {
   name: string;
   clip_count: number;
   last_opened: string;
+  thumbnail: string | null;
+  first_clip_date: string | null;
 }

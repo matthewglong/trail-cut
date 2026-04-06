@@ -21,6 +21,8 @@ pub fn run() {
             commands::generate_thumbnail,
             commands::get_recent_projects,
             commands::register_recent_project,
+            commands::rename_project,
+            commands::delete_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

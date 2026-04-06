@@ -138,6 +138,10 @@ pub struct ExportConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub version: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
     pub clips: Vec<Clip>,
     pub route: Option<Route>,
     pub exports: Vec<ExportConfig>,
@@ -147,6 +151,8 @@ impl Default for Project {
     fn default() -> Self {
         Project {
             version: 1,
+            name: String::new(),
+            thumbnail: None,
             clips: Vec::new(),
             route: None,
             exports: Vec::new(),
@@ -160,4 +166,8 @@ pub struct RecentProject {
     pub name: String,
     pub clip_count: u32,
     pub last_opened: String,
+    #[serde(default)]
+    pub thumbnail: Option<String>,
+    #[serde(default)]
+    pub first_clip_date: Option<String>,
 }

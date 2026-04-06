@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import Timeline from './components/Timeline';
 import MapView from './components/MapView';
@@ -53,6 +53,9 @@ export default function App() {
   const [thumbnails, setThumbnails] = useState<ThumbnailMap>({});
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  const [projectName, setProjectName] = useState('');
+  const [projectThumbnail, setProjectThumbnail] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showGpxMenu, setShowGpxMenu] = useState(false);
   const [previewAspect, setPreviewAspect] = useState('16:9');
@@ -114,6 +117,15 @@ export default function App() {
     }
   }, []);
 
+  // Auto-default project thumbnail to first clip's thumbnail
+  useEffect(() => {
+    if (projectThumbnail) return;
+    const firstClip = clips[0];
+    if (firstClip && thumbnails[firstClip.id]) {
+      setProjectThumbnail(thumbnails[firstClip.id]);
+    }
+  }, [clips, thumbnails, projectThumbnail]);
+
   // Auto-save when clips or route change
   useEffect(() => {
     if (!projectDir || clips.length === 0) return;
@@ -122,6 +134,8 @@ export default function App() {
     autoSaveTimer.current = setTimeout(() => {
       const project: Project = {
         version: 1,
+        name: projectName,
+        thumbnail: projectThumbnail,
         clips,
         route,
         exports: [],
@@ -133,7 +147,7 @@ export default function App() {
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [clips, route, projectDir]);
+  }, [clips, route, projectDir, projectName, projectThumbnail]);
 
   async function openProjectDir(dir: string) {
     setLoading(true);
@@ -142,6 +156,9 @@ export default function App() {
       const project = await invoke<Project>('load_project', { projectDir: dir });
       setProjectDir(dir);
 
+      const fallbackName = dir.split('/').pop()?.replace('.trailcut', '') ?? 'Untitled';
+      setProjectName(project.name || fallbackName);
+      setProjectThumbnail(project.thumbnail ?? null);
       setClips(project.clips);
       setRoute(project.route);
 
@@ -169,6 +186,8 @@ export default function App() {
       await invoke('create_project', { projectDir: selected });
       await invoke('register_recent_project', { projectDir: selected });
       setProjectDir(selected);
+      setProjectName(selected.split('/').pop()?.replace('.trailcut', '') ?? 'Untitled');
+      setProjectThumbnail(null);
       setClips([]);
       setRoute(null);
       setProxies({});
@@ -299,6 +318,8 @@ export default function App() {
 
   function handleCloseProject() {
     setProjectDir(null);
+    setProjectName('');
+    setProjectThumbnail(null);
     setClips([]);
     setRoute(null);
     setProxies({});
@@ -312,9 +333,53 @@ export default function App() {
   }
 
   // ---- HOME SCREEN ----
+  const [cardMenuOpen, setCardMenuOpen] = useState<string | null>(null);
+  const [renamingCard, setRenamingCard] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  // Close card menu on outside click
+  useEffect(() => {
+    if (!cardMenuOpen) return;
+    const close = () => setCardMenuOpen(null);
+    const timer = setTimeout(() => document.addEventListener('click', close), 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', close);
+    };
+  }, [cardMenuOpen]);
+
+  async function handleRenameProject(projectPath: string, newName: string) {
+    if (!newName.trim()) return;
+    try {
+      await invoke('rename_project', { projectDir: projectPath, newName: newName.trim() });
+      const updated = await invoke<RecentProject[]>('get_recent_projects');
+      setRecentProjects(updated);
+    } catch (err) {
+      setError(String(err));
+    }
+    setRenamingCard(null);
+  }
+
+  async function handleDeleteProject(projectPath: string) {
+    try {
+      await invoke('delete_project', { projectDir: projectPath });
+      const updated = await invoke<RecentProject[]>('get_recent_projects');
+      setRecentProjects(updated);
+    } catch (err) {
+      setError(String(err));
+    }
+    setDeleteConfirm(null);
+  }
+
   if (!hasProject) {
     return (
       <div style={styles.app}>
+        <style>{`
+          .project-card:hover .card-menu-btn { opacity: 1 !important; }
+          .project-card:hover .card-hover-overlay { background-color: rgba(0, 0, 0, 0.3) !important; }
+          .project-card:hover { border-color: #3a3a3a !important; }
+        `}</style>
         <div style={styles.home}>
           <h1 style={styles.homeTitle}>TrailCut</h1>
           <p style={styles.homeSubtitle}>Turn hiking videos into map-integrated stories</p>
@@ -340,28 +405,125 @@ export default function App() {
               <h2 style={styles.recentTitle}>Projects</h2>
               <div style={styles.recentGrid}>
                 {recentProjects.map((project) => (
-                  <button
-                    key={project.path}
-                    onClick={() => openProjectDir(project.path)}
-                    style={styles.projectCard}
-                  >
-                    <div style={styles.cardName}>{project.name.replace('.trailcut', '')}</div>
-                    <div style={styles.cardMeta}>
-                      {project.clip_count} clip{project.clip_count !== 1 ? 's' : ''}
+                  <div key={project.path} className="project-card" style={styles.projectCard}>
+                    <div
+                      style={styles.cardThumbnail}
+                      onClick={() => openProjectDir(project.path)}
+                    >
+                      {project.thumbnail ? (
+                        <img
+                          src={convertFileSrc(project.thumbnail)}
+                          alt=""
+                          style={styles.cardThumbnailImg}
+                        />
+                      ) : (
+                        <div style={styles.cardThumbnailEmpty}>
+                          <span style={styles.cardThumbnailIcon}>&#9968;</span>
+                        </div>
+                      )}
+                      <div className="card-hover-overlay" style={styles.cardHoverOverlay} />
+                      <button
+                        className="card-menu-btn"
+                        style={styles.cardMenuBtn}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCardMenuOpen(cardMenuOpen === project.path ? null : project.path);
+                        }}
+                      >
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="white">
+                          <circle cx="8" cy="3" r="1.5" />
+                          <circle cx="8" cy="8" r="1.5" />
+                          <circle cx="8" cy="13" r="1.5" />
+                        </svg>
+                      </button>
                     </div>
-                    <div style={styles.cardDate}>{project.last_opened}</div>
-                  </button>
+                    <div style={styles.cardBody} onClick={() => openProjectDir(project.path)}>
+                      {renamingCard === project.path ? (
+                        <input
+                          autoFocus
+                          onFocus={(e) => e.target.select()}
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onBlur={() => handleRenameProject(project.path, renameDraft)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleRenameProject(project.path, renameDraft);
+                            if (e.key === 'Escape') setRenamingCard(null);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          style={styles.cardNameInput}
+                        />
+                      ) : (
+                        <div style={styles.cardName}>{project.name}</div>
+                      )}
+                      <div style={styles.cardMeta}>
+                        <span>{project.clip_count} clip{project.clip_count !== 1 ? 's' : ''}</span>
+                        {project.first_clip_date && (
+                          <span>{project.first_clip_date}</span>
+                        )}
+                      </div>
+                    </div>
+                    {cardMenuOpen === project.path && (
+                      <div style={styles.cardDropdown}>
+                        <button
+                          style={styles.dropdownItem}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCardMenuOpen(null);
+                            setRenameDraft(project.name);
+                            setRenamingCard(project.path);
+                          }}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          style={{ ...styles.dropdownItem, color: '#ff5555' }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCardMenuOpen(null);
+                            setDeleteConfirm(project.path);
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
           )}
         </div>
+
+        {/* Delete confirmation modal */}
+        {deleteConfirm && (
+          <div style={styles.modalOverlay} onClick={() => setDeleteConfirm(null)}>
+            <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
+              <div style={styles.modalTitle}>Delete project?</div>
+              <div style={styles.modalBody}>
+                This will permanently delete the project bundle and all its proxies and thumbnails. Source videos will not be affected.
+              </div>
+              <div style={styles.modalActions}>
+                <button
+                  style={styles.modalCancelBtn}
+                  onClick={() => setDeleteConfirm(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  style={styles.modalDeleteBtn}
+                  onClick={() => handleDeleteProject(deleteConfirm)}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 
   // ---- PROJECT VIEW ----
-  const projectName = projectDir?.split('/').pop()?.replace('.trailcut', '') ?? '';
 
   return (
     <div style={styles.app}>
@@ -372,7 +534,27 @@ export default function App() {
             &#8592;
           </button>
           <span style={styles.logo}>TrailCut</span>
-          <span style={styles.projectName}>{projectName}</span>
+          {editingName ? (
+            <input
+              autoFocus
+              onFocus={(e) => e.target.select()}
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              onBlur={() => setEditingName(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === 'Escape') setEditingName(false);
+              }}
+              style={styles.projectNameInput}
+            />
+          ) : (
+            <span
+              style={styles.projectName}
+              onClick={() => setEditingName(true)}
+              title="Click to rename"
+            >
+              {projectName || 'Untitled'}
+            </span>
+          )}
         </div>
         <div style={styles.toolbarActions}>
           <div style={styles.importWrapper}>
@@ -570,35 +752,164 @@ const styles: Record<string, React.CSSProperties> = {
   },
   recentGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-    gap: '8px',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+    gap: '12px',
   },
   projectCard: {
-    padding: '16px',
+    position: 'relative' as const,
+    padding: 0,
     backgroundColor: '#1e1e1e',
-    border: '1px solid #333',
-    borderRadius: '8px',
+    border: '1px solid #2a2a2a',
+    borderRadius: '10px',
     cursor: 'pointer',
     textAlign: 'left' as const,
     color: '#fff',
-    transition: 'border-color 0.15s',
+    overflow: 'visible',
+    transition: 'border-color 0.2s, transform 0.2s',
+  },
+  cardThumbnail: {
+    position: 'relative' as const,
+    width: '100%',
+    aspectRatio: '16 / 9',
+    overflow: 'hidden',
+    backgroundColor: '#141414',
+    borderRadius: '10px 10px 0 0',
+  },
+  cardHoverOverlay: {
+    position: 'absolute' as const,
+    inset: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+    transition: 'background-color 0.2s',
+    pointerEvents: 'none' as const,
+  },
+  cardThumbnailImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover' as const,
+    display: 'block',
+  },
+  cardThumbnailEmpty: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'linear-gradient(135deg, #1a2a1a 0%, #1a1a2a 100%)',
+  },
+  cardThumbnailIcon: {
+    fontSize: '28px',
+    opacity: 0.3,
+  },
+  cardBody: {
+    padding: '10px 12px',
   },
   cardName: {
-    fontSize: '15px',
-    fontWeight: 'bold',
-    marginBottom: '6px',
+    fontSize: '14px',
+    fontWeight: 600,
+    marginBottom: '4px',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap' as const,
+    color: '#eee',
   },
   cardMeta: {
-    fontSize: '12px',
-    color: '#aaa',
-    marginBottom: '2px',
-  },
-  cardDate: {
     fontSize: '11px',
-    color: '#666',
+    color: '#777',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  cardNameInput: {
+    fontSize: '14px',
+    fontWeight: 600,
+    color: '#eee',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #3a3a3a',
+    borderRadius: '4px',
+    outline: 'none',
+    padding: '2px 6px',
+    fontFamily: 'inherit',
+    width: '100%',
+    boxSizing: 'border-box' as const,
+    marginBottom: '4px',
+  },
+  cardMenuBtn: {
+    position: 'absolute' as const,
+    top: '6px',
+    right: '6px',
+    background: 'none',
+    border: 'none',
+    fontSize: 0,
+    cursor: 'pointer',
+    padding: '3px 3px',
+    lineHeight: 1,
+    opacity: 0,
+    transition: 'opacity 0.15s',
+    zIndex: 2,
+  },
+  cardDropdown: {
+    position: 'absolute' as const,
+    top: '32px',
+    right: '6px',
+    backgroundColor: '#2a2a2a',
+    border: '1px solid #444',
+    borderRadius: '6px',
+    overflow: 'hidden',
+    zIndex: 100,
+    minWidth: '120px',
+  },
+  modalOverlay: {
+    position: 'fixed' as const,
+    inset: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+  },
+  modal: {
+    backgroundColor: '#222',
+    border: '1px solid #3a3a3a',
+    borderRadius: '10px',
+    padding: '20px',
+    maxWidth: '320px',
+    width: '100%',
+  },
+  modalTitle: {
+    fontSize: '14px',
+    fontWeight: 600,
+    color: '#eee',
+    marginBottom: '6px',
+  },
+  modalBody: {
+    fontSize: '12px',
+    color: '#888',
+    lineHeight: 1.5,
+    marginBottom: '16px',
+  },
+  modalActions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: '8px',
+  },
+  modalCancelBtn: {
+    padding: '6px 14px',
+    backgroundColor: 'transparent',
+    color: '#888',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '13px',
+  },
+  modalDeleteBtn: {
+    padding: '6px 14px',
+    backgroundColor: '#cc3333',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontWeight: 600,
   },
 
   // ---- Project view ----
@@ -629,8 +940,25 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#ff6b35',
   },
   projectName: {
-    fontSize: '13px',
-    color: '#888',
+    fontSize: '15px',
+    color: '#ddd',
+    fontWeight: 500,
+    cursor: 'text',
+    padding: '2px 6px',
+    borderRadius: '4px',
+    borderBottom: '1px solid transparent',
+    transition: 'border-color 0.15s ease',
+  },
+  projectNameInput: {
+    fontSize: '15px',
+    color: '#ddd',
+    fontWeight: 500,
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #3a3a3a',
+    borderRadius: '4px',
+    outline: 'none',
+    padding: '2px 6px',
+    fontFamily: 'inherit',
   },
   toolbarActions: {
     display: 'flex',
