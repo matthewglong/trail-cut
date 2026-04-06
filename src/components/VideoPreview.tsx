@@ -51,17 +51,57 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
     setVideoNatural(null);
   }, [proxyPath]);
 
-  // Apply playback speed
+  // For speeds > 1x, WebKit can't decode fast enough with playbackRate alone.
+  // Use a manual timer to step currentTime for fast playback.
+  const fastTimerRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number>(0);
+
+  function stopFastTimer() {
+    if (fastTimerRef.current !== null) {
+      cancelAnimationFrame(fastTimerRef.current);
+      fastTimerRef.current = null;
+    }
+  }
+
+  function startFastTimer() {
+    stopFastTimer();
+    lastFrameTimeRef.current = performance.now();
+    const tick = (now: number) => {
+      const video = videoRef.current;
+      if (!video) return;
+      const elapsed = (now - lastFrameTimeRef.current) / 1000;
+      lastFrameTimeRef.current = now;
+      const newTime = video.currentTime + elapsed * speed;
+      if (newTime >= trimOutSec) {
+        video.pause();
+        video.currentTime = trimInSec;
+        setCurrentTime(trimInSec);
+        setPlaying(false);
+        stopFastTimer();
+        return;
+      }
+      video.currentTime = newTime;
+      setCurrentTime(newTime);
+      fastTimerRef.current = requestAnimationFrame(tick);
+    };
+    fastTimerRef.current = requestAnimationFrame(tick);
+  }
+
+  // Clean up timer on unmount or clip change
+  useEffect(() => stopFastTimer, [proxyPath]);
+
+  // Apply playback speed for slow/normal rates
   useEffect(() => {
     if (videoRef.current) {
-      videoRef.current.playbackRate = speed;
+      videoRef.current.playbackRate = speed <= 1.0 ? speed : 1.0;
     }
   }, [speed, proxyPath]);
 
-  // Enforce trim bounds during playback
+  // Enforce trim bounds during playback (only used for speed <= 1x)
   function handleTimeUpdate() {
     const video = videoRef.current;
     if (!video || dragging) return;
+    if (speed > 1.0) return; // fast timer handles this
     const t = video.currentTime;
     setCurrentTime(t);
     if (t >= trimOutSec) {
@@ -75,15 +115,24 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   function togglePlay() {
     const video = videoRef.current;
     if (!video) return;
-    if (video.paused) {
+    if (!playing) {
       if (video.currentTime < trimInSec || video.currentTime >= trimOutSec) {
         video.currentTime = trimInSec;
         setCurrentTime(trimInSec);
       }
-      video.play();
+      if (speed > 1.0) {
+        // Keep video paused, step currentTime manually via rAF
+        // Paused video still renders the frame at the seeked position
+        video.pause();
+        startFastTimer();
+      } else {
+        video.playbackRate = speed;
+        video.play();
+      }
       setPlaying(true);
     } else {
       video.pause();
+      stopFastTimer();
       setPlaying(false);
     }
   }
@@ -110,6 +159,7 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   }
 
   function handleEnded() {
+    stopFastTimer();
     setPlaying(false);
   }
 

@@ -322,6 +322,8 @@ pub async fn generate_proxy(source_path: String, project_dir: String) -> Result<
         .arg("fast")
         .arg("-crf")
         .arg("28")
+        .arg("-g")
+        .arg("30")
         .arg("-c:a")
         .arg("aac")
         .arg("-b:a")
