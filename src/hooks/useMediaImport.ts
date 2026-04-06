@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { ClipMetadata, Clip, Route } from '../types';
-import { mergeClips } from '../utils/clips';
+import { mergeClips, newClipFromMetadata } from '../utils/clips';
 
 export type ProxyMap = Record<string, string | 'generating' | null>;
 export type ThumbnailMap = Record<string, string>;
@@ -54,13 +54,17 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
 
       const result = await invoke<ClipMetadata[]>('import_media', { paths });
 
-      setClips((prev) => {
-        const merged = mergeClips(prev, result);
-        const newClips = merged.filter((c) => !prev.some((existing) => existing.path === c.path));
-        if (newClips.length > 0) generateProxiesAndThumbnails(newClips, dir);
-        return merged;
-      });
+      // Figure out which are new BEFORE updating state, using the proxies map
+      // (any clip ID already in proxies has been processed before)
+      const newResults = result.filter((c) => !(c.id in proxies));
+
+      setClips((prev) => mergeClips(prev, result));
       setSelectedClipId((prev) => prev ?? result[0]?.id ?? null);
+
+      // Generate proxies/thumbnails OUTSIDE the state updater
+      if (newResults.length > 0) {
+        generateProxiesAndThumbnails(newResults.map(newClipFromMetadata), dir);
+      }
     } catch (err) {
       setError(String(err));
     } finally {

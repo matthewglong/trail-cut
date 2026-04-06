@@ -74,11 +74,20 @@ export default function VideoPreview({
     onUpdateFocalPoint,
   });
 
-  if (!proxyPath || !clip) {
+  if (!clip) {
     return (
       <div style={styles.empty}>
         <div style={styles.emptyIcon}>&#9654;</div>
         <p style={styles.emptyText}>Select a clip to preview</p>
+      </div>
+    );
+  }
+
+  if (!proxyPath) {
+    return (
+      <div style={styles.empty}>
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+        <div style={styles.spinner} />
       </div>
     );
   }

@@ -163,4 +163,12 @@ export const styles: Record<string, React.CSSProperties> = {
     color: '#555',
     fontSize: '14px',
   },
+  spinner: {
+    width: '36px',
+    height: '36px',
+    border: `3px solid rgba(255, 107, 53, 0.2)`,
+    borderTopColor: colors.accent,
+    borderRadius: '50%',
+    animation: 'spin 0.8s ease-in-out infinite',
+  },
 };

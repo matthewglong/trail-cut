@@ -192,9 +192,6 @@ export default function ProjectView({
             onChangeAspect={setPreviewAspect}
             cropPreview={cropPreview}
           />
-          {selectedClip && proxies[selectedClip.id] === 'generating' && (
-            <div style={styles.proxyStatus}>Generating proxy...</div>
-          )}
         </div>
         <div style={styles.mapPane}>
           <MapView clips={clips} selectedClipId={selectedClipId} route={route} />
@@ -405,11 +402,5 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     overflow: 'hidden',
     minWidth: '300px',
-  },
-  proxyStatus: {
-    padding: '8px 12px',
-    fontSize: '12px',
-    color: '#ff6b35',
-    textAlign: 'center',
   },
 };
