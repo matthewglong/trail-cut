@@ -1,11 +1,20 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import Timeline from '../components/Timeline';
 import MapView from '../components/MapView';
 import EditToolbar from '../components/EditToolbar';
+import CollapsibleToolbar from '../components/CollapsibleToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import type { Clip, Route, TrimRange, FocalPoint, Effects } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
+
+// Resizer constraints — easy to tune
+const V_SPLIT_DEFAULT = 0.65; // video takes 65% of width
+const V_SPLIT_MIN = 0.30;
+const V_SPLIT_MAX = 0.80;
+const H_CLIPS_MIN_PX = 80;
+const H_CLIPS_MAX_RATIO = 0.50; // clips can't exceed 50% of height
+const H_CLIPS_DEFAULT_PX = 140;
 
 interface ProjectViewProps {
   projectName: string;
@@ -65,8 +74,59 @@ export default function ProjectView({
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
 
+  // Resizer state
+  const [vSplit, setVSplit] = useState(V_SPLIT_DEFAULT); // fraction of width for video pane
+  const [clipsHeight, setClipsHeight] = useState(H_CLIPS_DEFAULT_PX);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef<'vertical' | 'horizontal' | null>(null);
+
   useDropdownClose(showImportMenu, useCallback(() => setShowImportMenu(false), []));
   useDropdownClose(showGpxMenu, useCallback(() => setShowGpxMenu(false), []));
+
+  // Drag handlers for resizers
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!draggingRef.current || !containerRef.current) return;
+      e.preventDefault();
+      const rect = containerRef.current.getBoundingClientRect();
+
+      if (draggingRef.current === 'vertical') {
+        const ratio = (e.clientX - rect.left) / rect.width;
+        setVSplit(Math.min(V_SPLIT_MAX, Math.max(V_SPLIT_MIN, ratio)));
+      } else {
+        const fromBottom = rect.bottom - e.clientY;
+        const maxClips = rect.height * H_CLIPS_MAX_RATIO;
+        setClipsHeight(Math.min(maxClips, Math.max(H_CLIPS_MIN_PX, fromBottom)));
+      }
+    };
+
+    const handleMouseUp = () => {
+      if (draggingRef.current) {
+        draggingRef.current = null;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+
+    const handleSelectStart = (e: Event) => {
+      if (draggingRef.current) e.preventDefault();
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('selectstart', handleSelectStart);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('selectstart', handleSelectStart);
+    };
+  }, []);
+
+  const startDrag = useCallback((axis: 'vertical' | 'horizontal') => {
+    draggingRef.current = axis;
+    document.body.style.cursor = axis === 'vertical' ? 'col-resize' : 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
 
   const selectedProxyPath = selectedClip
     ? (proxies[selectedClip.id] !== 'generating' ? proxies[selectedClip.id] ?? null : null)
@@ -74,7 +134,7 @@ export default function ProjectView({
 
   return (
     <div style={styles.app}>
-      {/* Toolbar */}
+      {/* Global Bar */}
       <div style={styles.toolbar}>
         <div style={styles.toolbarLeft}>
           <button onClick={onCloseProject} style={styles.backBtn} title="Back to home">
@@ -169,48 +229,74 @@ export default function ProjectView({
 
       {loading && <div style={styles.loading}>Loading...</div>}
 
-      {/* Edit toolbar */}
-      <EditToolbar
-        clip={selectedClip}
-        onUpdateFocalPoint={onUpdateFocalPoint}
-        onUpdateEffects={onUpdateEffects}
-        previewAspect={previewAspect}
-        onChangeAspect={setPreviewAspect}
-        cropPreview={cropPreview}
-        onToggleCropPreview={() => setCropPreview(p => !p)}
-      />
+      {/* Display + Clips area (fills remaining space) */}
+      <div ref={containerRef} style={styles.contentArea}>
+        {/* Display: Video + Map side by side */}
+        <div style={{ ...styles.displayArea, height: `calc(100% - ${clipsHeight}px - 6px)` }}>
+          {/* Video pane */}
+          <div style={{ ...styles.videoPane, width: `calc(${vSplit * 100}% - 3px)` }}>
+            <EditToolbar
+              clip={selectedClip}
+              onUpdateFocalPoint={onUpdateFocalPoint}
+              onUpdateEffects={onUpdateEffects}
+              previewAspect={previewAspect}
+              onChangeAspect={setPreviewAspect}
+              cropPreview={cropPreview}
+              onToggleCropPreview={() => setCropPreview(p => !p)}
+            />
+            <div style={styles.videoPaneContent}>
+              <VideoPreview
+                clip={selectedClip}
+                proxyPath={selectedProxyPath}
+                onUpdateTrim={onUpdateTrim}
+                onUpdateFocalPoint={onUpdateFocalPoint}
+                previewAspect={previewAspect}
+                onChangeAspect={setPreviewAspect}
+                cropPreview={cropPreview}
+              />
+            </div>
+          </div>
 
-      {/* Main content area */}
-      <div style={styles.main}>
-        <div style={styles.videoPane}>
-          <VideoPreview
-            clip={selectedClip}
-            proxyPath={selectedProxyPath}
-            onUpdateTrim={onUpdateTrim}
-            onUpdateFocalPoint={onUpdateFocalPoint}
-            previewAspect={previewAspect}
-            onChangeAspect={setPreviewAspect}
-            cropPreview={cropPreview}
+          {/* Vertical divider */}
+          <div
+            style={styles.vDivider}
+            onMouseDown={() => startDrag('vertical')}
+          />
+
+          {/* Map pane */}
+          <div style={{ ...styles.mapPane, width: `calc(${(1 - vSplit) * 100}% - 3px)` }}>
+            <CollapsibleToolbar>
+              <button style={styles.mapPlaceholderBtn} disabled>Placeholder</button>
+            </CollapsibleToolbar>
+            <div style={styles.mapPaneContent}>
+              <MapView clips={clips} selectedClipId={selectedClipId} route={route} />
+            </div>
+          </div>
+        </div>
+
+        {/* Horizontal divider */}
+        <div
+          style={styles.hDivider}
+          onMouseDown={() => startDrag('horizontal')}
+        />
+
+        {/* Clips timeline */}
+        <div style={{ ...styles.clipsArea, height: clipsHeight }}>
+          <Timeline
+            clips={clips}
+            selectedClipId={selectedClipId}
+            onSelectClip={setSelectedClipId}
+            thumbnails={thumbnails}
+            proxies={proxies}
+            onRemoveClip={onRemoveClip}
+            onToggleVisibility={(clipId) => {
+              setClips(prev => prev.map(c =>
+                c.id === clipId ? { ...c, visible: !c.visible } : c
+              ));
+            }}
           />
         </div>
-        <div style={styles.mapPane}>
-          <MapView clips={clips} selectedClipId={selectedClipId} route={route} />
-        </div>
       </div>
-
-      <Timeline
-        clips={clips}
-        selectedClipId={selectedClipId}
-        onSelectClip={setSelectedClipId}
-        thumbnails={thumbnails}
-        proxies={proxies}
-        onRemoveClip={onRemoveClip}
-        onToggleVisibility={(clipId) => {
-          setClips(prev => prev.map(c =>
-            c.id === clipId ? { ...c, visible: !c.visible } : c
-          ));
-        }}
-      />
     </div>
   );
 }
@@ -385,22 +471,61 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '13px',
     textAlign: 'center',
   },
-  main: {
+  contentArea: {
     display: 'flex',
+    flexDirection: 'column',
     flex: 1,
     overflow: 'hidden',
   },
+  displayArea: {
+    display: 'flex',
+    flexDirection: 'row',
+    overflow: 'hidden',
+  },
   videoPane: {
-    flex: 2,
-    borderRight: '1px solid #333',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  },
+  videoPaneContent: {
+    flex: 1,
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
     position: 'relative',
   },
   mapPane: {
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+  },
+  mapPaneContent: {
     flex: 1,
     overflow: 'hidden',
-    minWidth: '300px',
+  },
+  mapPlaceholderBtn: {
+    padding: '4px 10px',
+    backgroundColor: '#222',
+    color: '#555',
+    border: '1px solid #3a3a3a',
+    borderRadius: '5px',
+    fontSize: '11px',
+    cursor: 'default',
+    opacity: 0.5,
+  },
+  vDivider: {
+    width: '4px',
+    cursor: 'col-resize',
+    backgroundColor: '#222',
+    flexShrink: 0,
+  },
+  hDivider: {
+    height: '4px',
+    cursor: 'row-resize',
+    backgroundColor: '#222',
+    flexShrink: 0,
+  },
+  clipsArea: {
+    overflow: 'hidden',
   },
 };

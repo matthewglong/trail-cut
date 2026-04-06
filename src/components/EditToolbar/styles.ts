@@ -1,17 +1,7 @@
 import { colors } from '../../theme/tokens';
 
 export const styles: Record<string, React.CSSProperties> = {
-  // Collapsed state
-  collapsed: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '6px 16px',
-    backgroundColor: '#1a1a1a',
-    borderBottom: '1px solid #2a2a2a',
-    cursor: 'pointer',
-    userSelect: 'none',
-  },
+  // Collapsed summary chips
   chipRow: {
     display: 'flex',
     alignItems: 'center',
@@ -27,30 +17,13 @@ export const styles: Record<string, React.CSSProperties> = {
     height: '12px',
     backgroundColor: '#333',
   },
-  expandBtn: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    padding: '2px',
-    display: 'flex',
-    alignItems: 'center',
+  chipAccent: {
+    fontSize: '11px',
+    color: colors.accent,
+    fontVariantNumeric: 'tabular-nums',
   },
 
-  // Expanded state
-  bar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '8px 16px',
-    backgroundColor: '#1a1a1a',
-    borderBottom: '1px solid #2a2a2a',
-  },
-  sections: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '16px',
-    flex: 1,
-  },
+  // Expanded controls
   group: {
     display: 'flex',
     alignItems: 'center',
@@ -72,7 +45,6 @@ export const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#2a2a2a',
     flexShrink: 0,
   },
-
 
   // Preview
   previewToggle: {
@@ -113,22 +85,5 @@ export const styles: Record<string, React.CSSProperties> = {
     borderRadius: '5px',
     fontSize: '11px',
     cursor: 'pointer',
-  },
-
-  collapseBtn: {
-    background: 'none',
-    border: 'none',
-    cursor: 'pointer',
-    padding: '2px',
-    display: 'flex',
-    alignItems: 'center',
-    marginLeft: '12px',
-  },
-
-  // Accent color chip (used in collapsed crop preview)
-  chipAccent: {
-    fontSize: '11px',
-    color: colors.accent,
-    fontVariantNumeric: 'tabular-nums',
   },
 };
