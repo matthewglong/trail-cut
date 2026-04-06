@@ -55,7 +55,7 @@ export default function ClipInfo({ clip, onRemove, onUpdateTrim, onUpdateFocalPo
 
   function handleSpeedChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (!onUpdateEffects) return;
-    onUpdateEffects({ ...clip.effects, speed: parseFloat(e.target.value) });
+    onUpdateEffects({ ...clip!.effects, speed: parseFloat(e.target.value) });
   }
 
   async function handleSelectLut() {
@@ -66,14 +66,14 @@ export default function ClipInfo({ clip, onRemove, onUpdateTrim, onUpdateFocalPo
         filters: [{ name: 'LUT Files', extensions: ['cube', '3dl', 'lut'] }],
       });
       if (selected) {
-        onUpdateEffects({ ...clip.effects, color_lut: selected as string });
+        onUpdateEffects({ ...clip!.effects, color_lut: selected as string });
       }
     } catch { /* user cancelled */ }
   }
 
   function handleClearLut() {
     if (!onUpdateEffects) return;
-    onUpdateEffects({ ...clip.effects, color_lut: null });
+    onUpdateEffects({ ...clip!.effects, color_lut: null });
   }
 
   const lutFilename = clip.effects.color_lut?.split('/').pop() ?? null;
