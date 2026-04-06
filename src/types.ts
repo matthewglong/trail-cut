@@ -48,6 +48,7 @@ export interface Clip {
   trim: TrimRange | null;
   focal_point: FocalPoint;
   effects: Effects;
+  visible: boolean;
 }
 
 export interface TrackPoint {

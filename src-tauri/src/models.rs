@@ -36,6 +36,10 @@ fn default_zoom() -> f64 {
     1.0
 }
 
+fn default_visible() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StabilizeSettings {
     pub enabled: bool,
@@ -62,6 +66,8 @@ pub struct Clip {
     pub trim: Option<TrimRange>,
     pub focal_point: FocalPoint,
     pub effects: Effects,
+    #[serde(default = "default_visible")]
+    pub visible: bool,
 }
 
 impl From<ClipMetadata> for Clip {
@@ -86,6 +92,7 @@ impl From<ClipMetadata> for Clip {
                 color_lut: None,
                 speed: 1.0,
             },
+            visible: true,
         }
     }
 }

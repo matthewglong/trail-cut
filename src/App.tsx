@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import Timeline from './components/Timeline';
 import MapView from './components/MapView';
-import ClipInfo from './components/ClipInfo';
+import EditToolbar from './components/EditToolbar';
 import VideoPreview from './components/VideoPreview';
 import type { ClipMetadata, Clip, Project, Route, RecentProject, TrimRange, FocalPoint, Effects } from './types';
 
@@ -21,6 +21,7 @@ function newClipFromMetadata(meta: ClipMetadata): Clip {
       color_lut: null,
       speed: 1.0,
     },
+    visible: true,
   };
 }
 
@@ -53,6 +54,8 @@ export default function App() {
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [showImportMenu, setShowImportMenu] = useState(false);
+  const [previewAspect, setPreviewAspect] = useState('16:9');
+  const [cropPreview, setCropPreview] = useState(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
@@ -396,29 +399,33 @@ export default function App() {
 
       {loading && <div style={styles.loading}>Loading...</div>}
 
+      {/* Edit toolbar */}
+      <EditToolbar
+        clip={selectedClip}
+        onUpdateFocalPoint={handleUpdateFocalPoint}
+        onUpdateEffects={handleUpdateEffects}
+        previewAspect={previewAspect}
+        onChangeAspect={setPreviewAspect}
+        cropPreview={cropPreview}
+        onToggleCropPreview={() => setCropPreview(p => !p)}
+      />
+
       {/* Main content area */}
       <div style={styles.main}>
-        <div style={styles.leftPane}>
-          <ClipInfo
-            clip={selectedClip}
-            onRemove={selectedClip ? () => handleRemoveClip(selectedClip.id) : undefined}
-            onUpdateTrim={handleUpdateTrim}
-            onUpdateFocalPoint={handleUpdateFocalPoint}
-            onUpdateEffects={handleUpdateEffects}
-          />
-          {selectedClip && proxies[selectedClip.id] === 'generating' && (
-            <div style={styles.proxyStatus}>Generating proxy...</div>
-          )}
-        </div>
-        <div style={styles.centerPane}>
+        <div style={styles.videoPane}>
           <VideoPreview
             clip={selectedClip}
             proxyPath={selectedProxyPath}
             onUpdateTrim={handleUpdateTrim}
             onUpdateFocalPoint={handleUpdateFocalPoint}
+            previewAspect={previewAspect}
+            cropPreview={cropPreview}
           />
+          {selectedClip && proxies[selectedClip.id] === 'generating' && (
+            <div style={styles.proxyStatus}>Generating proxy...</div>
+          )}
         </div>
-        <div style={styles.rightPane}>
+        <div style={styles.mapPane}>
           <MapView clips={clips} selectedClipId={selectedClipId} route={route} />
         </div>
       </div>
@@ -429,6 +436,12 @@ export default function App() {
         onSelectClip={setSelectedClipId}
         thumbnails={thumbnails}
         proxies={proxies}
+        onRemoveClip={handleRemoveClip}
+        onToggleVisibility={(clipId) => {
+          setClips(prev => prev.map(c =>
+            c.id === clipId ? { ...c, visible: !c.visible } : c
+          ));
+        }}
       />
     </div>
   );
@@ -644,20 +657,15 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     overflow: 'hidden',
   },
-  leftPane: {
-    width: '240px',
-    minWidth: '200px',
-    borderRight: '1px solid #333',
-    overflow: 'auto',
-  },
-  centerPane: {
+  videoPane: {
     flex: 2,
     borderRight: '1px solid #333',
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
+    position: 'relative',
   },
-  rightPane: {
+  mapPane: {
     flex: 1,
     overflow: 'hidden',
     minWidth: '300px',

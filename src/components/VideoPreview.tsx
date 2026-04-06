@@ -14,6 +14,8 @@ interface VideoPreviewProps {
   proxyPath: string | null;
   onUpdateTrim?: (trim: TrimRange) => void;
   onUpdateFocalPoint?: (fp: FocalPoint) => void;
+  previewAspect: string;
+  cropPreview: boolean;
 }
 
 function formatTime(seconds: number): string {
@@ -23,7 +25,7 @@ function formatTime(seconds: number): string {
   return `${min}:${sec.toString().padStart(2, '0')}.${ms}`;
 }
 
-export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFocalPoint }: VideoPreviewProps) {
+export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFocalPoint, previewAspect, cropPreview }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekBarRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
@@ -33,8 +35,6 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   const [dragging, setDragging] = useState<'in' | 'out' | 'seek' | null>(null);
   const [draggingFocal, setDraggingFocal] = useState(false);
   const [videoNatural, setVideoNatural] = useState<{ w: number; h: number } | null>(null);
-  const [previewAspect, setPreviewAspect] = useState<string>('16:9');
-  const [cropPreview, setCropPreview] = useState(false);
 
   const trimInSec = clip?.trim ? clip.trim.in_ms / 1000 : 0;
   const trimOutSec = clip?.trim ? clip.trim.out_ms / 1000 : duration;
@@ -143,18 +143,6 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
       const w = videoRef.current.videoWidth;
       const h = videoRef.current.videoHeight;
       setVideoNatural({ w, h });
-      // Default to the closest standard aspect ratio
-      const srcAspect = w / h;
-      let closest = '16:9';
-      let closestDiff = Infinity;
-      for (const [name, ratio] of Object.entries(ASPECT_RATIOS)) {
-        const diff = Math.abs(srcAspect - ratio);
-        if (diff < closestDiff) {
-          closestDiff = diff;
-          closest = name;
-        }
-      }
-      setPreviewAspect(closest);
     }
   }
 
@@ -453,34 +441,6 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
         </div>
 
         <span style={styles.time}>{formatTime(duration)}</span>
-        <select
-          value={previewAspect}
-          onChange={(e) => setPreviewAspect(e.target.value)}
-          style={styles.aspectSelect}
-        >
-          <option value="16:9">16:9</option>
-          <option value="9:16">9:16</option>
-          <option value="1:1">1:1</option>
-          <option value="4:5">4:5</option>
-        </select>
-        <button
-          onClick={() => setCropPreview(p => !p)}
-          style={{
-            ...styles.playBtn,
-            backgroundColor: cropPreview ? '#ff6b35' : '#2a2a2a',
-            color: cropPreview ? '#000' : '#fff',
-            fontSize: '11px',
-            width: 'auto',
-            padding: '0 8px',
-          }}
-          title={cropPreview ? 'Exit crop preview' : 'Preview crop result'}
-        >
-          {cropPreview ? 'Edit' : 'Preview'}
-        </button>
-      </div>
-      <div style={styles.filename}>
-        {clip.filename}
-        {speed !== 1.0 && ` \u00b7 ${speed}x`}
       </div>
     </div>
   );
@@ -709,13 +669,6 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 3,
     pointerEvents: 'none',
   },
-  filename: {
-    padding: '4px 12px',
-    fontSize: '11px',
-    color: '#666',
-    backgroundColor: '#1a1a1a',
-    textAlign: 'center',
-  },
   empty: {
     display: 'flex',
     flexDirection: 'column',
@@ -732,15 +685,5 @@ const styles: Record<string, React.CSSProperties> = {
   emptyText: {
     color: '#555',
     fontSize: '14px',
-  },
-  aspectSelect: {
-    backgroundColor: '#2a2a2a',
-    color: '#ccc',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    padding: '4px 6px',
-    fontSize: '12px',
-    cursor: 'pointer',
-    flexShrink: 0,
   },
 };
