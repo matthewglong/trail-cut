@@ -419,6 +419,7 @@ export default function App() {
             onUpdateTrim={handleUpdateTrim}
             onUpdateFocalPoint={handleUpdateFocalPoint}
             previewAspect={previewAspect}
+            onChangeAspect={setPreviewAspect}
             cropPreview={cropPreview}
           />
           {selectedClip && proxies[selectedClip.id] === 'generating' && (

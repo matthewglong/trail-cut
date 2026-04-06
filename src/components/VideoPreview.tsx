@@ -15,6 +15,7 @@ interface VideoPreviewProps {
   onUpdateTrim?: (trim: TrimRange) => void;
   onUpdateFocalPoint?: (fp: FocalPoint) => void;
   previewAspect: string;
+  onChangeAspect?: (aspect: string) => void;
   cropPreview: boolean;
 }
 
@@ -25,7 +26,7 @@ function formatTime(seconds: number): string {
   return `${min}:${sec.toString().padStart(2, '0')}.${ms}`;
 }
 
-export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFocalPoint, previewAspect, cropPreview }: VideoPreviewProps) {
+export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFocalPoint, previewAspect, onChangeAspect, cropPreview }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekBarRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
@@ -402,6 +403,23 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
           />
         )}
       </div>
+      {/* Aspect ratio selector — overlaid in preview mode, outside clipped wrapper */}
+      {cropPreview && onChangeAspect && (
+        <div style={styles.aspectOverlay}>
+          {['16:9', '9:16', '1:1', '4:5'].map((ratio) => (
+            <button
+              key={ratio}
+              onClick={() => onChangeAspect(ratio)}
+              style={{
+                ...styles.aspectBtn,
+                ...(previewAspect === ratio ? styles.aspectBtnActive : {}),
+              }}
+            >
+              {ratio}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Controls */}
       <div style={styles.controls}>
@@ -557,6 +575,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     height: '100%',
     backgroundColor: '#000',
+    position: 'relative',
   },
   videoWrapper: {
     flex: 1,
@@ -569,6 +588,32 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     objectFit: 'contain',
     pointerEvents: 'none',
+  },
+  // Aspect ratio overlay (preview mode)
+  aspectOverlay: {
+    position: 'absolute',
+    top: '10px',
+    right: '10px',
+    display: 'flex',
+    gap: '4px',
+    zIndex: 10,
+  },
+  aspectBtn: {
+    padding: '4px 8px',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    color: '#999',
+    border: '1px solid rgba(255, 255, 255, 0.1)',
+    borderRadius: '4px',
+    fontSize: '11px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    backdropFilter: 'blur(8px)',
+    WebkitBackdropFilter: 'blur(8px)',
+  },
+  aspectBtnActive: {
+    backgroundColor: 'rgba(255, 107, 53, 0.85)',
+    color: '#fff',
+    borderColor: '#ff6b35',
   },
   // Crosshair overlay
   crosshairOverlay: {

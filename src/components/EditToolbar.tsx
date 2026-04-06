@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { ZoomIn, Gauge, Crop, Eye, EyeOff, Pipette, X } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../types';
 
 interface EditToolbarProps {
@@ -18,17 +19,25 @@ function NumberStepper({
   min,
   max,
   step,
-  format,
   onChange,
 }: {
   value: number;
   min: number;
   max: number;
   step: number;
-  format: (v: number) => string;
   onChange: (v: number) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
   const clamp = (v: number) => Math.round(Math.max(min, Math.min(max, v)) * 100) / 100;
+
+  function commitEdit() {
+    const parsed = parseFloat(draft);
+    if (!isNaN(parsed)) {
+      onChange(clamp(parsed));
+    }
+    setEditing(false);
+  }
 
   return (
     <div style={stepperStyles.container}>
@@ -39,7 +48,27 @@ function NumberStepper({
       >
         -
       </button>
-      <span style={stepperStyles.value}>{format(value)}</span>
+      {editing ? (
+        <input
+          autoFocus
+          onFocus={(e) => e.target.select()}
+          style={stepperStyles.input}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitEdit();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      ) : (
+        <span
+          style={stepperStyles.value}
+          onClick={() => { setDraft(parseFloat(value.toFixed(2)).toString()); setEditing(true); }}
+        >
+          {parseFloat(value.toFixed(2))}X
+        </span>
+      )}
       <button
         style={stepperStyles.btn}
         onClick={() => onChange(clamp(value + step))}
@@ -75,14 +104,29 @@ const stepperStyles: Record<string, React.CSSProperties> = {
     padding: 0,
   },
   value: {
-    minWidth: '38px',
+    width: '46px',
     textAlign: 'center' as const,
     fontSize: '12px',
     color: '#ddd',
     fontVariantNumeric: 'tabular-nums',
-    padding: '0 2px',
+    padding: '0 4px',
     borderLeft: '1px solid #3a3a3a',
     borderRight: '1px solid #3a3a3a',
+    cursor: 'text',
+  },
+  input: {
+    width: '46px',
+    textAlign: 'center' as const,
+    fontSize: '12px',
+    color: '#fff',
+    fontVariantNumeric: 'tabular-nums',
+    padding: '0 4px',
+    backgroundColor: '#1a1a1a',
+    border: 'none',
+    borderLeft: '1px solid #3a3a3a',
+    borderRight: '1px solid #3a3a3a',
+    outline: 'none',
+    height: '100%',
   },
 };
 
@@ -127,10 +171,12 @@ export default function EditToolbar({
           <span style={styles.chip}>
             {speed}x speed
           </span>
-          <span style={styles.divider} />
-          <span style={styles.chip}>
-            {previewAspect}
-          </span>
+          {cropPreview && (
+            <>
+              <span style={styles.divider} />
+              <span style={{ ...styles.chip, color: '#ff6b35' }}>{previewAspect}</span>
+            </>
+          )}
           {lutFilename && (
             <>
               <span style={styles.divider} />
@@ -150,13 +196,14 @@ export default function EditToolbar({
       <div style={styles.sections}>
         {/* Zoom */}
         <div style={styles.group}>
-          <span style={styles.groupLabel}>Zoom</span>
+          <span style={styles.groupLabel} title="Zoom">
+            <ZoomIn size={14} />
+          </span>
           <NumberStepper
             value={zoom}
             min={1.0}
             max={5.0}
-            step={0.1}
-            format={(v) => `${v.toFixed(1)}x`}
+            step={0.05}
             onChange={(v) => onUpdateFocalPoint({ ...clip.focal_point, zoom: v })}
           />
         </div>
@@ -165,51 +212,45 @@ export default function EditToolbar({
 
         {/* Speed */}
         <div style={styles.group}>
-          <span style={styles.groupLabel}>Speed</span>
+          <span style={styles.groupLabel} title="Speed">
+            <Gauge size={14} />
+          </span>
           <NumberStepper
             value={speed}
             min={0.25}
             max={4.0}
             step={0.25}
-            format={(v) => `${v}x`}
             onChange={(v) => onUpdateEffects({ ...clip.effects, speed: v })}
           />
         </div>
 
         <div style={styles.separator} />
 
-        {/* Aspect Ratio + Preview */}
+        {/* Crop preview toggle */}
         <div style={styles.group}>
-          <span style={styles.groupLabel}>Aspect</span>
-          <div style={styles.groupControls}>
-            <select
-              value={previewAspect}
-              onChange={(e) => onChangeAspect(e.target.value)}
-              style={styles.select}
-            >
-              <option value="16:9">16:9</option>
-              <option value="9:16">9:16</option>
-              <option value="1:1">1:1</option>
-              <option value="4:5">4:5</option>
-            </select>
-            <button
-              onClick={onToggleCropPreview}
-              style={{
-                ...styles.previewToggle,
-                backgroundColor: cropPreview ? '#ff6b35' : 'transparent',
-                color: cropPreview ? '#000' : '#999',
-              }}
-            >
-              {cropPreview ? 'Edit' : 'Preview'}
-            </button>
-          </div>
+          <span style={styles.groupLabel} title="Crop">
+            <Crop size={14} />
+          </span>
+          <button
+            onClick={onToggleCropPreview}
+            style={{
+              ...styles.previewToggle,
+              backgroundColor: cropPreview ? '#ff6b35' : 'transparent',
+              color: cropPreview ? '#000' : '#999',
+            }}
+            title={cropPreview ? 'Exit crop preview' : 'Preview crop'}
+          >
+            {cropPreview ? <Eye size={14} /> : <EyeOff size={14} />}
+          </button>
         </div>
 
         <div style={styles.separator} />
 
         {/* Color Grade */}
         <div style={styles.group}>
-          <span style={styles.groupLabel}>Color</span>
+          <span style={styles.groupLabel} title="Color Grade">
+            <Pipette size={14} />
+          </span>
           <div style={styles.groupControls}>
             {lutFilename ? (
               <>
@@ -218,7 +259,7 @@ export default function EditToolbar({
                   onClick={() => onUpdateEffects({ ...clip.effects, color_lut: null })}
                   style={styles.lutClear}
                 >
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 2L8 8M8 2L2 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                  <X size={10} />
                 </button>
               </>
             ) : (
@@ -294,11 +335,9 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '8px',
   },
   groupLabel: {
-    fontSize: '11px',
-    fontWeight: 600,
+    display: 'flex',
+    alignItems: 'center',
     color: '#666',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.4px',
   },
   groupControls: {
     display: 'flex',
@@ -313,23 +352,17 @@ const styles: Record<string, React.CSSProperties> = {
   },
 
 
-  // Aspect / Preview
-  select: {
-    backgroundColor: '#222',
-    color: '#ddd',
-    border: '1px solid #3a3a3a',
-    borderRadius: '5px',
-    padding: '4px 6px',
-    fontSize: '12px',
-    cursor: 'pointer',
-  },
+  // Preview
   previewToggle: {
-    padding: '4px 10px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '28px',
+    height: '28px',
     border: '1px solid #3a3a3a',
     borderRadius: '5px',
-    fontSize: '11px',
-    fontWeight: 600,
     cursor: 'pointer',
+    padding: 0,
   },
 
   // Color grade
