@@ -32,7 +32,6 @@ export interface StabilizeSettings {
 
 export interface Effects {
   stabilize: StabilizeSettings;
-  color_lut: string | null;
   speed: number;
 }
 

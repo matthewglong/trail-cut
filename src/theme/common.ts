@@ -3,7 +3,7 @@
 
 import { colors } from './tokens';
 
-/** Standard dark button (toolbar, panels — e.g. "Import Media", "Load LUT file") */
+/** Standard dark button (toolbar, panels — e.g. "Import Media") */
 export const buttonBase: React.CSSProperties = {
   padding: '6px 14px',
   backgroundColor: colors.bgSurface,

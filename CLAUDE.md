@@ -18,9 +18,10 @@ src/                    # React frontend
   types.ts              # TypeScript types matching Rust models
   components/
     Timeline.tsx        # Horizontal clip strip with thumbnails (bottom)
-    VideoPreview.tsx    # HTML5 video player with controls (center pane)
-    MapView.tsx         # MapLibre map with markers + route (right pane)
-    ClipInfo.tsx        # Clip metadata panel + remove button (left pane)
+    VideoPreview.tsx    # HTML5 video player with controls
+    MapView.tsx         # MapLibre map with markers + route
+    EditToolbar/        # Per-clip edit controls (zoom, speed, crop preview)
+    CollapsibleToolbar.tsx # Shared collapsible toolbar shell
 src-tauri/              # Rust backend
   src/
     main.rs             # Entry point
@@ -68,10 +69,11 @@ Source videos are linked (absolute paths), not copied into the bundle.
 ## Phase status
 - **Phase 1 (Foundation)**: COMPLETE — file/folder import via ExifTool, chronological timeline, MapLibre map with clip markers, GPX route drawing, project bundle save/load, home screen with project gallery. Only missing: drag-and-drop import (low priority).
 - **Phase 2 (Editing)**: COMPLETE
-  - Done: proxy generation, video preview player, clip removal, trim UI (in/out handles on seek bar + numeric inputs), focal point UI (draggable crosshair + 9:16 crop preview), speed adjustment (0.25x–4x slider + playbackRate), color grading (LUT file picker, applied at export), edit state persistence (Clip[] throughout, survives save/load)
+  - Done: proxy generation, video preview player, clip removal, trim UI (in/out handles on seek bar + numeric inputs), focal point UI (draggable crosshair + 9:16 crop preview), speed adjustment (0.25x–4x slider + playbackRate), edit state persistence (Clip[] throughout, survives save/load)
   - Deferred: stabilization (vidstab) pushed to Phase 4 — requires FFmpeg two-pass, not real-time previewable
+  - Deferred: color grading — to be designed properly with WebGL preview + full slider set + histogram in a later phase
 - **Phase 3 (Export)**: NOT STARTED — map frame rendering, FFmpeg compositing, layout configurator
-- **Phase 4 (Polish)**: NOT STARTED — audio, map styles, batch export, undo/redo, performance, stabilization, sidecar bundling of FFmpeg/ExifTool
+- **Phase 4 (Polish)**: NOT STARTED — color grading, audio, map styles, batch export, undo/redo, performance, stabilization, sidecar bundling of FFmpeg/ExifTool
 
 ## App flow
 1. **Home screen**: "New Project" button + "Open Project" button + project gallery (all known projects from `~/.trailcut/recent.json`, filtered to still-existing bundles)

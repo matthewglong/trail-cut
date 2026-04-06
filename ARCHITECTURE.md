@@ -59,7 +59,7 @@ For the editing UI, MapLibre GL JS renders the map live in the webview — fast 
 ### Video processing: FFmpeg (via CLI)
 - **Why**: Industry standard. Handles every codec/format iPhone produces. The Rust backend shells out to FFmpeg for all video operations.
 - **Stabilization**: vidstab library (two-pass: vidstabdetect → vidstabtransform)
-- **Color grading**: Hald CLUT / 3D LUT filter. Generate a reference LUT, edit in any image editor, apply to video.
+- **Color grading**: TBD — deferred to a later phase. Plan is full slider-based grading (brightness, contrast, saturation, exposure, temperature, tint, shadows/midtones/highlights, vibrance) with WebGL-based real-time preview and FFmpeg `eq` / `colorchannelmixer` / `colortemperature` filters at export.
 - **Speed adjustment**: setpts filter for video, atempo for audio
 - **Trimming**: Frame-accurate seek with -ss and -to
 - **Compositing**: filter_complex with overlay, pad, scale for combining video + map frames
@@ -90,7 +90,6 @@ JSON file stored on disk alongside (or wherever the user chooses). Contains:
       "focal_point": { "x": 0.5, "y": 0.5 },
       "effects": {
         "stabilize": { "enabled": false, "shakiness": 5 },
-        "color_lut": null,
         "speed": 1.0
       }
     }
@@ -138,7 +137,6 @@ Key command groups:
 
 **Effects processing**
 - `stabilize_clip(input, output, settings)`: Run vidstab two-pass on a clip
-- `apply_lut(input, output, lut_path)`: Apply color LUT via FFmpeg haldclut
 - `adjust_speed(input, output, factor)`: Apply speed change via setpts/atempo
 
 **Export**
@@ -158,7 +156,7 @@ The frontend is a single-window app with a resizable split-pane layout:
 - Timeline strip at the bottom showing clip thumbnails in chronological order
 - Video preview player (using proxy files) in the main area
 - Focal point overlay (draggable crosshair) on the video preview
-- Clip inspector panel: trim controls (in/out point sliders), effect toggles (stabilize, LUT, speed), focal point coordinates
+- Edit toolbar: zoom, speed, crop preview controls (stabilize and color grading deferred)
 
 **Right pane: Map**
 - MapLibre GL JS map showing the full route (if GPX loaded) and markers for each clip's location
@@ -204,13 +202,13 @@ User selects clip in timeline
   → Changes written to project JSON (no media processing yet)
   → Map pane highlights current clip location
   → Preview reflects trim/speed changes in real-time
-  → Stabilization and LUT preview: generate a single processed frame on demand for preview
+  → Stabilization preview: generate a single processed frame on demand for preview
 ```
 
 ### Export flow
 ```
 User configures export (aspect ratio, layout, quality)
-  → Rust processes each clip: apply trim, stabilize, color grade, speed
+  → Rust processes each clip: apply trim, stabilize, speed
   → Rust renders map animation frames:
       For each clip: static map frame at clip's GPS position
       For each transition: N frames of animated camera move / route drawing
@@ -270,13 +268,13 @@ For the headless WebView rendering, Tauri can create an offscreen/hidden window 
 - Build video preview player using HTML5 `<video>` element with proxy files
 - Implement trim UI: in/out point sliders that scrub the proxy video
 - Implement focal point UI: draggable crosshair overlay on video preview, with live crop preview showing how the frame will look in different aspect ratios
-- Implement stabilization: Rust command shells out to FFmpeg vidstab two-pass
-- Implement color grading: LUT-based workflow. Provide a few built-in LUTs (warm, cool, cinematic). Allow custom LUT import.
+- Implement stabilization: Rust command shells out to FFmpeg vidstab two-pass (deferred)
+- Color grading: deferred to a later phase — full slider-based grading with WebGL preview
 - Implement speed adjustment UI and backend (setpts/atempo)
 - Preview processed frames on demand (single-frame renders for effect preview without processing full clip)
 - All edits stored in project JSON, no destructive changes to source files
 
-**Exit criteria**: Select a clip → trim it → apply stabilization → apply a color LUT → adjust speed → set focal point → see preview of how it will look in vertical crop. All saved to project file.
+**Exit criteria**: Select a clip → trim it → adjust speed → set focal point → see preview of how it will look in vertical crop. All saved to project file.
 
 ### Phase 3: Export — "Render the final video"
 **Goal**: Produce finished videos with map composited alongside footage.

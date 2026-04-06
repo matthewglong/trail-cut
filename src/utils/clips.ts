@@ -8,7 +8,6 @@ export function newClipFromMetadata(meta: ClipMetadata): Clip {
     focal_point: { x: 0.5, y: 0.5, zoom: 1.0 },
     effects: {
       stabilize: { enabled: false, shakiness: 5 },
-      color_lut: null,
       speed: 1.0,
     },
     visible: true,

@@ -34,11 +34,6 @@ export const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     color: '#666',
   },
-  groupControls: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-  },
   separator: {
     width: '1px',
     height: '20px',
@@ -57,33 +52,5 @@ export const styles: Record<string, React.CSSProperties> = {
     borderRadius: '5px',
     cursor: 'pointer',
     padding: 0,
-  },
-
-  // Color grade
-  lutChip: {
-    fontSize: '11px',
-    color: '#ccc',
-    maxWidth: '80px',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap' as const,
-  },
-  lutClear: {
-    background: 'none',
-    border: 'none',
-    color: '#666',
-    cursor: 'pointer',
-    padding: '2px',
-    display: 'flex',
-    alignItems: 'center',
-  },
-  lutBtn: {
-    padding: '4px 10px',
-    backgroundColor: '#222',
-    color: '#999',
-    border: '1px solid #3a3a3a',
-    borderRadius: '5px',
-    fontSize: '11px',
-    cursor: 'pointer',
   },
 };

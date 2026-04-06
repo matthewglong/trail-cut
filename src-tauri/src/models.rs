@@ -49,7 +49,6 @@ pub struct StabilizeSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Effects {
     pub stabilize: StabilizeSettings,
-    pub color_lut: Option<String>,
     pub speed: f64,
 }
 
@@ -89,7 +88,6 @@ impl From<ClipMetadata> for Clip {
                     enabled: false,
                     shakiness: 5,
                 },
-                color_lut: None,
                 speed: 1.0,
             },
             visible: true,

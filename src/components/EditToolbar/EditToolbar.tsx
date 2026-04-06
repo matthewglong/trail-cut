@@ -1,5 +1,4 @@
-import { open } from '@tauri-apps/plugin-dialog';
-import { ZoomIn, Gauge, Crop, Eye, EyeOff, Pipette, X } from 'lucide-react';
+import { ZoomIn, Gauge, Crop, Eye, EyeOff } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../../types';
 import { colors } from '../../theme/tokens';
 import NumberStepper from './NumberStepper';
@@ -29,19 +28,6 @@ export default function EditToolbar({
 
   const zoom = clip.focal_point.zoom;
   const speed = clip.effects.speed;
-  const lutFilename = clip.effects.color_lut?.split('/').pop() ?? null;
-
-  async function handleSelectLut() {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: 'LUT Files', extensions: ['cube', '3dl', 'lut'] }],
-      });
-      if (selected) {
-        onUpdateEffects({ ...clip!.effects, color_lut: selected as string });
-      }
-    } catch { /* user cancelled */ }
-  }
 
   const collapsedContent = (
     <div style={styles.chipRow}>
@@ -52,12 +38,6 @@ export default function EditToolbar({
         <>
           <span style={styles.divider} />
           <span style={styles.chipAccent}>{previewAspect}</span>
-        </>
-      )}
-      {lutFilename && (
-        <>
-          <span style={styles.divider} />
-          <span style={styles.chip}>{lutFilename}</span>
         </>
       )}
     </div>
@@ -113,32 +93,6 @@ export default function EditToolbar({
         >
           {cropPreview ? <Eye size={14} /> : <EyeOff size={14} />}
         </button>
-      </div>
-
-      <div style={styles.separator} />
-
-      {/* Color Grade */}
-      <div style={styles.group}>
-        <span style={styles.groupLabel} title="Color Grade">
-          <Pipette size={14} />
-        </span>
-        <div style={styles.groupControls}>
-          {lutFilename ? (
-            <>
-              <span style={styles.lutChip} title={clip.effects.color_lut ?? ''}>{lutFilename}</span>
-              <button
-                onClick={() => onUpdateEffects({ ...clip.effects, color_lut: null })}
-                style={styles.lutClear}
-              >
-                <X size={10} />
-              </button>
-            </>
-          ) : (
-            <button onClick={handleSelectLut} style={styles.lutBtn}>
-              Load LUT
-            </button>
-          )}
-        </div>
       </div>
     </CollapsibleToolbar>
   );
