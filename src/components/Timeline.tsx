@@ -196,7 +196,7 @@ export default function Timeline({
               }}
             >
               {/* Thumbnail / click to select */}
-              <button
+              <div
                 onClick={() => onSelectClip(clip.id)}
                 style={styles.thumbBtn}
               >
@@ -215,7 +215,7 @@ export default function Timeline({
                 {proxies[clip.id] === 'generating' && (
                   <div style={styles.proxyBadge}>...</div>
                 )}
-              </button>
+              </div>
 
               {/* Action buttons */}
               <div style={styles.actions}>
@@ -287,14 +287,16 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: '96px',
     maxWidth: '120px',
     backgroundColor: '#222',
-    border: '2px solid transparent',
+    borderWidth: '2px',
+    borderStyle: 'solid',
+    borderColor: '#222',
     borderRadius: '6px',
     overflow: 'visible',
     transition: 'border-color 0.15s',
   },
   cardSelected: {
-    borderColor: '#4a9eff',
-    backgroundColor: '#1a2e45',
+    borderColor: '#ff6b35',
+    backgroundColor: '#2e1a0f',
   },
   cardHidden: {
     opacity: 0.5,
@@ -308,6 +310,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     cursor: 'pointer',
     position: 'relative',
+    outline: 'none',
   },
   thumbnail: {
     width: '100%',
@@ -356,6 +359,7 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     borderRadius: '3px',
     padding: 0,
+    outline: 'none',
   },
   empty: {
     display: 'flex',
