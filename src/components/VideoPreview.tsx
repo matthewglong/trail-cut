@@ -436,10 +436,18 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
           <div style={{ ...styles.trimExcluded, left: '0%', width: `${inPct}%` }} />
           <div style={{ ...styles.trimExcluded, left: `${outPct}%`, width: `${100 - outPct}%` }} />
           <div style={{ ...styles.trimHandle, left: `${inPct}%` }} title="Trim in">
-            <div style={styles.trimHandleBar} />
+            <div style={styles.trimHandleBar}>
+              <div style={styles.trimHandleGrip} />
+              <div style={styles.trimHandleGrip} />
+              <div style={styles.trimHandleGrip} />
+            </div>
           </div>
           <div style={{ ...styles.trimHandle, left: `${outPct}%` }} title="Trim out">
-            <div style={styles.trimHandleBar} />
+            <div style={styles.trimHandleBar}>
+              <div style={styles.trimHandleGrip} />
+              <div style={styles.trimHandleGrip} />
+              <div style={styles.trimHandleGrip} />
+            </div>
           </div>
           <div style={{ ...styles.playhead, left: `${playPct}%` }} />
         </div>
@@ -662,10 +670,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   trimHandle: {
     position: 'absolute',
-    top: '-2px',
-    width: '12px',
-    height: '24px',
-    marginLeft: '-6px',
+    top: '50%',
+    width: '18px',
+    height: '36px',
+    marginLeft: '-9px',
+    transform: 'translateY(-50%)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -673,10 +682,22 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 2,
   },
   trimHandleBar: {
-    width: '4px',
-    height: '16px',
+    width: '8px',
+    height: '32px',
     backgroundColor: '#ff6b35',
-    borderRadius: '2px',
+    borderRadius: '4px',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '3px',
+    boxShadow: '0 1px 4px rgba(0, 0, 0, 0.4)',
+  },
+  trimHandleGrip: {
+    width: '4px',
+    height: '1px',
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    borderRadius: '1px',
   },
   playhead: {
     position: 'absolute',
