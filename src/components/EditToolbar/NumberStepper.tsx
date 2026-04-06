@@ -75,7 +75,7 @@ export default function NumberStepper({
           style={stepperStyles.value}
           onClick={() => { setDraft(parseFloat(value.toFixed(2)).toString()); setEditing(true); }}
         >
-          {parseFloat(value.toFixed(2))}<span style={stepperStyles.unit}>x</span>
+          {value.toFixed(2)}<span style={stepperStyles.unit}>x</span>
         </span>
       )}
     </div>
@@ -90,13 +90,13 @@ const stepperStyles: Record<string, React.CSSProperties> = {
     height: '22px',
   },
   value: {
+    display: 'inline-block',
     fontSize: '12px',
     fontWeight: 500,
     color: '#bbb',
     fontVariantNumeric: 'tabular-nums',
     cursor: 'text',
     userSelect: 'none',
-    minWidth: '36px',
   },
   unit: {
     fontSize: '10px',
