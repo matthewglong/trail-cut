@@ -34,6 +34,7 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   const [draggingFocal, setDraggingFocal] = useState(false);
   const [videoNatural, setVideoNatural] = useState<{ w: number; h: number } | null>(null);
   const [previewAspect, setPreviewAspect] = useState<string>('16:9');
+  const [cropPreview, setCropPreview] = useState(false);
 
   const trimInSec = clip?.trim ? clip.trim.in_ms / 1000 : 0;
   const trimOutSec = clip?.trim ? clip.trim.out_ms / 1000 : duration;
@@ -238,6 +239,65 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
     );
   }
 
+  // Compute crop-preview transform: scale video so only the crop region is visible
+  const cropTransform = (() => {
+    if (!cropPreview || !videoNatural) return undefined;
+    const container = videoContainerRef.current;
+    if (!container) return undefined;
+
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    if (!cw || !ch) return undefined;
+
+    const videoAspect = videoNatural.w / videoNatural.h;
+    const containerAspect = cw / ch;
+    let vw: number, vh: number, vx: number, vy: number;
+    if (containerAspect > videoAspect) {
+      vh = ch; vw = ch * videoAspect; vx = (cw - vw) / 2; vy = 0;
+    } else {
+      vw = cw; vh = cw / videoAspect; vx = 0; vy = (ch - vh) / 2;
+    }
+
+    const targetAspect = ASPECT_RATIOS[previewAspect] ?? 1;
+    let cutW: number, cutH: number;
+    if (targetAspect > videoAspect) { cutW = vw; cutH = vw / targetAspect; }
+    else { cutH = vh; cutW = vh * targetAspect; }
+    cutW /= zoom; cutH /= zoom;
+
+    const focalPxX = vx + focalX * vw;
+    const focalPxY = vy + focalY * vh;
+    let cutX = focalPxX - cutW / 2;
+    let cutY = focalPxY - cutH / 2;
+    cutX = Math.max(vx, Math.min(vx + vw - cutW, cutX));
+    cutY = Math.max(vy, Math.min(vy + vh - cutH, cutY));
+
+    // Scale so the crop region fills the container (fit inside)
+    const scaleX = cw / cutW;
+    const scaleY = ch / cutH;
+    const scale = Math.min(scaleX, scaleY);
+
+    // Translate so the crop center maps to the container center
+    // CSS applies right-to-left: scale first, then translate
+    const cropCenterX = cutX + cutW / 2;
+    const cropCenterY = cutY + cutH / 2;
+    const tx = cw / 2 - scale * cropCenterX;
+    const ty = ch / 2 - scale * cropCenterY;
+
+    // Clip to only show the crop region (black bars for mismatched aspect)
+    const visW = cutW * scale;
+    const visH = cutH * scale;
+    const clipTop = (ch - visH) / 2;
+    const clipRight = (cw - visW) / 2;
+    const clipBottom = clipTop;
+    const clipLeft = clipRight;
+
+    return {
+      transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
+      transformOrigin: '0 0' as const,
+      clip: `inset(${clipTop}px ${clipRight}px ${clipBottom}px ${clipLeft}px)`,
+    };
+  })();
+
   const videoSrc = convertFileSrc(proxyPath);
   const inPct = duration ? (trimInSec / duration) * 100 : 0;
   const outPct = duration ? (trimOutSec / duration) * 100 : 100;
@@ -248,43 +308,51 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
       {/* Video with crosshair overlay */}
       <div
         ref={videoContainerRef}
-        style={styles.videoWrapper}
-        onMouseDown={handleVideoMouseDown}
-        onWheel={handleWheel}
+        style={{
+          ...styles.videoWrapper,
+          cursor: cropPreview ? 'default' : 'crosshair',
+          ...(cropTransform ? { clipPath: cropTransform.clip } : {}),
+        }}
+        onMouseDown={cropPreview ? undefined : handleVideoMouseDown}
+        onWheel={cropPreview ? undefined : handleWheel}
       >
-        <video
-          ref={videoRef}
-          src={videoSrc}
-          style={styles.video}
-          onTimeUpdate={handleTimeUpdate}
-          onLoadedMetadata={handleLoadedMetadata}
-          onEnded={handleEnded}
-          onDoubleClick={togglePlay}
-          playsInline
-        />
-        {/* Crosshair — always visible, short arms */}
-        <div style={styles.crosshairOverlay}>
-          <div style={{
-            position: 'absolute',
-            left: `calc(${focalX * 100}% - 12px)`,
-            top: `${focalY * 100}%`,
-            width: '24px',
-            height: '2px',
-            backgroundColor: '#ff6b35',
-            transform: 'translateY(-50%)',
-          }} />
-          <div style={{
-            position: 'absolute',
-            left: `${focalX * 100}%`,
-            top: `calc(${focalY * 100}% - 12px)`,
-            width: '2px',
-            height: '24px',
-            backgroundColor: '#ff6b35',
-            transform: 'translateX(-50%)',
-          }} />
+        <div style={cropTransform ? { ...cropTransform, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
+          <video
+            ref={videoRef}
+            src={videoSrc}
+            style={styles.video}
+            onTimeUpdate={handleTimeUpdate}
+            onLoadedMetadata={handleLoadedMetadata}
+            onEnded={handleEnded}
+            onDoubleClick={togglePlay}
+            playsInline
+          />
         </div>
-        {/* Aspect ratio crop overlay */}
-        {videoNatural && (
+        {/* Crosshair — hidden in crop preview mode */}
+        {!cropPreview && (
+          <div style={styles.crosshairOverlay}>
+            <div style={{
+              position: 'absolute',
+              left: `calc(${focalX * 100}% - 12px)`,
+              top: `${focalY * 100}%`,
+              width: '24px',
+              height: '2px',
+              backgroundColor: '#ff6b35',
+              transform: 'translateY(-50%)',
+            }} />
+            <div style={{
+              position: 'absolute',
+              left: `${focalX * 100}%`,
+              top: `calc(${focalY * 100}% - 12px)`,
+              width: '2px',
+              height: '24px',
+              backgroundColor: '#ff6b35',
+              transform: 'translateX(-50%)',
+            }} />
+          </div>
+        )}
+        {/* Aspect ratio crop overlay — hidden in crop preview mode */}
+        {!cropPreview && videoNatural && (
           <CropOverlay
             containerRef={videoContainerRef}
             videoW={videoNatural.w}
@@ -337,6 +405,20 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
           <option value="1:1">1:1</option>
           <option value="4:5">4:5</option>
         </select>
+        <button
+          onClick={() => setCropPreview(p => !p)}
+          style={{
+            ...styles.playBtn,
+            backgroundColor: cropPreview ? '#ff6b35' : '#2a2a2a',
+            color: cropPreview ? '#000' : '#fff',
+            fontSize: '11px',
+            width: 'auto',
+            padding: '0 8px',
+          }}
+          title={cropPreview ? 'Exit crop preview' : 'Preview crop result'}
+        >
+          {cropPreview ? 'Edit' : 'Preview'}
+        </button>
       </div>
       <div style={styles.filename}>
         {clip.filename}
@@ -463,7 +545,6 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative',
     overflow: 'hidden',
     minHeight: 0,
-    cursor: 'crosshair',
   },
   video: {
     width: '100%',
