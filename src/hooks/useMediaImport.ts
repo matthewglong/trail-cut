@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import type { ClipMetadata, Clip, Route } from '../types';
@@ -20,6 +20,12 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Use a ref so async functions always see the latest projectDir
+  const projectDirRef = useRef(projectDir);
+  useEffect(() => {
+    projectDirRef.current = projectDir;
+  }, [projectDir]);
+
   const generateProxiesAndThumbnails = useCallback(async (clipList: Clip[], dir: string) => {
     for (const clip of clipList) {
       invoke<string>('generate_thumbnail', { sourcePath: clip.path, projectDir: dir })
@@ -40,7 +46,8 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
   }, []);
 
   async function importPaths(paths: string[]) {
-    if (!projectDir || paths.length === 0) return;
+    const dir = projectDirRef.current;
+    if (!dir || paths.length === 0) return;
     try {
       setLoading(true);
       setError(null);
@@ -50,7 +57,7 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
       setClips((prev) => {
         const merged = mergeClips(prev, result);
         const newClips = merged.filter((c) => !prev.some((existing) => existing.path === c.path));
-        if (newClips.length > 0) generateProxiesAndThumbnails(newClips, projectDir);
+        if (newClips.length > 0) generateProxiesAndThumbnails(newClips, dir);
         return merged;
       });
       setSelectedClipId((prev) => prev ?? result[0]?.id ?? null);
@@ -62,7 +69,7 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
   }
 
   async function handleImportFiles() {
-    if (!projectDir) return;
+    if (!projectDirRef.current) return;
     try {
       const selected = await open({
         multiple: true,
@@ -78,7 +85,7 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
   }
 
   async function handleImportFolder() {
-    if (!projectDir) return;
+    if (!projectDirRef.current) return;
     try {
       const selected = await open({ directory: true, multiple: false });
       if (!selected) return;
@@ -89,7 +96,8 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
   }
 
   async function handleImportGpx() {
-    if (!projectDir) return;
+    const dir = projectDirRef.current;
+    if (!dir) return;
     try {
       const selected = await open({
         multiple: false,
@@ -100,7 +108,7 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
       setLoading(true);
       setError(null);
 
-      const result = await invoke<Route>('parse_gpx', { filePath: selected, projectDir });
+      const result = await invoke<Route>('parse_gpx', { filePath: selected, projectDir: dir });
       setRoute(result);
     } catch (err) {
       setError(String(err));

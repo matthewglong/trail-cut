@@ -4,6 +4,14 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { Clip, Project, Route, TrimRange, FocalPoint, Effects } from '../types';
 
 interface UseProjectParams {
+  projectDir: string | null;
+  setProjectDir: React.Dispatch<React.SetStateAction<string | null>>;
+  clips: Clip[];
+  setClips: React.Dispatch<React.SetStateAction<Clip[]>>;
+  selectedClipId: string | null;
+  setSelectedClipId: React.Dispatch<React.SetStateAction<string | null>>;
+  route: Route | null;
+  setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -12,25 +20,25 @@ interface UseProjectParams {
 }
 
 export function useProject({
+  projectDir: _projectDir,
+  setProjectDir,
+  clips,
+  setClips,
+  selectedClipId,
+  setSelectedClipId,
+  route: _route,
+  setRoute,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
   setImportError,
   loadRecentProjects,
 }: UseProjectParams) {
-  const [projectDir, setProjectDir] = useState<string | null>(null);
   const [projectName, setProjectName] = useState('');
   const [projectThumbnail, setProjectThumbnail] = useState<string | null>(null);
-  const [clips, setClips] = useState<Clip[]>([]);
-  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
-  const [route, setRoute] = useState<Route | null>(null);
   const [editingName, setEditingName] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
-
-  const hasProject = projectDir !== null;
 
   async function openProjectDir(dir: string) {
     setLoading(true);
@@ -142,24 +150,15 @@ export function useProject({
   }
 
   return {
-    projectDir,
     projectName,
     setProjectName,
     projectThumbnail,
     setProjectThumbnail,
-    clips,
-    setClips,
-    selectedClipId,
-    setSelectedClipId,
-    selectedClip,
-    route,
-    setRoute,
     editingName,
     setEditingName,
     loading,
     error,
     setError,
-    hasProject,
     openProjectDir,
     handleNewProject,
     handleOpenProject,
