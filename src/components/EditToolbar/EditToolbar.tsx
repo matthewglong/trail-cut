@@ -1,6 +1,5 @@
-import { ZoomIn, Gauge, Crop, Eye, EyeOff } from 'lucide-react';
+import { ZoomIn, Gauge, Crop } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../../types';
-import { colors } from '../../theme/tokens';
 import NumberStepper from './NumberStepper';
 import CollapsibleToolbar from '../CollapsibleToolbar';
 import { styles } from './styles';
@@ -48,7 +47,7 @@ export default function EditToolbar({
       {/* Zoom */}
       <div style={styles.group}>
         <span style={styles.groupLabel} title="Zoom">
-          <ZoomIn size={14} />
+          <ZoomIn size={15} strokeWidth={2} />
         </span>
         <NumberStepper
           value={zoom}
@@ -64,7 +63,7 @@ export default function EditToolbar({
       {/* Speed */}
       <div style={styles.group}>
         <span style={styles.groupLabel} title="Speed">
-          <Gauge size={14} />
+          <Gauge size={15} strokeWidth={2} />
         </span>
         <NumberStepper
           value={speed}
@@ -77,22 +76,19 @@ export default function EditToolbar({
 
       <div style={styles.separator} />
 
-      {/* Crop preview toggle */}
+      {/* Crop edit/preview toggle */}
       <div style={styles.group}>
         <span style={styles.groupLabel} title="Crop">
-          <Crop size={14} />
+          <Crop size={15} strokeWidth={2} />
         </span>
-        <button
+        <div
           onClick={onToggleCropPreview}
-          style={{
-            ...styles.previewToggle,
-            backgroundColor: cropPreview ? colors.accent : 'transparent',
-            color: cropPreview ? '#000' : '#999',
-          }}
+          style={cropPreview ? styles.previewPillOn : styles.previewPillOff}
           title={cropPreview ? 'Exit crop preview' : 'Preview crop'}
         >
-          {cropPreview ? <Eye size={14} /> : <EyeOff size={14} />}
-        </button>
+          <span style={cropPreview ? styles.previewDotOn : styles.previewDotOff} />
+          <span>PREVIEW</span>
+        </div>
       </div>
     </CollapsibleToolbar>
   );
