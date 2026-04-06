@@ -28,6 +28,12 @@ pub struct TrimRange {
 pub struct FocalPoint {
     pub x: f64,
     pub y: f64,
+    #[serde(default = "default_zoom")]
+    pub zoom: f64,
+}
+
+fn default_zoom() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +77,7 @@ impl From<ClipMetadata> for Clip {
             resolution: meta.resolution,
             frame_rate: meta.frame_rate,
             trim,
-            focal_point: FocalPoint { x: 0.5, y: 0.5 },
+            focal_point: FocalPoint { x: 0.5, y: 0.5, zoom: 1.0 },
             effects: Effects {
                 stabilize: StabilizeSettings {
                     enabled: false,

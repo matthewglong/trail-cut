@@ -15,7 +15,7 @@ function newClipFromMetadata(meta: ClipMetadata): Clip {
   return {
     ...meta,
     trim: meta.duration_ms ? { in_ms: 0, out_ms: meta.duration_ms } : null,
-    focal_point: { x: 0.5, y: 0.5 },
+    focal_point: { x: 0.5, y: 0.5, zoom: 1.0 },
     effects: {
       stabilize: { enabled: false, shakiness: 5 },
       color_lut: null,
@@ -403,6 +403,7 @@ export default function App() {
             clip={selectedClip}
             onRemove={selectedClip ? () => handleRemoveClip(selectedClip.id) : undefined}
             onUpdateTrim={handleUpdateTrim}
+            onUpdateFocalPoint={handleUpdateFocalPoint}
             onUpdateEffects={handleUpdateEffects}
           />
           {selectedClip && proxies[selectedClip.id] === 'generating' && (

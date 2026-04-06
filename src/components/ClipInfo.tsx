@@ -1,10 +1,11 @@
 import { open } from '@tauri-apps/plugin-dialog';
-import type { Clip, TrimRange, Effects } from '../types';
+import type { Clip, TrimRange, FocalPoint, Effects } from '../types';
 
 interface ClipInfoProps {
   clip: Clip | null;
   onRemove?: () => void;
   onUpdateTrim?: (trim: TrimRange) => void;
+  onUpdateFocalPoint?: (fp: FocalPoint) => void;
   onUpdateEffects?: (effects: Effects) => void;
 }
 
@@ -20,7 +21,7 @@ function parseMsInput(value: string, fallback: number): number {
   return isNaN(num) ? fallback : Math.max(0, num * 1000);
 }
 
-export default function ClipInfo({ clip, onRemove, onUpdateTrim, onUpdateEffects }: ClipInfoProps) {
+export default function ClipInfo({ clip, onRemove, onUpdateTrim, onUpdateFocalPoint, onUpdateEffects }: ClipInfoProps) {
   if (!clip) {
     return (
       <div style={styles.container}>
@@ -155,6 +156,39 @@ export default function ClipInfo({ clip, onRemove, onUpdateTrim, onUpdateEffects
           )}
         </div>
       )}
+
+      {/* Focal point / Zoom section */}
+      <div style={styles.section}>
+        <div style={styles.sectionHeader}>
+          <span style={styles.sectionTitle}>Zoom</span>
+          <span style={styles.sectionMeta}>{clip.focal_point.zoom.toFixed(1)}x</span>
+        </div>
+        <input
+          type="range"
+          min={1.0}
+          max={5.0}
+          step={0.1}
+          value={clip.focal_point.zoom}
+          onChange={(e) => onUpdateFocalPoint?.({
+            ...clip.focal_point,
+            zoom: parseFloat(e.target.value),
+          })}
+          style={styles.slider}
+        />
+        <div style={styles.sliderLabels}>
+          <span>1x</span>
+          <span>3x</span>
+          <span>5x</span>
+        </div>
+        {(clip.focal_point.x !== 0.5 || clip.focal_point.y !== 0.5 || clip.focal_point.zoom !== 1.0) && (
+          <button
+            onClick={() => onUpdateFocalPoint?.({ x: 0.5, y: 0.5, zoom: 1.0 })}
+            style={styles.resetBtn}
+          >
+            Reset position & zoom
+          </button>
+        )}
+      </div>
 
       {/* Speed section */}
       <div style={styles.section}>

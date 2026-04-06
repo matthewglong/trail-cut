@@ -2,6 +2,13 @@ import { useRef, useState, useEffect, useCallback } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { Clip, TrimRange, FocalPoint } from '../types';
 
+const ASPECT_RATIOS: Record<string, number> = {
+  '16:9': 16 / 9,
+  '9:16': 9 / 16,
+  '1:1': 1,
+  '4:5': 4 / 5,
+};
+
 interface VideoPreviewProps {
   clip: Clip | null;
   proxyPath: string | null;
@@ -24,19 +31,23 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [dragging, setDragging] = useState<'in' | 'out' | 'seek' | null>(null);
-  const [showFocalPoint, setShowFocalPoint] = useState(false);
   const [draggingFocal, setDraggingFocal] = useState(false);
+  const [videoNatural, setVideoNatural] = useState<{ w: number; h: number } | null>(null);
+  const [previewAspect, setPreviewAspect] = useState<string>('16:9');
 
   const trimInSec = clip?.trim ? clip.trim.in_ms / 1000 : 0;
   const trimOutSec = clip?.trim ? clip.trim.out_ms / 1000 : duration;
   const speed = clip?.effects.speed ?? 1.0;
+  const focalX = clip?.focal_point.x ?? 0.5;
+  const focalY = clip?.focal_point.y ?? 0.5;
+  const zoom = clip?.focal_point.zoom ?? 1.0;
 
   // Reset state when clip changes
   useEffect(() => {
     setPlaying(false);
     setCurrentTime(0);
     setDuration(0);
-    setShowFocalPoint(false);
+    setVideoNatural(null);
   }, [proxyPath]);
 
   // Apply playback speed
@@ -79,6 +90,21 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   function handleLoadedMetadata() {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      const w = videoRef.current.videoWidth;
+      const h = videoRef.current.videoHeight;
+      setVideoNatural({ w, h });
+      // Default to the closest standard aspect ratio
+      const srcAspect = w / h;
+      let closest = '16:9';
+      let closestDiff = Infinity;
+      for (const [name, ratio] of Object.entries(ASPECT_RATIOS)) {
+        const diff = Math.abs(srcAspect - ratio);
+        if (diff < closestDiff) {
+          closestDiff = diff;
+          closest = name;
+        }
+      }
+      setPreviewAspect(closest);
     }
   }
 
@@ -87,23 +113,15 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   }
 
   // --- Seek bar with trim handles ---
-  const getTimeFromMouseEvent = useCallback((e: React.MouseEvent | MouseEvent) => {
-    const bar = seekBarRef.current;
-    if (!bar || !duration) return 0;
-    const rect = bar.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    return ratio * duration;
-  }, [duration]);
-
   function handleSeekBarMouseDown(e: React.MouseEvent) {
-    if (!duration) return;
-    const time = getTimeFromMouseEvent(e);
-    const inPx = (trimInSec / duration) * (seekBarRef.current?.clientWidth ?? 0);
-    const outPx = (trimOutSec / duration) * (seekBarRef.current?.clientWidth ?? 0);
-    const rect = seekBarRef.current?.getBoundingClientRect();
-    const px = e.clientX - (rect?.left ?? 0);
+    if (!duration || !seekBarRef.current) return;
+    const rect = seekBarRef.current.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, px / rect.width));
+    const time = ratio * duration;
+    const inPx = (trimInSec / duration) * rect.width;
+    const outPx = (trimOutSec / duration) * rect.width;
 
-    // Check if near trim handles (within 8px)
     if (Math.abs(px - inPx) < 8) {
       setDragging('in');
     } else if (Math.abs(px - outPx) < 8) {
@@ -151,20 +169,12 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
     };
   }, [dragging, duration, trimInSec, trimOutSec, clip?.trim, onUpdateTrim]);
 
-  // --- Focal point dragging ---
-  function handleFocalMouseDown(e: React.MouseEvent) {
-    e.preventDefault();
-    setDraggingFocal(true);
-    updateFocalFromMouse(e);
-  }
-
-  function updateFocalFromMouse(e: React.MouseEvent | MouseEvent) {
+  // --- Focal point: drag to pan ---
+  const getVideoRect = useCallback(() => {
     const container = videoContainerRef.current;
     const video = videoRef.current;
-    if (!container || !video || !onUpdateFocalPoint) return;
-
+    if (!container || !video) return null;
     const rect = container.getBoundingClientRect();
-    // Account for object-fit: contain by calculating actual video area
     const containerAspect = rect.width / rect.height;
     const videoAspect = video.videoWidth / video.videoHeight || 16 / 9;
 
@@ -180,15 +190,27 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
       videoLeft = rect.left;
       videoTop = rect.top + (rect.height - videoH) / 2;
     }
+    return { videoLeft, videoTop, videoW, videoH };
+  }, []);
 
-    const x = Math.max(0, Math.min(1, (e.clientX - videoLeft) / videoW));
-    const y = Math.max(0, Math.min(1, (e.clientY - videoTop) / videoH));
-    onUpdateFocalPoint({ x, y });
+  function focalFromMouse(e: MouseEvent | React.MouseEvent) {
+    const vr = getVideoRect();
+    if (!vr || !onUpdateFocalPoint || !clip) return;
+    const x = Math.max(0, Math.min(1, (e.clientX - vr.videoLeft) / vr.videoW));
+    const y = Math.max(0, Math.min(1, (e.clientY - vr.videoTop) / vr.videoH));
+    onUpdateFocalPoint({ x, y, zoom: clip.focal_point.zoom });
+  }
+
+  function handleVideoMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    setDraggingFocal(true);
+    focalFromMouse(e);
   }
 
   useEffect(() => {
     if (!draggingFocal) return;
-    function handleMouseMove(e: MouseEvent) { updateFocalFromMouse(e); }
+    function handleMouseMove(e: MouseEvent) { focalFromMouse(e); }
     function handleMouseUp() { setDraggingFocal(false); }
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
@@ -196,7 +218,16 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [draggingFocal]);
+  }, [draggingFocal, clip?.focal_point.zoom, onUpdateFocalPoint]);
+
+  // --- Zoom: scroll wheel ---
+  function handleWheel(e: React.WheelEvent) {
+    e.preventDefault();
+    if (!onUpdateFocalPoint || !clip) return;
+    const delta = e.deltaY > 0 ? -0.1 : 0.1;
+    const newZoom = Math.max(1.0, Math.min(5.0, clip.focal_point.zoom + delta));
+    onUpdateFocalPoint({ ...clip.focal_point, zoom: newZoom });
+  }
 
   if (!proxyPath || !clip) {
     return (
@@ -212,16 +243,14 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
   const outPct = duration ? (trimOutSec / duration) * 100 : 100;
   const playPct = duration ? (currentTime / duration) * 100 : 0;
 
-  const focalX = clip.focal_point.x;
-  const focalY = clip.focal_point.y;
-
   return (
     <div style={styles.container}>
-      {/* Video with optional focal point overlay */}
+      {/* Video with crosshair overlay */}
       <div
         ref={videoContainerRef}
         style={styles.videoWrapper}
-        onMouseDown={showFocalPoint ? handleFocalMouseDown : undefined}
+        onMouseDown={handleVideoMouseDown}
+        onWheel={handleWheel}
       >
         <video
           ref={videoRef}
@@ -230,22 +259,41 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onEnded={handleEnded}
-          onClick={showFocalPoint ? undefined : togglePlay}
+          onDoubleClick={togglePlay}
           playsInline
         />
-        {showFocalPoint && (
-          <div style={styles.focalOverlay}>
-            {/* Crosshair */}
-            <div style={{ ...styles.focalLineH, top: `${focalY * 100}%` }} />
-            <div style={{ ...styles.focalLineV, left: `${focalX * 100}%` }} />
-            <div style={{
-              ...styles.focalDot,
-              left: `${focalX * 100}%`,
-              top: `${focalY * 100}%`,
-            }} />
-            {/* 9:16 crop preview outline */}
-            <CropPreview focalX={focalX} focalY={focalY} />
-          </div>
+        {/* Crosshair — always visible, short arms */}
+        <div style={styles.crosshairOverlay}>
+          <div style={{
+            position: 'absolute',
+            left: `calc(${focalX * 100}% - 12px)`,
+            top: `${focalY * 100}%`,
+            width: '24px',
+            height: '2px',
+            backgroundColor: '#ff6b35',
+            transform: 'translateY(-50%)',
+          }} />
+          <div style={{
+            position: 'absolute',
+            left: `${focalX * 100}%`,
+            top: `calc(${focalY * 100}% - 12px)`,
+            width: '2px',
+            height: '24px',
+            backgroundColor: '#ff6b35',
+            transform: 'translateX(-50%)',
+          }} />
+        </div>
+        {/* Aspect ratio crop overlay */}
+        {videoNatural && (
+          <CropOverlay
+            containerRef={videoContainerRef}
+            videoW={videoNatural.w}
+            videoH={videoNatural.h}
+            focalX={focalX}
+            focalY={focalY}
+            zoom={zoom}
+            aspectRatio={previewAspect}
+          />
         )}
       </div>
 
@@ -262,66 +310,144 @@ export default function VideoPreview({ clip, proxyPath, onUpdateTrim, onUpdateFo
           style={styles.seekBarTrack}
           onMouseDown={handleSeekBarMouseDown}
         >
-          {/* Trimmed region highlight */}
           <div style={{
             ...styles.trimRegion,
             left: `${inPct}%`,
             width: `${outPct - inPct}%`,
           }} />
-          {/* Excluded regions (dimmed) */}
           <div style={{ ...styles.trimExcluded, left: '0%', width: `${inPct}%` }} />
           <div style={{ ...styles.trimExcluded, left: `${outPct}%`, width: `${100 - outPct}%` }} />
-          {/* In handle */}
           <div style={{ ...styles.trimHandle, left: `${inPct}%` }} title="Trim in">
             <div style={styles.trimHandleBar} />
           </div>
-          {/* Out handle */}
           <div style={{ ...styles.trimHandle, left: `${outPct}%` }} title="Trim out">
             <div style={styles.trimHandleBar} />
           </div>
-          {/* Playhead */}
           <div style={{ ...styles.playhead, left: `${playPct}%` }} />
         </div>
 
         <span style={styles.time}>{formatTime(duration)}</span>
-        <button
-          onClick={() => setShowFocalPoint((v) => !v)}
-          style={{
-            ...styles.focalToggle,
-            ...(showFocalPoint ? styles.focalToggleActive : {}),
-          }}
-          title="Toggle focal point editor"
+        <select
+          value={previewAspect}
+          onChange={(e) => setPreviewAspect(e.target.value)}
+          style={styles.aspectSelect}
         >
-          +
-        </button>
+          <option value="16:9">16:9</option>
+          <option value="9:16">9:16</option>
+          <option value="1:1">1:1</option>
+          <option value="4:5">4:5</option>
+        </select>
       </div>
-      <div style={styles.filename}>{clip.filename}{speed !== 1.0 && ` (${speed}x)`}</div>
+      <div style={styles.filename}>
+        {clip.filename}
+        {speed !== 1.0 && ` \u00b7 ${speed}x`}
+      </div>
     </div>
   );
 }
 
-/** Draws a 9:16 crop rectangle centered on the focal point */
-function CropPreview({ focalX, focalY }: { focalX: number; focalY: number }) {
-  // 9:16 aspect ratio — crop width is 56.25% of height
-  // For the preview, show a rectangle that's ~40% of video width
-  const cropW = 40; // percent of overlay width
-  const cropH = cropW * (16 / 9); // taller than wide
+/** Draws a semi-transparent overlay with a cutout for the crop region */
+function CropOverlay({
+  containerRef,
+  videoW,
+  videoH,
+  focalX,
+  focalY,
+  zoom,
+  aspectRatio,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  videoW: number;
+  videoH: number;
+  focalX: number;
+  focalY: number;
+  zoom: number;
+  aspectRatio: string;
+}) {
+  const container = containerRef.current;
+  if (!container) return null;
 
-  const left = Math.max(0, Math.min(100 - cropW, focalX * 100 - cropW / 2));
-  const top = Math.max(0, Math.min(100 - cropH, focalY * 100 - cropH / 2));
+  const cw = container.clientWidth;
+  const ch = container.clientHeight;
+  if (!cw || !ch) return null;
+
+  // Compute where the video is rendered within the container (object-fit: contain)
+  const videoAspect = videoW / videoH;
+  const containerAspect = cw / ch;
+  let vw: number, vh: number, vx: number, vy: number;
+  if (containerAspect > videoAspect) {
+    vh = ch;
+    vw = ch * videoAspect;
+    vx = (cw - vw) / 2;
+    vy = 0;
+  } else {
+    vw = cw;
+    vh = cw / videoAspect;
+    vx = 0;
+    vy = (ch - vh) / 2;
+  }
+
+  // The crop rectangle: fits the target aspect ratio inside the video area,
+  // scaled down by 1/zoom, centered on the focal point
+  const targetAspect = ASPECT_RATIOS[aspectRatio] ?? 1;
+
+  // Max cutout size that fits within the video display area
+  let cutW: number, cutH: number;
+  if (targetAspect > videoAspect) {
+    // Target is wider than video — width-constrained
+    cutW = vw;
+    cutH = vw / targetAspect;
+  } else {
+    // Target is taller than video — height-constrained
+    cutH = vh;
+    cutW = vh * targetAspect;
+  }
+
+  // Apply zoom: shrink the cutout
+  cutW /= zoom;
+  cutH /= zoom;
+
+  // Position centered on focal point (in container coordinates)
+  const focalPxX = vx + focalX * vw;
+  const focalPxY = vy + focalY * vh;
+
+  // Clamp so the cutout stays within the video area
+  let cutX = focalPxX - cutW / 2;
+  let cutY = focalPxY - cutH / 2;
+  cutX = Math.max(vx, Math.min(vx + vw - cutW, cutX));
+  cutY = Math.max(vy, Math.min(vy + vh - cutH, cutY));
+
+  // Use clip-path to create the cutout (polygon with a hole)
+  // Outer rect = full container, inner rect = cutout (wound opposite direction)
+  const ox1 = 0, oy1 = 0, ox2 = cw, oy2 = ch;
+  const ix1 = cutX, iy1 = cutY, ix2 = cutX + cutW, iy2 = cutY + cutH;
+
+  const clipPath = `polygon(
+    evenodd,
+    ${ox1}px ${oy1}px, ${ox2}px ${oy1}px, ${ox2}px ${oy2}px, ${ox1}px ${oy2}px, ${ox1}px ${oy1}px,
+    ${ix1}px ${iy1}px, ${ix1}px ${iy2}px, ${ix2}px ${iy2}px, ${ix2}px ${iy1}px, ${ix1}px ${iy1}px
+  )`;
 
   return (
     <div style={{
       position: 'absolute',
-      left: `${left}%`,
-      top: `${top}%`,
-      width: `${cropW}%`,
-      height: `${cropH}%`,
-      border: '2px solid rgba(255, 107, 53, 0.8)',
-      borderRadius: '2px',
+      inset: 0,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      clipPath,
       pointerEvents: 'none',
-      boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.4)',
-    }} />
+    }}>
+      {/* Cutout border */}
+      <div style={{
+        position: 'absolute',
+        left: `${ix1}px`,
+        top: `${iy1}px`,
+        width: `${cutW}px`,
+        height: `${cutH}px`,
+        border: '2px solid #ff6b35',
+        borderRadius: '2px',
+        boxSizing: 'border-box',
+      }} />
+    </div>
   );
 }
 
@@ -337,13 +463,21 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'relative',
     overflow: 'hidden',
     minHeight: 0,
+    cursor: 'crosshair',
   },
   video: {
     width: '100%',
     height: '100%',
     objectFit: 'contain',
-    cursor: 'pointer',
+    pointerEvents: 'none',
   },
+  // Crosshair overlay
+  crosshairOverlay: {
+    position: 'absolute',
+    inset: 0,
+    pointerEvents: 'none',
+  },
+  // Controls
   controls: {
     display: 'flex',
     alignItems: 'center',
@@ -373,7 +507,6 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: '46px',
     flexShrink: 0,
   },
-  // Custom seek bar
   seekBarTrack: {
     flex: 1,
     height: '20px',
@@ -424,59 +557,6 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 3,
     pointerEvents: 'none',
   },
-  // Focal point
-  focalOverlay: {
-    position: 'absolute',
-    inset: 0,
-    cursor: 'crosshair',
-  },
-  focalLineH: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: '1px',
-    backgroundColor: 'rgba(255, 107, 53, 0.6)',
-    pointerEvents: 'none',
-  },
-  focalLineV: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    width: '1px',
-    backgroundColor: 'rgba(255, 107, 53, 0.6)',
-    pointerEvents: 'none',
-  },
-  focalDot: {
-    position: 'absolute',
-    width: '12px',
-    height: '12px',
-    borderRadius: '50%',
-    backgroundColor: '#ff6b35',
-    border: '2px solid #fff',
-    transform: 'translate(-50%, -50%)',
-    pointerEvents: 'none',
-    zIndex: 1,
-  },
-  focalToggle: {
-    width: '28px',
-    height: '28px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#2a2a2a',
-    color: '#888',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '16px',
-    flexShrink: 0,
-    fontWeight: 'bold',
-  },
-  focalToggleActive: {
-    backgroundColor: '#ff6b35',
-    color: '#fff',
-    borderColor: '#ff6b35',
-  },
   filename: {
     padding: '4px 12px',
     fontSize: '11px',
@@ -500,5 +580,15 @@ const styles: Record<string, React.CSSProperties> = {
   emptyText: {
     color: '#555',
     fontSize: '14px',
+  },
+  aspectSelect: {
+    backgroundColor: '#2a2a2a',
+    color: '#ccc',
+    border: '1px solid #444',
+    borderRadius: '4px',
+    padding: '4px 6px',
+    fontSize: '12px',
+    cursor: 'pointer',
+    flexShrink: 0,
   },
 };

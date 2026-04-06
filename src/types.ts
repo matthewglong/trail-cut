@@ -22,6 +22,7 @@ export interface TrimRange {
 export interface FocalPoint {
   x: number;
   y: number;
+  zoom: number;
 }
 
 export interface StabilizeSettings {
