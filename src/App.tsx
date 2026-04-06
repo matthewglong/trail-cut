@@ -54,6 +54,7 @@ export default function App() {
   const [projectDir, setProjectDir] = useState<string | null>(null);
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   const [showImportMenu, setShowImportMenu] = useState(false);
+  const [showGpxMenu, setShowGpxMenu] = useState(false);
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,6 +83,17 @@ export default function App() {
       document.removeEventListener('click', close);
     };
   }, [showImportMenu]);
+
+  // Close GPX dropdown on outside click
+  useEffect(() => {
+    if (!showGpxMenu) return;
+    const close = () => setShowGpxMenu(false);
+    const timer = setTimeout(() => document.addEventListener('click', close), 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', close);
+    };
+  }, [showGpxMenu]);
 
   const generateProxiesAndThumbnails = useCallback(async (clipList: Clip[], dir: string) => {
     for (const clip of clipList) {
@@ -382,9 +394,40 @@ export default function App() {
               </div>
             )}
           </div>
-          <button onClick={handleImportGpx} disabled={loading} style={styles.button}>
-            Import GPX
-          </button>
+          <div style={styles.gpxChipWrapper}>
+            <div
+              style={route ? styles.gpxChipLoaded : styles.gpxChipEmpty}
+              onClick={() => {
+                if (route) {
+                  setShowGpxMenu(!showGpxMenu);
+                } else {
+                  handleImportGpx();
+                }
+              }}
+              title={route ? route.source_path : 'Import a GPX route file'}
+            >
+              <span style={route ? styles.gpxDot : styles.gpxDotEmpty} />
+              <span style={styles.gpxLabel}>
+                {route ? 'GPX' : 'GPX'}
+              </span>
+            </div>
+            {showGpxMenu && route && (
+              <div style={styles.dropdown}>
+                <button
+                  onClick={() => { setShowGpxMenu(false); handleImportGpx(); }}
+                  style={styles.dropdownItem}
+                >
+                  Replace route…
+                </button>
+                <button
+                  onClick={() => { setShowGpxMenu(false); setRoute(null); }}
+                  style={styles.dropdownItem}
+                >
+                  Remove route
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -605,6 +648,56 @@ const styles: Record<string, React.CSSProperties> = {
   },
   importWrapper: {
     position: 'relative' as const,
+  },
+  gpxChipWrapper: {
+    position: 'relative' as const,
+  },
+  gpxChipEmpty: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '5px 12px',
+    border: '1px dashed #555',
+    borderRadius: '20px',
+    cursor: 'pointer',
+    fontSize: '12px',
+    color: '#777',
+    userSelect: 'none' as const,
+    transition: 'all 0.15s ease',
+  },
+  gpxChipLoaded: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '5px 12px',
+    border: '1px solid #4a7c59',
+    borderRadius: '20px',
+    backgroundColor: 'rgba(74, 124, 89, 0.15)',
+    cursor: 'pointer',
+    fontSize: '12px',
+    color: '#8bc49a',
+    userSelect: 'none' as const,
+    transition: 'all 0.15s ease',
+  },
+  gpxDotEmpty: {
+    width: '7px',
+    height: '7px',
+    borderRadius: '50%',
+    border: '1px solid #555',
+    flexShrink: 0,
+  },
+  gpxDot: {
+    width: '7px',
+    height: '7px',
+    borderRadius: '50%',
+    backgroundColor: '#6abf7b',
+    flexShrink: 0,
+  },
+  gpxLabel: {
+    maxWidth: '120px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap' as const,
   },
   dropdown: {
     position: 'absolute' as const,
