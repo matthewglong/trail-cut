@@ -2,6 +2,7 @@ import { ZoomIn, Gauge, Crop } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../../types';
 import NumberStepper from './NumberStepper';
 import CollapsibleToolbar from '../CollapsibleToolbar';
+import AspectRatioPicker from '../AspectRatioPicker';
 import { styles } from './styles';
 
 interface EditToolbarProps {
@@ -19,7 +20,7 @@ export default function EditToolbar({
   onUpdateFocalPoint,
   onUpdateEffects,
   previewAspect,
-  onChangeAspect: _onChangeAspect,
+  onChangeAspect,
   cropPreview,
   onToggleCropPreview,
 }: EditToolbarProps) {
@@ -33,12 +34,8 @@ export default function EditToolbar({
       <span style={styles.chip}>{zoom.toFixed(1)}x zoom</span>
       <span style={styles.divider} />
       <span style={styles.chip}>{speed}x speed</span>
-      {cropPreview && (
-        <>
-          <span style={styles.divider} />
-          <span style={styles.chipAccent}>{previewAspect}</span>
-        </>
-      )}
+      <span style={styles.divider} />
+      <span style={styles.chipAccent}>{previewAspect}</span>
     </div>
   );
 
@@ -89,6 +86,16 @@ export default function EditToolbar({
           <span style={cropPreview ? styles.previewDotOn : styles.previewDotOff} />
           <span>PREVIEW</span>
         </div>
+      </div>
+
+      <div style={styles.separator} />
+
+      {/* Aspect ratio picker */}
+      <div style={styles.group}>
+        <AspectRatioPicker
+          value={previewAspect}
+          onChange={onChangeAspect}
+        />
       </div>
     </CollapsibleToolbar>
   );

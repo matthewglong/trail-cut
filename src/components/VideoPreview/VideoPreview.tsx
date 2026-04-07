@@ -16,7 +16,6 @@ interface VideoPreviewProps {
   onUpdateTrim?: (trim: TrimRange) => void;
   onUpdateFocalPoint?: (fp: FocalPoint) => void;
   previewAspect: string;
-  onChangeAspect?: (aspect: string) => void;
   cropPreview: boolean;
 }
 
@@ -26,7 +25,6 @@ export default function VideoPreview({
   onUpdateTrim,
   onUpdateFocalPoint,
   previewAspect,
-  onChangeAspect,
   cropPreview,
 }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -228,24 +226,6 @@ export default function VideoPreview({
           />
         )}
       </div>
-      {/* Aspect ratio selector — overlaid in preview mode, outside clipped wrapper */}
-      {cropPreview && onChangeAspect && (
-        <div style={styles.aspectOverlay}>
-          {['16:9', '9:16', '1:1', '4:5'].map((ratio) => (
-            <button
-              key={ratio}
-              onClick={() => onChangeAspect(ratio)}
-              style={{
-                ...styles.aspectBtn,
-                ...(previewAspect === ratio ? styles.aspectBtnActive : {}),
-              }}
-            >
-              {ratio}
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* Controls */}
       <div style={styles.controls}>
         <button onClick={togglePlay} style={styles.playBtn}>

@@ -84,16 +84,16 @@ export default function ProjectView({
   useDropdownClose(showGpxMenu, useCallback(() => setShowGpxMenu(false), []));
 
   // Keyboard shortcuts: hold Z + -/= to nudge zoom, hold S + -/= to nudge speed,
-  // tap C to toggle crop preview, hold C + -/= to cycle aspect ratios
+  // tap C to toggle crop preview, hold A + -/= to cycle aspect ratios (opens fan while held)
   const ASPECTS = ['16:9', '9:16', '1:1', '4:5'];
   const heldRef = useRef<{
-    z: boolean; s: boolean; c: boolean;
-    zConsumed: boolean; sConsumed: boolean; cConsumed: boolean;
-    zLastTap: number; sLastTap: number;
+    z: boolean; s: boolean; a: boolean;
+    zConsumed: boolean; sConsumed: boolean; aConsumed: boolean;
+    zLastTap: number; sLastTap: number; aLastTap: number;
   }>({
-    z: false, s: false, c: false,
-    zConsumed: false, sConsumed: false, cConsumed: false,
-    zLastTap: 0, sLastTap: 0,
+    z: false, s: false, a: false,
+    zConsumed: false, sConsumed: false, aConsumed: false,
+    zLastTap: 0, sLastTap: 0, aLastTap: 0,
   });
   const DOUBLE_TAP_MS = 300;
   useEffect(() => {
@@ -110,12 +110,21 @@ export default function ProjectView({
       const key = e.key.toLowerCase();
       if (key === 'z') { heldRef.current.z = true; return; }
       if (key === 's') { heldRef.current.s = true; return; }
-      if (key === 'c') { heldRef.current.c = true; return; }
-      if (e.key !== '-' && e.key !== '=') return;
-      const delta = e.key === '=' ? 1 : -1;
-      if (heldRef.current.c) {
+      if (key === 'c') {
+        if (!e.repeat) setCropPreview(p => !p);
+        return;
+      }
+      if (key === 'a') {
+        heldRef.current.a = true;
+        return;
+      }
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      const anyHeld = heldRef.current.z || heldRef.current.s || heldRef.current.a;
+      if (!anyHeld) return;
+      const delta = e.key === 'ArrowUp' ? 1 : -1;
+      if (heldRef.current.a) {
         e.preventDefault();
-        heldRef.current.cConsumed = true;
+        heldRef.current.aConsumed = true;
         const idx = ASPECTS.indexOf(previewAspect);
         const base = idx === -1 ? 0 : idx;
         const next = (base + delta + ASPECTS.length) % ASPECTS.length;
@@ -164,19 +173,26 @@ export default function ProjectView({
         }
         heldRef.current.sConsumed = false;
       }
-      if (key === 'c') {
-        heldRef.current.c = false;
-        if (!heldRef.current.cConsumed) setCropPreview(p => !p);
-        heldRef.current.cConsumed = false;
+      if (key === 'a') {
+        heldRef.current.a = false;
+        if (!heldRef.current.aConsumed) {
+          if (now - heldRef.current.aLastTap < DOUBLE_TAP_MS) {
+            setPreviewAspect('16:9');
+            heldRef.current.aLastTap = 0;
+          } else {
+            heldRef.current.aLastTap = now;
+          }
+        }
+        heldRef.current.aConsumed = false;
       }
     };
     const onBlur = () => {
       heldRef.current.z = false;
       heldRef.current.s = false;
-      heldRef.current.c = false;
+      heldRef.current.a = false;
       heldRef.current.zConsumed = false;
       heldRef.current.sConsumed = false;
-      heldRef.current.cConsumed = false;
+      heldRef.current.aConsumed = false;
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -186,7 +202,7 @@ export default function ProjectView({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [selectedClip, onUpdateFocalPoint, onUpdateEffects, previewAspect, cropPreview]);
+  }, [selectedClip, onUpdateFocalPoint, onUpdateEffects, previewAspect]);
 
   // Drag handlers for resizers
   useEffect(() => {
@@ -356,7 +372,6 @@ export default function ProjectView({
                 onUpdateTrim={onUpdateTrim}
                 onUpdateFocalPoint={onUpdateFocalPoint}
                 previewAspect={previewAspect}
-                onChangeAspect={setPreviewAspect}
                 cropPreview={cropPreview}
               />
             </div>
