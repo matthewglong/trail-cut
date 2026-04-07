@@ -83,6 +83,111 @@ export default function ProjectView({
   useDropdownClose(showImportMenu, useCallback(() => setShowImportMenu(false), []));
   useDropdownClose(showGpxMenu, useCallback(() => setShowGpxMenu(false), []));
 
+  // Keyboard shortcuts: hold Z + -/= to nudge zoom, hold S + -/= to nudge speed,
+  // tap C to toggle crop preview, hold C + -/= to cycle aspect ratios
+  const ASPECTS = ['16:9', '9:16', '1:1', '4:5'];
+  const heldRef = useRef<{
+    z: boolean; s: boolean; c: boolean;
+    zConsumed: boolean; sConsumed: boolean; cConsumed: boolean;
+    zLastTap: number; sLastTap: number;
+  }>({
+    z: false, s: false, c: false,
+    zConsumed: false, sConsumed: false, cConsumed: false,
+    zLastTap: 0, sLastTap: 0,
+  });
+  const DOUBLE_TAP_MS = 300;
+  useEffect(() => {
+    const isTypingTarget = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      const tag = el?.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || !!el?.isContentEditable;
+    };
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+    const round = (v: number, step: number) => Math.round(v / step) * step;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z') { heldRef.current.z = true; return; }
+      if (key === 's') { heldRef.current.s = true; return; }
+      if (key === 'c') { heldRef.current.c = true; return; }
+      if (e.key !== '-' && e.key !== '=') return;
+      const delta = e.key === '=' ? 1 : -1;
+      if (heldRef.current.c) {
+        e.preventDefault();
+        heldRef.current.cConsumed = true;
+        const idx = ASPECTS.indexOf(previewAspect);
+        const base = idx === -1 ? 0 : idx;
+        const next = (base + delta + ASPECTS.length) % ASPECTS.length;
+        setPreviewAspect(ASPECTS[next]);
+        return;
+      }
+      if (!selectedClip) return;
+      if (heldRef.current.z) {
+        e.preventDefault();
+        heldRef.current.zConsumed = true;
+        const step = 0.05;
+        const next = clamp(round(selectedClip.focal_point.zoom + delta * step, step), 1.0, 5.0);
+        onUpdateFocalPoint({ ...selectedClip.focal_point, zoom: next });
+      } else if (heldRef.current.s) {
+        e.preventDefault();
+        heldRef.current.sConsumed = true;
+        const step = 0.25;
+        const next = clamp(round(selectedClip.effects.speed + delta * step, step), 0.25, 4.0);
+        onUpdateEffects({ ...selectedClip.effects, speed: next });
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      const now = performance.now();
+      if (key === 'z') {
+        heldRef.current.z = false;
+        if (!heldRef.current.zConsumed) {
+          if (now - heldRef.current.zLastTap < DOUBLE_TAP_MS && selectedClip) {
+            onUpdateFocalPoint({ ...selectedClip.focal_point, zoom: 1.0 });
+            heldRef.current.zLastTap = 0;
+          } else {
+            heldRef.current.zLastTap = now;
+          }
+        }
+        heldRef.current.zConsumed = false;
+      }
+      if (key === 's') {
+        heldRef.current.s = false;
+        if (!heldRef.current.sConsumed) {
+          if (now - heldRef.current.sLastTap < DOUBLE_TAP_MS && selectedClip) {
+            onUpdateEffects({ ...selectedClip.effects, speed: 1.0 });
+            heldRef.current.sLastTap = 0;
+          } else {
+            heldRef.current.sLastTap = now;
+          }
+        }
+        heldRef.current.sConsumed = false;
+      }
+      if (key === 'c') {
+        heldRef.current.c = false;
+        if (!heldRef.current.cConsumed) setCropPreview(p => !p);
+        heldRef.current.cConsumed = false;
+      }
+    };
+    const onBlur = () => {
+      heldRef.current.z = false;
+      heldRef.current.s = false;
+      heldRef.current.c = false;
+      heldRef.current.zConsumed = false;
+      heldRef.current.sConsumed = false;
+      heldRef.current.cConsumed = false;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [selectedClip, onUpdateFocalPoint, onUpdateEffects, previewAspect, cropPreview]);
+
   // Drag handlers for resizers
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
