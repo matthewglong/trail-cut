@@ -67,11 +67,9 @@ export function usePlayback({
       lastFrameTimeRef.current = now;
       const newTime = video.currentTime + elapsed * speed;
       if (newTime >= trimOutSec) {
-        video.pause();
         video.currentTime = trimInSec;
         setCurrentTime(trimInSec);
-        setPlaying(false);
-        stopFastTimer();
+        fastTimerRef.current = requestAnimationFrame(tick);
         return;
       }
       video.currentTime = newTime;
@@ -98,10 +96,9 @@ export function usePlayback({
     const t = video.currentTime;
     setCurrentTime(t);
     if (t >= trimOutSec) {
-      video.pause();
       video.currentTime = trimInSec;
       setCurrentTime(trimInSec);
-      setPlaying(false);
+      video.play();
     }
   }
 
@@ -138,8 +135,13 @@ export function usePlayback({
   }
 
   function handleEnded() {
-    stopFastTimer();
-    setPlaying(false);
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = trimInSec;
+    setCurrentTime(trimInSec);
+    if (playing && speed <= 1.0) {
+      video.play();
+    }
   }
 
   return {

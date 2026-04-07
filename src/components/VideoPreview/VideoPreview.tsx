@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { Clip, TrimRange, FocalPoint } from '../../types';
 import { formatTime } from '../../utils/format';
@@ -66,6 +66,21 @@ export default function VideoPreview({
     dragging,
     setDragging,
   });
+
+  // Spacebar toggles play/pause when a clip is loaded
+  useEffect(() => {
+    if (!clip || !proxyPath) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      e.preventDefault();
+      togglePlay();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [clip, proxyPath, togglePlay]);
 
   const { handleVideoMouseDown, handleWheel } = useFocalDrag({
     videoRef,

@@ -60,6 +60,26 @@ export default function App() {
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
   const hasProject = projectDir !== null;
 
+  // Left/right arrows navigate clips (with wrap-around)
+  useEffect(() => {
+    if (!hasProject || clips.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'ArrowLeft' && e.code !== 'ArrowRight') return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      e.preventDefault();
+      const idx = clips.findIndex((c) => c.id === selectedClipId);
+      const base = idx === -1 ? 0 : idx;
+      const next = e.code === 'ArrowRight'
+        ? (base + 1) % clips.length
+        : (base - 1 + clips.length) % clips.length;
+      setSelectedClipId(clips[next].id);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [hasProject, clips, selectedClipId]);
+
   // Combine errors
   const error = project.error || media.error || recent.error;
   const dismissError = () => {
