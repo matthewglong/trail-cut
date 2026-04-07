@@ -4,6 +4,7 @@ import MapView from '../components/MapView';
 import EditToolbar from '../components/EditToolbar';
 import CollapsibleToolbar from '../components/CollapsibleToolbar';
 import VideoPreview from '../components/VideoPreview';
+import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import type { Clip, Route, TrimRange, FocalPoint, Effects } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
@@ -83,232 +84,21 @@ export default function ProjectView({
   useDropdownClose(showImportMenu, useCallback(() => setShowImportMenu(false), []));
   useDropdownClose(showGpxMenu, useCallback(() => setShowGpxMenu(false), []));
 
-  // Keyboard shortcuts: hold Z + -/= to nudge zoom, hold S + -/= to nudge speed,
-  // tap C to toggle crop preview, hold A + -/= to cycle aspect ratios (opens fan while held)
-  const ASPECTS = ['16:9', '9:16', '1:1', '4:5'];
-  const heldRef = useRef<{
-    z: boolean; s: boolean; a: boolean; t: boolean;
-    zConsumed: boolean; sConsumed: boolean; aConsumed: boolean; tConsumed: boolean;
-    zLastTap: number; sLastTap: number; aLastTap: number; tLastTap: number;
-  }>({
-    z: false, s: false, a: false, t: false,
-    zConsumed: false, sConsumed: false, aConsumed: false, tConsumed: false,
-    zLastTap: 0, sLastTap: 0, aLastTap: 0, tLastTap: 0,
+  // VideoPreview publishes its togglePlay function here so Space can drive playback
+  const togglePlayRef = useRef<(() => void) | null>(null);
+
+  useEditorShortcuts({
+    selectedClip,
+    clips,
+    selectedClipId,
+    setSelectedClipId,
+    onUpdateFocalPoint,
+    onUpdateEffects,
+    previewAspect,
+    setPreviewAspect,
+    setCropPreview,
+    togglePlayRef,
   });
-  const DOUBLE_TAP_MS = 300;
-
-  // Game-loop state for T+arrow focal point movement
-  const arrowsRef = useRef({ up: false, down: false, left: false, right: false });
-  const focalLoopRef = useRef<{ raf: number | null; last: number; moveStart: number }>({ raf: null, last: 0, moveStart: 0 });
-  // latestRef stays in sync each render so the rAF loop reads fresh values
-  // without having to re-run the keyboard effect.
-  const latestRef = useRef({ selectedClip, onUpdateFocalPoint });
-  latestRef.current = { selectedClip, onUpdateFocalPoint };
-
-  const FOCAL_SPEED = 0.7;     // units (0..1) per second at full speed
-  const RAMP_MS = 180;          // time to accelerate to full speed
-  const RAMP_START = 0.25;      // initial speed multiplier
-
-  const startFocalLoop = () => {
-    if (focalLoopRef.current.raf !== null) return;
-    const now0 = performance.now();
-    focalLoopRef.current.last = now0;
-    focalLoopRef.current.moveStart = now0;
-    const tick = (now: number) => {
-      const dt = (now - focalLoopRef.current.last) / 1000;
-      focalLoopRef.current.last = now;
-      const a = arrowsRef.current;
-      const dx = (a.right ? 1 : 0) - (a.left ? 1 : 0);
-      const dy = (a.down ? 1 : 0) - (a.up ? 1 : 0);
-      const { selectedClip: clip, onUpdateFocalPoint: update } = latestRef.current;
-      if (clip && (dx !== 0 || dy !== 0)) {
-        // Ease-out ramp: slow start, quickly reaches full speed
-        const t = Math.min(1, (now - focalLoopRef.current.moveStart) / RAMP_MS);
-        const eased = 1 - Math.pow(1 - t, 2);
-        const mult = RAMP_START + (1 - RAMP_START) * eased;
-        const speed = FOCAL_SPEED * mult;
-        const fp = clip.focal_point;
-        const nx = Math.max(0, Math.min(1, fp.x + dx * speed * dt));
-        const ny = Math.max(0, Math.min(1, fp.y + dy * speed * dt));
-        update({ ...fp, x: nx, y: ny });
-      }
-      const stillMoving = heldRef.current.t && (a.up || a.down || a.left || a.right);
-      if (stillMoving) {
-        focalLoopRef.current.raf = requestAnimationFrame(tick);
-      } else {
-        focalLoopRef.current.raf = null;
-      }
-    };
-    focalLoopRef.current.raf = requestAnimationFrame(tick);
-  };
-
-  const stopFocalLoop = () => {
-    if (focalLoopRef.current.raf !== null) {
-      cancelAnimationFrame(focalLoopRef.current.raf);
-      focalLoopRef.current.raf = null;
-    }
-    arrowsRef.current.up = false;
-    arrowsRef.current.down = false;
-    arrowsRef.current.left = false;
-    arrowsRef.current.right = false;
-  };
-
-  useEffect(() => {
-    const isTypingTarget = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      const tag = el?.tagName;
-      return tag === 'INPUT' || tag === 'TEXTAREA' || !!el?.isContentEditable;
-    };
-    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-    const round = (v: number, step: number) => Math.round(v / step) * step;
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
-      const key = e.key.toLowerCase();
-      if (key === 'z') { heldRef.current.z = true; return; }
-      if (key === 's') { heldRef.current.s = true; return; }
-      if (key === 'c') {
-        if (!e.repeat) setCropPreview(p => !p);
-        return;
-      }
-      if (key === 'a') {
-        heldRef.current.a = true;
-        return;
-      }
-      if (key === 't') {
-        heldRef.current.t = true;
-        return;
-      }
-      if (!e.key.startsWith('Arrow')) return;
-      // T held: arrow keys drive focal point via game-style rAF loop
-      if (heldRef.current.t) {
-        e.preventDefault();
-        heldRef.current.tConsumed = true;
-        if (e.key === 'ArrowUp') arrowsRef.current.up = true;
-        if (e.key === 'ArrowDown') arrowsRef.current.down = true;
-        if (e.key === 'ArrowLeft') arrowsRef.current.left = true;
-        if (e.key === 'ArrowRight') arrowsRef.current.right = true;
-        startFocalLoop();
-        return;
-      }
-      // Left/Right with no modifier: navigate clips
-      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && clips.length > 0) {
-        const anyMod = heldRef.current.z || heldRef.current.s || heldRef.current.a || heldRef.current.t;
-        if (anyMod) return;
-        e.preventDefault();
-        const idx = clips.findIndex((c) => c.id === selectedClipId);
-        const base = idx === -1 ? 0 : idx;
-        const next = e.key === 'ArrowRight'
-          ? (base + 1) % clips.length
-          : (base - 1 + clips.length) % clips.length;
-        setSelectedClipId(clips[next].id);
-        return;
-      }
-      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-      const anyHeld = heldRef.current.z || heldRef.current.s || heldRef.current.a;
-      if (!anyHeld) return;
-      const delta = e.key === 'ArrowUp' ? 1 : -1;
-      if (heldRef.current.a) {
-        e.preventDefault();
-        heldRef.current.aConsumed = true;
-        const idx = ASPECTS.indexOf(previewAspect);
-        const base = idx === -1 ? 0 : idx;
-        const next = (base + delta + ASPECTS.length) % ASPECTS.length;
-        setPreviewAspect(ASPECTS[next]);
-        return;
-      }
-      if (!selectedClip) return;
-      if (heldRef.current.z) {
-        e.preventDefault();
-        heldRef.current.zConsumed = true;
-        const step = 0.05;
-        const next = clamp(round(selectedClip.focal_point.zoom + delta * step, step), 1.0, 5.0);
-        onUpdateFocalPoint({ ...selectedClip.focal_point, zoom: next });
-      } else if (heldRef.current.s) {
-        e.preventDefault();
-        heldRef.current.sConsumed = true;
-        const step = 0.25;
-        const next = clamp(round(selectedClip.effects.speed + delta * step, step), 0.25, 4.0);
-        onUpdateEffects({ ...selectedClip.effects, speed: next });
-      }
-    };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowUp') arrowsRef.current.up = false;
-      if (e.key === 'ArrowDown') arrowsRef.current.down = false;
-      if (e.key === 'ArrowLeft') arrowsRef.current.left = false;
-      if (e.key === 'ArrowRight') arrowsRef.current.right = false;
-      const key = e.key.toLowerCase();
-      const now = performance.now();
-      if (key === 'z') {
-        heldRef.current.z = false;
-        if (!heldRef.current.zConsumed) {
-          if (now - heldRef.current.zLastTap < DOUBLE_TAP_MS && selectedClip) {
-            onUpdateFocalPoint({ ...selectedClip.focal_point, zoom: 1.0 });
-            heldRef.current.zLastTap = 0;
-          } else {
-            heldRef.current.zLastTap = now;
-          }
-        }
-        heldRef.current.zConsumed = false;
-      }
-      if (key === 's') {
-        heldRef.current.s = false;
-        if (!heldRef.current.sConsumed) {
-          if (now - heldRef.current.sLastTap < DOUBLE_TAP_MS && selectedClip) {
-            onUpdateEffects({ ...selectedClip.effects, speed: 1.0 });
-            heldRef.current.sLastTap = 0;
-          } else {
-            heldRef.current.sLastTap = now;
-          }
-        }
-        heldRef.current.sConsumed = false;
-      }
-      if (key === 't') {
-        heldRef.current.t = false;
-        stopFocalLoop();
-        if (!heldRef.current.tConsumed) {
-          if (now - heldRef.current.tLastTap < DOUBLE_TAP_MS && selectedClip) {
-            onUpdateFocalPoint({ ...selectedClip.focal_point, x: 0.5, y: 0.5 });
-            heldRef.current.tLastTap = 0;
-          } else {
-            heldRef.current.tLastTap = now;
-          }
-        }
-        heldRef.current.tConsumed = false;
-      }
-      if (key === 'a') {
-        heldRef.current.a = false;
-        if (!heldRef.current.aConsumed) {
-          if (now - heldRef.current.aLastTap < DOUBLE_TAP_MS) {
-            setPreviewAspect('16:9');
-            heldRef.current.aLastTap = 0;
-          } else {
-            heldRef.current.aLastTap = now;
-          }
-        }
-        heldRef.current.aConsumed = false;
-      }
-    };
-    const onBlur = () => {
-      heldRef.current.z = false;
-      heldRef.current.s = false;
-      heldRef.current.a = false;
-      heldRef.current.t = false;
-      heldRef.current.zConsumed = false;
-      heldRef.current.sConsumed = false;
-      heldRef.current.aConsumed = false;
-      heldRef.current.tConsumed = false;
-      stopFocalLoop();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
-    };
-  }, [selectedClip, onUpdateFocalPoint, onUpdateEffects, previewAspect, clips, selectedClipId, setSelectedClipId]);
 
   // Drag handlers for resizers
   useEffect(() => {
@@ -479,6 +269,7 @@ export default function ProjectView({
                 onUpdateFocalPoint={onUpdateFocalPoint}
                 previewAspect={previewAspect}
                 cropPreview={cropPreview}
+                togglePlayRef={togglePlayRef}
               />
             </div>
           </div>

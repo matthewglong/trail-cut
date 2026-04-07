@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { Clip, TrimRange, FocalPoint } from '../../types';
 import { formatTime } from '../../utils/format';
@@ -17,6 +17,9 @@ interface VideoPreviewProps {
   onUpdateFocalPoint?: (fp: FocalPoint) => void;
   previewAspect: string;
   cropPreview: boolean;
+  /** If provided, VideoPreview publishes its togglePlay function here so
+   *  external keyboard shortcuts (Space) can drive playback. */
+  togglePlayRef?: MutableRefObject<(() => void) | null>;
 }
 
 export default function VideoPreview({
@@ -26,6 +29,7 @@ export default function VideoPreview({
   onUpdateFocalPoint,
   previewAspect,
   cropPreview,
+  togglePlayRef,
 }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekBarRef = useRef<HTMLDivElement>(null);
@@ -65,20 +69,19 @@ export default function VideoPreview({
     setDragging,
   });
 
-  // Spacebar toggles play/pause when a clip is loaded
+  // Publish togglePlay so the editor's keyboard shortcuts can drive playback.
+  // Only publish when there's an actually-playable clip loaded.
   useEffect(() => {
-    if (!clip || !proxyPath) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
-      e.preventDefault();
-      togglePlay();
+    if (!togglePlayRef) return;
+    if (!clip || !proxyPath) {
+      togglePlayRef.current = null;
+      return;
+    }
+    togglePlayRef.current = togglePlay;
+    return () => {
+      if (togglePlayRef.current === togglePlay) togglePlayRef.current = null;
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [clip, proxyPath, togglePlay]);
+  }, [togglePlayRef, clip, proxyPath, togglePlay]);
 
   const { handleVideoMouseDown, handleWheel } = useFocalDrag({
     videoRef,
