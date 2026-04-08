@@ -63,6 +63,20 @@ export interface Route {
   trackpoints: TrackPoint[];
 }
 
+export type RouteMode = 'full' | 'trail';
+
+export interface MapSettings {
+  route_mode: RouteMode;
+  show_waypoints: boolean;
+  follow_playhead: boolean;
+}
+
+export const DEFAULT_MAP_SETTINGS: MapSettings = {
+  route_mode: 'full',
+  show_waypoints: true,
+  follow_playhead: true,
+};
+
 export interface ExportLayout {
   video_pct: number;
   map_position: string;
@@ -90,6 +104,7 @@ export interface Project {
   clips: Clip[];
   route: Route | null;
   exports: ExportConfig[];
+  map_settings?: MapSettings;
 }
 
 export interface RecentProject {

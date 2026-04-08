@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { Clip, Project, Route, TrimRange, FocalPoint, Effects } from '../types';
+import type { Clip, Project, Route, TrimRange, FocalPoint, Effects, MapSettings } from '../types';
+import { DEFAULT_MAP_SETTINGS } from '../types';
 
 interface UseProjectParams {
   projectDir: string | null;
@@ -12,6 +13,7 @@ interface UseProjectParams {
   setSelectedClipId: React.Dispatch<React.SetStateAction<string | null>>;
   route: Route | null;
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
+  setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -28,6 +30,7 @@ export function useProject({
   setSelectedClipId,
   route: _route,
   setRoute,
+  setMapSettings,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -52,6 +55,7 @@ export function useProject({
       setProjectThumbnail(project.thumbnail ?? null);
       setClips(project.clips);
       setRoute(project.route);
+      setMapSettings(project.map_settings ?? DEFAULT_MAP_SETTINGS);
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -81,6 +85,7 @@ export function useProject({
       setProjectThumbnail(null);
       setClips([]);
       setRoute(null);
+      setMapSettings(DEFAULT_MAP_SETTINGS);
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -113,6 +118,7 @@ export function useProject({
     setProjectThumbnail(null);
     setClips([]);
     setRoute(null);
+    setMapSettings(DEFAULT_MAP_SETTINGS);
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);

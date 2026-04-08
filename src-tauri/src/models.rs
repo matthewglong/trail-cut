@@ -134,6 +134,34 @@ pub struct ExportConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapSettings {
+    #[serde(default = "default_route_mode")]
+    pub route_mode: String, // "full" | "trail"
+    #[serde(default = "default_true")]
+    pub show_waypoints: bool,
+    #[serde(default = "default_true")]
+    pub follow_playhead: bool,
+}
+
+fn default_route_mode() -> String {
+    "full".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for MapSettings {
+    fn default() -> Self {
+        MapSettings {
+            route_mode: default_route_mode(),
+            show_waypoints: true,
+            follow_playhead: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub version: u32,
     #[serde(default)]
@@ -143,6 +171,8 @@ pub struct Project {
     pub clips: Vec<Clip>,
     pub route: Option<Route>,
     pub exports: Vec<ExportConfig>,
+    #[serde(default)]
+    pub map_settings: Option<MapSettings>,
 }
 
 impl Default for Project {
@@ -154,6 +184,7 @@ impl Default for Project {
             clips: Vec::new(),
             route: None,
             exports: Vec::new(),
+            map_settings: None,
         }
     }
 }

@@ -20,6 +20,9 @@ interface VideoPreviewProps {
   /** If provided, VideoPreview publishes its togglePlay function here so
    *  external keyboard shortcuts (Space) can drive playback. */
   togglePlayRef?: MutableRefObject<(() => void) | null>;
+  /** Fired whenever the playhead moves, in media seconds from the start of
+   *  the source video (unaffected by trim or speed). */
+  onPlayheadChange?: (mediaSeconds: number) => void;
 }
 
 export default function VideoPreview({
@@ -30,6 +33,7 @@ export default function VideoPreview({
   previewAspect,
   cropPreview,
   togglePlayRef,
+  onPlayheadChange,
 }: VideoPreviewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekBarRef = useRef<HTMLDivElement>(null);
@@ -82,6 +86,11 @@ export default function VideoPreview({
       if (togglePlayRef.current === togglePlay) togglePlayRef.current = null;
     };
   }, [togglePlayRef, clip, proxyPath, togglePlay]);
+
+  // Publish playhead position upward (in media seconds, raw video.currentTime).
+  useEffect(() => {
+    if (onPlayheadChange) onPlayheadChange(currentTime);
+  }, [currentTime, onPlayheadChange]);
 
   const { handleVideoMouseDown, handleWheel } = useFocalDrag({
     videoRef,

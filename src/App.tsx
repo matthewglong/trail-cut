@@ -5,7 +5,8 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { Clip, Route } from './types';
+import type { Clip, Route, MapSettings } from './types';
+import { DEFAULT_MAP_SETTINGS } from './types';
 
 export default function App() {
   // Shared state lifted here to break the circular dependency
@@ -14,6 +15,8 @@ export default function App() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
+  const [mapSettings, setMapSettings] = useState<MapSettings>(DEFAULT_MAP_SETTINGS);
+  const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
 
@@ -33,6 +36,7 @@ export default function App() {
     setSelectedClipId,
     route,
     setRoute,
+    setMapSettings,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -46,6 +50,7 @@ export default function App() {
     route,
     projectName: project.projectName,
     projectThumbnail: project.projectThumbnail,
+    mapSettings,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
@@ -104,6 +109,10 @@ export default function App() {
       setSelectedClipId={setSelectedClipId}
       route={route}
       setRoute={setRoute}
+      mapSettings={mapSettings}
+      setMapSettings={setMapSettings}
+      playheadMs={playheadMs}
+      setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}
       thumbnails={media.thumbnails}
       loading={project.loading || media.loading}

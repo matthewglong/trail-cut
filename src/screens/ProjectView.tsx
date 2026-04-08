@@ -1,12 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import Timeline from '../components/Timeline';
 import MapView from '../components/MapView';
+import MapToolbar from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
-import CollapsibleToolbar from '../components/CollapsibleToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
-import type { Clip, Route, TrimRange, FocalPoint, Effects } from '../types';
+import { clipWallClockMs } from '../lib/routeLocation';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
 // Resizer constraints — easy to tune
@@ -29,6 +30,10 @@ interface ProjectViewProps {
   setSelectedClipId: (id: string) => void;
   route: Route | null;
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
+  mapSettings: MapSettings;
+  setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
+  playheadMs: number | null;
+  setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
   thumbnails: ThumbnailMap;
   loading: boolean;
@@ -56,6 +61,10 @@ export default function ProjectView({
   setSelectedClipId,
   route,
   setRoute,
+  mapSettings,
+  setMapSettings,
+  playheadMs,
+  setPlayheadMs,
   proxies,
   thumbnails,
   loading,
@@ -270,6 +279,7 @@ export default function ProjectView({
                 previewAspect={previewAspect}
                 cropPreview={cropPreview}
                 togglePlayRef={togglePlayRef}
+                onPlayheadChange={(s) => setPlayheadMs(clipWallClockMs(selectedClip, s))}
               />
             </div>
           </div>
@@ -282,11 +292,19 @@ export default function ProjectView({
 
           {/* Map pane */}
           <div style={{ ...styles.mapPane, width: `calc(${(1 - vSplit) * 100}% - 3px)` }}>
-            <CollapsibleToolbar>
-              <button style={styles.mapPlaceholderBtn} disabled>Placeholder</button>
-            </CollapsibleToolbar>
+            <MapToolbar
+              settings={mapSettings}
+              onChange={setMapSettings}
+              routeLoaded={route !== null && route.trackpoints.length > 0}
+            />
             <div style={styles.mapPaneContent}>
-              <MapView clips={clips} selectedClipId={selectedClipId} route={route} />
+              <MapView
+                clips={clips}
+                selectedClipId={selectedClipId}
+                route={route}
+                playheadMs={playheadMs}
+                mapSettings={mapSettings}
+              />
             </div>
           </div>
         </div>
