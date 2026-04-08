@@ -113,8 +113,9 @@ export default function MapView({
 
   const liveMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveMarkerElRef = useRef<HTMLDivElement | null>(null);
-  const lastFollowAtRef = useRef<number>(0);
   const lastFitRouteRef = useRef<Route | null>(null);
+  const lastFollowAtRef = useRef<number>(0);
+  const lastFollowedClipRef = useRef<string | null>(null);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
   const routeLoaded = indexedRoute !== null;
@@ -365,25 +366,18 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [selectedClipId, styleVersion]);
 
-  // ---- Fly to selected clip's waypoint on selection change ----
+  // ---- Fly to selected clip's waypoint on manual selection change ----
+  // Only runs when follow is OFF — when following, the playhead effect below
+  // handles camera movement (including a longer ease on clip transitions).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !selectedClipId) return;
+    if (mapSettings.follow_playhead) return;
     const clip = clips.find((c) => c.id === selectedClipId);
     if (!clip) return;
     const loc = clipWaypointLocation(clip, indexedRoute);
     if (!loc) return;
-    map.flyTo({
-      center: [loc.lng, loc.lat],
-      zoom: Math.max(map.getZoom(), 14),
-      duration: 700,
-      essential: true,
-    });
-    // Suppress follow-playhead easeTo while the flyTo is animating, so it
-    // doesn't get interrupted by the seek that accompanies clip selection.
-    lastFollowAtRef.current = performance.now() + 700;
-    // Intentionally only depends on selectedClipId — we don't want to re-fly
-    // when clips/route update.
+    map.flyTo({ center: [loc.lng, loc.lat], duration: 700, essential: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClipId]);
 
@@ -427,13 +421,28 @@ export default function MapView({
       liveMarkerRef.current.setLngLat([resolved.lng, resolved.lat]);
     }
 
-    // Follow playhead — throttle to ~10Hz
+    // Follow playhead. On clip boundary crossings (selection change) do a
+    // longer ease so it reads as a deliberate transition between clips;
+    // within a single clip, throttle to ~10Hz for smooth tracking.
     if (mapSettings.follow_playhead) {
-      const now = performance.now();
-      if (now - lastFollowAtRef.current > 100) {
-        lastFollowAtRef.current = now;
-        map.easeTo({ center: [resolved.lng, resolved.lat], duration: 220 });
+      const selectionChanged = lastFollowedClipRef.current !== selectedClipId;
+      lastFollowedClipRef.current = selectedClipId;
+      if (selectionChanged) {
+        // Target the clip's waypoint location (GPX-snapped) rather than the
+        // current playhead, which may not have caught up to the seek yet.
+        const wp = selectedClip ? clipWaypointLocation(selectedClip, indexedRoute) : null;
+        const target = wp ?? resolved;
+        lastFollowAtRef.current = performance.now();
+        map.easeTo({ center: [target.lng, target.lat], duration: 700 });
+      } else {
+        const now = performance.now();
+        if (now - lastFollowAtRef.current > 100) {
+          lastFollowAtRef.current = now;
+          map.easeTo({ center: [resolved.lng, resolved.lat], duration: 220 });
+        }
       }
+    } else {
+      lastFollowedClipRef.current = selectedClipId;
     }
   }, [playheadMs, indexedRoute, clips, selectedClipId, mapSettings.follow_playhead]);
 
