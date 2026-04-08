@@ -16,19 +16,24 @@ interface CollapsibleToolbarProps {
   children?: ReactNode;
   collapsedContent?: ReactNode;
   defaultExpanded?: boolean;
+  /** Horizontal gap between top-level children in the expanded content row. */
+  contentGap?: number;
 }
 
 export default function CollapsibleToolbar({
   children,
   collapsedContent,
   defaultExpanded = true,
+  contentGap,
 }: CollapsibleToolbarProps) {
+  const contentStyle =
+    contentGap != null ? { ...styles.content, gap: `${contentGap}px` } : styles.content;
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   if (!expanded) {
     return (
       <div style={styles.bar} onClick={() => setExpanded(true)}>
-        <div style={styles.content}>
+        <div style={contentStyle}>
           {collapsedContent}
         </div>
         <button style={styles.toggleBtn} onClick={(e) => { e.stopPropagation(); setExpanded(true); }}>
@@ -40,7 +45,7 @@ export default function CollapsibleToolbar({
 
   return (
     <div style={styles.bar}>
-      <div style={styles.content}>
+      <div style={contentStyle}>
         {children}
       </div>
       <button style={styles.toggleBtn} onClick={() => setExpanded(false)}>

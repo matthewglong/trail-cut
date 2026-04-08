@@ -4,6 +4,8 @@ import { colors } from '../theme/tokens';
 interface ModeOption<T extends string> {
   value: T;
   label: string;
+  /** 1–2 char shorthand shown in the minimal-variant trigger badge. */
+  short?: string;
 }
 
 interface ModePickerProps<T extends string> {
@@ -14,8 +16,11 @@ interface ModePickerProps<T extends string> {
   title?: string;
   /** Optional minimum card width (px). Otherwise sized to fit longest label. */
   minWidth?: number;
-  /** Optional leading icon rendered inside every card (trigger + fan options). */
+  /** Optional leading icon. In `full` variant the icon sits beside the pill;
+   *  in `minimal` variant the icon itself is the clickable trigger. */
   icon?: ReactNode;
+  /** Visual variant. `minimal` collapses the trigger to icon + shorthand badge. */
+  variant?: 'full' | 'minimal';
 }
 
 const ICON_GAP = 6;
@@ -35,7 +40,9 @@ export default function ModePicker<T extends string>({
   title,
   minWidth,
   icon,
+  variant = 'full',
 }: ModePickerProps<T>) {
+  const isMinimal = variant === 'minimal';
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -87,9 +94,17 @@ export default function ModePicker<T extends string>({
 
   const activeOption = options.find((o) => o.value === value) ?? options[0];
 
+  // Fan geometry differs by variant. In `full`, the active option overlays
+  // the trigger (slot 0). In `minimal`, the icon trigger stays put and the
+  // fan starts one slot below it.
+  const triggerSlots = isMinimal ? 1 : 0;
+  const fanW = anchor ? (isMinimal ? (minWidth ?? anchor.w) : anchor.w) : 0;
+  const fanH = anchor?.h ?? 22;
+  const fanOriginTop = anchor ? anchor.top + triggerSlots * (anchor.h + Y_GAP) : 0;
+
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: ICON_GAP }}>
-      {icon && (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: isMinimal ? 0 : ICON_GAP }}>
+      {!isMinimal && icon && (
         <span
           style={{
             display: 'inline-flex',
@@ -105,31 +120,44 @@ export default function ModePicker<T extends string>({
         ref={btnRef}
         onClick={() => setOpen((o) => !o)}
         style={{
-          ...activeStyle,
+          ...(isMinimal ? minimalTriggerStyle : activeStyle),
           position: 'relative',
           height: '22px',
-          padding: '0 10px',
+          padding: isMinimal ? '0 4px' : '0 10px',
           transition: 'all 0.15s ease',
-          ...(minWidth ? { minWidth } : {}),
-          ...(expanded ? { visibility: 'hidden' } : {}),
+          ...(!isMinimal && minWidth ? { minWidth } : {}),
+          ...(!isMinimal && expanded ? { visibility: 'hidden' } : {}),
         }}
         title={title}
       >
-        {/* Render every label stacked in a grid so the button auto-sizes
-         *  to the widest one. Only the active label is visible. */}
-        <span style={{ display: 'grid', alignItems: 'center', justifyItems: 'center' }}>
-          {options.map((opt) => (
-            <span
-              key={opt.value}
-              style={{
-                gridArea: '1 / 1',
-                visibility: opt.value === activeOption.value ? 'visible' : 'hidden',
-              }}
-            >
-              {opt.label}
+        {isMinimal ? (
+          <>
+            {icon && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', color: '#c8c8c8' }}>
+                {icon}
+              </span>
+            )}
+            <span style={minimalBadgeStyle}>
+              {activeOption.short ?? activeOption.label.slice(0, 2).toUpperCase()}
             </span>
-          ))}
-        </span>
+          </>
+        ) : (
+          /* Render every label stacked in a grid so the button auto-sizes
+           *  to the widest one. Only the active label is visible. */
+          <span style={{ display: 'grid', alignItems: 'center', justifyItems: 'center' }}>
+            {options.map((opt) => (
+              <span
+                key={opt.value}
+                style={{
+                  gridArea: '1 / 1',
+                  visibility: opt.value === activeOption.value ? 'visible' : 'hidden',
+                }}
+              >
+                {opt.label}
+              </span>
+            ))}
+          </span>
+        )}
       </button>
 
       {mounted && anchor && (
@@ -137,8 +165,8 @@ export default function ModePicker<T extends string>({
           {options.map((opt, i) => {
             const isActive = opt.value === value;
             const disabled = disabledValues.includes(opt.value);
-            const dy = expanded ? i * (anchor.h + Y_GAP) : 0;
-            const opacity = expanded ? (disabled ? 0.4 : 1) : isActive ? 1 : 0;
+            const dy = expanded ? i * (fanH + Y_GAP) : 0;
+            const opacity = expanded ? (disabled ? 0.4 : 1) : isMinimal ? 0 : isActive ? 1 : 0;
             const delay = expanded ? i * STAGGER_MS : (options.length - 1 - i) * STAGGER_MS;
             return (
               <button
@@ -154,9 +182,9 @@ export default function ModePicker<T extends string>({
                   position: 'absolute',
                   ...(disabled ? { cursor: 'not-allowed' } : {}),
                   left: anchor.left,
-                  top: anchor.top + dy,
-                  width: anchor.w,
-                  height: anchor.h,
+                  top: fanOriginTop + dy,
+                  width: fanW,
+                  height: fanH,
                   opacity,
                   transition: `top ${ANIM_MS}ms cubic-bezier(0.2, 0.9, 0.3, 1.3) ${delay}ms, opacity ${ANIM_MS}ms ease ${delay}ms`,
                 }}
@@ -255,4 +283,33 @@ const activeStyle: React.CSSProperties = {
   boxSizing: 'border-box',
   padding: 0,
   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.10), 0 1px 0 rgba(0,0,0,0.35)',
+};
+
+// Minimal trigger — borderless icon button with a tiny shorthand badge.
+// Reads as a single click target; no chrome to compete with the map.
+const minimalTriggerStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  border: 'none',
+  background: 'transparent',
+  borderRadius: '6px',
+  cursor: 'pointer',
+  userSelect: 'none' as const,
+  fontFamily: 'inherit',
+  boxSizing: 'border-box',
+  color: '#c8c8c8',
+};
+
+const minimalBadgeStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minWidth: 14,
+  fontSize: '10px',
+  fontWeight: 600,
+  letterSpacing: '0.05em',
+  textTransform: 'uppercase' as const,
+  color: colors.accent,
+  textShadow: '0 1px 0 rgba(0,0,0,0.35)',
 };

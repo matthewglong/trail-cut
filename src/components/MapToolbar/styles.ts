@@ -8,6 +8,17 @@ import { colors } from '../../theme/tokens';
 export const styles: Record<string, React.CSSProperties> = {
   ...editStyles,
 
+  // Tighter layout than EditToolbar — the minimal-variant ModePickers
+  // collapse to icon+badge, so large gaps look disproportionate.
+  group: {
+    ...editStyles.group,
+    gap: '4px',
+  },
+  separator: {
+    ...editStyles.separator,
+    margin: '0 2px',
+  },
+
   segmented: {
     display: 'flex',
     alignItems: 'stretch',

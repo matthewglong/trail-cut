@@ -11,16 +11,16 @@ interface MapToolbarProps {
   routeLoaded: boolean;
 }
 
-const TRI_OPTIONS: { value: TriMode; label: string }[] = [
-  { value: 'none', label: 'None' },
-  { value: 'visited', label: 'Visited' },
-  { value: 'full', label: 'Full' },
+const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
+  { value: 'none', label: 'None', short: 'N' },
+  { value: 'visited', label: 'Visited', short: 'V' },
+  { value: 'full', label: 'Full', short: 'F' },
 ];
 
-const STYLE_OPTIONS: { value: MapStyleId; label: string }[] = [
-  { value: 'default', label: 'Default' },
-  { value: '3d', label: '3D' },
-  { value: 'satellite', label: 'Satellite' },
+const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
+  { value: 'default', label: 'Default', short: 'D' },
+  { value: '3d', label: '3D', short: '3D' },
+  { value: 'satellite', label: 'Satellite', short: 'S' },
 ];
 
 const styleLabel = (s: MapStyleId) =>
@@ -51,7 +51,7 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
   );
 
   return (
-    <CollapsibleToolbar collapsedContent={collapsedContent}>
+    <CollapsibleToolbar collapsedContent={collapsedContent} contentGap={4}>
       {/* Route mode */}
       <div style={styles.group}>
         <ModePicker<TriMode>
@@ -62,6 +62,7 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
           title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
           minWidth={68}
           icon={<RouteIcon size={15} strokeWidth={2} />}
+          variant="minimal"
         />
       </div>
 
@@ -76,6 +77,7 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
           title="Clip waypoint visibility"
           minWidth={68}
           icon={<MapPin size={15} strokeWidth={2} />}
+          variant="minimal"
         />
       </div>
 
@@ -107,6 +109,7 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
           title="Base map style"
           minWidth={76}
           icon={<Layers size={15} strokeWidth={2} />}
+          variant="minimal"
         />
       </div>
     </CollapsibleToolbar>
