@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
 import { colors } from '../theme/tokens';
 
 interface ModeOption<T extends string> {
@@ -14,7 +14,11 @@ interface ModePickerProps<T extends string> {
   title?: string;
   /** Optional minimum card width (px). Otherwise sized to fit longest label. */
   minWidth?: number;
+  /** Optional leading icon rendered inside every card (trigger + fan options). */
+  icon?: ReactNode;
 }
+
+const ICON_GAP = 6;
 
 const ANIM_MS = 240;
 const STAGGER_MS = 35;
@@ -30,6 +34,7 @@ export default function ModePicker<T extends string>({
   disabledValues = [],
   title,
   minWidth,
+  icon,
 }: ModePickerProps<T>) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -83,7 +88,19 @@ export default function ModePicker<T extends string>({
   const activeOption = options.find((o) => o.value === value) ?? options[0];
 
   return (
-    <>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: ICON_GAP }}>
+      {icon && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            color: '#c8c8c8',
+          }}
+          title={title}
+        >
+          {icon}
+        </span>
+      )}
       <button
         ref={btnRef}
         onClick={() => setOpen((o) => !o)}
@@ -150,7 +167,7 @@ export default function ModePicker<T extends string>({
           })}
         </div>
       )}
-    </>
+    </span>
   );
 }
 

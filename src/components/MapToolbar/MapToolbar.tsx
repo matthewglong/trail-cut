@@ -54,9 +54,6 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
     <CollapsibleToolbar collapsedContent={collapsedContent}>
       {/* Route mode */}
       <div style={styles.group}>
-        <span style={styles.groupLabel} title="Route line">
-          <RouteIcon size={15} strokeWidth={2} />
-        </span>
         <ModePicker<TriMode>
           value={settings.route_mode}
           options={TRI_OPTIONS}
@@ -64,6 +61,7 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
           disabledValues={routeLoaded ? [] : ['visited']}
           title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
           minWidth={68}
+          icon={<RouteIcon size={15} strokeWidth={2} />}
         />
       </div>
 
@@ -71,15 +69,13 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
 
       {/* Waypoints */}
       <div style={styles.group}>
-        <span style={styles.groupLabel} title="Clip waypoints">
-          <MapPin size={15} strokeWidth={2} />
-        </span>
         <ModePicker<TriMode>
           value={settings.waypoints_mode}
           options={TRI_OPTIONS}
           onChange={(v) => onChange({ ...settings, waypoints_mode: v })}
           title="Clip waypoint visibility"
           minWidth={68}
+          icon={<MapPin size={15} strokeWidth={2} />}
         />
       </div>
 
@@ -104,15 +100,13 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
 
       {/* Map style */}
       <div style={styles.group}>
-        <span style={styles.groupLabel} title="Map style">
-          <Layers size={15} strokeWidth={2} />
-        </span>
         <ModePicker<MapStyleId>
           value={settings.map_style}
           options={STYLE_OPTIONS}
           onChange={(v) => onChange({ ...settings, map_style: v })}
           title="Base map style"
           minWidth={76}
+          icon={<Layers size={15} strokeWidth={2} />}
         />
       </div>
     </CollapsibleToolbar>

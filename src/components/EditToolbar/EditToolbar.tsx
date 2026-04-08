@@ -2,8 +2,12 @@ import { ZoomIn, Gauge, Crop } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../../types';
 import NumberStepper from './NumberStepper';
 import CollapsibleToolbar from '../CollapsibleToolbar';
-import AspectRatioPicker from '../AspectRatioPicker';
+import ModePicker from '../ModePicker';
 import { styles } from './styles';
+
+const RATIOS = ['16:9', '9:16', '1:1', '4:5'] as const;
+type Ratio = typeof RATIOS[number];
+const RATIO_OPTIONS = RATIOS.map((r) => ({ value: r, label: r }));
 
 interface EditToolbarProps {
   clip: Clip | null;
@@ -92,9 +96,12 @@ export default function EditToolbar({
 
       {/* Aspect ratio picker */}
       <div style={styles.group}>
-        <AspectRatioPicker
-          value={previewAspect}
+        <ModePicker<Ratio>
+          value={(RATIOS.includes(previewAspect as Ratio) ? previewAspect : RATIOS[0]) as Ratio}
+          options={RATIO_OPTIONS}
           onChange={onChangeAspect}
+          title="Aspect ratio"
+          minWidth={56}
         />
       </div>
     </CollapsibleToolbar>
