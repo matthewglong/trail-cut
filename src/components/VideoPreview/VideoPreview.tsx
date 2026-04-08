@@ -296,7 +296,10 @@ export default function VideoPreview({
               <div style={styles.trimHandleGrip} />
             </div>
           </div>
-          <div style={{ ...styles.playhead, left: `${playPct}%` }} />
+          <div style={{ ...styles.playhead, left: `${playPct}%` }}>
+            <div style={{ ...styles.playheadHoop, top: 0 }} />
+            <div style={styles.playheadBar} />
+          </div>
         </div>
 
         <span style={styles.time}>{formatTime(duration)}</span>

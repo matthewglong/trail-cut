@@ -13,4 +13,5 @@ export const colors = {
   errorText: '#ff8888',
   overlay: 'rgba(0, 0, 0, 0.6)',
   accent: '#ff6b35',
+  accent2: '#c9a227',
 };
