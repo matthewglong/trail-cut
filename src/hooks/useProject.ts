@@ -4,6 +4,11 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { Clip, Project, Route, TrimRange, FocalPoint, Effects, MapSettings } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 
+/** Minimum gap (ms) required between the playhead and either trim edge for a
+ *  split to be accepted. Below this the split is a no-op, so we never create
+ *  zero-length segments from a fat-fingered ⌘B. */
+const SPLIT_MIN_GAP_MS = 100;
+
 interface UseProjectParams {
   projectDir: string | null;
   setProjectDir: React.Dispatch<React.SetStateAction<string | null>>;
@@ -22,7 +27,7 @@ interface UseProjectParams {
 }
 
 export function useProject({
-  projectDir: _projectDir,
+  projectDir,
   setProjectDir,
   clips,
   setClips,
@@ -155,6 +160,74 @@ export function useProject({
     updateSelectedClip({ effects });
   }
 
+  /** Split the selected clip at the given media-seconds playhead position
+   *  (measured from the start of the underlying source, not from trim.in_ms).
+   *  The left half keeps the existing id; the right half gets a new random
+   *  id and inherits all other fields. No-op if the playhead is outside
+   *  the current trim window or within SPLIT_MIN_GAP_MS of either edge. */
+  function handleSplitClip(playheadSec: number) {
+    const clip = clips.find((c) => c.id === selectedClipId);
+    if (!clip || !clip.trim) return;
+
+    const splitMs = playheadSec * 1000;
+    if (splitMs <= clip.trim.in_ms + SPLIT_MIN_GAP_MS) return;
+    if (splitMs >= clip.trim.out_ms - SPLIT_MIN_GAP_MS) return;
+
+    const newId =
+      (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `${clip.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const leftHalf: Clip = {
+      ...clip,
+      trim: { in_ms: clip.trim.in_ms, out_ms: splitMs },
+    };
+    const rightHalf: Clip = {
+      ...clip,
+      id: newId,
+      trim: { in_ms: splitMs, out_ms: clip.trim.out_ms },
+      // Clone nested edit state so later tweaks to one half don't bleed
+      // into the other via shared references.
+      focal_point: { ...clip.focal_point },
+      effects: {
+        ...clip.effects,
+        stabilize: { ...clip.effects.stabilize },
+      },
+    };
+
+    setClips((prev) => {
+      const idx = prev.findIndex((c) => c.id === clip.id);
+      if (idx === -1) return prev;
+      const next = prev.slice();
+      next.splice(idx, 1, leftHalf, rightHalf);
+      return next;
+    });
+    setSelectedClipId(newId);
+
+    // The new segment shares the same source video, so it can reuse the
+    // existing proxy file directly — just mirror the proxy map entry onto
+    // the new id.
+    setProxies((prev) => {
+      const existing = prev[clip.id];
+      if (existing == null) return prev;
+      return { ...prev, [newId]: existing };
+    });
+
+    // Generate a thumbnail at the right half's start frame. Left half keeps
+    // its existing thumbnail since its trim.in_ms is unchanged.
+    if (projectDir) {
+      invoke<string>('generate_thumbnail_at', {
+        sourcePath: clip.path,
+        atMs: Math.round(splitMs),
+        projectDir,
+      })
+        .then((thumbPath) => {
+          setThumbnails((prev) => ({ ...prev, [newId]: thumbPath }));
+        })
+        .catch(() => {});
+    }
+  }
+
   return {
     projectName,
     setProjectName,
@@ -173,5 +246,6 @@ export function useProject({
     handleUpdateTrim,
     handleUpdateFocalPoint,
     handleUpdateEffects,
+    handleSplitClip,
   };
 }

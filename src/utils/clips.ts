@@ -28,6 +28,12 @@ export function mergeClips(existing: Clip[], incoming: ClipMetadata[]): Clip[] {
   // Add genuinely new clips with default editing fields
   const newClips = [...incomingByPath.values()].map(newClipFromMetadata);
   const merged = [...updated, ...newClips];
-  merged.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''));
+  merged.sort((a, b) => {
+    const cmp = (a.created_at ?? '').localeCompare(b.created_at ?? '');
+    if (cmp !== 0) return cmp;
+    // Tiebreaker for split clips: within the same source (identical
+    // created_at), order by where each segment begins.
+    return (a.trim?.in_ms ?? 0) - (b.trim?.in_ms ?? 0);
+  });
   return merged;
 }

@@ -71,6 +71,8 @@ export interface UseEditorShortcutsParams {
   setCropPreview: (fn: (prev: boolean) => boolean) => void;
   /** VideoPreview writes its togglePlay function into this ref. */
   togglePlayRef: MutableRefObject<(() => void) | null>;
+  /** Split the selected clip at the current playhead (FCP-style ⌘B). */
+  splitAtPlayhead: () => void;
 }
 
 // ---------- The hook ----------
@@ -152,6 +154,13 @@ export function useEditorShortcuts(params: UseEditorShortcutsParams) {
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target)) return;
+
+      // ⌘B / Ctrl+B → split at playhead (FCP "Blade at Playhead")
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        if (!e.repeat) latestRef.current.splitAtPlayhead();
+        return;
+      }
 
       // Space → play/pause (delegated to VideoPreview via ref)
       if (e.code === 'Space') {

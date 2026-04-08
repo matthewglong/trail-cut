@@ -198,9 +198,13 @@ export function clipWaypointLocation(
   clip: Clip,
   route: IndexedRoute | null,
 ): ResolvedLocation | null {
-  const startMs = clip.created_at ? parseTimestamp(clip.created_at) : NaN;
-  if (Number.isNaN(startMs)) {
+  // Anchor at created_at + trim.in_ms so each split segment (and any trimmed
+  // clip) resolves to the geographic position the hiker was actually at
+  // when that segment *starts*, not where the underlying source starts.
+  const sourceStartMs = clip.created_at ? parseTimestamp(clip.created_at) : NaN;
+  if (Number.isNaN(sourceStartMs)) {
     return clip.gps ? { lat: clip.gps.lat, lng: clip.gps.lng, source: 'fallback' } : null;
   }
-  return locationAt(startMs, route, clip.gps);
+  const segmentStartMs = sourceStartMs + (clip.trim?.in_ms ?? 0);
+  return locationAt(segmentStartMs, route, clip.gps);
 }

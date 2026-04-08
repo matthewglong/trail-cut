@@ -23,6 +23,8 @@ interface VideoPreviewProps {
   /** Fired whenever the playhead moves, in media seconds from the start of
    *  the source video (unaffected by trim or speed). */
   onPlayheadChange?: (mediaSeconds: number) => void;
+  /** Split the current clip at the playhead (right-click menu + ⌘B). */
+  onSplitAtPlayhead?: () => void;
 }
 
 export default function VideoPreview({
@@ -34,7 +36,9 @@ export default function VideoPreview({
   cropPreview,
   togglePlayRef,
   onPlayheadChange,
+  onSplitAtPlayhead,
 }: VideoPreviewProps) {
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekBarRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
@@ -91,6 +95,21 @@ export default function VideoPreview({
   useEffect(() => {
     if (onPlayheadChange) onPlayheadChange(currentTime);
   }, [currentTime, onPlayheadChange]);
+
+  // Dismiss the split context menu on any click elsewhere or Escape.
+  useEffect(() => {
+    if (!contextMenu) return;
+    const dismiss = () => setContextMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('mousedown', dismiss);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', dismiss);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
 
   const { handleVideoMouseDown, handleWheel } = useFocalDrag({
     videoRef,
@@ -189,6 +208,11 @@ export default function VideoPreview({
         }}
         onMouseDown={cropPreview ? undefined : handleVideoMouseDown}
         onWheel={cropPreview ? undefined : handleWheel}
+        onContextMenu={(e) => {
+          if (!onSplitAtPlayhead) return;
+          e.preventDefault();
+          setContextMenu({ x: e.clientX, y: e.clientY });
+        }}
       >
         <div style={cropTransform ? { ...cropTransform, width: '100%', height: '100%' } : { width: '100%', height: '100%' }}>
           <video
@@ -277,6 +301,43 @@ export default function VideoPreview({
 
         <span style={styles.time}>{formatTime(duration)}</span>
       </div>
+      {contextMenu && onSplitAtPlayhead && (
+        <div
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+            backgroundColor: '#2a2a2a',
+            border: '1px solid #444',
+            borderRadius: 6,
+            overflow: 'hidden',
+            zIndex: 1000,
+            minWidth: 180,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+          }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              onSplitAtPlayhead();
+              setContextMenu(null);
+            }}
+            style={{
+              display: 'block',
+              width: '100%',
+              padding: '8px 14px',
+              backgroundColor: 'transparent',
+              color: '#ccc',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 13,
+              textAlign: 'left',
+            }}
+          >
+            Split at Playhead&nbsp;&nbsp;<span style={{ color: '#777' }}>⌘B</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

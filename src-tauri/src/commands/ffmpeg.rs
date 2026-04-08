@@ -59,6 +59,63 @@ pub async fn generate_proxy(source_path: String, project_dir: String) -> Result<
     Ok(proxy_str)
 }
 
+/// Extract a thumbnail frame at a specific time offset from a video via
+/// FFmpeg, stored in project bundle. Used by split clips so each segment gets
+/// a thumbnail matching its trim.in_ms. Filename incorporates at_ms so
+/// multiple segments of the same source don't collide on disk.
+#[tauri::command]
+pub async fn generate_thumbnail_at(
+    source_path: String,
+    at_ms: u64,
+    project_dir: String,
+) -> Result<String, String> {
+    let thumbs_dir = PathBuf::from(&project_dir).join("thumbnails");
+    ensure_dir(&thumbs_dir)?;
+
+    let hash = path_hash(&source_path);
+    let thumb_path = thumbs_dir.join(format!("{}_{}_thumb.jpg", hash, at_ms));
+
+    if thumb_path.exists() {
+        return thumb_path
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Invalid thumbnail path".to_string());
+    }
+
+    if !Path::new(&source_path).exists() {
+        return Err(format!("Source file not found: {}", source_path));
+    }
+
+    let thumb_str = thumb_path
+        .to_str()
+        .ok_or("Invalid thumbnail path")?
+        .to_string();
+
+    let seconds = at_ms as f64 / 1000.0;
+
+    let output = Command::new("ffmpeg")
+        .arg("-ss")
+        .arg(format!("{:.3}", seconds))
+        .arg("-i")
+        .arg(&source_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg("scale=-2:160")
+        .arg("-y")
+        .arg(&thumb_str)
+        .output()
+        .map_err(|e| format!("Failed to run ffmpeg: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = std::fs::remove_file(&thumb_path);
+        return Err(format!("FFmpeg thumbnail extraction failed: {}", stderr));
+    }
+
+    Ok(thumb_str)
+}
+
 /// Extract a thumbnail frame from a video via FFmpeg, stored in project bundle
 #[tauri::command]
 pub async fn generate_thumbnail(source_path: String, project_dir: String) -> Result<String, String> {

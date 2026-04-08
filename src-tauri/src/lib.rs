@@ -20,6 +20,7 @@ pub fn run() {
             commands::load_project,
             commands::generate_proxy,
             commands::generate_thumbnail,
+            commands::generate_thumbnail_at,
             commands::get_recent_projects,
             commands::register_recent_project,
             commands::rename_project,

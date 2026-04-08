@@ -120,6 +120,7 @@ export default function App() {
       onDismissError={dismissError}
       onCloseProject={project.handleCloseProject}
       onRemoveClip={project.handleRemoveClip}
+      onSplitClip={project.handleSplitClip}
       onUpdateTrim={project.handleUpdateTrim}
       onUpdateFocalPoint={project.handleUpdateFocalPoint}
       onUpdateEffects={project.handleUpdateEffects}

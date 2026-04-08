@@ -41,6 +41,7 @@ interface ProjectViewProps {
   onDismissError: () => void;
   onCloseProject: () => void;
   onRemoveClip: (clipId: string) => void;
+  onSplitClip: (playheadSec: number) => void;
   onUpdateTrim: (trim: TrimRange) => void;
   onUpdateFocalPoint: (fp: FocalPoint) => void;
   onUpdateEffects: (effects: Effects) => void;
@@ -72,6 +73,7 @@ export default function ProjectView({
   onDismissError,
   onCloseProject,
   onRemoveClip,
+  onSplitClip,
   onUpdateTrim,
   onUpdateFocalPoint,
   onUpdateEffects,
@@ -96,6 +98,15 @@ export default function ProjectView({
   // VideoPreview publishes its togglePlay function here so Space can drive playback
   const togglePlayRef = useRef<(() => void) | null>(null);
 
+  // Current playhead in media-seconds from the source start (what onSplitClip
+  // expects). Mirrors VideoPreview.onPlayheadChange without triggering
+  // re-renders on every time update.
+  const playheadSecRef = useRef(0);
+
+  const splitAtPlayhead = useCallback(() => {
+    onSplitClip(playheadSecRef.current);
+  }, [onSplitClip]);
+
   useEditorShortcuts({
     selectedClip,
     clips,
@@ -107,6 +118,7 @@ export default function ProjectView({
     setPreviewAspect,
     setCropPreview,
     togglePlayRef,
+    splitAtPlayhead,
   });
 
   // Drag handlers for resizers
@@ -279,7 +291,11 @@ export default function ProjectView({
                 previewAspect={previewAspect}
                 cropPreview={cropPreview}
                 togglePlayRef={togglePlayRef}
-                onPlayheadChange={(s) => setPlayheadMs(clipWallClockMs(selectedClip, s))}
+                onSplitAtPlayhead={splitAtPlayhead}
+                onPlayheadChange={(s) => {
+                  playheadSecRef.current = s;
+                  setPlayheadMs(clipWallClockMs(selectedClip, s));
+                }}
               />
             </div>
           </div>
