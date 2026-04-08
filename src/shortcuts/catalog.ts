@@ -28,3 +28,20 @@ export const SHORTCUTS = {
 export type ShortcutId = keyof typeof SHORTCUTS;
 
 export const keyOf = (id: ShortcutId): string => SHORTCUTS[id].key;
+
+// Fail loudly at startup if two shortcuts share the same key. Cheap insurance
+// against the most likely future bug: silently shadowing an existing binding.
+(function assertNoDuplicateKeys() {
+  const seen = new Map<string, ShortcutId>();
+  for (const [id, def] of Object.entries(SHORTCUTS) as [ShortcutId, ShortcutDef][]) {
+    const norm = def.key.toLowerCase();
+    const prior = seen.get(norm);
+    if (prior) {
+      throw new Error(
+        `Shortcut catalog: key "${def.key}" is bound to both "${prior}" and "${id}". ` +
+        `Each key may only be used once.`,
+      );
+    }
+    seen.set(norm, id);
+  }
+})();
