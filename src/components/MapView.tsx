@@ -8,6 +8,7 @@ import {
   locationAt,
   trailUpTo,
   clipWaypointLocation,
+  parseTimestamp,
   type IndexedRoute,
 } from '../lib/routeLocation';
 
@@ -142,21 +143,49 @@ export default function MapView({
     else map.once('load', apply);
   }, [route]);
 
-  // ---- Update route-line opacity based on routeMode ----
+  // ---- Update route-line visibility based on route_mode ----
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       if (!map.getLayer('route-full-line')) return;
-      map.setPaintProperty(
+      map.setLayoutProperty(
         'route-full-line',
-        'line-opacity',
-        mapSettings.route_mode === 'trail' ? 0.22 : 0.85,
+        'visibility',
+        mapSettings.route_mode === 'full' ? 'visible' : 'none',
       );
+      if (map.getLayer('route-trail-line')) {
+        map.setLayoutProperty(
+          'route-trail-line',
+          'visibility',
+          mapSettings.route_mode === 'visited' ? 'visible' : 'none',
+        );
+      }
     };
     if (styleReadyRef.current) apply();
     else map.once('load', apply);
   }, [mapSettings.route_mode]);
+
+  // Compute the set of visible waypoints. Memoized so effect deps are stable.
+  const positionedWaypoints = useMemo(() => {
+    if (mapSettings.waypoints_mode === 'none') return [];
+    return clips
+      .map((clip, originalIndex) => {
+        const loc = clipWaypointLocation(clip, indexedRoute);
+        if (!loc) return null;
+        if (mapSettings.waypoints_mode === 'visited') {
+          if (playheadMs == null) return null;
+          const startMs = parseTimestamp(clip.created_at);
+          if (Number.isNaN(startMs) || startMs > playheadMs) return null;
+        }
+        return { clip, originalIndex, loc };
+      })
+      .filter((x): x is { clip: Clip; originalIndex: number; loc: { lat: number; lng: number } } => x !== null);
+  }, [clips, indexedRoute, mapSettings.waypoints_mode, playheadMs]);
+
+  // Stable key so the marker-rendering effect only runs when the visible set
+  // (or selection) actually changes — not on every playhead tick.
+  const waypointsKey = positionedWaypoints.map((p) => p.clip.id).join(',') + '|' + selectedClipId;
 
   // ---- Waypoint markers (one per clip, snapped to GPX when possible) ----
   useEffect(() => {
@@ -167,14 +196,7 @@ export default function MapView({
     waypointMarkersRef.current.forEach((m) => m.remove());
     waypointMarkersRef.current = [];
 
-    if (!mapSettings.show_waypoints) return;
-
-    const positioned = clips
-      .map((clip, originalIndex) => {
-        const loc = clipWaypointLocation(clip, indexedRoute);
-        return loc ? { clip, originalIndex, loc } : null;
-      })
-      .filter((x): x is { clip: Clip; originalIndex: number; loc: { lat: number; lng: number } } => x !== null);
+    const positioned = positionedWaypoints;
 
     if (positioned.length === 0) return;
 
@@ -202,7 +224,8 @@ export default function MapView({
         .addTo(map);
       waypointMarkersRef.current.push(marker);
     });
-  }, [clips, selectedClipId, indexedRoute, mapSettings.show_waypoints]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waypointsKey]);
 
   // ---- Live playhead marker ----
   useEffect(() => {
@@ -261,7 +284,7 @@ export default function MapView({
     const apply = () => {
       const src = map.getSource('route-trail') as maplibregl.GeoJSONSource | undefined;
       if (!src) return;
-      if (!indexedRoute || mapSettings.route_mode !== 'trail' || playheadMs == null) {
+      if (!indexedRoute || mapSettings.route_mode !== 'visited' || playheadMs == null) {
         src.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
         return;
       }

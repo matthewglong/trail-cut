@@ -1,28 +1,36 @@
 import { Route as RouteIcon, MapPin, LocateFixed } from 'lucide-react';
 import CollapsibleToolbar from '../CollapsibleToolbar';
-import type { MapSettings } from '../../types';
+import ModePicker from '../ModePicker';
+import type { MapSettings, TriMode } from '../../types';
 import { styles } from './styles';
 
 interface MapToolbarProps {
   settings: MapSettings;
   onChange: (next: MapSettings) => void;
-  /** Whether a GPX route is loaded — disables the trail toggle when false. */
+  /** Whether a GPX route is loaded — disables the visited option when false. */
   routeLoaded: boolean;
 }
 
+const TRI_OPTIONS: { value: TriMode; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'visited', label: 'Visited' },
+  { value: 'full', label: 'Full' },
+];
+
+const labelFor = (m: TriMode) =>
+  m === 'none' ? 'None' : m === 'visited' ? 'Visited' : 'Full';
+
 export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolbarProps) {
-  const trailOn = settings.route_mode === 'trail';
-  const waypointsOn = settings.show_waypoints;
   const followOn = settings.follow_playhead;
 
   const collapsedContent = (
     <div style={styles.chipRow}>
-      <span style={trailOn ? styles.chipAccent : styles.chip}>
-        {trailOn ? 'Trail' : 'Full route'}
+      <span style={settings.route_mode === 'none' ? styles.chip : styles.chipAccent}>
+        Route: {labelFor(settings.route_mode)}
       </span>
       <span style={styles.divider} />
-      <span style={waypointsOn ? styles.chipAccent : styles.chip}>
-        {waypointsOn ? 'Waypoints on' : 'Waypoints off'}
+      <span style={settings.waypoints_mode === 'none' ? styles.chip : styles.chipAccent}>
+        Waypoints: {labelFor(settings.waypoints_mode)}
       </span>
       <span style={styles.divider} />
       <span style={followOn ? styles.chipAccent : styles.chip}>
@@ -31,45 +39,20 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
     </div>
   );
 
-  const Pill = ({
-    on,
-    onClick,
-    label,
-    title,
-    disabled,
-  }: { on: boolean; onClick: () => void; label: string; title: string; disabled?: boolean }) => (
-    <div
-      onClick={disabled ? undefined : onClick}
-      style={{
-        ...(on ? styles.previewPillOn : styles.previewPillOff),
-        ...(disabled ? styles.pillDisabled : null),
-      }}
-      title={title}
-    >
-      <span style={on ? styles.previewDotOn : styles.previewDotOff} />
-      <span>{label}</span>
-    </div>
-  );
-
   return (
     <CollapsibleToolbar collapsedContent={collapsedContent}>
       {/* Route mode */}
       <div style={styles.group}>
-        <span style={styles.groupLabel} title="Route mode">
+        <span style={styles.groupLabel} title="Route line">
           <RouteIcon size={15} strokeWidth={2} />
         </span>
-        <Pill
-          on={trailOn}
-          onClick={() => onChange({ ...settings, route_mode: trailOn ? 'full' : 'trail' })}
-          label="TRAIL"
-          title={
-            !routeLoaded
-              ? 'Import a GPX route to enable the slime trail'
-              : trailOn
-                ? 'Showing trail to playhead — click for full route'
-                : 'Showing full route — click for slime trail'
-          }
-          disabled={!routeLoaded}
+        <ModePicker<TriMode>
+          value={settings.route_mode}
+          options={TRI_OPTIONS}
+          onChange={(v) => onChange({ ...settings, route_mode: v })}
+          disabledValues={routeLoaded ? [] : ['visited']}
+          title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
+          minWidth={68}
         />
       </div>
 
@@ -80,11 +63,12 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
         <span style={styles.groupLabel} title="Clip waypoints">
           <MapPin size={15} strokeWidth={2} />
         </span>
-        <Pill
-          on={waypointsOn}
-          onClick={() => onChange({ ...settings, show_waypoints: !waypointsOn })}
-          label="WAYPOINTS"
-          title={waypointsOn ? 'Hide clip waypoints' : 'Show clip waypoints'}
+        <ModePicker<TriMode>
+          value={settings.waypoints_mode}
+          options={TRI_OPTIONS}
+          onChange={(v) => onChange({ ...settings, waypoints_mode: v })}
+          title="Clip waypoint visibility"
+          minWidth={68}
         />
       </div>
 
@@ -95,12 +79,14 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
         <span style={styles.groupLabel} title="Follow playhead">
           <LocateFixed size={15} strokeWidth={2} />
         </span>
-        <Pill
-          on={followOn}
+        <div
           onClick={() => onChange({ ...settings, follow_playhead: !followOn })}
-          label="FOLLOW"
+          style={followOn ? styles.previewPillOn : styles.previewPillOff}
           title={followOn ? 'Map follows playhead — click to pan freely' : 'Free pan — click to follow playhead'}
-        />
+        >
+          <span style={followOn ? styles.previewDotOn : styles.previewDotOff} />
+          <span>FOLLOW</span>
+        </div>
       </div>
     </CollapsibleToolbar>
   );

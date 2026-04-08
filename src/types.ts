@@ -63,17 +63,17 @@ export interface Route {
   trackpoints: TrackPoint[];
 }
 
-export type RouteMode = 'full' | 'trail';
+export type TriMode = 'none' | 'visited' | 'full';
 
 export interface MapSettings {
-  route_mode: RouteMode;
-  show_waypoints: boolean;
+  route_mode: TriMode;
+  waypoints_mode: TriMode;
   follow_playhead: boolean;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
   route_mode: 'full',
-  show_waypoints: true,
+  waypoints_mode: 'full',
   follow_playhead: true,
 };
 

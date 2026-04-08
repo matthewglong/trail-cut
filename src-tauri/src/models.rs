@@ -135,15 +135,15 @@ pub struct ExportConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapSettings {
-    #[serde(default = "default_route_mode")]
-    pub route_mode: String, // "full" | "trail"
-    #[serde(default = "default_true")]
-    pub show_waypoints: bool,
+    #[serde(default = "default_full")]
+    pub route_mode: String, // "none" | "visited" | "full"
+    #[serde(default = "default_full")]
+    pub waypoints_mode: String, // "none" | "visited" | "full"
     #[serde(default = "default_true")]
     pub follow_playhead: bool,
 }
 
-fn default_route_mode() -> String {
+fn default_full() -> String {
     "full".to_string()
 }
 
@@ -154,8 +154,8 @@ fn default_true() -> bool {
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
-            route_mode: default_route_mode(),
-            show_waypoints: true,
+            route_mode: default_full(),
+            waypoints_mode: default_full(),
             follow_playhead: true,
         }
     }
