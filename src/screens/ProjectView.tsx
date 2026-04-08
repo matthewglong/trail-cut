@@ -85,6 +85,52 @@ export default function ProjectView({
   const [showGpxMenu, setShowGpxMenu] = useState(false);
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
+  const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
+  const [autoPlayToken, setAutoPlayToken] = useState(0);
+  const isPlayingRef = useRef(false);
+  const needsRewindRef = useRef(false);
+
+  const handleClipEnded = useCallback(() => {
+    const idx = clips.findIndex((c) => c.id === selectedClipId);
+    if (idx < 0) return;
+    for (let i = idx + 1; i < clips.length; i++) {
+      if (clips[i].visible !== false) {
+        setSelectedClipId(clips[i].id);
+        setAutoPlayToken((t) => t + 1);
+        return;
+      }
+    }
+    // End of timeline — stop on last clip, but remember to rewind on next play.
+    needsRewindRef.current = true;
+  }, [clips, selectedClipId, setSelectedClipId]);
+
+  // Intercept play-press: if we're parked at the end of the timeline, jump
+  // back to the first visible clip and auto-play it instead.
+  const handlePlayIntent = useCallback(() => {
+    if (!needsRewindRef.current) return false;
+    const first = clips.find((c) => c.visible !== false);
+    if (!first) return false;
+    needsRewindRef.current = false;
+    setSelectedClipId(first.id);
+    setAutoPlayToken((t) => t + 1);
+    return true;
+  }, [clips, setSelectedClipId]);
+
+  // Wrap clip selection: if a clip is currently playing, the newly-selected
+  // clip should auto-play too. Also clears any end-of-timeline rewind flag.
+  const handleSelectClip = useCallback((id: string) => {
+    needsRewindRef.current = false;
+    if (id === selectedClipId) {
+      setSelectedClipId(id);
+      return;
+    }
+    setSelectedClipId(id);
+    if (isPlayingRef.current) setAutoPlayToken((t) => t + 1);
+  }, [selectedClipId, setSelectedClipId]);
+
+  const handlePlayingChange = useCallback((p: boolean) => {
+    isPlayingRef.current = p;
+  }, []);
 
   // Resizer state
   const [vSplit, setVSplit] = useState(V_SPLIT_DEFAULT); // fraction of width for video pane
@@ -111,7 +157,7 @@ export default function ProjectView({
     selectedClip,
     clips,
     selectedClipId,
-    setSelectedClipId,
+    setSelectedClipId: handleSelectClip,
     onUpdateFocalPoint,
     onUpdateEffects,
     previewAspect,
@@ -292,6 +338,12 @@ export default function ProjectView({
                 cropPreview={cropPreview}
                 togglePlayRef={togglePlayRef}
                 onSplitAtPlayhead={splitAtPlayhead}
+                playbackMode={playbackMode}
+                onChangePlaybackMode={setPlaybackMode}
+                onClipEnded={handleClipEnded}
+                autoPlayToken={autoPlayToken}
+                onPlayingChange={handlePlayingChange}
+                onPlayIntent={handlePlayIntent}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
                   setPlayheadMs(clipWallClockMs(selectedClip, s));
@@ -320,7 +372,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={mapSettings}
-                onSelectClip={setSelectedClipId}
+                onSelectClip={handleSelectClip}
               />
             </div>
           </div>
@@ -337,7 +389,7 @@ export default function ProjectView({
           <Timeline
             clips={clips}
             selectedClipId={selectedClipId}
-            onSelectClip={setSelectedClipId}
+            onSelectClip={handleSelectClip}
             thumbnails={thumbnails}
             proxies={proxies}
             onRemoveClip={onRemoveClip}

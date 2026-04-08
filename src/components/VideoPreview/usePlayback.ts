@@ -8,6 +8,11 @@ interface UsePlaybackOptions {
   trim: TrimRange | null;
   speed: number;
   dragging: 'in' | 'out' | 'seek' | null;
+  playbackMode?: 'loop' | 'continuous';
+  onClipEnded?: () => void;
+  autoPlayToken?: number;
+  onPlayingChange?: (playing: boolean) => void;
+  onPlayIntent?: () => boolean;
 }
 
 export interface PlaybackState {
@@ -30,7 +35,22 @@ export function usePlayback({
   trim,
   speed,
   dragging,
+  playbackMode = 'loop',
+  onClipEnded,
+  autoPlayToken,
+  onPlayingChange,
+  onPlayIntent,
 }: UsePlaybackOptions): PlaybackState {
+  const pendingAutoPlayRef = useRef(false);
+  const onClipEndedRef = useRef(onClipEnded);
+  const playbackModeRef = useRef(playbackMode);
+  const onPlayIntentRef = useRef(onPlayIntent);
+  useEffect(() => { onClipEndedRef.current = onClipEnded; }, [onClipEnded]);
+  useEffect(() => { playbackModeRef.current = playbackMode; }, [playbackMode]);
+  useEffect(() => { onPlayIntentRef.current = onPlayIntent; }, [onPlayIntent]);
+  useEffect(() => {
+    if (autoPlayToken && autoPlayToken > 0) pendingAutoPlayRef.current = true;
+  }, [autoPlayToken]);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -67,6 +87,13 @@ export function usePlayback({
       lastFrameTimeRef.current = now;
       const newTime = video.currentTime + elapsed * speed;
       if (newTime >= trimOutSec) {
+        if (playbackModeRef.current === 'continuous' && onClipEndedRef.current) {
+          stopFastTimer();
+          video.pause();
+          setPlaying(false);
+          onClipEndedRef.current();
+          return;
+        }
         video.currentTime = trimInSec;
         setCurrentTime(trimInSec);
         fastTimerRef.current = requestAnimationFrame(tick);
@@ -96,16 +123,27 @@ export function usePlayback({
     const t = video.currentTime;
     setCurrentTime(t);
     if (t >= trimOutSec) {
+      if (playbackModeRef.current === 'continuous' && onClipEndedRef.current) {
+        video.pause();
+        setPlaying(false);
+        onClipEndedRef.current();
+        return;
+      }
       video.currentTime = trimInSec;
       setCurrentTime(trimInSec);
       video.play();
     }
   }
 
+  useEffect(() => {
+    if (onPlayingChange) onPlayingChange(playing);
+  }, [playing, onPlayingChange]);
+
   function togglePlay() {
     const video = videoRef.current;
     if (!video) return;
     if (!playing) {
+      if (onPlayIntentRef.current && onPlayIntentRef.current()) return;
       if (video.currentTime < trimInSec || video.currentTime >= trimOutSec) {
         video.currentTime = trimInSec;
         setCurrentTime(trimInSec);
@@ -126,17 +164,34 @@ export function usePlayback({
   }
 
   function handleLoadedMetadata() {
-    if (videoRef.current) {
-      setDuration(videoRef.current.duration);
-      const w = videoRef.current.videoWidth;
-      const h = videoRef.current.videoHeight;
-      setVideoNatural({ w, h });
+    const video = videoRef.current;
+    if (!video) return;
+    setDuration(video.duration);
+    setVideoNatural({ w: video.videoWidth, h: video.videoHeight });
+    if (pendingAutoPlayRef.current) {
+      pendingAutoPlayRef.current = false;
+      const inSec = trim ? trim.in_ms / 1000 : 0;
+      video.currentTime = inSec;
+      setCurrentTime(inSec);
+      if (speed > 1.0) {
+        video.pause();
+        startFastTimer();
+      } else {
+        video.playbackRate = speed;
+        video.play();
+      }
+      setPlaying(true);
     }
   }
 
   function handleEnded() {
     const video = videoRef.current;
     if (!video) return;
+    if (playbackModeRef.current === 'continuous' && onClipEndedRef.current) {
+      setPlaying(false);
+      onClipEndedRef.current();
+      return;
+    }
     video.currentTime = trimInSec;
     setCurrentTime(trimInSec);
     if (playing && speed <= 1.0) {

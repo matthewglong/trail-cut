@@ -25,6 +25,15 @@ interface VideoPreviewProps {
   onPlayheadChange?: (mediaSeconds: number) => void;
   /** Split the current clip at the playhead (right-click menu + ⌘B). */
   onSplitAtPlayhead?: () => void;
+  /** 'loop' repeats the current clip; 'continuous' advances to next via onClipEnded. */
+  playbackMode?: 'loop' | 'continuous';
+  onChangePlaybackMode?: (mode: 'loop' | 'continuous') => void;
+  /** Called when playback reaches trimOut in continuous mode. */
+  onClipEnded?: () => void;
+  /** Incrementing token — any change auto-plays this clip on next load. */
+  autoPlayToken?: number;
+  onPlayingChange?: (playing: boolean) => void;
+  onPlayIntent?: () => boolean;
 }
 
 export default function VideoPreview({
@@ -37,6 +46,12 @@ export default function VideoPreview({
   togglePlayRef,
   onPlayheadChange,
   onSplitAtPlayhead,
+  playbackMode = 'loop',
+  onChangePlaybackMode,
+  onClipEnded,
+  autoPlayToken,
+  onPlayingChange,
+  onPlayIntent,
 }: VideoPreviewProps) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -62,6 +77,11 @@ export default function VideoPreview({
     trim: clip?.trim ?? null,
     speed,
     dragging,
+    playbackMode,
+    onClipEnded,
+    autoPlayToken,
+    onPlayingChange,
+    onPlayIntent,
   });
 
   const { handleSeekBarMouseDown } = useTrimDrag({
@@ -303,6 +323,38 @@ export default function VideoPreview({
         </div>
 
         <span style={styles.time}>{formatTime(duration)}</span>
+        {onChangePlaybackMode && (
+          <button
+            type="button"
+            onClick={() =>
+              onChangePlaybackMode(playbackMode === 'loop' ? 'continuous' : 'loop')
+            }
+            style={styles.modePill}
+            title={
+              playbackMode === 'loop'
+                ? 'Loop current clip (click to play through)'
+                : 'Play through clips (click to loop)'
+            }
+            aria-label="Toggle playback mode"
+          >
+            <span
+              style={{
+                ...styles.modeSeg,
+                ...(playbackMode === 'loop' ? styles.modeSegActive : {}),
+              }}
+            >
+              {'\u21BB'}
+            </span>
+            <span
+              style={{
+                ...styles.modeSeg,
+                ...(playbackMode === 'continuous' ? styles.modeSegActive : {}),
+              }}
+            >
+              {'\u2192'}
+            </span>
+          </button>
+        )}
       </div>
       {contextMenu && onSplitAtPlayhead && (
         <div
