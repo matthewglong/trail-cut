@@ -46,6 +46,7 @@ export default function ModePicker<T extends string>({
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<{ left: number; top: number; w: number; h: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   // Stable id for the click-outside check (one per instance)
@@ -119,6 +120,8 @@ export default function ModePicker<T extends string>({
       <button
         ref={btnRef}
         onClick={() => setOpen((o) => !o)}
+        onMouseEnter={() => setHoveredKey('__trigger')}
+        onMouseLeave={() => setHoveredKey(null)}
         style={{
           ...(isMinimal ? minimalTriggerStyle : activeStyle),
           position: 'relative',
@@ -133,11 +136,23 @@ export default function ModePicker<T extends string>({
         {isMinimal ? (
           <>
             {icon && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', color: '#c8c8c8' }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  color: '#c8c8c8',
+                  opacity: hoveredKey === '__trigger' ? 0.8 : 1,
+                }}
+              >
                 {icon}
               </span>
             )}
-            <span style={minimalBadgeStyle}>
+            <span
+              style={{
+                ...minimalBadgeStyle,
+                opacity: hoveredKey === '__trigger' ? 0.8 : 1,
+              }}
+            >
               {activeOption.short ?? activeOption.label.slice(0, 2).toUpperCase()}
             </span>
           </>
@@ -172,6 +187,8 @@ export default function ModePicker<T extends string>({
               <button
                 key={opt.value}
                 disabled={disabled}
+                onMouseEnter={() => !disabled && setHoveredKey(opt.value)}
+                onMouseLeave={() => setHoveredKey(null)}
                 onClick={() => {
                   if (disabled) return;
                   onChange(opt.value);
@@ -185,6 +202,14 @@ export default function ModePicker<T extends string>({
                   top: fanOriginTop + dy,
                   width: fanW,
                   height: fanH,
+                  ...(hoveredKey === opt.value && !disabled
+                    ? isActive
+                      ? {
+                          boxShadow:
+                            'inset 0 1px 0 rgba(255,255,255,0.20), 0 1px 0 rgba(0,0,0,0.35)',
+                        }
+                      : { backgroundColor: 'rgba(36,36,40,0.94)', backgroundImage: 'none' }
+                    : {}),
                   opacity,
                   transition: `top ${ANIM_MS}ms cubic-bezier(0.2, 0.9, 0.3, 1.3) ${delay}ms, opacity ${ANIM_MS}ms ease ${delay}ms`,
                 }}
@@ -239,7 +264,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    border: '1px solid rgba(255,255,255,0.10)',
+    border: '1px solid rgba(235,235,240,0.28)',
     backgroundColor: 'rgba(20,20,22,0.92)',
     backgroundImage:
       'linear-gradient(180deg, rgba(28,28,30,0.92) 0%, rgba(20,20,22,0.92) 100%)',
