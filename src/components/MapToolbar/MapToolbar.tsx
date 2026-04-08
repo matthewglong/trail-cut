@@ -1,7 +1,7 @@
-import { Route as RouteIcon, MapPin, LocateFixed } from 'lucide-react';
+import { Route as RouteIcon, MapPin, LocateFixed, Layers } from 'lucide-react';
 import CollapsibleToolbar from '../CollapsibleToolbar';
 import ModePicker from '../ModePicker';
-import type { MapSettings, TriMode } from '../../types';
+import type { MapSettings, MapStyleId, TriMode } from '../../types';
 import { styles } from './styles';
 
 interface MapToolbarProps {
@@ -16,6 +16,15 @@ const TRI_OPTIONS: { value: TriMode; label: string }[] = [
   { value: 'visited', label: 'Visited' },
   { value: 'full', label: 'Full' },
 ];
+
+const STYLE_OPTIONS: { value: MapStyleId; label: string }[] = [
+  { value: 'default', label: 'Default' },
+  { value: '3d', label: '3D' },
+  { value: 'satellite', label: 'Satellite' },
+];
+
+const styleLabel = (s: MapStyleId) =>
+  s === 'default' ? 'Default' : s === '3d' ? '3D' : 'Satellite';
 
 const labelFor = (m: TriMode) =>
   m === 'none' ? 'None' : m === 'visited' ? 'Visited' : 'Full';
@@ -36,6 +45,8 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
       <span style={followOn ? styles.chipAccent : styles.chip}>
         {followOn ? 'Following' : 'Free pan'}
       </span>
+      <span style={styles.divider} />
+      <span style={styles.chipAccent}>Style: {styleLabel(settings.map_style)}</span>
     </div>
   );
 
@@ -87,6 +98,22 @@ export default function MapToolbar({ settings, onChange, routeLoaded }: MapToolb
           <span style={followOn ? styles.previewDotOn : styles.previewDotOff} />
           <span>FOLLOW</span>
         </div>
+      </div>
+
+      <div style={styles.separator} />
+
+      {/* Map style */}
+      <div style={styles.group}>
+        <span style={styles.groupLabel} title="Map style">
+          <Layers size={15} strokeWidth={2} />
+        </span>
+        <ModePicker<MapStyleId>
+          value={settings.map_style}
+          options={STYLE_OPTIONS}
+          onChange={(v) => onChange({ ...settings, map_style: v })}
+          title="Base map style"
+          minWidth={76}
+        />
       </div>
     </CollapsibleToolbar>
   );

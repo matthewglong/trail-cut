@@ -65,16 +65,20 @@ export interface Route {
 
 export type TriMode = 'none' | 'visited' | 'full';
 
+export type MapStyleId = 'default' | '3d' | 'satellite';
+
 export interface MapSettings {
   route_mode: TriMode;
   waypoints_mode: TriMode;
   follow_playhead: boolean;
+  map_style: MapStyleId;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
   route_mode: 'full',
   waypoints_mode: 'full',
   follow_playhead: true,
+  map_style: 'default',
 };
 
 export interface ExportLayout {

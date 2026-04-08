@@ -141,6 +141,8 @@ pub struct MapSettings {
     pub waypoints_mode: String, // "none" | "visited" | "full"
     #[serde(default = "default_true")]
     pub follow_playhead: bool,
+    #[serde(default = "default_map_style")]
+    pub map_style: String, // "default" | "3d" | "satellite"
 }
 
 fn default_full() -> String {
@@ -151,12 +153,17 @@ fn default_true() -> bool {
     true
 }
 
+fn default_map_style() -> String {
+    "default".to_string()
+}
+
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
             route_mode: default_full(),
             waypoints_mode: default_full(),
             follow_playhead: true,
+            map_style: default_map_style(),
         }
     }
 }

@@ -304,6 +304,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={mapSettings}
+                onSelectClip={setSelectedClipId}
               />
             </div>
           </div>

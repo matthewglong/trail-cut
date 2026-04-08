@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { Clip, Route, MapSettings } from '../types';
+import type { Clip, Route, MapSettings, MapStyleId } from '../types';
 import { colors } from '../theme/tokens';
 import {
   indexRoute,
@@ -20,10 +20,71 @@ interface MapViewProps {
    *  clip is selected or its created_at is missing. */
   playheadMs: number | null;
   mapSettings: MapSettings;
+  onSelectClip?: (clipId: string) => void;
 }
 
 const TRAIL_COLOR = colors.accent;
 const FULL_ROUTE_COLOR = colors.accent;
+
+const DEFAULT_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+
+const SATELLITE_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+  sources: {
+    satellite: {
+      type: 'raster',
+      tiles: [
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      ],
+      tileSize: 256,
+      attribution:
+        'Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+    },
+  },
+  layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }],
+};
+
+function styleForId(id: MapStyleId): string | maplibregl.StyleSpecification {
+  if (id === 'satellite') return SATELLITE_STYLE;
+  // 'default' and '3d' both use the OpenFreeMap liberty vector style;
+  // 3D adds fill-extrusion + pitch on top after style.load.
+  return DEFAULT_STYLE_URL;
+}
+
+function add3DBuildings(map: maplibregl.Map) {
+  if (map.getLayer('3d-buildings')) return;
+  // The OpenFreeMap liberty style exposes building polygons under the
+  // "openmaptiles" vector source, source-layer "building".
+  if (!map.getSource('openmaptiles')) return;
+  try {
+    map.addLayer({
+      id: '3d-buildings',
+      source: 'openmaptiles',
+      'source-layer': 'building',
+      type: 'fill-extrusion',
+      minzoom: 14,
+      paint: {
+        'fill-extrusion-color': '#cfd3d8',
+        'fill-extrusion-height': [
+          'coalesce',
+          ['get', 'render_height'],
+          ['get', 'height'],
+          3,
+        ],
+        'fill-extrusion-base': [
+          'coalesce',
+          ['get', 'render_min_height'],
+          ['get', 'min_height'],
+          0,
+        ],
+        'fill-extrusion-opacity': 0.85,
+      },
+    });
+  } catch {
+    // building layer not available in this style — ignore
+  }
+}
 const LIVE_MARKER_PULSE_KEYFRAMES = `
 @keyframes trailcut-pulse {
   0%   { box-shadow: 0 0 0 0 rgba(255, 107, 53, 0.55); }
@@ -38,15 +99,22 @@ export default function MapView({
   route,
   playheadMs,
   mapSettings,
+  onSelectClip,
 }: MapViewProps) {
+  const onSelectClipRef = useRef(onSelectClip);
+  onSelectClipRef.current = onSelectClip;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
+  const [styleVersion, setStyleVersion] = useState(0);
+  const mapStyleId = mapSettings.map_style;
+  const mapStyleIdRef = useRef(mapStyleId);
+  mapStyleIdRef.current = mapStyleId;
 
-  const waypointMarkersRef = useRef<maplibregl.Marker[]>([]);
   const liveMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveMarkerElRef = useRef<HTMLDivElement | null>(null);
   const lastFollowAtRef = useRef<number>(0);
+  const lastFitRouteRef = useRef<Route | null>(null);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
   const routeLoaded = indexedRoute !== null;
@@ -57,15 +125,23 @@ export default function MapView({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: 'https://tiles.openfreemap.org/styles/liberty',
+      style: styleForId(mapStyleIdRef.current),
       center: [-122.4194, 37.7749],
       zoom: 10,
+      attributionControl: false,
     });
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
+    map.addControl(new maplibregl.AttributionControl({ compact: true }));
+
+    const resizeObserver = new ResizeObserver(() => map.resize());
+    resizeObserver.observe(containerRef.current);
     mapRef.current = map;
 
-    map.on('load', () => {
+    const onStyleLoad = () => {
       styleReadyRef.current = true;
+      if (mapStyleIdRef.current === '3d') {
+        add3DBuildings(map);
+      }
       // Pre-create the two route sources/layers so we can update their data
       // dynamically without re-adding layers each time.
       if (!map.getSource('route-full')) {
@@ -102,17 +178,83 @@ export default function MapView({
           },
         });
       }
+      if (!map.getSource('waypoints')) {
+        map.addSource('waypoints', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+        });
+        map.addLayer({
+          id: 'waypoints-circle',
+          type: 'circle',
+          source: 'waypoints',
+          paint: {
+            'circle-radius': 11,
+            'circle-color': colors.accent,
+            'circle-stroke-width': 2,
+            'circle-stroke-color': 'rgba(255,255,255,0.85)',
+          },
+        });
+        map.addLayer({
+          id: 'waypoints-label',
+          type: 'symbol',
+          source: 'waypoints',
+          layout: {
+            'text-field': ['to-string', ['+', ['get', 'index'], 1]],
+            'text-font': ['Noto Sans Bold'],
+            'text-size': 11,
+            'text-allow-overlap': true,
+            'text-ignore-placement': true,
+          },
+          paint: {
+            'text-color': '#fff',
+          },
+        });
+
+      }
+      // Trigger data effects to re-seed sources after a (re)style.
+      setStyleVersion((v) => v + 1);
+    };
+    map.on('style.load', onStyleLoad);
+
+    // Register layer event listeners once — they resolve the layer by name
+    // at dispatch time, so they survive setStyle().
+    map.on('click', 'waypoints-circle', (e) => {
+      const f = e.features?.[0];
+      const id = f?.properties?.id;
+      if (typeof id === 'string') onSelectClipRef.current?.(id);
+    });
+    map.on('mouseenter', 'waypoints-circle', () => {
+      map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'waypoints-circle', () => {
+      map.getCanvas().style.cursor = '';
     });
 
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
       styleReadyRef.current = false;
-      waypointMarkersRef.current = [];
       liveMarkerRef.current = null;
       liveMarkerElRef.current = null;
     };
   }, []);
+
+  // ---- Switch base map style ----
+  const lastAppliedStyleRef = useRef<MapStyleId>(mapStyleId);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (lastAppliedStyleRef.current === mapStyleId) {
+      // First mount: style was set in the constructor; just sync pitch.
+      map.easeTo({ pitch: mapStyleId === '3d' ? 60 : 0, duration: 0 });
+      return;
+    }
+    lastAppliedStyleRef.current = mapStyleId;
+    styleReadyRef.current = false;
+    map.setStyle(styleForId(mapStyleId));
+    map.easeTo({ pitch: mapStyleId === '3d' ? 60 : 0, duration: 400 });
+  }, [mapStyleId]);
 
   // ---- Update full-route line + fit bounds when route changes ----
   useEffect(() => {
@@ -134,14 +276,16 @@ export default function MapView({
         geometry: { type: 'LineString', coordinates },
       });
 
-      const bounds = new maplibregl.LngLatBounds();
-      coordinates.forEach((c) => bounds.extend(c));
-      map.fitBounds(bounds, { padding: 60, duration: 0 });
+      if (lastFitRouteRef.current !== route) {
+        lastFitRouteRef.current = route;
+        const bounds = new maplibregl.LngLatBounds();
+        coordinates.forEach((c) => bounds.extend(c));
+        map.fitBounds(bounds, { padding: 60, duration: 0 });
+      }
     };
 
     if (styleReadyRef.current) apply();
-    else map.once('load', apply);
-  }, [route]);
+  }, [route, styleVersion]);
 
   // ---- Update route-line visibility based on route_mode ----
   useEffect(() => {
@@ -163,8 +307,7 @@ export default function MapView({
       }
     };
     if (styleReadyRef.current) apply();
-    else map.once('load', apply);
-  }, [mapSettings.route_mode]);
+  }, [mapSettings.route_mode, styleVersion]);
 
   // Compute the set of visible waypoints. Memoized so effect deps are stable.
   const positionedWaypoints = useMemo(() => {
@@ -183,49 +326,66 @@ export default function MapView({
       .filter((x): x is { clip: Clip; originalIndex: number; loc: { lat: number; lng: number } } => x !== null);
   }, [clips, indexedRoute, mapSettings.waypoints_mode, playheadMs]);
 
-  // Stable key so the marker-rendering effect only runs when the visible set
-  // (or selection) actually changes — not on every playhead tick.
-  const waypointsKey = positionedWaypoints.map((p) => p.clip.id).join(',') + '|' + selectedClipId;
-
-  // ---- Waypoint markers (one per clip, snapped to GPX when possible) ----
+  // ---- Waypoint source data (one feature per visible clip) ----
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const apply = () => {
+      const src = map.getSource('waypoints') as maplibregl.GeoJSONSource | undefined;
+      if (!src) return;
+      src.setData({
+        type: 'FeatureCollection',
+        features: positionedWaypoints.map(({ clip, originalIndex, loc }) => ({
+          type: 'Feature',
+          properties: { id: clip.id, index: originalIndex },
+          geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
+        })),
+      });
+    };
+    if (styleReadyRef.current) apply();
+  }, [positionedWaypoints, styleVersion]);
 
-    // Clear existing
-    waypointMarkersRef.current.forEach((m) => m.remove());
-    waypointMarkersRef.current = [];
+  // ---- Waypoint selection styling (data-driven, no re-render) ----
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (!map.getLayer('waypoints-circle')) return;
+      const selected: unknown = selectedClipId ?? '';
+      map.setPaintProperty('waypoints-circle', 'circle-radius', [
+        'case', ['==', ['get', 'id'], selected], 14, 11,
+      ]);
+      map.setPaintProperty('waypoints-circle', 'circle-color', [
+        'case', ['==', ['get', 'id'], selected], '#4a9eff', colors.accent,
+      ]);
+      map.setPaintProperty('waypoints-circle', 'circle-stroke-color', [
+        'case', ['==', ['get', 'id'], selected], '#ffffff', 'rgba(255,255,255,0.85)',
+      ]);
+    };
+    if (styleReadyRef.current) apply();
+  }, [selectedClipId, styleVersion]);
 
-    const positioned = positionedWaypoints;
-
-    if (positioned.length === 0) return;
-
-    positioned.forEach(({ clip, originalIndex, loc }) => {
-      const isSelected = clip.id === selectedClipId;
-      const el = document.createElement('div');
-      el.style.width = isSelected ? '28px' : '22px';
-      el.style.height = isSelected ? '28px' : '22px';
-      el.style.borderRadius = '50%';
-      el.style.backgroundColor = isSelected ? '#4a9eff' : colors.accent;
-      el.style.border = `2px solid ${isSelected ? '#fff' : 'rgba(255,255,255,0.85)'}`;
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.justifyContent = 'center';
-      el.style.fontSize = '11px';
-      el.style.fontWeight = 'bold';
-      el.style.color = '#fff';
-      el.style.cursor = 'pointer';
-      el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.4)';
-      el.style.transition = 'all 0.15s';
-      el.textContent = String(originalIndex + 1);
-
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([loc.lng, loc.lat])
-        .addTo(map);
-      waypointMarkersRef.current.push(marker);
+  // ---- Fly to selected clip's waypoint on selection change ----
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !selectedClipId) return;
+    const clip = clips.find((c) => c.id === selectedClipId);
+    if (!clip) return;
+    const loc = clipWaypointLocation(clip, indexedRoute);
+    if (!loc) return;
+    map.flyTo({
+      center: [loc.lng, loc.lat],
+      zoom: Math.max(map.getZoom(), 14),
+      duration: 700,
+      essential: true,
     });
+    // Suppress follow-playhead easeTo while the flyTo is animating, so it
+    // doesn't get interrupted by the seek that accompanies clip selection.
+    lastFollowAtRef.current = performance.now() + 700;
+    // Intentionally only depends on selectedClipId — we don't want to re-fly
+    // when clips/route update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waypointsKey]);
+  }, [selectedClipId]);
 
   // ---- Live playhead marker ----
   useEffect(() => {
@@ -291,8 +451,7 @@ export default function MapView({
       src.setData(trailUpTo(playheadMs, indexedRoute));
     };
     if (styleReadyRef.current) apply();
-    else map.once('load', apply);
-  }, [playheadMs, indexedRoute, mapSettings.route_mode]);
+  }, [playheadMs, indexedRoute, mapSettings.route_mode, styleVersion]);
 
   return (
     <>
