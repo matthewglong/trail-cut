@@ -37,7 +37,6 @@ export const styles: Record<string, React.CSSProperties> = {
     margin: '-40px 0 -40px -16px',
     padding: 0,
     border: 'none',
-    borderRight: '1px solid rgba(74, 124, 89, 0.4)',
     backgroundColor: '#4a7c59',
     color: '#e0efe4',
     cursor: 'pointer',
@@ -45,6 +44,7 @@ export const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.15s ease',
     fontFamily: 'inherit',
     flexShrink: 0,
+    boxShadow: '3px 0 6px rgba(0, 0, 0, 0.35)',
   },
   scopeTabClip: {
     display: 'flex',
@@ -55,7 +55,6 @@ export const styles: Record<string, React.CSSProperties> = {
     margin: '-40px 0 -40px -16px',
     padding: 0,
     border: 'none',
-    borderRight: `1px solid rgba(255, 107, 53, 0.4)`,
     backgroundColor: colors.accent,
     color: '#fff',
     cursor: 'pointer',
@@ -63,6 +62,7 @@ export const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.15s ease',
     fontFamily: 'inherit',
     flexShrink: 0,
+    boxShadow: '3px 0 6px rgba(0, 0, 0, 0.35)',
   },
 
   // --- Option 1 (inactive): tinted scope tab, colored control text ---
