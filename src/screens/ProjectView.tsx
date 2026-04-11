@@ -89,6 +89,7 @@ export default function ProjectView({
   const [cropPreview, setCropPreview] = useState(false);
   const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
   const [autoPlayToken, setAutoPlayToken] = useState(0);
+  const [resetPillHover, setResetPillHover] = useState(false);
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
 
@@ -145,6 +146,22 @@ export default function ProjectView({
       ));
     }
   }, [mapScope, selectedClipId, mapSettings, setMapSettings, setClips]);
+
+  // True when the selected clip has any stored map overrides. Used to surface
+  // the reset pill in project scope — handleMapToolbarChange already nulls out
+  // empty override bags, but we re-check defensively for load-time state.
+  const clipHasMapOverrides = useMemo((): boolean => {
+    if (!selectedClip?.map_overrides) return false;
+    return Object.values(selectedClip.map_overrides).some((v) => v !== undefined);
+  }, [selectedClip]);
+
+  // Clear the selected clip's map overrides, letting it follow project defaults.
+  const handleResetClipMapOverrides = useCallback(() => {
+    if (!selectedClipId) return;
+    setClips((prev) => prev.map((c) =>
+      c.id === selectedClipId ? { ...c, map_overrides: null } : c
+    ));
+  }, [selectedClipId, setClips]);
 
   const handleClipEnded = useCallback(() => {
     const idx = clips.findIndex((c) => c.id === selectedClipId);
@@ -430,7 +447,7 @@ export default function ProjectView({
                 selectedClipId={selectedClipId}
                 route={route}
                 playheadMs={playheadMs}
-                mapSettings={resolvedMapSettings}
+                mapSettings={toolbarSettings}
                 onSelectClip={handleSelectClip}
               />
               <div
@@ -443,6 +460,16 @@ export default function ProjectView({
               >
                 {mapScope === 'project' ? 'PROJECT' : 'CLIP'}
               </div>
+              {mapScope === 'project' && clipHasMapOverrides && (
+                <button
+                  style={{ ...styles.resetPill, ...(resetPillHover ? styles.resetPillHoverDelta : null) }}
+                  onClick={handleResetClipMapOverrides}
+                  onMouseEnter={() => setResetPillHover(true)}
+                  onMouseLeave={() => setResetPillHover(false)}
+                >
+                  This clip has custom map settings • Reset
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -723,6 +750,37 @@ const styles: Record<string, React.CSSProperties> = {
     boxSizing: 'border-box' as const,
     boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
     zIndex: 10,
+  },
+  resetPill: {
+    position: 'absolute' as const,
+    top: '8px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    height: '28px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '0 16px',
+    border: '1px solid rgba(170, 170, 170, 0.6)',
+    backgroundColor: 'rgba(130, 130, 130, 0.88)',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    color: '#f5f5f5',
+    cursor: 'pointer',
+    userSelect: 'none' as const,
+    fontFamily: 'inherit',
+    whiteSpace: 'nowrap' as const,
+    boxSizing: 'border-box' as const,
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.15)',
+    transition: 'background-color 0.15s ease, border-color 0.15s ease',
+    zIndex: 11,
+  },
+  resetPillHoverDelta: {
+    backgroundColor: 'rgba(95, 95, 95, 0.92)',
+    border: '1px solid rgba(140, 140, 140, 0.7)',
   },
   mapPlaceholderBtn: {
     padding: '4px 10px',
