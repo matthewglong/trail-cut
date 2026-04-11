@@ -93,6 +93,80 @@ const LIVE_MARKER_PULSE_KEYFRAMES = `
 }
 `;
 
+// ---- Clip-transition camera animation ----
+// When switching between clips, if the destination waypoint is outside the
+// current viewport, arc the camera out to a zoom level that fits both the
+// current and next points, then back in to the target — a single Van Wijk
+// flyTo with minZoom pinning the peak. Duration scales with the sum of the
+// zoom work (out + in) so short hops stay snappy and long jumps get room to
+// breathe. Within-clip tracking uses a separate 220 ms easeTo and is not
+// affected.
+interface MapTransitionConfig {
+  baseMs: number;           // floor duration when zoomSum = 0
+  msPerZoomLevel: number;   // added per zoom level of work (out + in)
+  minDurationMs: number;    // clamp floor
+  maxDurationMs: number;    // clamp ceiling
+  fitPaddingPx: number;     // padding for cameraForBounds when computing peak
+  curve: number;            // flyTo arc aggressiveness
+}
+
+const DEFAULT_MAP_TRANSITION: MapTransitionConfig = {
+  baseMs: 1100,
+  msPerZoomLevel: 580,
+  minDurationMs: 1100,
+  maxDurationMs: 7000,
+  fitPaddingPx: 80,
+  curve: 1.42,
+};
+
+function runClipTransition(
+  map: maplibregl.Map,
+  start: { lng: number; lat: number },
+  end: { lng: number; lat: number },
+  startZoom: number,
+  targetZoom: number,
+  cfg: MapTransitionConfig = DEFAULT_MAP_TRANSITION,
+): void {
+  const endLngLat: [number, number] = [end.lng, end.lat];
+  const clampDuration = (raw: number) =>
+    Math.max(cfg.minDurationMs, Math.min(cfg.maxDurationMs, raw));
+
+  // Fast path: target already inside the current viewport → flat ease, no arc.
+  if (map.getBounds().contains(endLngLat)) {
+    const duration = clampDuration(
+      cfg.baseMs + Math.abs(targetZoom - startZoom) * cfg.msPerZoomLevel,
+    );
+    map.easeTo({ center: endLngLat, zoom: targetZoom, duration, essential: true });
+    return;
+  }
+
+  // Compute the zoom level that fits both points with padding.
+  const fitBounds = new maplibregl.LngLatBounds()
+    .extend([start.lng, start.lat])
+    .extend(endLngLat);
+  const cam = map.cameraForBounds(fitBounds, { padding: cfg.fitPaddingPx });
+  const boundsZoom =
+    cam && typeof cam.zoom === 'number' ? cam.zoom : Math.min(startZoom, targetZoom);
+
+  // Only zoom out as far as needed — never below what fits both points.
+  const peakZoom = Math.min(startZoom, targetZoom, boundsZoom);
+
+  const zoomOut = Math.max(0, startZoom - peakZoom);
+  const zoomIn = Math.max(0, targetZoom - peakZoom);
+  const zoomSum = zoomOut + zoomIn;
+
+  const duration = clampDuration(cfg.baseMs + zoomSum * cfg.msPerZoomLevel);
+
+  map.flyTo({
+    center: endLngLat,
+    zoom: targetZoom,
+    minZoom: peakZoom, // pins the peak of the Van Wijk arc
+    duration,
+    curve: cfg.curve,
+    essential: true,
+  });
+}
+
 export default function MapView({
   clips,
   selectedClipId,
@@ -394,7 +468,14 @@ export default function MapView({
     if (!clip) return;
     const loc = clipWaypointLocation(clip, indexedRoute);
     if (!loc) return;
-    map.flyTo({ center: [loc.lng, loc.lat], zoom: mapSettings.zoom, duration: 700, essential: true });
+    const startCenter = map.getCenter();
+    runClipTransition(
+      map,
+      { lng: startCenter.lng, lat: startCenter.lat },
+      { lng: loc.lng, lat: loc.lat },
+      map.getZoom(),
+      mapSettings.zoom,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClipId]);
 
@@ -450,7 +531,14 @@ export default function MapView({
         const wp = selectedClip ? clipWaypointLocation(selectedClip, indexedRoute) : null;
         const target = wp ?? resolved;
         lastFollowAtRef.current = performance.now();
-        map.easeTo({ center: [target.lng, target.lat], zoom: mapSettings.zoom, duration: 700 });
+        const startCenter = map.getCenter();
+        runClipTransition(
+          map,
+          { lng: startCenter.lng, lat: startCenter.lat },
+          { lng: target.lng, lat: target.lat },
+          map.getZoom(),
+          mapSettings.zoom,
+        );
       } else {
         const now = performance.now();
         if (now - lastFollowAtRef.current > 100) {
