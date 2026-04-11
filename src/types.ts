@@ -35,6 +35,8 @@ export interface Effects {
   speed: number;
 }
 
+export type MapOverrides = Partial<MapSettings>;
+
 export interface Clip {
   id: string;
   path: string;
@@ -48,6 +50,7 @@ export interface Clip {
   focal_point: FocalPoint;
   effects: Effects;
   visible: boolean;
+  map_overrides: MapOverrides | null;
 }
 
 export interface TrackPoint {
@@ -72,6 +75,8 @@ export interface MapSettings {
   waypoints_mode: TriMode;
   follow_playhead: boolean;
   map_style: MapStyleId;
+  /** Zoom level the map animates to when a clip becomes active. */
+  zoom: number;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -79,7 +84,14 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   waypoints_mode: 'full',
   follow_playhead: true,
   map_style: 'default',
+  zoom: 14,
 };
+
+/** Merge project defaults with per-clip overrides. */
+export function resolveMapSettings(defaults: MapSettings, overrides: MapOverrides | null | undefined): MapSettings {
+  if (!overrides) return defaults;
+  return { ...defaults, ...overrides };
+}
 
 export interface ExportLayout {
   video_pct: number;

@@ -67,6 +67,8 @@ pub struct Clip {
     pub effects: Effects,
     #[serde(default = "default_visible")]
     pub visible: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_overrides: Option<MapOverrides>,
 }
 
 impl From<ClipMetadata> for Clip {
@@ -91,6 +93,7 @@ impl From<ClipMetadata> for Clip {
                 speed: 1.0,
             },
             visible: true,
+            map_overrides: None,
         }
     }
 }
@@ -143,6 +146,8 @@ pub struct MapSettings {
     pub follow_playhead: bool,
     #[serde(default = "default_map_style")]
     pub map_style: String, // "default" | "3d" | "satellite"
+    #[serde(default = "default_map_zoom")]
+    pub zoom: f64,
 }
 
 fn default_full() -> String {
@@ -157,6 +162,24 @@ fn default_map_style() -> String {
     "default".to_string()
 }
 
+fn default_map_zoom() -> f64 {
+    14.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MapOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waypoints_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_playhead: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub map_style: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<f64>,
+}
+
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
@@ -164,6 +187,7 @@ impl Default for MapSettings {
             waypoints_mode: default_full(),
             follow_playhead: true,
             map_style: default_map_style(),
+            zoom: default_map_zoom(),
         }
     }
 }

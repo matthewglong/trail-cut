@@ -1,13 +1,15 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Timeline from '../components/Timeline';
 import MapView from '../components/MapView';
 import MapToolbar from '../components/MapToolbar/MapToolbar';
+import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { clipWallClockMs } from '../lib/routeLocation';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings } from '../types';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides } from '../types';
+import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
 // Resizer constraints — easy to tune
@@ -89,6 +91,60 @@ export default function ProjectView({
   const [autoPlayToken, setAutoPlayToken] = useState(0);
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
+
+  // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
+  const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
+  const prevSelectedClipIdRef = useRef(selectedClipId);
+  useEffect(() => {
+    if (selectedClipId !== prevSelectedClipIdRef.current) {
+      prevSelectedClipIdRef.current = selectedClipId;
+      if (mapScope === 'clip') {
+        // Stay in clip scope — user is browsing clips with clip-level edits
+      } else {
+        // Stay in project scope — don't switch automatically
+      }
+    }
+  }, [selectedClipId, mapScope]);
+
+  // Resolve the effective map settings for the selected clip
+  const resolvedMapSettings = useMemo(() => {
+    if (!selectedClip) return mapSettings;
+    return resolveMapSettings(mapSettings, selectedClip.map_overrides);
+  }, [mapSettings, selectedClip]);
+
+  // The settings shown in the toolbar depend on scope
+  const toolbarSettings = mapScope === 'project' ? mapSettings : resolvedMapSettings;
+
+  // Which keys the current clip overrides
+  const overriddenKeys = useMemo((): Set<keyof MapSettings> | null => {
+    if (mapScope === 'project' || !selectedClip?.map_overrides) return null;
+    return new Set(
+      (Object.keys(selectedClip.map_overrides) as (keyof MapSettings)[])
+        .filter((k) => selectedClip.map_overrides![k] !== undefined)
+    );
+  }, [mapScope, selectedClip]);
+
+  // Handle toolbar changes based on scope
+  const handleMapToolbarChange = useCallback((next: MapSettings) => {
+    if (mapScope === 'project') {
+      setMapSettings(next);
+    } else if (selectedClipId) {
+      // Compute overrides: only store fields that differ from project defaults
+      const overrides: MapOverrides = {};
+      let hasOverrides = false;
+      for (const key of Object.keys(next) as (keyof MapSettings)[]) {
+        if (next[key] !== mapSettings[key]) {
+          (overrides as any)[key] = next[key];
+          hasOverrides = true;
+        }
+      }
+      setClips((prev) => prev.map((c) =>
+        c.id === selectedClipId
+          ? { ...c, map_overrides: hasOverrides ? overrides : null }
+          : c
+      ));
+    }
+  }, [mapScope, selectedClipId, mapSettings, setMapSettings, setClips]);
 
   const handleClipEnded = useCallback(() => {
     const idx = clips.findIndex((c) => c.id === selectedClipId);
@@ -361,19 +417,32 @@ export default function ProjectView({
           {/* Map pane */}
           <div style={{ ...styles.mapPane, width: `calc(${(1 - vSplit) * 100}% - 3px)` }}>
             <MapToolbar
-              settings={mapSettings}
-              onChange={setMapSettings}
+              settings={toolbarSettings}
+              onChange={handleMapToolbarChange}
               routeLoaded={route !== null && route.trackpoints.length > 0}
+              scope={mapScope}
+              onScopeChange={setMapScope}
+              overriddenKeys={overriddenKeys}
             />
-            <div style={styles.mapPaneContent}>
+            <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
                 clips={clips}
                 selectedClipId={selectedClipId}
                 route={route}
                 playheadMs={playheadMs}
-                mapSettings={mapSettings}
+                mapSettings={resolvedMapSettings}
                 onSelectClip={handleSelectClip}
               />
+              <div
+                style={mapScope === 'project' ? styles.scopeBadgeProject : styles.scopeBadgeClip}
+                onClick={() => setMapScope(mapScope === 'project' ? 'clip' : 'project')}
+                title={mapScope === 'project'
+                  ? 'Viewing project defaults — click to switch to clip'
+                  : 'Viewing clip overrides — click to switch to project'
+                }
+              >
+                {mapScope === 'project' ? 'PROJECT' : 'CLIP'}
+              </div>
             </div>
           </div>
         </div>
@@ -606,6 +675,54 @@ const styles: Record<string, React.CSSProperties> = {
   mapPaneContent: {
     flex: 1,
     overflow: 'hidden',
+  },
+  scopeBadgeProject: {
+    position: 'absolute' as const,
+    bottom: '8px',
+    left: '12px',
+    width: '84px',
+    height: '28px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid rgba(90, 154, 110, 0.6)',
+    backgroundColor: 'rgba(58, 107, 74, 0.88)',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    color: '#e0f0e6',
+    cursor: 'pointer',
+    userSelect: 'none' as const,
+    fontFamily: 'inherit',
+    boxSizing: 'border-box' as const,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+    zIndex: 10,
+  },
+  scopeBadgeClip: {
+    position: 'absolute' as const,
+    bottom: '8px',
+    left: '12px',
+    width: '84px',
+    height: '28px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    border: '1px solid rgba(255, 133, 85, 0.6)',
+    backgroundColor: 'rgba(224, 90, 40, 0.88)',
+    borderRadius: '999px',
+    fontSize: '11px',
+    fontWeight: 600,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase' as const,
+    color: '#fff',
+    cursor: 'pointer',
+    userSelect: 'none' as const,
+    fontFamily: 'inherit',
+    boxSizing: 'border-box' as const,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+    zIndex: 10,
   },
   mapPlaceholderBtn: {
     padding: '4px 10px',

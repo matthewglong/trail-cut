@@ -193,6 +193,7 @@ export function useProject({
         ...clip.effects,
         stabilize: { ...clip.effects.stabilize },
       },
+      map_overrides: clip.map_overrides ? { ...clip.map_overrides } : null,
     };
 
     setClips((prev) => {

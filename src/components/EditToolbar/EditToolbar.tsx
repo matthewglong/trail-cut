@@ -1,6 +1,6 @@
 import { ZoomIn, Gauge, Crop } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../../types';
-import NumberStepper from './NumberStepper';
+import NumberStepper from '../NumberStepper';
 import CollapsibleToolbar from '../CollapsibleToolbar';
 import ModePicker from '../ModePicker';
 import { styles } from './styles';

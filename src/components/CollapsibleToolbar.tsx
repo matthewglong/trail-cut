@@ -18,6 +18,8 @@ interface CollapsibleToolbarProps {
   defaultExpanded?: boolean;
   /** Horizontal gap between top-level children in the expanded content row. */
   contentGap?: number;
+  /** Optional style overrides for the bar container. */
+  barStyle?: React.CSSProperties;
 }
 
 export default function CollapsibleToolbar({
@@ -25,14 +27,16 @@ export default function CollapsibleToolbar({
   collapsedContent,
   defaultExpanded = true,
   contentGap,
+  barStyle,
 }: CollapsibleToolbarProps) {
   const contentStyle =
     contentGap != null ? { ...styles.content, gap: `${contentGap}px` } : styles.content;
+  const mergedBar = barStyle ? { ...styles.bar, ...barStyle } : styles.bar;
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   if (!expanded) {
     return (
-      <div style={styles.bar} onClick={() => setExpanded(true)}>
+      <div style={mergedBar} onClick={() => setExpanded(true)}>
         <div style={contentStyle}>
           {collapsedContent}
         </div>
@@ -44,7 +48,7 @@ export default function CollapsibleToolbar({
   }
 
   return (
-    <div style={styles.bar}>
+    <div style={mergedBar}>
       <div style={contentStyle}>
         {children}
       </div>

@@ -116,6 +116,7 @@ export default function MapView({
   const lastFitRouteRef = useRef<Route | null>(null);
   const lastFollowAtRef = useRef<number>(0);
   const lastFollowedClipRef = useRef<string | null>(null);
+  const prevZoomRef = useRef<number>(mapSettings.zoom);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
   const routeLoaded = indexedRoute !== null;
@@ -366,6 +367,22 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [selectedClipId, styleVersion]);
 
+  // ---- Live zoom updates from the toolbar ----
+  // When the user changes the zoom stepper, snap to the new zoom immediately
+  // without waiting for a clip transition. Uses setZoom (instant) rather than
+  // easeTo because in clip scope the stepper triggers a setClips update, which
+  // re-fires the playhead marker effect below — its center-only easeTo would
+  // otherwise cancel an in-flight zoom animation and leave the zoom stuck.
+  // Skips the mount render so the initial DEFAULT_MAP_SETTINGS value doesn't
+  // fight the route fitBounds.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (prevZoomRef.current === mapSettings.zoom) return;
+    prevZoomRef.current = mapSettings.zoom;
+    map.setZoom(mapSettings.zoom);
+  }, [mapSettings.zoom]);
+
   // ---- Fly to selected clip's waypoint on manual selection change ----
   // Only runs when follow is OFF — when following, the playhead effect below
   // handles camera movement (including a longer ease on clip transitions).
@@ -377,7 +394,7 @@ export default function MapView({
     if (!clip) return;
     const loc = clipWaypointLocation(clip, indexedRoute);
     if (!loc) return;
-    map.flyTo({ center: [loc.lng, loc.lat], duration: 700, essential: true });
+    map.flyTo({ center: [loc.lng, loc.lat], zoom: mapSettings.zoom, duration: 700, essential: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClipId]);
 
@@ -433,7 +450,7 @@ export default function MapView({
         const wp = selectedClip ? clipWaypointLocation(selectedClip, indexedRoute) : null;
         const target = wp ?? resolved;
         lastFollowAtRef.current = performance.now();
-        map.easeTo({ center: [target.lng, target.lat], duration: 700 });
+        map.easeTo({ center: [target.lng, target.lat], zoom: mapSettings.zoom, duration: 700 });
       } else {
         const now = performance.now();
         if (now - lastFollowAtRef.current > 100) {

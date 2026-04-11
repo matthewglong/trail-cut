@@ -21,6 +21,8 @@ interface ModePickerProps<T extends string> {
   icon?: ReactNode;
   /** Visual variant. `minimal` collapses the trigger to icon + shorthand badge. */
   variant?: 'full' | 'minimal';
+  /** Optional icon color override — e.g. accent color to mark an overridden field. */
+  iconColor?: string;
 }
 
 const ICON_GAP = 6;
@@ -41,6 +43,7 @@ export default function ModePicker<T extends string>({
   minWidth,
   icon,
   variant = 'full',
+  iconColor = '#c8c8c8',
 }: ModePickerProps<T>) {
   const isMinimal = variant === 'minimal';
   const [open, setOpen] = useState(false);
@@ -110,7 +113,8 @@ export default function ModePicker<T extends string>({
           style={{
             display: 'inline-flex',
             alignItems: 'center',
-            color: '#c8c8c8',
+            color: iconColor,
+            transition: 'color 0.15s ease',
           }}
           title={title}
         >
@@ -140,8 +144,9 @@ export default function ModePicker<T extends string>({
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
-                  color: '#c8c8c8',
+                  color: iconColor,
                   opacity: hoveredKey === '__trigger' ? 0.8 : 1,
+                  transition: 'color 0.15s ease',
                 }}
               >
                 {icon}

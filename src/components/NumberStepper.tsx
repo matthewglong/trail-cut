@@ -7,6 +7,8 @@ interface NumberStepperProps {
   max: number;
   step: number;
   onChange: (v: number) => void;
+  /** Unit suffix shown after the number. Defaults to 'x'. Pass '' for no unit. */
+  unit?: string;
 }
 
 /** Compact value with persistent (but subtle) stepper arrows to the left. */
@@ -16,6 +18,7 @@ export default function NumberStepper({
   max,
   step,
   onChange,
+  unit = 'x',
 }: NumberStepperProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -75,7 +78,8 @@ export default function NumberStepper({
           style={stepperStyles.value}
           onClick={() => { setDraft(parseFloat(value.toFixed(2)).toString()); setEditing(true); }}
         >
-          {value.toFixed(2)}<span style={stepperStyles.unit}>x</span>
+          {value.toFixed(2)}
+          {unit && <span style={stepperStyles.unit}>{unit}</span>}
         </span>
       )}
     </div>
