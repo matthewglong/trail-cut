@@ -7,7 +7,11 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
-import { clipWallClockMs } from '../lib/routeLocation';
+import {
+  bearingAt,
+  clipWallClockMs,
+  indexRoute,
+} from '../lib/routeLocation';
 import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
@@ -154,6 +158,28 @@ export default function ProjectView({
     if (!selectedClip?.map_overrides) return false;
     return Object.values(selectedClip.map_overrides).some((v) => v !== undefined);
   }, [selectedClip]);
+
+  // ---- Direction of travel ----
+  // `currentBearing` is derived from GPX geometry at the current playhead.
+  // This is *movement* direction — not camera facing (that would need iPhone
+  // CoreMotion data). It drives the map's effective bearing in auto mode and
+  // the live readout in the bearing toolbar control.
+  const indexedRoute = useMemo(() => indexRoute(route), [route]);
+  const currentBearing: number | null = useMemo(() => {
+    if (playheadMs == null) return null;
+    return bearingAt(playheadMs, indexedRoute);
+  }, [playheadMs, indexedRoute]);
+
+  // Effective bearing actually handed to MapView. In auto mode, prefer the
+  // live GPX heading; when it's unavailable (GPX gap, out of range) fall back
+  // to the stored fixed value so the map holds steady instead of snapping to
+  // north mid-playback.
+  const effectiveBearing: number = useMemo(() => {
+    if (toolbarSettings.bearing_mode === 'auto' && currentBearing != null) {
+      return currentBearing;
+    }
+    return toolbarSettings.bearing_degrees;
+  }, [toolbarSettings.bearing_mode, toolbarSettings.bearing_degrees, currentBearing]);
 
   // Clear the selected clip's map overrides, letting it follow project defaults.
   const handleResetClipMapOverrides = useCallback(() => {
@@ -440,6 +466,7 @@ export default function ProjectView({
               scope={mapScope}
               onScopeChange={setMapScope}
               overriddenKeys={overriddenKeys}
+              currentBearing={currentBearing}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
@@ -448,6 +475,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
+                mapBearing={effectiveBearing}
                 onSelectClip={handleSelectClip}
               />
               <div

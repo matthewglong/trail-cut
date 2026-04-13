@@ -70,6 +70,8 @@ export type TriMode = 'none' | 'visited' | 'full';
 
 export type MapStyleId = 'default' | '3d' | 'satellite';
 
+export type BearingMode = 'auto' | 'fixed';
+
 export interface MapSettings {
   route_mode: TriMode;
   waypoints_mode: TriMode;
@@ -77,6 +79,13 @@ export interface MapSettings {
   map_style: MapStyleId;
   /** Zoom level the map animates to when a clip becomes active. */
   zoom: number;
+  /** How the map's bearing is determined:
+   *  - 'fixed'  → pinned to `bearing_degrees` (default: 0 = north up)
+   *  - 'auto'   → tracks GPX direction of travel at the current playhead */
+  bearing_mode: BearingMode;
+  /** Fixed-mode bearing in degrees, normalized 0–359. Ignored when
+   *  `bearing_mode` is 'auto'. */
+  bearing_degrees: number;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -85,6 +94,8 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   follow_playhead: true,
   map_style: 'default',
   zoom: 14,
+  bearing_mode: 'fixed',
+  bearing_degrees: 0,
 };
 
 /** Merge project defaults with per-clip overrides. */

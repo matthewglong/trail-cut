@@ -148,6 +148,10 @@ pub struct MapSettings {
     pub map_style: String, // "default" | "3d" | "satellite"
     #[serde(default = "default_map_zoom")]
     pub zoom: f64,
+    #[serde(default = "default_bearing_mode")]
+    pub bearing_mode: String, // "auto" | "fixed"
+    #[serde(default = "default_bearing_degrees")]
+    pub bearing_degrees: f64,
 }
 
 fn default_full() -> String {
@@ -166,6 +170,14 @@ fn default_map_zoom() -> f64 {
     14.0
 }
 
+fn default_bearing_mode() -> String {
+    "fixed".to_string()
+}
+
+fn default_bearing_degrees() -> f64 {
+    0.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,6 +190,10 @@ pub struct MapOverrides {
     pub map_style: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zoom: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bearing_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bearing_degrees: Option<f64>,
 }
 
 impl Default for MapSettings {
@@ -188,6 +204,8 @@ impl Default for MapSettings {
             follow_playhead: true,
             map_style: default_map_style(),
             zoom: default_map_zoom(),
+            bearing_mode: default_bearing_mode(),
+            bearing_degrees: default_bearing_degrees(),
         }
     }
 }

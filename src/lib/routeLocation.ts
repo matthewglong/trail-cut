@@ -208,3 +208,87 @@ export function clipWaypointLocation(
   const segmentStartMs = sourceStartMs + (clip.trim?.in_ms ?? 0);
   return locationAt(segmentStartMs, route, clip.gps);
 }
+
+// ---- Bearing (direction of travel) ----
+// Computes the direction the hiker is moving at a given wall-clock time,
+// derived from GPX geometry. This is direction of *travel* — not camera
+// facing (that would need iPhone CoreMotion metadata). Used to drive map
+// orientation during playback.
+
+/** Default smoothing window for bearingAt, in ms. Sampling the GPX position
+ *  ~2 seconds before and after the playhead and measuring the vector between
+ *  those two points averages out GPS jitter. Larger windows smooth more but
+ *  lag behind quick direction changes (switchbacks). */
+export const DEFAULT_BEARING_WINDOW_MS = 4_000;
+
+function toRad(d: number): number {
+  return (d * Math.PI) / 180;
+}
+function toDeg(r: number): number {
+  return (r * 180) / Math.PI;
+}
+
+/** Initial bearing (forward azimuth) from point A to point B, in degrees
+ *  in [0, 360). 0 = north, 90 = east. */
+export function forwardAzimuth(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+): number {
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lng2 - lng1);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) -
+    Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+/** Resolve the direction of travel at a given wall-clock time by sampling
+ *  the route a fixed window before and after the playhead and measuring the
+ *  vector between those two positions. Returns a bearing in degrees in
+ *  [0, 360), or null if a bearing can't be computed (no route, fewer than
+ *  two points, out of range with nowhere to straddle, or the two samples
+ *  land on the same coordinate — e.g. a stationary segment). */
+export function bearingAt(
+  wallClockMs: number,
+  route: IndexedRoute | null,
+  windowMs: number = DEFAULT_BEARING_WINDOW_MS,
+): number | null {
+  if (!route || route.points.length < 2) return null;
+  if (windowMs <= 0) return null;
+
+  // Clamp the sample window inside the route's time range so we always get
+  // two distinct timestamps to sample, even near the start/end.
+  const half = windowMs / 2;
+  let tBefore = wallClockMs - half;
+  let tAfter = wallClockMs + half;
+  if (tBefore < route.minTimeMs) {
+    tBefore = route.minTimeMs;
+    tAfter = Math.min(route.maxTimeMs, tBefore + windowMs);
+  }
+  if (tAfter > route.maxTimeMs) {
+    tAfter = route.maxTimeMs;
+    tBefore = Math.max(route.minTimeMs, tAfter - windowMs);
+  }
+  if (tAfter <= tBefore) return null;
+
+  const a = locationAt(tBefore, route, null);
+  const b = locationAt(tAfter, route, null);
+  if (!a || !b) return null;
+  if (a.lat === b.lat && a.lng === b.lng) return null;
+
+  return forwardAzimuth(a.lat, a.lng, b.lat, b.lng);
+}
+
+const CARDINALS_8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
+export type Cardinal8 = (typeof CARDINALS_8)[number];
+
+/** Quantize a bearing in degrees to an 8-point cardinal label. */
+export function cardinalFromBearing(degrees: number): Cardinal8 {
+  const normalized = ((degrees % 360) + 360) % 360;
+  const i = Math.round(normalized / 45) % 8;
+  return CARDINALS_8[i];
+}

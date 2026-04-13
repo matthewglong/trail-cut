@@ -108,4 +108,19 @@ export const styles: Record<string, React.CSSProperties> = {
     opacity: 0.35,
     cursor: 'not-allowed',
   },
+
+  // Read-only degrees readout shown next to the AUTO mode pill in the
+  // bearing group. Typography matches NumberStepper's value (so swapping
+  // between fixed-mode stepper and auto-mode readout doesn't jump the
+  // layout), but dimmer to signal it's informational, not editable.
+  bearingLiveReadout: {
+    display: 'inline-block',
+    fontSize: '12px',
+    fontWeight: 500,
+    color: '#888',
+    fontVariantNumeric: 'tabular-nums' as const,
+    userSelect: 'none' as const,
+    cursor: 'default',
+    padding: '0 2px',
+  },
 };

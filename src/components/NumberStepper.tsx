@@ -9,6 +9,9 @@ interface NumberStepperProps {
   onChange: (v: number) => void;
   /** Unit suffix shown after the number. Defaults to 'x'. Pass '' for no unit. */
   unit?: string;
+  /** Number of decimal places to display and round to. Defaults to 2. Pass 0
+   *  for integer-only steppers (e.g. degrees). */
+  decimals?: number;
 }
 
 /** Compact value with persistent (but subtle) stepper arrows to the left. */
@@ -19,11 +22,15 @@ export default function NumberStepper({
   step,
   onChange,
   unit = 'x',
+  decimals = 2,
 }: NumberStepperProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [hover, setHover] = useState(false);
-  const clamp = (v: number) => Math.round(Math.max(min, Math.min(max, v)) * 100) / 100;
+  const clamp = (v: number) => {
+    const factor = Math.pow(10, decimals);
+    return Math.round(Math.max(min, Math.min(max, v)) * factor) / factor;
+  };
 
   function commitEdit() {
     const parsed = parseFloat(draft);
@@ -76,9 +83,9 @@ export default function NumberStepper({
       ) : (
         <span
           style={stepperStyles.value}
-          onClick={() => { setDraft(parseFloat(value.toFixed(2)).toString()); setEditing(true); }}
+          onClick={() => { setDraft(parseFloat(value.toFixed(decimals)).toString()); setEditing(true); }}
         >
-          {value.toFixed(2)}
+          {value.toFixed(decimals)}
           {unit && <span style={stepperStyles.unit}>{unit}</span>}
         </span>
       )}

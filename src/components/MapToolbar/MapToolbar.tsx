@@ -1,4 +1,4 @@
-import { Route as RouteIcon, MapPin, LocateFixed, Layers, ZoomIn } from 'lucide-react';
+import { Route as RouteIcon, MapPin, LocateFixed, Layers, ZoomIn, Compass } from 'lucide-react';
 import CollapsibleToolbar from '../CollapsibleToolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
@@ -18,6 +18,10 @@ interface MapToolbarProps {
   onScopeChange: (scope: MapToolbarScope) => void;
   /** Which fields the current clip overrides (non-null keys). Null when scope is 'project'. */
   overriddenKeys: Set<keyof MapSettings> | null;
+  /** Live GPX-derived direction of travel at the current playhead, in degrees
+   *  [0, 360). Null when no route is loaded or the playhead is outside the
+   *  route's time range. Drives the live readout shown in `auto` bearing mode. */
+  currentBearing: number | null;
 }
 
 const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
@@ -45,14 +49,20 @@ export default function MapToolbar({
   scope,
   onScopeChange,
   overriddenKeys,
+  currentBearing,
 }: MapToolbarProps) {
   const followOn = settings.follow_playhead;
+  const bearingAuto = settings.bearing_mode === 'auto';
 
   /** Accent color when the given field is overridden by the current clip,
    *  undefined (default icon color) otherwise. Spacing stays constant because
    *  only the color toggles — no element is added or removed. */
   const overrideColor = (field: keyof MapSettings): string | undefined =>
     overriddenKeys?.has(field) ? colors.accent : undefined;
+
+  const bearingChipText = bearingAuto
+    ? `Bearing: Auto${currentBearing != null ? ` (${Math.round(currentBearing)}°)` : ''}`
+    : `Bearing: ${Math.round(settings.bearing_degrees)}°`;
 
   const collapsedContent = (
     <div style={styles.chipRow}>
@@ -68,6 +78,10 @@ export default function MapToolbar({
       <span style={styles.divider} />
       <span style={followOn ? styles.chipAccent : styles.chip}>
         {followOn ? 'Following' : 'Free pan'}
+      </span>
+      <span style={styles.divider} />
+      <span style={bearingAuto ? styles.chipAccent : styles.chip}>
+        {bearingChipText}
       </span>
       <span style={styles.divider} />
       <span style={styles.chipAccent}>Style: {styleLabel(settings.map_style)}</span>
@@ -134,6 +148,65 @@ export default function MapToolbar({
           <span style={followOn ? styles.previewDotOn : styles.previewDotOff} />
           <span>FOLLOW</span>
         </div>
+      </div>
+
+      <div style={styles.separator} />
+
+      {/* Bearing — mode + degrees, one coupled group (no internal separator).
+          Compass icon anchors the group; the AUTO/FIXED pill toggles mode and
+          the trailing element is either an editable stepper (fixed) or a
+          live readout of the GPX heading (auto). */}
+      <div style={styles.group}>
+        <span
+          style={{
+            ...styles.groupLabel,
+            color:
+              overrideColor('bearing_mode') ??
+              overrideColor('bearing_degrees') ??
+              styles.groupLabel.color,
+            transition: 'color 0.15s ease',
+          }}
+          title="Map bearing"
+        >
+          <Compass size={15} strokeWidth={2} />
+        </span>
+        <div
+          onClick={() =>
+            onChange({
+              ...settings,
+              bearing_mode: bearingAuto ? 'fixed' : 'auto',
+            })
+          }
+          style={bearingAuto ? styles.previewPillOn : styles.previewPillOff}
+          title={
+            bearingAuto
+              ? 'Bearing follows direction of travel — click for fixed'
+              : 'Fixed bearing — click to auto-follow direction of travel'
+          }
+        >
+          <span style={bearingAuto ? styles.previewDotOn : styles.previewDotOff} />
+          <span>{bearingAuto ? 'AUTO' : 'FIXED'}</span>
+        </div>
+        {bearingAuto ? (
+          <span style={styles.bearingLiveReadout} title="Live direction of travel">
+            {currentBearing != null ? `${Math.round(currentBearing)}°` : '—'}
+          </span>
+        ) : (
+          <NumberStepper
+            value={settings.bearing_degrees}
+            min={0}
+            max={359}
+            step={1}
+            unit="°"
+            decimals={0}
+            onChange={(v) =>
+              onChange({
+                ...settings,
+                bearing_degrees: ((Math.round(v) % 360) + 360) % 360,
+              })
+            }
+          />
+        )}
       </div>
 
       <div style={styles.separator} />

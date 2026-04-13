@@ -20,6 +20,10 @@ interface MapViewProps {
    *  clip is selected or its created_at is missing. */
   playheadMs: number | null;
   mapSettings: MapSettings;
+  /** Effective bearing the map should face, in degrees [0, 360). Resolved
+   *  upstream in ProjectView from `bearing_mode`/`bearing_degrees` and the
+   *  live GPX heading. */
+  mapBearing: number;
   onSelectClip?: (clipId: string) => void;
 }
 
@@ -125,6 +129,7 @@ function runClipTransition(
   end: { lng: number; lat: number },
   startZoom: number,
   targetZoom: number,
+  targetBearing: number,
   cfg: MapTransitionConfig = DEFAULT_MAP_TRANSITION,
 ): void {
   const endLngLat: [number, number] = [end.lng, end.lat];
@@ -136,7 +141,13 @@ function runClipTransition(
     const duration = clampDuration(
       cfg.baseMs + Math.abs(targetZoom - startZoom) * cfg.msPerZoomLevel,
     );
-    map.easeTo({ center: endLngLat, zoom: targetZoom, duration, essential: true });
+    map.easeTo({
+      center: endLngLat,
+      zoom: targetZoom,
+      bearing: targetBearing,
+      duration,
+      essential: true,
+    });
     return;
   }
 
@@ -160,6 +171,7 @@ function runClipTransition(
   map.flyTo({
     center: endLngLat,
     zoom: targetZoom,
+    bearing: targetBearing,
     minZoom: peakZoom, // pins the peak of the Van Wijk arc
     duration,
     curve: cfg.curve,
@@ -173,10 +185,13 @@ export default function MapView({
   route,
   playheadMs,
   mapSettings,
+  mapBearing,
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
   onSelectClipRef.current = onSelectClip;
+  const mapBearingRef = useRef(mapBearing);
+  mapBearingRef.current = mapBearing;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
@@ -191,6 +206,7 @@ export default function MapView({
   const lastFollowAtRef = useRef<number>(0);
   const lastFollowedClipRef = useRef<string | null>(null);
   const prevZoomRef = useRef<number>(mapSettings.zoom);
+  const prevBearingRef = useRef<number>(mapBearing);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
   const routeLoaded = indexedRoute !== null;
@@ -204,6 +220,7 @@ export default function MapView({
       style: styleForId(mapStyleIdRef.current),
       center: [-122.4194, 37.7749],
       zoom: 10,
+      bearing: mapBearingRef.current,
       attributionControl: false,
     });
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -457,6 +474,20 @@ export default function MapView({
     map.setZoom(mapSettings.zoom);
   }, [mapSettings.zoom]);
 
+  // ---- Live bearing updates ----
+  // Drives map rotation from the toolbar (fixed-mode stepper edits) and from
+  // auto-mode GPX tracking. Uses a short easeTo so stepper clicks look smooth
+  // and auto-mode rotations blend naturally with the 220 ms playhead-tracking
+  // ease in the effect below. The prevBearingRef gate prevents redundant
+  // updates when the resolved bearing hasn't actually changed.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (prevBearingRef.current === mapBearing) return;
+    prevBearingRef.current = mapBearing;
+    map.easeTo({ bearing: mapBearing, duration: 300, essential: true });
+  }, [mapBearing]);
+
   // ---- Fly to selected clip's waypoint on manual selection change ----
   // Only runs when follow is OFF — when following, the playhead effect below
   // handles camera movement (including a longer ease on clip transitions).
@@ -475,7 +506,9 @@ export default function MapView({
       { lng: loc.lng, lat: loc.lat },
       map.getZoom(),
       mapSettings.zoom,
+      mapBearingRef.current,
     );
+    prevBearingRef.current = mapBearingRef.current;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClipId]);
 
@@ -538,12 +571,19 @@ export default function MapView({
           { lng: target.lng, lat: target.lat },
           map.getZoom(),
           mapSettings.zoom,
+          mapBearingRef.current,
         );
+        prevBearingRef.current = mapBearingRef.current;
       } else {
         const now = performance.now();
         if (now - lastFollowAtRef.current > 100) {
           lastFollowAtRef.current = now;
-          map.easeTo({ center: [resolved.lng, resolved.lat], duration: 220 });
+          map.easeTo({
+            center: [resolved.lng, resolved.lat],
+            bearing: mapBearingRef.current,
+            duration: 220,
+          });
+          prevBearingRef.current = mapBearingRef.current;
         }
       }
     } else {
