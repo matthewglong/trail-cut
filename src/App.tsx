@@ -1,12 +1,20 @@
 import { useState, useEffect } from 'react';
 import HomeScreen from './screens/HomeScreen';
 import ProjectView from './screens/ProjectView';
+import CameraSpikeHarness from './dev/CameraSpikeHarness';
 import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
 import type { Clip, Route, MapSettings } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
+
+/** Dev-only: when the URL has `?camera-spike=1`, mount the spike harness
+ *  instead of ProjectView. Used to A/B-test the new cameraIntent pipeline
+ *  against the existing imperative MapView. See task 140 / §6.1. */
+const CAMERA_SPIKE_ENABLED =
+  typeof window !== 'undefined' &&
+  new URLSearchParams(window.location.search).get('camera-spike') === '1';
 
 export default function App() {
   // Shared state lifted here to break the circular dependency
@@ -72,6 +80,20 @@ export default function App() {
     media.setError(null);
     recent.setError(null);
   };
+
+  // Dev spike harness — bypasses ProjectView entirely. Only kicks in when a
+  // project is already open so the harness has clips/route to feed. The home
+  // screen still shows when no project is open even if the query param is set.
+  if (CAMERA_SPIKE_ENABLED && hasProject) {
+    return (
+      <CameraSpikeHarness
+        clips={clips}
+        route={route}
+        mapSettings={mapSettings}
+        onClose={project.handleCloseProject}
+      />
+    );
+  }
 
   if (!hasProject) {
     return (
