@@ -152,6 +152,8 @@ pub struct MapSettings {
     pub bearing_mode: String, // "auto" | "fixed"
     #[serde(default = "default_bearing_degrees")]
     pub bearing_degrees: f64,
+    #[serde(default = "default_bearing_stops")]
+    pub bearing_stops: u32,
 }
 
 fn default_full() -> String {
@@ -178,6 +180,10 @@ fn default_bearing_degrees() -> f64 {
     0.0
 }
 
+fn default_bearing_stops() -> u32 {
+    3
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -194,6 +200,8 @@ pub struct MapOverrides {
     pub bearing_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bearing_degrees: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bearing_stops: Option<u32>,
 }
 
 impl Default for MapSettings {
@@ -206,6 +214,7 @@ impl Default for MapSettings {
             zoom: default_map_zoom(),
             bearing_mode: default_bearing_mode(),
             bearing_degrees: default_bearing_degrees(),
+            bearing_stops: default_bearing_stops(),
         }
     }
 }

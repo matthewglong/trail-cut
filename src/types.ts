@@ -86,6 +86,11 @@ export interface MapSettings {
   /** Fixed-mode bearing in degrees, normalized 0–359. Ignored when
    *  `bearing_mode` is 'auto'. */
   bearing_degrees: number;
+  /** Number of bearing keyframes (stops) used in auto mode. The clip's
+   *  trail segment is divided into this many chunks, each with a
+   *  representative bearing. The map arcs smoothly between them.
+   *  1 = single fixed bearing for the whole clip. */
+  bearing_stops: number;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -96,6 +101,7 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   zoom: 14,
   bearing_mode: 'fixed',
   bearing_degrees: 0,
+  bearing_stops: 3,
 };
 
 /** Merge project defaults with per-clip overrides. */

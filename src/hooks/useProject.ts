@@ -60,7 +60,7 @@ export function useProject({
       setProjectThumbnail(project.thumbnail ?? null);
       setClips(project.clips);
       setRoute(project.route);
-      setMapSettings(project.map_settings ?? DEFAULT_MAP_SETTINGS);
+      setMapSettings({ ...DEFAULT_MAP_SETTINGS, ...project.map_settings });
 
       await invoke('register_recent_project', { projectDir: dir });
 

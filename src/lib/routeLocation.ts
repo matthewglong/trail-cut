@@ -283,6 +283,112 @@ export function bearingAt(
   return forwardAzimuth(a.lat, a.lng, b.lat, b.lng);
 }
 
+// ---- Predetermined bearing keyframes ----
+// Instead of computing a noisy bearing every frame, we pre-derive a small set
+// of keyframes for a clip's time range and smoothly interpolate between them.
+// Recomputed whenever the clip's trim, route, or stop count changes.
+
+export interface BearingKeyframe {
+  timeMs: number;
+  bearing: number;
+}
+
+/** Shortest-arc circular interpolation between two angles in degrees.
+ *  Handles the 360°/0° wraparound correctly (e.g. 350° → 10° arcs 20°
+ *  clockwise, not 340° counterclockwise). Returns a value in [0, 360). */
+export function circularLerp(a: number, b: number, t: number): number {
+  // Normalize both into [0, 360)
+  a = ((a % 360) + 360) % 360;
+  b = ((b % 360) + 360) % 360;
+  let diff = b - a;
+  // Pick shortest arc
+  if (diff > 180) diff -= 360;
+  else if (diff < -180) diff += 360;
+  return ((a + diff * t) % 360 + 360) % 360;
+}
+
+/** Compute bearing keyframes for a clip's wall-clock time range.
+ *  Divides the range into `stops` equal-time segments, computes the
+ *  representative bearing for each segment midpoint, and returns one
+ *  keyframe per segment boundary (start of each segment + end of last).
+ *
+ *  For `stops = 1`, returns a single keyframe at the midpoint of the clip
+ *  (one fixed bearing for the whole clip).
+ *
+ *  Returns null if bearings can't be computed (no route, etc.). */
+export function computeBearingKeyframes(
+  clipStartMs: number,
+  clipEndMs: number,
+  route: IndexedRoute | null,
+  stops: number,
+): BearingKeyframe[] | null {
+  if (!route || route.points.length < 2) return null;
+  if (clipEndMs <= clipStartMs) return null;
+  if (stops < 1) return null;
+
+  const duration = clipEndMs - clipStartMs;
+  const segLen = duration / stops;
+
+  // Compute one bearing per segment using the segment's full extent as the
+  // sampling window (start → end of that segment).
+  const segmentBearings: number[] = [];
+  for (let i = 0; i < stops; i++) {
+    const segStart = clipStartMs + i * segLen;
+    const segEnd = segStart + segLen;
+    const a = locationAt(segStart, route, null);
+    const b = locationAt(segEnd, route, null);
+    if (!a || !b) return null;
+    if (a.lat === b.lat && a.lng === b.lng) {
+      // Stationary segment — try the old windowed approach as fallback
+      const mid = (segStart + segEnd) / 2;
+      const fb = bearingAt(mid, route, DEFAULT_BEARING_WINDOW_MS);
+      if (fb == null) return null;
+      segmentBearings.push(fb);
+    } else {
+      segmentBearings.push(forwardAzimuth(a.lat, a.lng, b.lat, b.lng));
+    }
+  }
+
+  // Build keyframes: each segment's bearing is placed at the segment midpoint.
+  // This way interpolation arcs smoothly between segment centers.
+  const keyframes: BearingKeyframe[] = [];
+  for (let i = 0; i < stops; i++) {
+    const midTime = clipStartMs + (i + 0.5) * segLen;
+    keyframes.push({ timeMs: midTime, bearing: segmentBearings[i] });
+  }
+
+  return keyframes;
+}
+
+/** Resolve a bearing at a given wall-clock time from pre-computed keyframes.
+ *  Before the first keyframe, holds the first bearing; after the last,
+ *  holds the last bearing; between keyframes, circular-lerps. */
+export function bearingFromKeyframes(
+  wallClockMs: number,
+  keyframes: BearingKeyframe[],
+): number {
+  if (keyframes.length === 0) return 0;
+  if (keyframes.length === 1) return keyframes[0].bearing;
+
+  // Before first keyframe — hold
+  if (wallClockMs <= keyframes[0].timeMs) return keyframes[0].bearing;
+  // After last keyframe — hold
+  const last = keyframes[keyframes.length - 1];
+  if (wallClockMs >= last.timeMs) return last.bearing;
+
+  // Find the two keyframes we're between
+  for (let i = 0; i < keyframes.length - 1; i++) {
+    const kA = keyframes[i];
+    const kB = keyframes[i + 1];
+    if (wallClockMs >= kA.timeMs && wallClockMs <= kB.timeMs) {
+      const t = (wallClockMs - kA.timeMs) / (kB.timeMs - kA.timeMs);
+      return circularLerp(kA.bearing, kB.bearing, t);
+    }
+  }
+
+  return last.bearing;
+}
+
 const CARDINALS_8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
 export type Cardinal8 = (typeof CARDINALS_8)[number];
 
