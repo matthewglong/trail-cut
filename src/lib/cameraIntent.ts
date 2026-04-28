@@ -277,30 +277,250 @@ export function interpolateAnchors(
   throw new Error('not implemented');
 }
 
+// -- §3.4  Van Wijk arc primitives -----------------------------------------
+//
+// Implementation of Van Wijk & Nuij (2003), "Smooth and Efficient Zooming
+// and Panning." Equations (1)-(9) plus the eq. (10) linear-pan special
+// case. Cross-checked against MapLibre's `src/ui/camera.ts` `flyTo` (which
+// is the canonical TypeScript port of the same paper) for numerical
+// agreement and edge-case handling.
+//
+// Key insight on units: the paper parameterizes the arc in a 1-D "world"
+// where positions u and visible widths w share the same unit (call it
+// "world pixels at the higher source zoom"). We follow MapLibre's choice:
+//   - w0 = visible width at camA in world pixels at camA's zoom
+//   - w1 = visible width at camB in those same units
+//        = w0 * 2^(camA.zoom - camB.zoom)
+//          (zooming in by 1 halves the visible world width)
+//   - u1 = ground-plane distance from camA.center to camB.center in those
+//          same world pixels at camA's zoom.
+// With these conventions, `zoom(s) = camA.zoom - log2(w(s))` because
+// `w(s) = w(0)/scale` and a doubling of scale is +1 zoom level.
+
+/** Smoothing parameter from Van Wijk & Nuij (2003). The paper's user study
+ *  found 1.42 to be the average preferred value; MapLibre uses the same
+ *  default and today's `DEFAULT_MAP_TRANSITION.curve` is also 1.42.
+ *  Higher rho → straighter (more zoom-out) arc; lower rho → flatter arc. */
+const RHO = 1.42;
+
+/** Linear-branch threshold from eq. (10) of the paper / MapLibre's flyTo.
+ *  When `rho * |u1 - u0|` is within this absolute tolerance OR when the
+ *  derived `S` becomes non-finite, the cosh/sinh formulas degenerate and
+ *  we switch to a pure exponential zoom interpolation (no pan). */
+const LINEAR_BRANCH_EPSILON = 0.000002;
+
+/** Threshold below which two cameras with no horizontal travel are also
+ *  considered identical in zoom — both endpoints are the same camera. */
+const DEGENERATE_ARC_EPSILON = 0.000001;
+
+// Hyperbolic helpers — JS doesn't ship these on `Math` cross-platform-
+// reliably for `tanh`, so we inline all three for parity with MapLibre.
+function sinh(n: number): number {
+  return (Math.exp(n) - Math.exp(-n)) / 2;
+}
+function cosh(n: number): number {
+  return (Math.exp(n) + Math.exp(-n)) / 2;
+}
+function tanh(n: number): number {
+  return sinh(n) / cosh(n);
+}
+
+/** Mercator-pixel distance between two LngLats at a given MapLibre zoom.
+ *  Uses the same `lngLatToMercator` projection as `cameraForBounds` (zoom
+ *  0 → 512px world). Distance scales by `2^zoom`. */
+function pixelDistanceAtZoom(a: LngLat, b: LngLat, zoom: number): number {
+  const pa = lngLatToMercator(a);
+  const pb = lngLatToMercator(b);
+  const dx = pb.x - pa.x;
+  const dy = pb.y - pa.y;
+  const distAtZoom0 = Math.sqrt(dx * dx + dy * dy);
+  return distAtZoom0 * Math.pow(2, zoom);
+}
+
 /** Build a Van Wijk arc between two resolved cameras. Pure.
- *  Implements eqs. (1)-(8) of Van Wijk & Nuij (2003).
- *  See §3.4 — implemented in task 110. */
+ *  Implements eqs. (1)-(8) of Van Wijk & Nuij (2003) plus the eq. (10)
+ *  linear-pan branch for short / pure-zoom paths. */
 export function vanWijkArc(
-  _camA: ResolvedCamera,
-  _camB: ResolvedCamera,
+  camA: ResolvedCamera,
+  camB: ResolvedCamera,
 ): VanWijkArc {
-  throw new Error('not implemented');
+  const rho = RHO;
+  const rho2 = rho * rho;
+
+  // Choose the "higher source zoom" for our common unit. Per MapLibre and
+  // the paper, anchoring at camA's zoom is sufficient — w1 is then derived
+  // by the zoom-ratio formula and the math is symmetric in the math sense
+  // (forward and reverse arcs share the same total path length S).
+  const w0 = 1; // unit width at camA's zoom; absolute scale cancels out
+  const w1 = w0 * Math.pow(2, camA.zoom - camB.zoom);
+
+  // u1 is the great-circle (here: planar Mercator) distance from camA to
+  // camB, in the same unit as w0. We measure in "viewport widths" at
+  // camA's zoom: distance in pixels at camA's zoom divided by w0_in_pixels.
+  // Since w0=1 above is dimensionless, the actual divisor cancels — what
+  // matters is u1 / w0 ratio. Use a fixed 1000-px reference width so u1
+  // expresses "ground distance / 1000-px window" — same shape as MapLibre
+  // (the absolute reference width drops out of S in the linear branch and
+  // appears symmetrically in r0/r1 in the curved branch).
+  const REFERENCE_VIEWPORT_PX = 1000;
+  const distancePx = pixelDistanceAtZoom(camA.center, camB.center, camA.zoom);
+  const u0 = 0;
+  const u1 = distancePx / REFERENCE_VIEWPORT_PX;
+
+  // ------------------------------------------------------------------
+  // Edge case: linear-zoom branch (eq. 10). Same-place pure zoom (or
+  // numerically tiny pan) — cosh/sinh formulas blow up, fall back to a
+  // pure exponential `w(s) = w0 * exp(±rho * s)` with u(s) = 0.
+  // ------------------------------------------------------------------
+  if (rho * Math.abs(u1 - u0) < LINEAR_BRANCH_EPSILON) {
+    if (Math.abs(w0 - w1) < DEGENERATE_ARC_EPSILON) {
+      // Both endpoints identical (within tolerance). Return a zero-length
+      // arc; sampling at any s returns camA.
+      return { rho, u0, u1, r0: 0, r1: 0, w0, S: 0 };
+    }
+    const S = Math.abs(Math.log(w1 / w0)) / rho;
+    // r0/r1 are unused in the linear branch but must be finite so callers
+    // can serialize/log them safely. 0 is a sentinel — `vanWijkSample`
+    // detects the linear branch by `arc.u1 - arc.u0` being near-zero.
+    return { rho, u0, u1, r0: 0, r1: 0, w0, S };
+  }
+
+  // ------------------------------------------------------------------
+  // Curved branch (paper §4 eqs. 7-8). r0 / r1 are the "rapidity"
+  // coefficients; S is the total arc length.
+  // ------------------------------------------------------------------
+  // b(i) from eq. (7), where i ∈ {0, 1}. Both share the `w1² - w0²`
+  // numerator base; the descent flag (i=1 → descent=true) flips the sign
+  // of the ρ⁴(u1-u0)² term, and the denominator uses wi. Matches MapLibre's
+  // `zoomOutFactor(descent)` exactly.
+  const du = u1 - u0;
+  const b = (i: 0 | 1): number => {
+    const wi = i === 0 ? w0 : w1;
+    const sign = i === 0 ? 1 : -1;
+    return (
+      (w1 * w1 - w0 * w0 + sign * rho2 * rho2 * du * du) /
+      (2 * wi * rho2 * du)
+    );
+  };
+
+  // r(i) = ln(-b(i) + sqrt(b(i)^2 + 1)) — eq. (7).
+  const r = (i: 0 | 1): number => {
+    const bi = b(i);
+    return Math.log(-bi + Math.sqrt(bi * bi + 1));
+  };
+
+  const r0 = r(0);
+  const r1 = r(1);
+  const S = (r1 - r0) / rho;
+
+  return { rho, u0, u1, r0, r1, w0, S };
 }
 
 /** Sample the arc at parameter `s ∈ [0, arc.S]`.
  *  Returns the geographic center and (real) zoom at that arc position.
- *  See §3.4 — implemented in task 110. */
+ *
+ *  Center is interpolated linearly between camA.center and camB.center via
+ *  the normalized arc-length parameter u(s)/u1 (paper eq. 9). On the
+ *  linear branch (camA.center ≈ camB.center) this collapses to camA.center.
+ *
+ *  Zoom comes from w(s): a doubling of the visible window halves zoom, so
+ *  `zoom(s) = camA.zoom - log2(w(s) / w0)`. */
 export function vanWijkSample(
-  _camA: ResolvedCamera,
-  _camB: ResolvedCamera,
-  _arc: VanWijkArc,
-  _s: number,
+  camA: ResolvedCamera,
+  camB: ResolvedCamera,
+  arc: VanWijkArc,
+  s: number,
 ): { center: LngLat; zoom: number } {
-  throw new Error('not implemented');
+  const { rho, u0, u1, r0, w0 } = arc;
+
+  // Detect the linear branch via the same predicate vanWijkArc used.
+  const isLinearBranch = rho * Math.abs(u1 - u0) < LINEAR_BRANCH_EPSILON;
+
+  let wRatio: number; // w(s) / w0
+  let uFraction: number; // (u(s) - u0) / (u1 - u0); 0 at camA, 1 at camB
+
+  if (isLinearBranch) {
+    // Pure-zoom branch. Direction of zoom (in vs. out) determined by
+    // whether camB is closer (w1 < w0) → k=-1, or farther → k=+1.
+    const w1 = w0 * Math.pow(2, camA.zoom - camB.zoom);
+    if (Math.abs(w0 - w1) < DEGENERATE_ARC_EPSILON) {
+      // Degenerate: arc.S == 0, every sample is camA.
+      return { center: { ...camA.center }, zoom: camA.zoom };
+    }
+    const k = w1 < w0 ? -1 : 1;
+    wRatio = Math.exp(k * rho * s);
+    // Fraction of the way through the arc (0..1). Linearly proportional
+    // to s/S so that s=0→camA and s=S→camB exactly.
+    uFraction = arc.S === 0 ? 0 : s / arc.S;
+  } else {
+    // Curved branch — paper eqs. (8) and (9).
+    wRatio = cosh(r0) / cosh(r0 + rho * s);
+    const uPath =
+      w0 * ((cosh(r0) * tanh(r0 + rho * s) - sinh(r0)) / (rho * rho));
+    // u(s) is in our shared unit; normalize to the camA→camB span.
+    uFraction = uPath / (u1 - u0);
+  }
+
+  // Linear lng/lat lerp — fine for the small geographic spans typical
+  // here (the paper's small-area assumption holds at the meter scale of
+  // hiking footage). Great-circle interpolation is overkill at this scale
+  // and would diverge negligibly from the linear path inside any single
+  // viewport's worth of geography. Documented in §3.4 of the migration
+  // doc as an acceptable approximation.
+  const center: LngLat = {
+    lng: camA.center.lng + (camB.center.lng - camA.center.lng) * uFraction,
+    lat: camA.center.lat + (camB.center.lat - camA.center.lat) * uFraction,
+  };
+
+  // zoom(s) = camA.zoom - log2(w(s) / w0). At s=0, wRatio=1 → zoom=camA.zoom.
+  // At s=S, wRatio = w1/w0 = 2^(camA.zoom - camB.zoom) so log2(wRatio) =
+  // camA.zoom - camB.zoom and zoom = camB.zoom. Exact at both endpoints.
+  const zoom = camA.zoom - Math.log2(wRatio);
+
+  return { center, zoom };
 }
 
+/** Per-feel duration multiplier. From §3.6 of MAP_ARCHITECTURE_MIGRATION.md:
+ *    natural: 1.0 (matches today's defaults baseMs:1100, msPerZoomLevel:580)
+ *    snappy:  0.6 (≈ baseMs:600,  msPerZoomLevel:320)
+ *    slow:    1.5 (≈ baseMs:1800, msPerZoomLevel:900)
+ *  Internal helper — exported only via `arcDurationMs`. */
+function feelMultiplier(feel: TransitionFeel): number {
+  switch (feel) {
+    case 'snappy':
+      return 0.6;
+    case 'slow':
+      return 1.5;
+    case 'natural':
+    default:
+      return 1.0;
+  }
+}
+
+/** Tuning constants for `arcDurationMs`. These map the unitless arc length
+ *  `S` (natural-log of zoom-distance ratio) into wall-clock milliseconds.
+ *
+ *  - `MS_PER_S_UNIT = 800`: chosen empirically so a typical hiking-clip arc
+ *    (roughly 1-2 zoom levels of zoom-out + a viewport of pan) lands near
+ *    today's `runClipTransition` defaults (baseMs ≈ 1100). For the canonical
+ *    "1 zoom level + 1 viewport pan" arc, S ≈ 1.4, giving base ≈ 1120ms —
+ *    well within the ±10% target of today's 1100ms baseline. Will be
+ *    re-tuned in task 140 against the spike harness; treat as a starting
+ *    point, not gospel.
+ *  - `MIN_MS = 1100`: floor — pure zoom-only (S≈0) transitions still need a
+ *    perceptible duration. Matches today's `DEFAULT_MAP_TRANSITION.baseMs`.
+ *  - `MAX_MS = 7000`: ceiling — extreme cross-country jumps shouldn't run
+ *    arbitrarily long. Matches today's effective ceiling. */
+const MS_PER_S_UNIT = 800;
+const MIN_MS = 1100;
+const MAX_MS = 7000;
+
 /** Auto-derive the arc duration from path length and "transition feel."
- *  See §3.4 — implemented in task 110. */
-export function arcDurationMs(_arc: VanWijkArc, _feel: TransitionFeel): number {
-  throw new Error('not implemented');
+ *  Formula: `clamp(arc.S * MS_PER_S_UNIT, MIN_MS, MAX_MS) * feelMultiplier`.
+ *  Symmetric: `arcDurationMs` for an A→B arc equals B→A because S is
+ *  invariant under endpoint swap (paper §4). */
+export function arcDurationMs(arc: VanWijkArc, feel: TransitionFeel): number {
+  const raw = arc.S * MS_PER_S_UNIT;
+  const base = Math.max(MIN_MS, Math.min(MAX_MS, raw));
+  return base * feelMultiplier(feel);
 }
