@@ -10,8 +10,19 @@ import {
   vanWijkArc,
   vanWijkSample,
   arcDurationMs,
+  buildMapTrack,
+  cameraAt,
+  DEFAULT_INTENT,
 } from './cameraIntent';
-import type { Bounds, Viewport, ResolvedCamera } from './cameraIntent';
+import type {
+  Bounds,
+  Viewport,
+  ResolvedCamera,
+  CameraIntent,
+  MapAnchor,
+  MapTrack,
+} from './cameraIntent';
+import { DEFAULT_MAP_SETTINGS, type Clip, type MapSettings } from '../types';
 
 // 1° of longitude at the equator ≈ 111320 m. Used to build small geodesic
 // squares centered on (0, 0) where Mercator distortion is negligible.
@@ -226,4 +237,280 @@ describe('arcDurationMs', () => {
     const d = arcDurationMs(arc, 'natural');
     expect(d).toBeGreaterThanOrEqual(1100);
   });
+});
+
+// ---------------------------------------------------------------------------
+// buildMapTrack / cameraAt — task 120.
+//
+// The contract is in §3.2 of MAP_ARCHITECTURE_MIGRATION.md. These tests
+// cover:
+//   - empty-clip / empty-track handling (DEFAULT_INTENT fallback)
+//   - single-anchor follow vs. point: liveIntent semantics
+//   - before-first / after-last clamping
+//   - purity (same args → deeply-equal results)
+//   - gap routing into the still-stubbed `interpolateAnchors`
+// ---------------------------------------------------------------------------
+
+/** Build a minimal Clip with the fields buildMapTrack actually reads.
+ *  Anything else is left at sensible defaults so the test surface stays
+ *  focused on the camera-intent contract. */
+function makeClip(overrides: Partial<Clip> = {}): Clip {
+  return {
+    id: overrides.id ?? 'clip-1',
+    path: '/tmp/clip.mov',
+    filename: 'clip.mov',
+    created_at: '2026-04-04T15:00:00Z',
+    duration_ms: 10_000,
+    gps: null,
+    resolution: null,
+    frame_rate: null,
+    trim: { in_ms: 0, out_ms: 10_000 },
+    focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+    effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
+    visible: true,
+    map_overrides: null,
+    ...overrides,
+  };
+}
+
+/** Project settings preset that forces a `point` anchor (no follow). */
+const POINT_SETTINGS: MapSettings = {
+  ...DEFAULT_MAP_SETTINGS,
+  follow_playhead: false,
+  bearing_mode: 'fixed',
+  bearing_degrees: 0,
+};
+
+/** Project settings preset that forces a `follow` anchor with fixed bearing
+ *  (so we don't need an indexed route's GPX geometry to make sense). */
+const FOLLOW_SETTINGS: MapSettings = {
+  ...DEFAULT_MAP_SETTINGS,
+  follow_playhead: true,
+  bearing_mode: 'fixed',
+  bearing_degrees: 0,
+};
+
+/** A minimal IndexedRoute spanning the test clip's wall-clock range.
+ *  Two trackpoints is enough to be "non-degenerate" for follow intents. */
+function makeIndexedRoute(): import('./routeLocation').IndexedRoute {
+  const t0 = Date.parse('2026-04-04T15:00:00Z');
+  return {
+    points: [
+      { lat: 37.77, lng: -122.40, timeMs: t0 },
+      { lat: 37.78, lng: -122.39, timeMs: t0 + 60_000 },
+    ],
+    minTimeMs: t0,
+    maxTimeMs: t0 + 60_000,
+  };
+}
+
+describe('buildMapTrack + cameraAt', () => {
+  it('empty clips → empty track → cameraAt returns DEFAULT_INTENT', () => {
+    const track = buildMapTrack([], null, DEFAULT_MAP_SETTINGS, 'natural');
+    expect(track.anchors).toHaveLength(0);
+    expect(track.transitionFeel).toBe('natural');
+
+    const intent = cameraAt(track, 0);
+    expect(intent).toEqual(DEFAULT_INTENT);
+  });
+
+  it('skips clips with missing or unparseable created_at without throwing', () => {
+    const clips: Clip[] = [
+      makeClip({ id: 'no-ts', created_at: null }),
+      makeClip({ id: 'bad-ts', created_at: 'not-a-date' }),
+      makeClip({ id: 'good', created_at: '2026-04-04T15:00:00Z' }),
+    ];
+    const track = buildMapTrack(clips, null, POINT_SETTINGS, 'natural');
+    expect(track.anchors).toHaveLength(1);
+  });
+
+  it('skips clips with degenerate trim ranges (out_ms <= in_ms)', () => {
+    const clips: Clip[] = [
+      makeClip({ id: 'zero', trim: { in_ms: 1000, out_ms: 1000 } }),
+      makeClip({ id: 'inverted', trim: { in_ms: 5000, out_ms: 1000 } }),
+    ];
+    const track = buildMapTrack(clips, null, POINT_SETTINGS, 'natural');
+    expect(track.anchors).toHaveLength(0);
+  });
+
+  it('skips invisible clips', () => {
+    const clips: Clip[] = [
+      makeClip({ id: 'hidden', visible: false }),
+      makeClip({ id: 'shown' }),
+    ];
+    const track = buildMapTrack(clips, null, POINT_SETTINGS, 'natural');
+    expect(track.anchors).toHaveLength(1);
+  });
+
+  it('single follow anchor: cameraAt(t) inside returns follow intent with playheadMs === t', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route = makeIndexedRoute();
+    const track = buildMapTrack(
+      [makeClip({ id: 'c1' })],
+      route,
+      FOLLOW_SETTINGS,
+      'natural',
+    );
+    expect(track.anchors).toHaveLength(1);
+    expect(track.anchors[0].intent.kind).toBe('follow');
+
+    const probeT = t0 + 3_000;
+    const intent = cameraAt(track, probeT);
+    expect(intent.kind).toBe('follow');
+    if (intent.kind === 'follow') {
+      expect(intent.playheadMs).toBe(probeT);
+      // The frozen-on-intent route reference passes through.
+      expect(intent.route).toBe(route);
+    }
+  });
+
+  it('single point anchor: cameraAt at any t inside returns the point intent unchanged (purity)', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const track = buildMapTrack(
+      [makeClip({ id: 'c1', gps: { lat: 37.77, lng: -122.4 } })],
+      null,
+      POINT_SETTINGS,
+      'natural',
+    );
+    const anchorIntent = track.anchors[0].intent;
+    expect(anchorIntent.kind).toBe('point');
+
+    // Inside the clip range, the live intent is identity (point intents are
+    // time-invariant — liveIntent returns them unchanged).
+    for (const t of [t0, t0 + 1, t0 + 5_000, t0 + 9_999]) {
+      const intent = cameraAt(track, t);
+      expect(intent).toBe(anchorIntent);
+    }
+  });
+
+  it('before-first: cameraAt(t < anchors[0].timeMs) returns intent equivalent to first anchor', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route = makeIndexedRoute();
+    const track = buildMapTrack(
+      [makeClip({ id: 'c1' })],
+      route,
+      FOLLOW_SETTINGS,
+      'natural',
+    );
+    const first = track.anchors[0];
+
+    // Strictly before the first anchor's start.
+    const probeT = t0 - 5_000;
+    const intent = cameraAt(track, probeT);
+    // For follow: playheadMs is overwritten with the probe t per liveIntent.
+    expect(intent.kind).toBe('follow');
+    if (intent.kind === 'follow' && first.intent.kind === 'follow') {
+      expect(intent.playheadMs).toBe(probeT);
+      // All other follow fields preserved from the anchor's intent.
+      expect(intent.route).toBe(first.intent.route);
+      expect(intent.targetZoom).toBe(first.intent.targetZoom);
+      expect(intent.bearingMode).toBe(first.intent.bearingMode);
+      expect(intent.fixedBearingDegrees).toBe(first.intent.fixedBearingDegrees);
+      expect(intent.pitch).toBe(first.intent.pitch);
+    }
+  });
+
+  it('after-last: cameraAt(t > last.endTimeMs) returns intent clamped to last.endTimeMs', () => {
+    const route = makeIndexedRoute();
+    const track = buildMapTrack(
+      [makeClip({ id: 'c1' })],
+      route,
+      FOLLOW_SETTINGS,
+      'natural',
+    );
+    const last = track.anchors[track.anchors.length - 1];
+
+    // Strictly after the last anchor's end.
+    const intent = cameraAt(track, last.endTimeMs + 60_000);
+    expect(intent.kind).toBe('follow');
+    if (intent.kind === 'follow') {
+      // Clamping behavior: playheadMs pinned to last.endTimeMs, not the
+      // probe time. Don't drag the follow marker past the last clip.
+      expect(intent.playheadMs).toBe(last.endTimeMs);
+    }
+  });
+
+  it('after-last with point intent passes through unchanged', () => {
+    const track = buildMapTrack(
+      [makeClip({ id: 'c1', gps: { lat: 37.77, lng: -122.4 } })],
+      null,
+      POINT_SETTINGS,
+      'natural',
+    );
+    const last = track.anchors[track.anchors.length - 1];
+    const intent = cameraAt(track, last.endTimeMs + 60_000);
+    // Point intents are time-invariant; identity passthrough.
+    expect(intent).toBe(last.intent);
+  });
+
+  it('purity: two calls with the same args produce deeply-equal intents', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route = makeIndexedRoute();
+    const track = buildMapTrack(
+      [makeClip({ id: 'c1' })],
+      route,
+      FOLLOW_SETTINGS,
+      'natural',
+    );
+
+    // Use a deep structural compare via toEqual. JSON.stringify would also
+    // work but loses identity info on nested object refs (route is shared
+    // by reference across calls — which is the *intended* behavior — and
+    // toEqual reports both structural equality and identity). We
+    // intentionally use toEqual so a future regression that copies the
+    // route reference would still pass equality but the explicit `route`
+    // identity assertion below catches it.
+    const probeT = t0 + 1_234;
+    const a = cameraAt(track, probeT);
+    const b = cameraAt(track, probeT);
+    expect(a).toEqual(b);
+    if (a.kind === 'follow' && b.kind === 'follow') {
+      expect(a.route).toBe(b.route);
+    }
+  });
+
+  it('gap routing: cameraAt in a gap calls interpolateAnchors (still a stub → throws)', () => {
+    const route = makeIndexedRoute();
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    // Two clips with a 30s gap between them.
+    const clipA = makeClip({
+      id: 'a',
+      created_at: '2026-04-04T15:00:00Z',
+      duration_ms: 10_000,
+      trim: { in_ms: 0, out_ms: 10_000 },
+    });
+    const clipB = makeClip({
+      id: 'b',
+      // Starts 40s after t0 → 30s gap after clipA ends at t0+10s.
+      created_at: '2026-04-04T15:00:40Z',
+      duration_ms: 10_000,
+      trim: { in_ms: 0, out_ms: 10_000 },
+    });
+    const track = buildMapTrack([clipA, clipB], route, FOLLOW_SETTINGS, 'natural');
+    expect(track.anchors).toHaveLength(2);
+
+    // Probe a time strictly inside the gap. interpolateAnchors is still the
+    // task-010 stub that throws 'not implemented'; we verify the routing
+    // by asserting cameraAt forwards into it. Task 130 will replace the
+    // stub body and this test will be updated to exercise interpolation.
+    const gapT = t0 + 25_000;
+    expect(() => cameraAt(track, gapT)).toThrow('not implemented');
+  });
+
+  it('anchors are sorted by start time even if clips arrive out of order', () => {
+    const later = makeClip({
+      id: 'later',
+      created_at: '2026-04-04T15:01:00Z',
+    });
+    const earlier = makeClip({
+      id: 'earlier',
+      created_at: '2026-04-04T15:00:00Z',
+    });
+    const track = buildMapTrack([later, earlier], null, POINT_SETTINGS, 'natural');
+    expect(track.anchors).toHaveLength(2);
+    expect(track.anchors[0].timeMs).toBeLessThan(track.anchors[1].timeMs);
+  });
+
+  // Reference unused imports so TS/eslint don't complain in the test scope.
+  void (null as unknown as CameraIntent | MapAnchor | MapTrack);
 });

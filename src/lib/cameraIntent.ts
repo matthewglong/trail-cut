@@ -5,9 +5,15 @@
 // This file currently scaffolds the *type* surface and stub function
 // signatures only. Logic bodies are filled in by tasks 100/110/120/130.
 
-import type { Clip } from '../types';
-import type { BearingMode } from '../types';
-import type { IndexedRoute, BearingKeyframe } from './routeLocation';
+import type { Clip, MapSettings } from '../types';
+import { resolveMapSettings, type BearingMode } from '../types';
+import {
+  parseTimestamp,
+  clipWaypointLocation,
+  computeBearingKeyframes,
+  type IndexedRoute,
+  type BearingKeyframe,
+} from './routeLocation';
 
 // -- §3.1  Core geometric / camera types ------------------------------------
 
@@ -234,22 +240,159 @@ export function cameraForBounds(
 // match §3.2-3.4 verbatim so consumers can already type-check usage.
 
 /** Build a MapTrack from project state. Pure.
- *  See §3.2 — implemented in task 120. */
+ *  See §3.2.
+ *
+ *  For each visible clip with a parseable `created_at` and a non-degenerate
+ *  trim range, builds one anchor whose `intent` is chosen by
+ *  `anchorIntentForClip`. Anchors are sorted by start time so `cameraAt`'s
+ *  linear scan can rely on monotonicity.
+ *
+ *  Note on `route`: caller is responsible for indexing the GPX route via
+ *  `indexRoute` before calling. We do *not* call `indexRoute` here so this
+ *  function stays a pure mapping over already-derived inputs. */
 export function buildMapTrack(
-  _clips: Clip[],
-  _route: IndexedRoute | null,
-  _projectMapSettings: import('../types').MapSettings,
-  _transitionFeel: TransitionFeel = 'natural',
+  clips: Clip[],
+  route: IndexedRoute | null,
+  projectMapSettings: MapSettings,
+  transitionFeel: TransitionFeel = 'natural',
 ): MapTrack {
-  throw new Error('not implemented');
+  const anchors: MapAnchor[] = [];
+  for (const clip of clips) {
+    if (clip.visible === false) continue;
+    if (!clip.created_at) continue;
+    const baseMs = parseTimestamp(clip.created_at);
+    if (Number.isNaN(baseMs)) continue;
+    const inMs = clip.trim?.in_ms ?? 0;
+    const outMs = clip.trim?.out_ms ?? clip.duration_ms ?? 0;
+    if (outMs <= inMs) continue;
+
+    const settings = resolveMapSettings(projectMapSettings, clip.map_overrides);
+    const startMs = baseMs + inMs;
+    const endMs = baseMs + outMs;
+    const intent = anchorIntentForClip(clip, settings, route, startMs, endMs);
+    anchors.push({ timeMs: startMs, endTimeMs: endMs, intent });
+  }
+  anchors.sort((a, b) => a.timeMs - b.timeMs);
+  return { anchors, transitionFeel };
+}
+
+/** Pick the right CameraIntent kind for an anchor based on per-clip settings.
+ *
+ *  For `follow` anchors in `auto` bearing mode, we precompute the
+ *  bearing-keyframe table here (once per anchor, frozen on the intent)
+ *  rather than evaluating it lazily inside `resolveIntent`. This keeps
+ *  `resolveIntent` pure in `(intent, viewport)` with no transitive
+ *  dependency on `IndexedRoute` math at render time.
+ *
+ *  `computeBearingKeyframes` returns `null` for degenerate inputs (no route,
+ *  zero-length range, etc.). We coerce that to an empty array on the
+ *  intent — `resolveIntent`'s 'auto' branch already falls back to bearing 0
+ *  when `bearingKeyframes.length === 0`. */
+function anchorIntentForClip(
+  clip: Clip,
+  settings: MapSettings,
+  route: IndexedRoute | null,
+  anchorStartMs: number,
+  anchorEndMs: number,
+): CameraIntent {
+  const pitch = settings.map_style === '3d' ? 60 : 0;
+
+  if (settings.follow_playhead && route) {
+    const bearingKeyframes: BearingKeyframe[] =
+      settings.bearing_mode === 'auto'
+        ? (computeBearingKeyframes(
+            anchorStartMs,
+            anchorEndMs,
+            route,
+            settings.bearing_stops,
+          ) ?? [])
+        : [];
+    return {
+      kind: 'follow',
+      // Initial value; `cameraAt` overwrites this per-frame via `liveIntent`.
+      playheadMs: anchorStartMs,
+      route,
+      targetZoom: settings.zoom,
+      bearingMode: settings.bearing_mode,
+      // Fraction of min(viewport.w, viewport.h). Reserved for future
+      // "frame the marker plus N meters" extensions; ignored by today's
+      // 'follow' branch in resolveIntent.
+      padding: 0.06,
+      fixedBearingDegrees: settings.bearing_degrees,
+      bearingKeyframes,
+      pitch,
+    };
+  }
+
+  // Fallback: a static point on the clip's waypoint. Coordinates fall back
+  // to {lng:0, lat:0} when neither GPX nor embedded GPS resolves — matches
+  // the spec in §3.2 of MAP_ARCHITECTURE_MIGRATION.md.
+  const wp = clipWaypointLocation(clip, route);
+  return {
+    kind: 'point',
+    center: wp ? { lng: wp.lng, lat: wp.lat } : { lng: 0, lat: 0 },
+    zoom: settings.zoom,
+    bearing: settings.bearing_mode === 'fixed' ? settings.bearing_degrees : 0,
+    pitch,
+  };
 }
 
 /** The single source of truth.
  *  Returns the intent that should be active at wall-clock time t.
  *  Pure: deterministic in (track, t). No hidden state. No MapLibre.
- *  See §3.2 — implemented in task 120. */
-export function cameraAt(_track: MapTrack, _t: number): CameraIntent {
-  throw new Error('not implemented');
+ *
+ *  Output kinds:
+ *    - empty track                    → DEFAULT_INTENT
+ *    - before first anchor's start    → `liveIntent(first.intent, t)`
+ *    - inside an anchor's range       → `liveIntent(active.intent, t)`
+ *    - after last anchor's end        → `liveIntent(last.intent, last.endTimeMs)`
+ *      (clamped t — holding past the last clip should display the same
+ *      framing the last frame of that clip rendered, not advance the
+ *      follow marker into "no-clip" territory)
+ *    - in a gap between two anchors   → `interpolateAnchors(a, next, t, feel)`
+ *      (always returns a `point` intent — see §3.4) */
+export function cameraAt(track: MapTrack, t: number): CameraIntent {
+  const { anchors } = track;
+  if (anchors.length === 0) {
+    return DEFAULT_INTENT;
+  }
+  // Before the first anchor: hold the first anchor's framing at t.
+  if (t <= anchors[0].timeMs) {
+    return liveIntent(anchors[0].intent, t);
+  }
+  // After the last anchor: hold the last anchor's framing at its endTimeMs
+  // (i.e. don't drag the follow marker beyond the last clip's end).
+  const last = anchors[anchors.length - 1];
+  if (t >= last.endTimeMs) {
+    return liveIntent(last.intent, last.endTimeMs);
+  }
+
+  // Find the active anchor or the bracketing pair for a gap.
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i];
+    if (t >= a.timeMs && t <= a.endTimeMs) {
+      // Inside clip i — return the live (per-frame) intent.
+      return liveIntent(a.intent, t);
+    }
+    const next = anchors[i + 1];
+    if (next && t > a.endTimeMs && t < next.timeMs) {
+      // Gap between clips — Van Wijk interpolation. Lives in §3.4 / task 130.
+      return interpolateAnchors(a, next, t, track.transitionFeel);
+    }
+  }
+  // Unreachable in well-formed (sorted, non-overlapping) tracks; fall back
+  // to holding the last anchor rather than throwing.
+  return liveIntent(last.intent, last.endTimeMs);
+}
+
+/** For `follow` intents, evaluate at the current t (overwrite `playheadMs`).
+ *  For `point` and `region`, return as-is — they are time-invariant within
+ *  the clip's range. Pure. */
+function liveIntent(intent: CameraIntent, t: number): CameraIntent {
+  if (intent.kind === 'follow') {
+    return { ...intent, playheadMs: t };
+  }
+  return intent;
 }
 
 /** Resolve a CameraIntent to a concrete camera given the renderer's
