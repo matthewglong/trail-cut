@@ -148,8 +148,89 @@ export const DEFAULT_INTENT: CameraIntent = {
   pitch: 0,
 };
 
+// -- Pure geometric helpers -------------------------------------------------
+
+/** World pixel size at zoom 0. We pick 512 to match MapLibre's default
+ *  TILE_SIZE so that any zoom values produced here read identically to
+ *  MapLibre's own `cameraForBounds` output. (Choosing 256 would shift every
+ *  resolved zoom by exactly +1 — same framing, different numeric label.) */
+const WORLD_SIZE_AT_ZOOM_0 = 512;
+
+/** Project a `LngLat` into world-pixel coordinates at zoom 0. Standard
+ *  Web Mercator (spherical), clamped implicitly by the caller — latitudes
+ *  approaching ±90° will blow up because tan(latRad) → ∞. Bounds within
+ *  the Mercator-valid band (≈±85.0511°) are well-defined. */
+function lngLatToMercator(ll: LngLat): { x: number; y: number } {
+  const x = ((ll.lng + 180) / 360) * WORLD_SIZE_AT_ZOOM_0;
+  const latRad = (ll.lat * Math.PI) / 180;
+  const y =
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) *
+    WORLD_SIZE_AT_ZOOM_0;
+  return { x, y };
+}
+
+/** Pure port of MapLibre's `cameraForBounds`. Computes the zoom and
+ *  geographic center that frame `bounds` inside `viewport` with a symmetric
+ *  inset of `padding * min(width, height)` pixels. Bearing and pitch are
+ *  passed through unchanged from `extra`.
+ *
+ *  Algorithm — §5.2 of `docs/MAP_ARCHITECTURE_MIGRATION.md`:
+ *    1. `pad = padding * min(viewport.width, viewport.height)` (px)
+ *    2. Project `sw` and `ne` to world pixels at zoom 0 (Web Mercator).
+ *    3. `dx = ne.x - sw.x`, `dy = sw.y - ne.y` (mercator Y grows southward).
+ *    4. `zx = log2((W - 2*pad) / dx)`, `zy = log2((H - 2*pad) / dy)`.
+ *    5. `zoom = min(zx, zy)` — the limiting axis wins.
+ *    6. `center` = bounds midpoint in `lng/lat` (straight average).
+ *
+ *  Padding is rejected (not clamped) when `>= 0.5` because such an inset
+ *  would consume the entire smaller dimension of the viewport and leave
+ *  zero or negative pixels of usable framing. Silent clamping would hide
+ *  caller bugs; explicit rejection surfaces them.
+ *
+ *  Antimeridian limitation: bounds that straddle ±180° longitude are not
+ *  handled in v1 — `lngLatToMercator` projects each corner independently,
+ *  so a bounds with `sw.lng = 170, ne.lng = -170` is interpreted as the
+ *  long way around the world. Document and revisit if a real route ever
+ *  crosses the antimeridian. */
+export function cameraForBounds(
+  bounds: Bounds,
+  padding: Padding,
+  viewport: Viewport,
+  extra: { bearing: number; pitch: number },
+): ResolvedCamera {
+  if (padding >= 0.5) {
+    throw new Error(
+      `cameraForBounds: padding must be < 0.5 (got ${padding}); a fractional padding ≥ 0.5 would inset the smaller viewport dimension to ≤0 pixels.`,
+    );
+  }
+
+  const pad = padding * Math.min(viewport.width, viewport.height);
+
+  const sw = lngLatToMercator(bounds.sw);
+  const ne = lngLatToMercator(bounds.ne);
+
+  const dx = ne.x - sw.x;
+  const dy = sw.y - ne.y;
+
+  const zx = Math.log2((viewport.width - 2 * pad) / dx);
+  const zy = Math.log2((viewport.height - 2 * pad) / dy);
+  const zoom = Math.min(zx, zy);
+
+  const center: LngLat = {
+    lng: (bounds.sw.lng + bounds.ne.lng) / 2,
+    lat: (bounds.sw.lat + bounds.ne.lat) / 2,
+  };
+
+  return {
+    center,
+    zoom,
+    bearing: extra.bearing,
+    pitch: extra.pitch,
+  };
+}
+
 // -- Stub function signatures ----------------------------------------------
-// Bodies are filled in by Step 1 tasks (100, 110, 120, 130). The signatures
+// Bodies are filled in by Step 1 tasks (110, 120, 130). The signatures
 // match §3.2-3.4 verbatim so consumers can already type-check usage.
 
 /** Build a MapTrack from project state. Pure.
