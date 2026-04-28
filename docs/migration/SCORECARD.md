@@ -18,7 +18,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 001 | ✅     | Setup             | Install and configure Vitest                                       | —                 | 78f5e77 |
 | 010 | ✅     | Setup             | Scaffold src/lib/cameraIntent.ts with type definitions             | —                 | deac2d3 |
 | 100 | ✅     | 1 (Spike)         | Implement pure cameraForBounds helper                              | 010               | f7f6363 |
-| 110 | ⬜     | 1 (Spike)         | Implement Van Wijk arc primitives                                  | 010               | —      |
+| 110 | ✅     | 1 (Spike)         | Implement Van Wijk arc primitives                                  | 010               | 9a864e0 |
 | 120 | ⬜     | 1 (Spike)         | Implement buildMapTrack, cameraAt, liveIntent                      | 010               | —      |
 | 130 | ⬜     | 1 (Spike)         | Implement resolveIntent and interpolateAnchors                     | 100, 110, 120     | —      |
 | 140 | 🛑     | 1 (Spike)         | Build CameraSpikeHarness with two-pane preview (HARD STOP)         | 100, 110, 120, 130| —      |
