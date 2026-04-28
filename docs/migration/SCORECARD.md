@@ -21,7 +21,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 110 | ✅     | 1 (Spike)         | Implement Van Wijk arc primitives                                  | 010               | 9a864e0 |
 | 120 | ✅     | 1 (Spike)         | Implement buildMapTrack, cameraAt, liveIntent                      | 010               | 430a5f1 |
 | 130 | ✅     | 1 (Spike)         | Implement resolveIntent and interpolateAnchors                     | 100, 110, 120     | 94f4bae |
-| 140 | 🛑     | 1 (Spike)         | Build CameraSpikeHarness with two-pane preview (HARD STOP)         | 100, 110, 120, 130| —      |
+| 140 | 🛑     | 1 (Spike)         | Build CameraSpikeHarness with two-pane preview (HARD STOP)         | 100, 110, 120, 130| 2c88756 |
 | 200 | ⬜     | 2 (route tests)   | Scaffold routeLocation test file structure                         | 001               | —      |
 | 210 | ⬜     | 2 (route tests)   | Tests for parseTimestamp, indexRoute, locationAt                   | 200               | —      |
 | 220 | ⬜     | 2 (route tests)   | Tests for trailUpTo, clipWaypointLocation, forwardAzimuth          | 200               | —      |
@@ -43,6 +43,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 ## Hard stops
 
 - After task 140: human visual-parity review of the spike (per §6.1 pass criteria A and B). Do NOT proceed to Step 2/3/4 until the user signs off.
+  - Status: 🛑 awaiting human review — open with `?camera-spike=1` query param after `npm run tauri dev`.
 
 ## Notes
 
