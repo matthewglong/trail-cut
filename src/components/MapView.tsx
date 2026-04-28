@@ -10,6 +10,7 @@ import {
   clipWaypointLocation,
   parseTimestamp,
   type IndexedRoute,
+  type ResolvedLocation,
 } from '../lib/routeLocation';
 import type { MapRecorder } from '../hooks/useMapRecorder';
 
@@ -223,7 +224,6 @@ export default function MapView({
   const clipTransitionEndsAtRef = useRef<number>(0);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
-  const routeLoaded = indexedRoute !== null;
 
   // ---- Initialize map ----
   useEffect(() => {
@@ -443,7 +443,7 @@ export default function MapView({
         }
         return { clip, originalIndex, loc };
       })
-      .filter((x): x is { clip: Clip; originalIndex: number; loc: { lat: number; lng: number } } => x !== null);
+      .filter((x): x is { clip: Clip; originalIndex: number; loc: ResolvedLocation } => x !== null);
   }, [clips, indexedRoute, mapSettings.waypoints_mode, playheadMs]);
 
   // ---- Waypoint source data (one feature per visible clip) ----

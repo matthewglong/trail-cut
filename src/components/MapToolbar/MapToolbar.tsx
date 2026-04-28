@@ -2,7 +2,7 @@ import { Route as RouteIcon, MapPin, LocateFixed, Layers, ZoomIn, Compass } from
 import CollapsibleToolbar from '../CollapsibleToolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
-import type { MapSettings, MapStyleId, TriMode, MapOverrides } from '../../types';
+import type { MapSettings, MapStyleId, TriMode } from '../../types';
 import { colors } from '../../theme/tokens';
 import { styles } from './styles';
 
