@@ -12,6 +12,8 @@ import {
   arcDurationMs,
   buildMapTrack,
   cameraAt,
+  resolveIntent,
+  interpolateAnchors,
   DEFAULT_INTENT,
 } from './cameraIntent';
 import type {
@@ -22,6 +24,7 @@ import type {
   MapAnchor,
   MapTrack,
 } from './cameraIntent';
+import { circularLerp, type IndexedRoute } from './routeLocation';
 import { DEFAULT_MAP_SETTINGS, type Clip, type MapSettings } from '../types';
 
 // 1° of longitude at the equator ≈ 111320 m. Used to build small geodesic
@@ -469,15 +472,19 @@ describe('buildMapTrack + cameraAt', () => {
     }
   });
 
-  it('gap routing: cameraAt in a gap calls interpolateAnchors (still a stub → throws)', () => {
+  it('gap routing: cameraAt in a gap returns a point intent between anchor endpoints', () => {
     const route = makeIndexedRoute();
     const t0 = Date.parse('2026-04-04T15:00:00Z');
-    // Two clips with a 30s gap between them.
+    // Two POINT clips with distinct GPS endpoints and a 30s gap between
+    // them. Using point intents (not follow) gives us deterministic,
+    // route-independent endpoints to assert the interpolated center is
+    // between.
     const clipA = makeClip({
       id: 'a',
       created_at: '2026-04-04T15:00:00Z',
       duration_ms: 10_000,
       trim: { in_ms: 0, out_ms: 10_000 },
+      gps: { lat: 37.77, lng: -122.40 },
     });
     const clipB = makeClip({
       id: 'b',
@@ -485,16 +492,26 @@ describe('buildMapTrack + cameraAt', () => {
       created_at: '2026-04-04T15:00:40Z',
       duration_ms: 10_000,
       trim: { in_ms: 0, out_ms: 10_000 },
+      gps: { lat: 37.80, lng: -122.35 },
     });
-    const track = buildMapTrack([clipA, clipB], route, FOLLOW_SETTINGS, 'natural');
+    const track = buildMapTrack([clipA, clipB], route, POINT_SETTINGS, 'natural');
     expect(track.anchors).toHaveLength(2);
 
-    // Probe a time strictly inside the gap. interpolateAnchors is still the
-    // task-010 stub that throws 'not implemented'; we verify the routing
-    // by asserting cameraAt forwards into it. Task 130 will replace the
-    // stub body and this test will be updated to exercise interpolation.
-    const gapT = t0 + 25_000;
-    expect(() => cameraAt(track, gapT)).toThrow('not implemented');
+    // Probe the gap midpoint. Result must be a `point` intent whose
+    // center is strictly between the two anchors (since cubic ease-in-out
+    // at t=0.5 yields exactly 0.5 — a midway sample along the arc).
+    const gapMidT = t0 + 25_000;
+    const intent = cameraAt(track, gapMidT);
+    expect(intent.kind).toBe('point');
+    if (intent.kind === 'point') {
+      // Center sits strictly between the two anchor centers in lng/lat.
+      // The Van Wijk arc is monotonic in u, and uFraction at eased=0.5 is
+      // strictly in (0, 1), so center coordinates lie strictly between.
+      expect(intent.center.lng).toBeGreaterThan(-122.40);
+      expect(intent.center.lng).toBeLessThan(-122.35);
+      expect(intent.center.lat).toBeGreaterThan(37.77);
+      expect(intent.center.lat).toBeLessThan(37.80);
+    }
   });
 
   it('anchors are sorted by start time even if clips arrive out of order', () => {
@@ -513,4 +530,272 @@ describe('buildMapTrack + cameraAt', () => {
 
   // Reference unused imports so TS/eslint don't complain in the test scope.
   void (null as unknown as CameraIntent | MapAnchor | MapTrack);
+});
+
+// ---------------------------------------------------------------------------
+// resolveIntent — task 130.
+//
+// resolveIntent is the only aspect-aware function in the architecture. The
+// tests below cover all three intent kinds and verify the critical
+// aspect-awareness contract: the same `region` intent against two viewports
+// of different aspect ratios produces two different framings (zoom values).
+// ---------------------------------------------------------------------------
+
+describe('resolveIntent', () => {
+  it('point: passes center/zoom/bearing/pitch through unchanged', () => {
+    const intent: CameraIntent = {
+      kind: 'point',
+      center: { lng: -122.4, lat: 37.77 },
+      zoom: 14.5,
+      bearing: 137.5,
+      pitch: 42,
+    };
+    const viewport: Viewport = { width: 1920, height: 1080 };
+    const cam = resolveIntent(intent, viewport);
+    expect(cam.center).toEqual(intent.center);
+    expect(cam.zoom).toBe(14.5);
+    expect(cam.bearing).toBe(137.5);
+    expect(cam.pitch).toBe(42);
+  });
+
+  it('region: produces different zoom for different viewport aspect ratios', () => {
+    // Same region intent, two viewports. A 1km equatorial square framed in
+    // a 1024×1024 square viewport vs. a 360×640 portrait viewport — the
+    // limiting axis flips (vertical strips get tighter on width), so the
+    // resolved zoom must differ. This is the entire point of the
+    // intent/resolve split.
+    const bounds = squareAtEquator(1000);
+    const intent: CameraIntent = {
+      kind: 'region',
+      bounds,
+      padding: 0.05,
+      bearing: 0,
+      pitch: 0,
+    };
+
+    const square = resolveIntent(intent, { width: 1024, height: 1024 });
+    const portrait = resolveIntent(intent, { width: 360, height: 640 });
+
+    expect(square.zoom).not.toBe(portrait.zoom);
+    // Sanity: the smaller (360×640) viewport should resolve to a *lower*
+    // zoom — a smaller window can only fit the bounds at a wider zoom.
+    expect(portrait.zoom).toBeLessThan(square.zoom);
+    // Center is the bounds midpoint regardless of viewport.
+    expect(square.center.lng).toBeCloseTo(0, 9);
+    expect(portrait.center.lng).toBeCloseTo(0, 9);
+  });
+
+  it('follow (auto): center from locationAt, bearing from bearingFromKeyframes', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route: IndexedRoute = {
+      points: [
+        { lat: 37.77, lng: -122.40, timeMs: t0 },
+        { lat: 37.78, lng: -122.39, timeMs: t0 + 10_000 },
+      ],
+      minTimeMs: t0,
+      maxTimeMs: t0 + 10_000,
+    };
+    // Hand-picked keyframes covering the clip's wall-clock range. Pick a
+    // non-ambiguous short-way pair: 350° → 30° at t=0.5 should land on
+    // ~10° (short way is +40°, not -320°). Avoids the 90→270 case where
+    // the two short-way arcs are equidistant.
+    const intent: CameraIntent = {
+      kind: 'follow',
+      playheadMs: t0 + 5_000, // halfway between the two trackpoints
+      route,
+      targetZoom: 16,
+      bearingMode: 'auto',
+      padding: 0.06,
+      bearingKeyframes: [
+        { timeMs: t0, bearing: 350 },
+        { timeMs: t0 + 10_000, bearing: 30 },
+      ],
+      pitch: 0,
+    };
+    const cam = resolveIntent(intent, { width: 1024, height: 1024 });
+
+    // Center: at t0+5s, locationAt linearly interpolates trackpoints.
+    expect(cam.center.lat).toBeCloseTo(37.775, 6);
+    expect(cam.center.lng).toBeCloseTo(-122.395, 6);
+    // Bearing: short-way 350→30 covers +40° (through 0), so midpoint = 10°.
+    expect(cam.bearing).toBeCloseTo(10, 6);
+    expect(cam.zoom).toBe(16);
+    expect(cam.pitch).toBe(0);
+  });
+
+  it('follow (auto): empty bearing keyframes → bearing falls back to 0', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route: IndexedRoute = {
+      points: [
+        { lat: 37.77, lng: -122.40, timeMs: t0 },
+        { lat: 37.78, lng: -122.39, timeMs: t0 + 10_000 },
+      ],
+      minTimeMs: t0,
+      maxTimeMs: t0 + 10_000,
+    };
+    const intent: CameraIntent = {
+      kind: 'follow',
+      playheadMs: t0 + 1_000,
+      route,
+      targetZoom: 14,
+      bearingMode: 'auto',
+      padding: 0.06,
+      bearingKeyframes: [],
+      pitch: 0,
+    };
+    const cam = resolveIntent(intent, { width: 1024, height: 1024 });
+    expect(cam.bearing).toBe(0);
+  });
+
+  it('follow (fixed): bearing from fixedBearingDegrees', () => {
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route: IndexedRoute = {
+      points: [
+        { lat: 37.77, lng: -122.40, timeMs: t0 },
+        { lat: 37.78, lng: -122.39, timeMs: t0 + 10_000 },
+      ],
+      minTimeMs: t0,
+      maxTimeMs: t0 + 10_000,
+    };
+    const intent: CameraIntent = {
+      kind: 'follow',
+      playheadMs: t0 + 5_000,
+      route,
+      targetZoom: 14,
+      bearingMode: 'fixed',
+      padding: 0.06,
+      fixedBearingDegrees: 180,
+      bearingKeyframes: [],
+      pitch: 60,
+    };
+    const cam = resolveIntent(intent, { width: 1024, height: 1024 });
+    expect(cam.bearing).toBe(180);
+    expect(cam.pitch).toBe(60);
+  });
+
+  it('follow: locationAt returning null → center falls back to (0, 0)', () => {
+    // playheadMs out of route range and no embedded GPS fallback (resolveIntent
+    // passes `null` to locationAt) → locationAt returns null → resolveIntent
+    // substitutes the documented {lng:0, lat:0} sentinel rather than throwing.
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route: IndexedRoute = {
+      points: [
+        { lat: 37.77, lng: -122.40, timeMs: t0 },
+        { lat: 37.78, lng: -122.39, timeMs: t0 + 10_000 },
+      ],
+      minTimeMs: t0,
+      maxTimeMs: t0 + 10_000,
+    };
+    const intent: CameraIntent = {
+      kind: 'follow',
+      // 1 hour after the route ends — out of range, no fallback in resolveIntent.
+      playheadMs: t0 + 3_600_000,
+      route,
+      targetZoom: 12,
+      bearingMode: 'fixed',
+      padding: 0.06,
+      fixedBearingDegrees: 0,
+      bearingKeyframes: [],
+      pitch: 0,
+    };
+    const cam = resolveIntent(intent, { width: 1024, height: 1024 });
+    expect(cam.center).toEqual({ lng: 0, lat: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// interpolateAnchors — task 130.
+//
+// Endpoint exactness: at t = a.endTimeMs the interpolated camera should
+// match canonicalCamera(a). At t = a.endTimeMs + arcDurationMs(arc, feel)
+// it should match canonicalCamera(b). These guarantee the gap closes
+// seamlessly into the next anchor's framing.
+// ---------------------------------------------------------------------------
+
+describe('interpolateAnchors', () => {
+  function makePointAnchor(
+    timeMs: number,
+    endTimeMs: number,
+    lng: number,
+    lat: number,
+    zoom: number,
+    bearing = 0,
+    pitch = 0,
+  ): MapAnchor {
+    return {
+      timeMs,
+      endTimeMs,
+      intent: {
+        kind: 'point',
+        center: { lng, lat },
+        zoom,
+        bearing,
+        pitch,
+      },
+    };
+  }
+
+  it('at t = a.endTimeMs returns a camera ≈ canonicalCamera(a)', () => {
+    const a = makePointAnchor(0, 10_000, -122.40, 37.77, 14, 30, 0);
+    const b = makePointAnchor(15_000, 25_000, -122.35, 37.80, 16, 90, 0);
+
+    const intent = interpolateAnchors(a, b, a.endTimeMs, 'natural');
+    expect(intent.kind).toBe('point');
+    if (intent.kind === 'point') {
+      expect(intent.center.lng).toBeCloseTo(-122.40, 6);
+      expect(intent.center.lat).toBeCloseTo(37.77, 6);
+      expect(Math.abs(intent.zoom - 14)).toBeLessThan(1e-3);
+      expect(intent.bearing).toBeCloseTo(30, 6);
+      expect(intent.pitch).toBeCloseTo(0, 9);
+    }
+  });
+
+  it('at t = a.endTimeMs + arcDurationMs returns a camera ≈ canonicalCamera(b)', () => {
+    const a = makePointAnchor(0, 10_000, -122.40, 37.77, 14, 30, 0);
+    const b = makePointAnchor(15_000, 25_000, -122.35, 37.80, 16, 90, 0);
+
+    // Recompute the arc to find its duration — same construction as
+    // interpolateAnchors does internally.
+    const camA = a.intent.kind === 'point'
+      ? { center: a.intent.center, zoom: a.intent.zoom, bearing: a.intent.bearing, pitch: a.intent.pitch }
+      : null;
+    const camB = b.intent.kind === 'point'
+      ? { center: b.intent.center, zoom: b.intent.zoom, bearing: b.intent.bearing, pitch: b.intent.pitch }
+      : null;
+    if (!camA || !camB) throw new Error('test setup invariant');
+    const arc = vanWijkArc(camA, camB);
+    const tEnd = a.endTimeMs + arcDurationMs(arc, 'natural');
+
+    const intent = interpolateAnchors(a, b, tEnd, 'natural');
+    expect(intent.kind).toBe('point');
+    if (intent.kind === 'point') {
+      expect(intent.center.lng).toBeCloseTo(-122.35, 5);
+      expect(intent.center.lat).toBeCloseTo(37.80, 5);
+      expect(Math.abs(intent.zoom - 16)).toBeLessThan(1e-3);
+      expect(intent.bearing).toBeCloseTo(90, 6);
+    }
+  });
+
+  it('beyond t = tEnd: clamp01 holds at camB', () => {
+    const a = makePointAnchor(0, 10_000, -122.40, 37.77, 14);
+    const b = makePointAnchor(15_000, 25_000, -122.35, 37.80, 16);
+
+    const intent = interpolateAnchors(a, b, 1_000_000, 'natural');
+    if (intent.kind === 'point') {
+      expect(intent.center.lng).toBeCloseTo(-122.35, 5);
+      expect(intent.center.lat).toBeCloseTo(37.80, 5);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// circularLerp — short-way bearing interpolation. Already tested by usage
+// in resolveIntent's auto-bearing path, but the §3.4 acceptance criterion
+// calls out the 350° → 10° wraparound case explicitly. Guard it here.
+// ---------------------------------------------------------------------------
+
+describe('circularLerp short-way', () => {
+  it('350° → 10° at t=0.5 lands on 0° (the short-way arc, 20° clockwise)', () => {
+    expect(circularLerp(350, 10, 0.5)).toBeCloseTo(0, 6);
+  });
 });

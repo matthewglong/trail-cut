@@ -11,6 +11,9 @@ import {
   parseTimestamp,
   clipWaypointLocation,
   computeBearingKeyframes,
+  bearingFromKeyframes,
+  circularLerp,
+  locationAt,
   type IndexedRoute,
   type BearingKeyframe,
 } from './routeLocation';
@@ -398,26 +401,153 @@ function liveIntent(intent: CameraIntent, t: number): CameraIntent {
 /** Resolve a CameraIntent to a concrete camera given the renderer's
  *  viewport. Pure in (intent, viewport). The same intent resolved against
  *  two different viewports correctly produces two different framings.
- *  See §3.3 — implemented in task 130. */
+ *
+ *  This is the **only** aspect-aware function in the architecture (see
+ *  §3.3 of MAP_ARCHITECTURE_MIGRATION.md). The fractional `Padding` on a
+ *  `region` intent is converted to pixels here against the viewport's
+ *  smaller dimension; everywhere else, padding stays unitless.
+ *
+ *  `follow` resolution intentionally does NOT walk the IndexedRoute for
+ *  bearing — `bearingKeyframes` are precomputed once per anchor by
+ *  `buildMapTrack` and frozen on the intent. The empty-array fallback
+ *  (bearing = 0) handles degenerate inputs (no route, zero-length window,
+ *  etc.) without coupling this function back to route math. */
 export function resolveIntent(
-  _intent: CameraIntent,
-  _viewport: Viewport,
+  intent: CameraIntent,
+  viewport: Viewport,
 ): ResolvedCamera {
-  throw new Error('not implemented');
+  switch (intent.kind) {
+    case 'point':
+      return {
+        center: intent.center,
+        zoom: intent.zoom,
+        bearing: intent.bearing,
+        pitch: intent.pitch,
+      };
+
+    case 'region':
+      return cameraForBounds(intent.bounds, intent.padding, viewport, {
+        bearing: intent.bearing,
+        pitch: intent.pitch,
+      });
+
+    case 'follow': {
+      const loc = locationAt(intent.playheadMs, intent.route, null);
+      const center: LngLat = loc
+        ? { lng: loc.lng, lat: loc.lat }
+        : { lng: 0, lat: 0 };
+
+      const bearing =
+        intent.bearingMode === 'auto'
+          ? intent.bearingKeyframes.length > 0
+            ? bearingFromKeyframes(intent.playheadMs, intent.bearingKeyframes)
+            : 0
+          : (intent.fixedBearingDegrees ?? 0);
+
+      return {
+        center,
+        zoom: intent.targetZoom,
+        bearing,
+        pitch: intent.pitch,
+      };
+    }
+  }
+}
+
+/** Canonical 1024×1024 viewport used for cross-anchor interpolation.
+ *  Anchor-to-anchor interpolation is intrinsically not viewport-aware —
+ *  `interpolateAnchors` must produce a single arc that the renderer can
+ *  later re-frame for any viewport via `resolveIntent`. We collapse
+ *  region/follow anchors to a fixed reference viewport so `vanWijkArc`'s
+ *  endpoints (LngLat + zoom) are well-defined regardless of where the
+ *  camera ultimately renders. */
+const CANONICAL_VIEWPORT: Viewport = { width: 1024, height: 1024, dpr: 1 };
+
+/** Resolve an anchor to a `ResolvedCamera` at the canonical viewport.
+ *  Used inside `interpolateAnchors` to give the Van Wijk arc two concrete
+ *  endpoints regardless of intent kind.
+ *
+ *  - `point`: trivial pass-through (point intents already carry a zoom).
+ *  - `region`: resolved against the canonical 1024×1024 viewport. The
+ *    actual render-time framing may differ — that's `resolveIntent`'s job
+ *    when the renderer takes over after the gap closes.
+ *  - `follow`: evaluate at `refTimeMs` (boundary of the anchor's range).
+ *    `refTimeMs` is `endTimeMs` for the outgoing anchor and `timeMs` for
+ *    the incoming anchor, per §3.4. */
+function canonicalCamera(
+  anchor: MapAnchor,
+  refTimeMs: number,
+): ResolvedCamera {
+  const intent = anchor.intent;
+  if (intent.kind === 'follow') {
+    return resolveIntent(
+      { ...intent, playheadMs: refTimeMs },
+      CANONICAL_VIEWPORT,
+    );
+  }
+  return resolveIntent(intent, CANONICAL_VIEWPORT);
+}
+
+/** Clamp a number into [0, 1]. Internal helper for `interpolateAnchors`. */
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/** Standard cubic ease-in-out on [0, 1].
+ *  Matches the curve used by most UI animation libraries: gentle start,
+ *  fast middle, gentle end. The `_feel` parameter is accepted for API
+ *  symmetry but unused — feel manifests through `arcDurationMs`'s
+ *  multiplier (snappy=0.6, slow=1.5), not the easing curve itself. */
+function easeInOut(x: number, _feel: TransitionFeel): number {
+  return x < 0.5
+    ? 4 * x * x * x
+    : 1 - Math.pow(-2 * x + 2, 3) / 2;
 }
 
 /** Interpolate from anchor A to anchor B at time t.
  *  Uses Van Wijk & Nuij (2003) "Smooth and Efficient Zooming and Panning"
  *  to produce a smooth zoom-out + pan + zoom-in arc between the two
- *  anchors' resolved geographic positions.
- *  See §3.4 — implemented in task 130. */
+ *  anchors' canonical resolved cameras.
+ *
+ *  Returns a `point` intent (the interpolated state at t). The renderer
+ *  passes this through `resolveIntent` like any other intent — gap frames
+ *  and clip frames go through the same pipeline.
+ *
+ *  Time mapping: the arc's wall-clock duration is `arcDurationMs(arc, feel)`,
+ *  starting at `a.endTimeMs`. `t` outside that window clamps to the
+ *  appropriate endpoint (cubic ease-in-out compresses the [0,1] map at
+ *  the boundaries — but `clamp01` ensures values strictly outside snap to
+ *  exactly camA/camB, not just "very close").
+ *
+ *  See §3.4 of MAP_ARCHITECTURE_MIGRATION.md for the full algorithm. */
 export function interpolateAnchors(
-  _a: MapAnchor,
-  _b: MapAnchor,
-  _t: number,
-  _feel: TransitionFeel,
+  a: MapAnchor,
+  b: MapAnchor,
+  t: number,
+  feel: TransitionFeel,
 ): CameraIntent {
-  throw new Error('not implemented');
+  const camA = canonicalCamera(a, a.endTimeMs);
+  const camB = canonicalCamera(b, b.timeMs);
+
+  const arc = vanWijkArc(camA, camB);
+
+  const tStart = a.endTimeMs;
+  const tEnd = tStart + arcDurationMs(arc, feel);
+  const localT = clamp01((t - tStart) / Math.max(1, tEnd - tStart));
+  const eased = easeInOut(localT, feel);
+  const s = arc.S * eased;
+
+  const point = vanWijkSample(camA, camB, arc, s);
+  const bearing = circularLerp(camA.bearing, camB.bearing, eased);
+  const pitch = camA.pitch + (camB.pitch - camA.pitch) * eased;
+
+  return {
+    kind: 'point',
+    center: point.center,
+    zoom: point.zoom,
+    bearing,
+    pitch,
+  };
 }
 
 // -- §3.4  Van Wijk arc primitives -----------------------------------------
