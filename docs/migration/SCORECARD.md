@@ -15,7 +15,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 
 | ID  | Status | Step              | Title                                                              | Depends on        | Commit |
 |-----|--------|-------------------|--------------------------------------------------------------------|-------------------|--------|
-| 001 | ⬜     | Setup             | Install and configure Vitest                                       | —                 | —      |
+| 001 | ✅     | Setup             | Install and configure Vitest                                       | —                 | 78f5e77 |
 | 010 | ⬜     | Setup             | Scaffold src/lib/cameraIntent.ts with type definitions             | —                 | —      |
 | 100 | ⬜     | 1 (Spike)         | Implement pure cameraForBounds helper                              | 010               | —      |
 | 110 | ⬜     | 1 (Spike)         | Implement Van Wijk arc primitives                                  | 010               | —      |
