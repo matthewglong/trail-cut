@@ -20,7 +20,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 100 | ✅     | 1 (Spike)         | Implement pure cameraForBounds helper                              | 010               | f7f6363 |
 | 110 | ✅     | 1 (Spike)         | Implement Van Wijk arc primitives                                  | 010               | 9a864e0 |
 | 120 | ✅     | 1 (Spike)         | Implement buildMapTrack, cameraAt, liveIntent                      | 010               | 430a5f1 |
-| 130 | ⬜     | 1 (Spike)         | Implement resolveIntent and interpolateAnchors                     | 100, 110, 120     | —      |
+| 130 | ✅     | 1 (Spike)         | Implement resolveIntent and interpolateAnchors                     | 100, 110, 120     | 94f4bae |
 | 140 | 🛑     | 1 (Spike)         | Build CameraSpikeHarness with two-pane preview (HARD STOP)         | 100, 110, 120, 130| —      |
 | 200 | ⬜     | 2 (route tests)   | Scaffold routeLocation test file structure                         | 001               | —      |
 | 210 | ⬜     | 2 (route tests)   | Tests for parseTimestamp, indexRoute, locationAt                   | 200               | —      |
