@@ -32,11 +32,13 @@ pub fn save_project(mut project: Project, project_dir: String) -> Result<(), Str
 }
 
 /// Load project from project bundle. Reads the `schema_version` field, runs
-/// any required one-shot migrations, then returns a current-schema Project
-/// in memory. Files lacking the field are read as v1 and migrated to v2.
+/// any required one-shot migrations, then re-parses the bundle's `route.gpx`
+/// (if present) into the in-memory `route` field. Files lacking the schema
+/// field are read as v1 and migrated to v2.
 #[tauri::command]
 pub fn load_project(project_dir: String) -> Result<Project, String> {
-    let path = Path::new(&project_dir).join("project.json");
+    let dir = Path::new(&project_dir);
+    let path = dir.join("project.json");
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read project file: {}", e))?;
     let raw: serde_json::Value =
@@ -47,7 +49,7 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
         .map(|v| v as u32)
         .unwrap_or(1);
 
-    let project = match version {
+    let mut project = match version {
         1 => migrate_v1_to_v2(raw)?,
         2 => serde_json::from_value::<Project>(raw)
             .map_err(|e| format!("Failed to parse v2 project: {}", e))?,
@@ -58,6 +60,13 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
             ));
         }
     };
+
+    // §3.9.2: route is no longer persisted in project.json. Re-parse from
+    // the bundle's route.gpx as the canonical source. Missing file → None.
+    let route_path = dir.join("route.gpx");
+    if route_path.exists() {
+        project.route = Some(super::gpx::parse_gpx_internal(&route_path)?);
+    }
 
     Ok(project)
 }
@@ -183,7 +192,7 @@ mod tests {
 
         save_project(loaded, dir_str.clone()).expect("save must succeed");
 
-        // After save, the on-disk file is v2.
+        // After save, the on-disk file is v2 and has no top-level `route`.
         let on_disk = std::fs::read_to_string(dir.join("project.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
         assert_eq!(
@@ -191,6 +200,65 @@ mod tests {
             Some(2),
             "save must write schema_version: 2"
         );
+        assert!(
+            parsed.get("route").is_none(),
+            "save must omit the `route` key (re-parsed from route.gpx on load)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_repopulates_route_from_route_gpx() {
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-route",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // v1 project.json with an obsolete inline route — should be ignored
+        // in favor of route.gpx.
+        std::fs::write(dir.join("project.json"), V1_PROJECT_JSON).unwrap();
+
+        // Minimal valid GPX with two trackpoints.
+        let gpx = r#"<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="trailcut-test" xmlns="http://www.topografix.com/GPX/1/1">
+  <trk><trkseg>
+    <trkpt lat="37.7749" lon="-122.4194"><ele>10</ele><time>2026-04-04T12:00:00Z</time></trkpt>
+    <trkpt lat="37.7750" lon="-122.4195"><ele>11</ele><time>2026-04-04T12:00:30Z</time></trkpt>
+  </trkseg></trk>
+</gpx>"#;
+        std::fs::write(dir.join("route.gpx"), gpx).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("load with route.gpx must succeed");
+        let route = loaded.route.expect("route must be populated from route.gpx");
+        assert_eq!(route.trackpoints.len(), 2);
+        assert_eq!(route.format, "gpx");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_succeeds_when_route_gpx_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-noroute",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("project.json"), V1_PROJECT_JSON).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("load without route.gpx must succeed");
+        assert!(loaded.route.is_none(), "missing route.gpx → route is None");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

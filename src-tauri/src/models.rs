@@ -255,6 +255,11 @@ pub struct Project {
     #[serde(default)]
     pub thumbnail: Option<String>,
     pub clips: Vec<Clip>,
+    /// In-memory only as of v2 (§3.9.2). The canonical source is the
+    /// `route.gpx` file in the bundle, re-parsed by `load_project` on every
+    /// load. `#[serde(skip)]` keeps this out of `project.json` on save and
+    /// causes serde to ignore any leftover `route` key on v1 deserialize.
+    #[serde(skip)]
     pub route: Option<Route>,
     pub exports: Vec<ExportConfig>,
     #[serde(default)]
