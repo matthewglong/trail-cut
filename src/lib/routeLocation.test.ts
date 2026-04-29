@@ -15,7 +15,15 @@ import {
   trailUpTo,
   clipWaypointLocation,
   forwardAzimuth,
+  bearingAt,
+  circularLerp,
+  computeBearingKeyframes,
+  bearingFromKeyframes,
+  clipWallClockMs,
+  cardinalFromBearing,
+  DEFAULT_BEARING_WINDOW_MS,
   MAX_INTERPOLATION_GAP_MS,
+  type IndexedRoute,
 } from './routeLocation';
 import type { Clip, Route } from '../types';
 import {
@@ -23,6 +31,7 @@ import {
   longLinearRoute,
   mkPoint,
   routeWithGap,
+  routeWithStationarySegment,
 } from './__fixtures__/routes';
 
 /** Build a minimal Clip for tests. Only the fields routeLocation reads
@@ -414,25 +423,342 @@ describe('forwardAzimuth', () => {
 });
 
 describe('bearingAt', () => {
-  it.todo('two-point linear route returns a constant bearing');
-  it.todo('out-of-range t clamps the sample window inside the route');
-  it.todo('stationary segment returns null');
+  it('returns null for a null route', () => {
+    expect(bearingAt(0, null)).toBeNull();
+  });
+
+  it('returns null for a single-point route (no second point to sample)', () => {
+    const single: Route = {
+      source_path: '',
+      format: 'gpx',
+      trackpoints: [mkPoint(37, -122, '2026-04-04T15:00:00Z')],
+    };
+    expect(bearingAt(0, indexRoute(single))).toBeNull();
+  });
+
+  it('returns null for a non-positive windowMs', () => {
+    const idx = indexRoute(linearRoute)!;
+    expect(bearingAt(idx.minTimeMs, idx, 0)).toBeNull();
+    expect(bearingAt(idx.minTimeMs, idx, -1000)).toBeNull();
+  });
+
+  it('two-point linear route moving north returns a constant ~0° bearing', () => {
+    const idx = indexRoute(linearRoute)!;
+    const tMid = (idx.minTimeMs + idx.maxTimeMs) / 2;
+    const az = bearingAt(tMid, idx)!;
+    expect(az).not.toBeNull();
+    expect(az).toBeCloseTo(0, 6);
+  });
+
+  it('out-of-range t before the route start clamps the window inside [min,max]', () => {
+    const idx = indexRoute(linearRoute)!;
+    // t well before minTimeMs — the function should still return a defined
+    // bearing using the clamped sample window starting at minTimeMs.
+    const az = bearingAt(idx.minTimeMs - 60_000, idx);
+    expect(az).not.toBeNull();
+    expect(az).toBeCloseTo(0, 6);
+  });
+
+  it('out-of-range t after the route end clamps the window inside [min,max]', () => {
+    const idx = indexRoute(linearRoute)!;
+    const az = bearingAt(idx.maxTimeMs + 60_000, idx);
+    expect(az).not.toBeNull();
+    expect(az).toBeCloseTo(0, 6);
+  });
+
+  it('stationary segment returns null (a equals b)', () => {
+    // Two trackpoints at the exact same lat/lng but different timestamps.
+    const stationary: Route = {
+      source_path: '',
+      format: 'gpx',
+      trackpoints: [
+        mkPoint(37, -122, '2026-04-04T15:00:00Z'),
+        mkPoint(37, -122, '2026-04-04T15:00:04Z'),
+      ],
+    };
+    const idx = indexRoute(stationary)!;
+    const tMid = (idx.minTimeMs + idx.maxTimeMs) / 2;
+    expect(bearingAt(tMid, idx)).toBeNull();
+  });
+
+  it('returns null when the gap between samples falls in a > 60s GPX gap and locationAt fails', () => {
+    // routeWithGap has an 89-second gap. With the default 4-second window
+    // centered inside that gap, both locationAt samples will fall in the
+    // gap → both return the (null) fallback → bearingAt returns null.
+    const idx = indexRoute(routeWithGap)!;
+    const tInGap = Date.UTC(2026, 3, 4, 15, 0, 30);
+    expect(bearingAt(tInGap, idx)).toBeNull();
+  });
 });
 
 describe('circularLerp', () => {
-  it.todo('350° → 10° at t=0.5 returns 0° (short arc through 0)');
-  it.todo('10° → 350° at t=0.5 returns 0° (short arc the other way)');
-  it.todo('0° → 180° at t=0.5 returns the documented arc');
+  it('350° → 10° at t=0.5 returns 0° (short arc through 0)', () => {
+    expect(circularLerp(350, 10, 0.5)).toBeCloseTo(0, 6);
+  });
+
+  it('10° → 350° at t=0.5 returns 0° (short arc the other way)', () => {
+    // The shortest path from 10° to 350° goes counterclockwise through 0°
+    // — diff = -20°, not +340°. Halfway is 0°.
+    expect(circularLerp(10, 350, 0.5)).toBeCloseTo(0, 6);
+  });
+
+  it('0° → 180° at t=0.5 returns 90° (clockwise arc — convention)', () => {
+    // 0° → 180° is the ambiguous case: both arcs are 180° long, so the
+    // function picks one by convention. With the source's `if (diff > 180)
+    // diff -= 360` (strict greater), diff stays at +180 and the result is
+    // 90°. This test codifies that choice — if the function ever flips to
+    // the counterclockwise arc (270°) we'll know.
+    expect(circularLerp(0, 180, 0.5)).toBeCloseTo(90, 6);
+  });
+
+  it('t=0 returns the start angle, t=1 returns the end angle', () => {
+    expect(circularLerp(123, 45, 0)).toBeCloseTo(123, 6);
+    expect(circularLerp(123, 45, 1)).toBeCloseTo(45, 6);
+  });
+
+  it('normalizes negative inputs into [0, 360)', () => {
+    // -10° normalizes to 350°, and 350° → 10° at 0.5 → 0°.
+    expect(circularLerp(-10, 10, 0.5)).toBeCloseTo(0, 6);
+  });
+
+  it('returns a value in [0, 360) for any t', () => {
+    for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+      const v = circularLerp(350, 10, t);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(360);
+    }
+  });
 });
 
 describe('computeBearingKeyframes', () => {
-  it.todo('stops=1 returns one keyframe at the midpoint');
-  it.todo('stops=N returns N keyframes at segment midpoints');
-  it.todo('stationary first segment falls back to a windowed bearing');
+  it('returns null for a null route', () => {
+    expect(computeBearingKeyframes(0, 1000, null, 1)).toBeNull();
+  });
+
+  it('returns null when the route has fewer than 2 points', () => {
+    const single: Route = {
+      source_path: '',
+      format: 'gpx',
+      trackpoints: [mkPoint(37, -122, '2026-04-04T15:00:00Z')],
+    };
+    expect(computeBearingKeyframes(0, 1000, indexRoute(single), 1)).toBeNull();
+  });
+
+  it('returns null when clipEndMs <= clipStartMs', () => {
+    const idx = indexRoute(linearRoute);
+    expect(computeBearingKeyframes(1000, 1000, idx, 1)).toBeNull();
+    expect(computeBearingKeyframes(2000, 1000, idx, 1)).toBeNull();
+  });
+
+  it('returns null when stops < 1', () => {
+    const idx = indexRoute(linearRoute);
+    expect(computeBearingKeyframes(0, 1000, idx, 0)).toBeNull();
+    expect(computeBearingKeyframes(0, 1000, idx, -3)).toBeNull();
+  });
+
+  it('returns null when locationAt fails inside a segment (e.g. gap fallthrough)', () => {
+    // routeWithGap has a 89s gap; if a segment lands entirely inside the
+    // gap, locationAt returns null and computeBearingKeyframes bails.
+    const idx = indexRoute(routeWithGap)!;
+    const tStart = Date.UTC(2026, 3, 4, 15, 0, 20);
+    const tEnd = Date.UTC(2026, 3, 4, 15, 0, 50);
+    expect(computeBearingKeyframes(tStart, tEnd, idx, 1)).toBeNull();
+  });
+
+  it('stops=1 returns a single keyframe at the midpoint of the clip', () => {
+    const idx = indexRoute(linearRoute)!;
+    const start = idx.minTimeMs;
+    const end = idx.maxTimeMs;
+    const kfs = computeBearingKeyframes(start, end, idx, 1)!;
+    expect(kfs).toHaveLength(1);
+    expect(kfs[0].timeMs).toBe((start + end) / 2);
+    // Linear-north route → bearing ~0°
+    expect(kfs[0].bearing).toBeCloseTo(0, 6);
+  });
+
+  it('stops=N returns N keyframes at segment midpoints', () => {
+    const idx = indexRoute(linearRoute)!;
+    const start = idx.minTimeMs;
+    const end = idx.maxTimeMs;
+    const stops = 4;
+    const kfs = computeBearingKeyframes(start, end, idx, stops)!;
+    expect(kfs).toHaveLength(stops);
+    const segLen = (end - start) / stops;
+    for (let i = 0; i < stops; i++) {
+      expect(kfs[i].timeMs).toBeCloseTo(start + (i + 0.5) * segLen, 6);
+      expect(kfs[i].bearing).toBeCloseTo(0, 6);
+    }
+  });
+
+  it('stationary first segment falls back to a windowed bearing rather than null', () => {
+    // routeWithStationarySegment: first ~half stationary, second half north.
+    // With stops=4 the first segment is in the stationary half; the function
+    // must use bearingAt's windowed fallback (which sweeps farther than the
+    // single segment) to produce a defined bearing.
+    const idx = indexRoute(routeWithStationarySegment)!;
+    const start = idx.minTimeMs;
+    const end = idx.maxTimeMs;
+    const kfs = computeBearingKeyframes(start, end, idx, 4)!;
+    expect(kfs).toHaveLength(4);
+    for (const k of kfs) {
+      expect(Number.isFinite(k.bearing)).toBe(true);
+      expect(k.bearing).toBeGreaterThanOrEqual(0);
+      expect(k.bearing).toBeLessThan(360);
+    }
+    // The non-stationary segments should still report ~0° (north).
+    expect(kfs.at(-1)!.bearing).toBeCloseTo(0, 6);
+  });
 });
 
 describe('bearingFromKeyframes', () => {
-  it.todo('before first keyframe holds first.bearing');
-  it.todo('after last keyframe holds last.bearing');
-  it.todo('between keyframes circular-lerps');
+  it('empty keyframes returns 0', () => {
+    expect(bearingFromKeyframes(0, [])).toBe(0);
+  });
+
+  it('single keyframe holds its bearing for any t', () => {
+    expect(bearingFromKeyframes(0, [{ timeMs: 1000, bearing: 42 }])).toBe(42);
+    expect(bearingFromKeyframes(99_999, [{ timeMs: 1000, bearing: 42 }])).toBe(42);
+  });
+
+  it('before the first keyframe holds first.bearing', () => {
+    const kfs = [
+      { timeMs: 1000, bearing: 30 },
+      { timeMs: 2000, bearing: 90 },
+    ];
+    expect(bearingFromKeyframes(0, kfs)).toBe(30);
+    expect(bearingFromKeyframes(1000, kfs)).toBe(30);
+  });
+
+  it('after the last keyframe holds last.bearing', () => {
+    const kfs = [
+      { timeMs: 1000, bearing: 30 },
+      { timeMs: 2000, bearing: 90 },
+    ];
+    expect(bearingFromKeyframes(2000, kfs)).toBe(90);
+    expect(bearingFromKeyframes(5000, kfs)).toBe(90);
+  });
+
+  it('between two keyframes circular-lerps', () => {
+    const kfs = [
+      { timeMs: 1000, bearing: 350 },
+      { timeMs: 2000, bearing: 10 },
+    ];
+    // Halfway between → short arc through 0
+    expect(bearingFromKeyframes(1500, kfs)).toBeCloseTo(0, 6);
+  });
+
+  it('lerps between intermediate keyframes (not just the first pair)', () => {
+    const kfs = [
+      { timeMs: 1000, bearing: 0 },
+      { timeMs: 2000, bearing: 30 },
+      { timeMs: 3000, bearing: 90 },
+    ];
+    // Halfway between kfs[1] and kfs[2]: shortest arc 30→90 at 0.5 = 60°.
+    expect(bearingFromKeyframes(2500, kfs)).toBeCloseTo(60, 6);
+  });
+});
+
+// ---- Coverage backfill ----
+// The §6.2 table doesn't list these two functions, but they live in the same
+// file and the Step 2 pass criterion requires ≥90% line coverage on
+// routeLocation.ts as a whole. These are minimal targeted tests to push the
+// file across the gate without adding redundant cases.
+
+describe('clipWallClockMs (coverage backfill)', () => {
+  it('returns null when clip is null', () => {
+    expect(clipWallClockMs(null, 0)).toBeNull();
+  });
+
+  it('returns null when clip.created_at is null', () => {
+    const clip: Clip = {
+      id: 'c',
+      path: '',
+      filename: '',
+      created_at: null,
+      duration_ms: null,
+      gps: null,
+      resolution: null,
+      frame_rate: null,
+      trim: null,
+      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
+      visible: true,
+      map_overrides: null,
+    };
+    expect(clipWallClockMs(clip, 0)).toBeNull();
+  });
+
+  it('returns null when created_at is unparseable', () => {
+    const clip: Clip = {
+      id: 'c',
+      path: '',
+      filename: '',
+      created_at: 'gibberish',
+      duration_ms: null,
+      gps: null,
+      resolution: null,
+      frame_rate: null,
+      trim: null,
+      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
+      visible: true,
+      map_overrides: null,
+    };
+    expect(clipWallClockMs(clip, 0)).toBeNull();
+  });
+
+  it('adds mediaSeconds * 1000 to the parsed start', () => {
+    const clip: Clip = {
+      id: 'c',
+      path: '',
+      filename: '',
+      created_at: '2026-04-04T15:00:00Z',
+      duration_ms: null,
+      gps: null,
+      resolution: null,
+      frame_rate: null,
+      trim: null,
+      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
+      visible: true,
+      map_overrides: null,
+    };
+    expect(clipWallClockMs(clip, 2.5)).toBe(Date.UTC(2026, 3, 4, 15, 0, 0) + 2500);
+  });
+});
+
+describe('cardinalFromBearing (coverage backfill)', () => {
+  it('quantizes to N/E/S/W at exact cardinals', () => {
+    expect(cardinalFromBearing(0)).toBe('N');
+    expect(cardinalFromBearing(90)).toBe('E');
+    expect(cardinalFromBearing(180)).toBe('S');
+    expect(cardinalFromBearing(270)).toBe('W');
+  });
+
+  it('quantizes to NE/SE/SW/NW at intercardinals', () => {
+    expect(cardinalFromBearing(45)).toBe('NE');
+    expect(cardinalFromBearing(135)).toBe('SE');
+    expect(cardinalFromBearing(225)).toBe('SW');
+    expect(cardinalFromBearing(315)).toBe('NW');
+  });
+
+  it('normalizes negative or out-of-range bearings before quantizing', () => {
+    expect(cardinalFromBearing(360)).toBe('N');
+    expect(cardinalFromBearing(-90)).toBe('W');
+  });
+});
+
+// Reference imports — these are exported and used elsewhere in the codebase
+// but the linter would otherwise flag them as unused if a test ever drops the
+// describe block above. Keeping a touch-test ensures we don't accidentally
+// break the public surface.
+describe('module exports surface', () => {
+  it('DEFAULT_BEARING_WINDOW_MS is a positive number', () => {
+    expect(DEFAULT_BEARING_WINDOW_MS).toBeGreaterThan(0);
+  });
+
+  it('IndexedRoute is the type returned by indexRoute', () => {
+    const idx: IndexedRoute | null = indexRoute(linearRoute);
+    expect(idx).not.toBeNull();
+  });
 });
