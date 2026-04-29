@@ -19,9 +19,11 @@ pub fn create_project(project_dir: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Save project to project bundle
+/// Save project to project bundle. Always writes `schema_version =
+/// CURRENT_SCHEMA_VERSION` regardless of what came in from the frontend.
 #[tauri::command]
-pub fn save_project(project: Project, project_dir: String) -> Result<(), String> {
+pub fn save_project(mut project: Project, project_dir: String) -> Result<(), String> {
+    project.schema_version = CURRENT_SCHEMA_VERSION;
     let path = Path::new(&project_dir).join("project.json");
     let json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {}", e))?;
@@ -29,14 +31,47 @@ pub fn save_project(project: Project, project_dir: String) -> Result<(), String>
     Ok(())
 }
 
-/// Load project from project bundle
+/// Load project from project bundle. Reads the `schema_version` field, runs
+/// any required one-shot migrations, then returns a current-schema Project
+/// in memory. Files lacking the field are read as v1 and migrated to v2.
 #[tauri::command]
 pub fn load_project(project_dir: String) -> Result<Project, String> {
     let path = Path::new(&project_dir).join("project.json");
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read project file: {}", e))?;
-    let project: Project =
+    let raw: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("Failed to parse project: {}", e))?;
+    let version = raw
+        .get("schema_version")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(1);
+
+    let project = match version {
+        1 => migrate_v1_to_v2(raw)?,
+        2 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v2 project: {}", e))?,
+        _ => {
+            return Err(format!(
+                "Unknown project schema version {} (this app supports v1 and v2)",
+                version
+            ));
+        }
+    };
+
+    Ok(project)
+}
+
+/// v1 → v2 migration. v1 is the pre-camera-architecture shape: `route`
+/// present in JSON, no `transition_feel`. Today this is effectively additive
+/// (serde defaults handle the missing field), but the migration step exists
+/// to make the version bump load-bearing for future shape changes. Task 370
+/// will extend this to drop the persisted `route` from the in-memory result
+/// and re-parse from `route.gpx`.
+fn migrate_v1_to_v2(raw: serde_json::Value) -> Result<Project, String> {
+    let mut project: Project = serde_json::from_value(raw)
+        .map_err(|e| format!("Failed to parse v1 project: {}", e))?;
+    project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
 
@@ -84,4 +119,79 @@ pub fn delete_project(project_dir: String) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A v1 project on disk: no `schema_version`, no `transition_feel`,
+    /// `route` field present (will be dropped by task 370 — for now it's
+    /// preserved through migration since the route field still exists).
+    const V1_PROJECT_JSON: &str = r#"{
+        "version": 1,
+        "name": "Old Project",
+        "thumbnail": null,
+        "clips": [],
+        "route": null,
+        "exports": [],
+        "map_settings": null
+    }"#;
+
+    #[test]
+    fn v1_loads_with_default_schema_version_1() {
+        let raw: serde_json::Value = serde_json::from_str(V1_PROJECT_JSON).unwrap();
+        let version = raw
+            .get("schema_version")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(1);
+        assert_eq!(version, 1, "missing schema_version must default to 1");
+    }
+
+    #[test]
+    fn migrate_v1_to_v2_lifts_schema_version() {
+        let raw: serde_json::Value = serde_json::from_str(V1_PROJECT_JSON).unwrap();
+        let project = migrate_v1_to_v2(raw).expect("v1 project must migrate cleanly");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 2);
+        assert!(project.transition_feel.is_none());
+        assert_eq!(project.name, "Old Project");
+    }
+
+    #[test]
+    fn save_then_load_round_trip_writes_v2() {
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Seed the bundle with a v1-shaped project.json.
+        std::fs::write(dir.join("project.json"), V1_PROJECT_JSON).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str.clone()).expect("load v1 must succeed");
+        assert_eq!(
+            loaded.schema_version, CURRENT_SCHEMA_VERSION,
+            "load must surface migrated v2 in memory"
+        );
+
+        save_project(loaded, dir_str.clone()).expect("save must succeed");
+
+        // After save, the on-disk file is v2.
+        let on_disk = std::fs::read_to_string(dir.join("project.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
+        assert_eq!(
+            parsed.get("schema_version").and_then(|v| v.as_u64()),
+            Some(2),
+            "save must write schema_version: 2"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -216,6 +216,17 @@ pub enum TransitionFeel {
     Slow,
 }
 
+/// Current persisted-project schema version. Bump when a field's *shape*
+/// changes (not just additive). v2 = post-camera-architecture migration:
+/// `route` is no longer in JSON (re-parsed from `route.gpx` — task 370),
+/// `transition_feel` is present (task 350).
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+
+fn default_schema_version() -> u32 {
+    // Legacy files lack the field; treat them as v1 for migration purposes.
+    1
+}
+
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
@@ -233,6 +244,11 @@ impl Default for MapSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    /// Persisted-schema version. See `CURRENT_SCHEMA_VERSION` and the v1→v2
+    /// migration in `commands/project.rs::load_project`. Defaults to 1 on
+    /// deserialize so legacy bundles read as v1 and get migrated.
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub version: u32,
     #[serde(default)]
     pub name: String,
@@ -254,6 +270,7 @@ pub struct Project {
 impl Default for Project {
     fn default() -> Self {
         Project {
+            schema_version: CURRENT_SCHEMA_VERSION,
             version: 1,
             name: String::new(),
             thumbnail: None,
