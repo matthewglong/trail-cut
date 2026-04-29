@@ -23,7 +23,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 130 | ✅     | 1 (Spike)         | Implement resolveIntent and interpolateAnchors                     | 100, 110, 120     | 94f4bae |
 | 140 | 🛑     | 1 (Spike)         | Build CameraSpikeHarness with two-pane preview (HARD STOP)         | 100, 110, 120, 130| 2c88756 |
 | 200 | ✅     | 2 (route tests)   | Scaffold routeLocation test file structure                         | 001               | 9e9640a |
-| 210 | ⬜     | 2 (route tests)   | Tests for parseTimestamp, indexRoute, locationAt                   | 200               | —      |
+| 210 | ✅     | 2 (route tests)   | Tests for parseTimestamp, indexRoute, locationAt                   | 200               | 067b73a |
 | 220 | ⬜     | 2 (route tests)   | Tests for trailUpTo, clipWaypointLocation, forwardAzimuth          | 200               | —      |
 | 230 | ⬜     | 2 (route tests)   | Tests for bearing math (90% coverage gate)                         | 200               | —      |
 | 300 | ⬜     | 3 (MapView)       | Build MapTrack in ProjectView and pass to MapView                  | 120, 230          | —      |
