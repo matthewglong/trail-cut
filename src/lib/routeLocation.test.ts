@@ -12,10 +12,39 @@ import {
   parseTimestamp,
   indexRoute,
   locationAt,
+  trailUpTo,
+  clipWaypointLocation,
+  forwardAzimuth,
   MAX_INTERPOLATION_GAP_MS,
 } from './routeLocation';
-import type { Route } from '../types';
-import { linearRoute, mkPoint, routeWithGap } from './__fixtures__/routes';
+import type { Clip, Route } from '../types';
+import {
+  linearRoute,
+  longLinearRoute,
+  mkPoint,
+  routeWithGap,
+} from './__fixtures__/routes';
+
+/** Build a minimal Clip for tests. Only the fields routeLocation reads
+ *  matter — everything else is filled with reasonable defaults. */
+function mkClip(overrides: Partial<Clip>): Clip {
+  return {
+    id: 'test-clip',
+    path: '/fixtures/clip.mov',
+    filename: 'clip.mov',
+    created_at: null,
+    duration_ms: 1000,
+    gps: null,
+    resolution: null,
+    frame_rate: null,
+    trim: null,
+    focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+    effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
+    visible: true,
+    map_overrides: null,
+    ...overrides,
+  };
+}
 
 describe('parseTimestamp', () => {
   it('parses ISO 8601 ("2026-04-04T15:13:00Z")', () => {
@@ -223,19 +252,165 @@ describe('locationAt', () => {
 });
 
 describe('trailUpTo', () => {
-  it.todo('before route start returns empty coordinates');
-  it.todo('after route end returns all coordinates');
-  it.todo('mid-route returns strict-before points + interpolated head');
-  it.todo('big gap straddling t omits the interpolated head');
+  it('before route start returns empty coordinates', () => {
+    const idx = indexRoute(linearRoute)!;
+    const feat = trailUpTo(idx.minTimeMs - 1, idx);
+    expect(feat.geometry.coordinates).toEqual([]);
+  });
+
+  it('exactly at route start returns empty coordinates', () => {
+    // bisectLeft returns 0 → strict-before loop emits nothing; head check
+    // fails because i === 0. The slime trail starts the moment we *pass*
+    // the first point.
+    const idx = indexRoute(linearRoute)!;
+    const feat = trailUpTo(idx.minTimeMs, idx);
+    expect(feat.geometry.coordinates).toEqual([]);
+  });
+
+  it('after route end returns all coordinates with no interpolated head', () => {
+    const idx = indexRoute(linearRoute)!;
+    const feat = trailUpTo(idx.maxTimeMs + 5_000, idx);
+    expect(feat.geometry.coordinates).toHaveLength(idx.points.length);
+    // GeoJSON ordering is [lng, lat]
+    expect(feat.geometry.coordinates[0]).toEqual([-122.0, 37.0]);
+    expect(feat.geometry.coordinates.at(-1)).toEqual([-122.0, 37.004]);
+  });
+
+  it('exactly at route end returns all coordinates', () => {
+    const idx = indexRoute(linearRoute)!;
+    const feat = trailUpTo(idx.maxTimeMs, idx);
+    expect(feat.geometry.coordinates).toHaveLength(5);
+  });
+
+  it('mid-route returns strict-before points plus an interpolated head', () => {
+    const idx = indexRoute(linearRoute)!;
+    // 1.5 s in: strict-before points are pts[0] (15:00:00) and pts[1]
+    // (15:00:01); interpolated head sits halfway between pts[1] and pts[2].
+    const t = Date.UTC(2026, 3, 4, 15, 0, 1) + 500;
+    const feat = trailUpTo(t, idx);
+    const coords = feat.geometry.coordinates;
+    expect(coords).toHaveLength(3);
+    expect(coords[0]).toEqual([-122.0, 37.0]);
+    expect(coords[1]).toEqual([-122.0, 37.001]);
+    // Interpolated head: lng=-122, lat halfway between 37.001 and 37.002
+    expect(coords[2][0]).toBeCloseTo(-122.0, 12);
+    expect(coords[2][1]).toBeCloseTo(0.5 * (37.001 + 37.002), 12);
+  });
+
+  it('big gap straddling t omits the interpolated head', () => {
+    const idx = indexRoute(routeWithGap)!;
+    // Inside the 89-second gap between pts[1] (15:00:01) and pts[2] (15:01:30).
+    const t = Date.UTC(2026, 3, 4, 15, 0, 30);
+    const feat = trailUpTo(t, idx);
+    const coords = feat.geometry.coordinates;
+    // Strict-before points are pts[0] and pts[1]; no interpolated head.
+    expect(coords).toHaveLength(2);
+    expect(coords[0]).toEqual([-122.0, 37.0]);
+    expect(coords[1]).toEqual([-122.0, 37.001]);
+  });
 });
 
 describe('clipWaypointLocation', () => {
-  it.todo('anchors at created_at + trim.in_ms (split-clip semantics)');
+  it('with no created_at and no gps falls back to null', () => {
+    const clip = mkClip({ created_at: null, gps: null });
+    expect(clipWaypointLocation(clip, indexRoute(linearRoute))).toBeNull();
+  });
+
+  it('with no created_at but a gps fallback returns the fallback', () => {
+    const clip = mkClip({ created_at: null, gps: { lat: 1.5, lng: 2.5 } });
+    const loc = clipWaypointLocation(clip, indexRoute(linearRoute));
+    expect(loc).toEqual({ lat: 1.5, lng: 2.5, source: 'fallback' });
+  });
+
+  it('with an unparseable created_at falls back to clip.gps', () => {
+    const clip = mkClip({ created_at: 'not a date', gps: { lat: 9, lng: 8 } });
+    const loc = clipWaypointLocation(clip, indexRoute(linearRoute));
+    expect(loc).toEqual({ lat: 9, lng: 8, source: 'fallback' });
+  });
+
+  it('anchors at created_at when trim is null (defaults to 0)', () => {
+    const clip = mkClip({
+      created_at: '2026-04-04T15:00:00Z',
+      trim: null,
+      gps: null,
+    });
+    const loc = clipWaypointLocation(clip, indexRoute(longLinearRoute));
+    expect(loc).toEqual({ lat: 37.0, lng: -122.0, source: 'gpx' });
+  });
+
+  it('split-clip semantics: same created_at + different trim.in_ms → different positions', () => {
+    // Both halves of a split clip share created_at = 15:00:00. The left
+    // half has trim.in_ms = 0 (anchor at 15:00:00 → lat 37.000). The right
+    // half has trim.in_ms = 5000 (anchor at 15:00:05 → lat 37.005). Without
+    // the trim.in_ms offset, both halves would resolve to the same point.
+    const created = '2026-04-04T15:00:00Z';
+    const idx = indexRoute(longLinearRoute);
+    const left = mkClip({
+      id: 'left',
+      created_at: created,
+      trim: { in_ms: 0, out_ms: 5_000 },
+    });
+    const right = mkClip({
+      id: 'right',
+      created_at: created,
+      trim: { in_ms: 5_000, out_ms: 10_000 },
+    });
+    const lLoc = clipWaypointLocation(left, idx)!;
+    const rLoc = clipWaypointLocation(right, idx)!;
+    expect(lLoc.source).toBe('gpx');
+    expect(rLoc.source).toBe('gpx');
+    expect(lLoc.lat).toBeCloseTo(37.0, 12);
+    expect(rLoc.lat).toBeCloseTo(37.005, 12);
+    // Same lng, different lat → demonstrably different positions.
+    expect(rLoc.lat).not.toBeCloseTo(lLoc.lat, 6);
+  });
 });
 
 describe('forwardAzimuth', () => {
-  it.todo('cardinal directions: N=0, E=90, S=180, W=270');
-  it.todo('antipodal points have a defined output');
+  // Cardinals are exact at the equator: parallels are great circles there,
+  // and any meridian segment is a great circle everywhere. Mid-latitude
+  // east/west bearings have a tiny great-circle curvature offset (~0.0003°
+  // for a 0.001° step), so we use lat=0 to get crisp cardinal outputs.
+  const STEP = 0.001;
+
+  it('due north (along a meridian at mid-latitude) → 0°', () => {
+    expect(forwardAzimuth(37, -122, 37 + STEP, -122)).toBeCloseTo(0, 6);
+  });
+
+  it('due east at the equator → 90°', () => {
+    expect(forwardAzimuth(0, 0, 0, STEP)).toBeCloseTo(90, 6);
+  });
+
+  it('due south (along a meridian at mid-latitude) → 180°', () => {
+    expect(forwardAzimuth(37, -122, 37 - STEP, -122)).toBeCloseTo(180, 6);
+  });
+
+  it('due west at the equator → 270°', () => {
+    expect(forwardAzimuth(0, 0, 0, -STEP)).toBeCloseTo(270, 6);
+  });
+
+  it('output is always in [0, 360)', () => {
+    // Sweep four diagonals; each must normalize into [0, 360).
+    const cases = [
+      [37 + STEP, -122 + STEP],
+      [37 - STEP, -122 + STEP],
+      [37 - STEP, -122 - STEP],
+      [37 + STEP, -122 - STEP],
+    ] as const;
+    for (const [lat2, lng2] of cases) {
+      const az = forwardAzimuth(37, -122, lat2, lng2);
+      expect(az).toBeGreaterThanOrEqual(0);
+      expect(az).toBeLessThan(360);
+    }
+  });
+
+  it('antipodal points (180° lng apart, same non-equator lat) return 0° — great circle goes over the pole', () => {
+    // For two points at the same latitude separated by exactly 180° of
+    // longitude, the shortest great-circle path runs directly over the
+    // pole, which is "due north" (azimuth 0°). This is a defined output
+    // (not NaN) — capturing it here so future refactors notice if it changes.
+    expect(forwardAzimuth(37, 0, 37, 180)).toBeCloseTo(0, 6);
+  });
 });
 
 describe('bearingAt', () => {
