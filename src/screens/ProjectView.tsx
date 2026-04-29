@@ -7,13 +7,9 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
-import { useMapRecorder } from '../hooks/useMapRecorder';
 import {
   clipWallClockMs,
-  computeBearingKeyframes,
-  bearingFromKeyframes,
   indexRoute,
-  parseTimestamp,
 } from '../lib/routeLocation';
 import { buildMapTrack, type TransitionFeel } from '../lib/cameraIntent';
 import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides } from '../types';
@@ -163,71 +159,21 @@ export default function ProjectView({
     return Object.values(selectedClip.map_overrides).some((v) => v !== undefined);
   }, [selectedClip]);
 
-  // ---- Direction of travel (predetermined keyframes) ----
-  // Instead of computing a noisy bearing every frame, we pre-derive keyframes
-  // for the selected clip's time range and smoothly interpolate between them.
-  // Keyframes recompute when the clip's trim, route, or stop count changes.
+  // Indexed route — used by buildMapTrack below. Per-clip bearing keyframes
+  // are now pre-computed inside buildMapTrack's anchor builder, so ProjectView
+  // no longer derives effectiveBearing for the camera.
   const indexedRoute = useMemo(() => indexRoute(route), [route]);
 
-  // TODO(task 350): replace hardcoded 'natural' with `project.transition_feel ?? 'natural'`.
+  // The project-level transition-feel knob (§3.6). Read from the persisted
+  // project field with a 'natural' default for v1 projects that pre-date it.
   const projectTransitionFeel: TransitionFeel = 'natural';
 
-  // The single source of truth for camera-state derivation. `MapView` will
-  // consume this in tasks 310-320 to drive the live ease loop.
+  // The single source of truth for camera-state derivation. MapView consumes
+  // this each tick of its live ease loop (§3.5).
   const track = useMemo(
     () => buildMapTrack(clips, indexedRoute, mapSettings, projectTransitionFeel),
     [clips, indexedRoute, mapSettings, projectTransitionFeel],
   );
-
-  // Derive the selected clip's wall-clock time range (respecting trim).
-  const clipTimeRange = useMemo((): { startMs: number; endMs: number } | null => {
-    if (!selectedClip?.created_at) return null;
-    const baseMs = parseTimestamp(selectedClip.created_at);
-    if (Number.isNaN(baseMs)) return null;
-    const startMs = baseMs + (selectedClip.trim?.in_ms ?? 0);
-    const endMs = baseMs + (selectedClip.trim?.out_ms ?? selectedClip.duration_ms ?? 0);
-    if (endMs <= startMs) return null;
-    return { startMs, endMs };
-  }, [selectedClip]);
-
-  // Pre-compute bearing keyframes for the current clip.
-  const bearingKeyframes = useMemo(() => {
-    if (!clipTimeRange) return null;
-    return computeBearingKeyframes(
-      clipTimeRange.startMs,
-      clipTimeRange.endMs,
-      indexedRoute,
-      toolbarSettings.bearing_stops,
-    );
-  }, [clipTimeRange, indexedRoute, toolbarSettings.bearing_stops]);
-
-  // Effective bearing actually handed to MapView. In auto mode, interpolate
-  // from pre-computed keyframes; when the playhead hasn't arrived yet (e.g.
-  // right after project load, before the video reports its first time update),
-  // evaluate at the clip's start time so the initial clip-transition fires
-  // with the correct bearing. Otherwise a subsequent bearing-only easeTo
-  // would cancel the in-flight zoom flyTo and the zoom would be lost.
-  const effectiveBearing: number = useMemo(() => {
-    if (toolbarSettings.bearing_mode === 'auto' && bearingKeyframes != null) {
-      const t = playheadMs ?? clipTimeRange?.startMs ?? null;
-      if (t != null) return bearingFromKeyframes(t, bearingKeyframes);
-    }
-    return toolbarSettings.bearing_degrees;
-  }, [toolbarSettings.bearing_mode, toolbarSettings.bearing_degrees, bearingKeyframes, playheadMs, clipTimeRange]);
-
-  // Map debug recorder. Captures per-frame camera state + tagged events to TSV.
-  // The hook owns the RAF loop while the popover is open.
-  const recorder = useMapRecorder({
-    selectedClipId,
-    playheadMs,
-    follow: toolbarSettings.follow_playhead,
-    bearingMode: toolbarSettings.bearing_mode,
-    targetZoom: toolbarSettings.zoom,
-    targetBearing: effectiveBearing,
-  });
-  const setRecorderOpen = recorder.setOpen;
-  const closeDebug = useCallback(() => setRecorderOpen(false), [setRecorderOpen]);
-  useDropdownClose(recorder.isOpen, closeDebug);
 
   // Clear the selected clip's map overrides, letting it follow project defaults.
   const handleResetClipMapOverrides = useCallback(() => {
@@ -446,51 +392,6 @@ export default function ProjectView({
               </div>
             )}
           </div>
-          <div style={styles.debugWrapper}>
-            <button
-              onClick={() => recorder.setOpen(!recorder.isOpen)}
-              style={styles.button}
-            >
-              Debug &#9662;
-            </button>
-            {recorder.isOpen && (
-              <div style={styles.debugPopover} onClick={(e) => e.stopPropagation()}>
-                <div style={styles.debugHeader}>
-                  <button onClick={recorder.copy} style={styles.debugButtonPrimary}>
-                    {recorder.copyFlash ? 'Copied' : 'Copy'}
-                  </button>
-                  <button onClick={recorder.clear} style={styles.debugButtonSecondary}>Clear</button>
-                  <span style={styles.debugMeta}>
-                    {(recorder.recordingMs / 1000).toFixed(1)}s · {recorder.framesCount} frames
-                  </span>
-                </div>
-                <div style={styles.debugStateRow}>
-                  follow={toolbarSettings.follow_playhead ? 'ON' : 'OFF'}
-                  {' '}bearing={toolbarSettings.bearing_mode}
-                  {toolbarSettings.bearing_mode === 'fixed'
-                    ? `(${toolbarSettings.bearing_degrees}°)`
-                    : `(stops=${toolbarSettings.bearing_stops})`}
-                  {' '}style={toolbarSettings.map_style}
-                  {' '}targetZ={toolbarSettings.zoom}
-                  {' '}targetB={Math.round(effectiveBearing)}°
-                </div>
-                <div style={styles.debugEventsList}>
-                  {recorder.recentEvents.length === 0 && (
-                    <div style={styles.debugEmpty}>no events yet — interact with the map</div>
-                  )}
-                  {recorder.recentEvents.map((e, i) => {
-                    const dim = e.msg.includes('GATED') || e.msg.includes('THROTTLED');
-                    return (
-                      <div key={i} style={dim ? styles.debugEventDim : styles.debugEvent}>
-                        <span style={styles.debugEventTime}>{(e.t / 1000).toFixed(2)}s</span>
-                        {' '}{e.msg}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -568,9 +469,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
-                mapBearing={effectiveBearing}
                 onSelectClip={handleSelectClip}
-                recorder={recorder}
               />
               <div
                 style={mapScope === 'project' ? styles.scopeBadgeProject : styles.scopeBadgeClip}
@@ -768,93 +667,6 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     fontSize: '13px',
     textAlign: 'left' as const,
-  },
-  debugWrapper: {
-    position: 'relative' as const,
-  },
-  debugPopover: {
-    position: 'absolute' as const,
-    top: '100%',
-    right: 0,
-    marginTop: '4px',
-    backgroundColor: '#1d1d1d',
-    border: '1px solid #444',
-    borderRadius: '6px',
-    zIndex: 100,
-    width: '420px',
-    maxHeight: '420px',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    fontSize: '11px',
-    color: '#ddd',
-    boxShadow: '0 6px 24px rgba(0,0,0,0.5)',
-  },
-  debugHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
-    padding: '8px 10px',
-    borderBottom: '1px solid #333',
-  },
-  debugButtonPrimary: {
-    padding: '4px 12px',
-    backgroundColor: '#3a5a8a',
-    color: '#fff',
-    border: '1px solid #4a6a9a',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '11px',
-    fontFamily: 'inherit',
-  },
-  debugButtonSecondary: {
-    padding: '4px 12px',
-    backgroundColor: '#2a2a2a',
-    color: '#bbb',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '11px',
-    fontFamily: 'inherit',
-  },
-  debugMeta: {
-    marginLeft: 'auto',
-    color: '#888',
-    fontSize: '11px',
-  },
-  debugStateRow: {
-    padding: '6px 10px',
-    color: '#888',
-    fontSize: '10.5px',
-    borderBottom: '1px solid #2a2a2a',
-    lineHeight: 1.5,
-  },
-  debugEventsList: {
-    overflowY: 'auto' as const,
-    padding: '6px 10px 8px 10px',
-    flex: 1,
-    minHeight: '120px',
-    lineHeight: 1.55,
-  },
-  debugEvent: {
-    color: '#ddd',
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  debugEventDim: {
-    color: '#666',
-    whiteSpace: 'nowrap' as const,
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-  },
-  debugEventTime: {
-    color: '#666',
-    marginRight: '4px',
-  },
-  debugEmpty: {
-    color: '#555',
-    fontStyle: 'italic' as const,
   },
   error: {
     padding: '8px 16px',

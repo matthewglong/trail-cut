@@ -519,6 +519,15 @@ function easeInOut(x: number, _feel: TransitionFeel): number {
  *  the boundaries — but `clamp01` ensures values strictly outside snap to
  *  exactly camA/camB, not just "very close").
  *
+ *  Bearing in gap arcs: §8.3 flagged that lerping between camA.bearing and
+ *  camB.bearing at the canonical-time endpoints (a.endTimeMs / b.timeMs)
+ *  may diverge from the GPX direction-of-travel mid-gap when the two clips
+ *  point very different ways. Visual parity for gap arcs needs a sanity
+ *  check on a real ≥3-clip project with `bearing_mode: 'auto'`; deferred
+ *  to user review at the end of Step 3. If the arc rotation looks wrong,
+ *  the fix is to consult GPX bearing at intermediate times rather than
+ *  lerp endpoints — that's a contained follow-up, not a redesign.
+ *
  *  See §3.4 of MAP_ARCHITECTURE_MIGRATION.md for the full algorithm. */
 export function interpolateAnchors(
   a: MapAnchor,

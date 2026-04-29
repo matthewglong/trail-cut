@@ -18,26 +18,23 @@ import {
   type MapTrack,
   type Viewport,
 } from '../lib/cameraIntent';
-import type { MapRecorder } from '../hooks/useMapRecorder';
 
 interface MapViewProps {
   /** Pure timeline of camera anchors built upstream by `buildMapTrack`. The
-   *  imperative writers in this file still drive the camera today; tasks
-   *  310-320 will replace them with a single ease loop that consumes this. */
+   *  ease loop in this file consumes this each tick to drive the camera. */
   track: MapTrack;
-  clips: Clip[];
-  selectedClipId: string | null;
-  route: Route | null;
   /** Wall-clock playback time in ms (clip start + media time). null when no
    *  clip is selected or its created_at is missing. */
   playheadMs: number | null;
   mapSettings: MapSettings;
-  /** Effective bearing the map should face, in degrees [0, 360). Resolved
-   *  upstream in ProjectView from `bearing_mode`/`bearing_degrees` and the
-   *  live GPX heading. */
-  mapBearing: number;
+  selectedClipId: string | null;
+  route: Route | null;
+  /** Retained beyond §6.3's listing because the waypoint paint writer and the
+   *  marker's GPS fallback both need per-clip data (id, created_at, gps).
+   *  `track.anchors` does not carry clip identity, so there's no path from
+   *  `selectedClipId` back to a `Clip` without this prop. */
+  clips: Clip[];
   onSelectClip?: (clipId: string) => void;
-  recorder?: MapRecorder;
 }
 
 const TRAIL_COLOR = colors.accent;
@@ -117,16 +114,10 @@ export default function MapView({
   route,
   playheadMs,
   mapSettings,
-  mapBearing,
   onSelectClip,
-  recorder,
 }: MapViewProps) {
-  const recorderRef = useRef<MapRecorder | undefined>(recorder);
-  recorderRef.current = recorder;
   const onSelectClipRef = useRef(onSelectClip);
   onSelectClipRef.current = onSelectClip;
-  const mapBearingRef = useRef(mapBearing);
-  mapBearingRef.current = mapBearing;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
@@ -169,7 +160,7 @@ export default function MapView({
       style: styleForId(mapStyleIdRef.current),
       center: [-122.4194, 37.7749],
       zoom: 10,
-      bearing: mapBearingRef.current,
+      bearing: 0,
       attributionControl: false,
     });
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -178,18 +169,6 @@ export default function MapView({
     const resizeObserver = new ResizeObserver(() => map.resize());
     resizeObserver.observe(containerRef.current);
     mapRef.current = map;
-
-    recorderRef.current?.registerFrameSampler(() => {
-      const c = map.getCenter();
-      return {
-        zoom: map.getZoom(),
-        bearing: map.getBearing(),
-        pitch: map.getPitch(),
-        lng: c.lng,
-        lat: c.lat,
-        isMoving: map.isMoving(),
-      };
-    });
 
     const onStyleLoad = () => {
       styleReadyRef.current = true;
@@ -285,7 +264,6 @@ export default function MapView({
     });
 
     return () => {
-      recorderRef.current?.registerFrameSampler(null);
       resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
