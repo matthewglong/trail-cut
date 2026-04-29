@@ -140,7 +140,9 @@ export default function MapView({
 
   const liveMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveMarkerElRef = useRef<HTMLDivElement | null>(null);
-  const lastFitRouteRef = useRef<Route | null>(null);
+  // Tracks the last route reference we framed via the region-intent jumpTo
+  // below. Idempotence guard: we only refit once per unique route.
+  const appliedRouteRef = useRef<Route | null>(null);
   const prevZoomRef = useRef<number>(mapSettings.zoom);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
@@ -313,7 +315,13 @@ export default function MapView({
     map.easeTo({ pitch: mapStyleId === '3d' ? 60 : 0, duration: 400 });
   }, [mapStyleId]);
 
-  // ---- Update full-route line + fit bounds when route changes ----
+  // ---- Update full-route line + region-intent fit when route changes ----
+  // On a new route, frame the full bounds via a `region` CameraIntent resolved
+  // through the same pipeline the ease loop uses (§6.3 step 3). jumpTo (not
+  // easeTo) is intentional: the initial fit has no continuity to preserve,
+  // and the §3.5 ease loop picks up smoothly from this state on the next
+  // tick once anchors exist. Padding 0.06 matches the follow-anchor default
+  // (§3.2) — at a typical map pane this is comparable to today's 60 px inset.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -333,11 +341,46 @@ export default function MapView({
         geometry: { type: 'LineString', coordinates },
       });
 
-      if (lastFitRouteRef.current !== route) {
-        lastFitRouteRef.current = route;
-        const bounds = new maplibregl.LngLatBounds();
-        coordinates.forEach((c) => bounds.extend(c));
-        map.fitBounds(bounds, { padding: 60, duration: 0 });
+      if (appliedRouteRef.current !== route) {
+        appliedRouteRef.current = route;
+        let minLng = Infinity;
+        let minLat = Infinity;
+        let maxLng = -Infinity;
+        let maxLat = -Infinity;
+        for (const tp of route.trackpoints) {
+          if (tp.lng < minLng) minLng = tp.lng;
+          if (tp.lng > maxLng) maxLng = tp.lng;
+          if (tp.lat < minLat) minLat = tp.lat;
+          if (tp.lat > maxLat) maxLat = tp.lat;
+        }
+        // Skip degenerate routes (single point or zero extent on either axis)
+        // — `cameraForBounds` would return -Infinity zoom on a zero span.
+        if (Number.isFinite(minLng) && maxLng > minLng && maxLat > minLat) {
+          const viewport: Viewport = {
+            width: map.getContainer().clientWidth,
+            height: map.getContainer().clientHeight,
+            dpr: window.devicePixelRatio,
+          };
+          const target = resolveIntent(
+            {
+              kind: 'region',
+              bounds: {
+                sw: { lng: minLng, lat: minLat },
+                ne: { lng: maxLng, lat: maxLat },
+              },
+              padding: 0.06,
+              bearing: 0,
+              pitch: 0,
+            },
+            viewport,
+          );
+          map.jumpTo({
+            center: [target.center.lng, target.center.lat],
+            zoom: target.zoom,
+            bearing: target.bearing,
+            pitch: target.pitch,
+          });
+        }
       }
     };
 
@@ -456,9 +499,9 @@ export default function MapView({
 
     const tick = () => {
       if (stopped) return;
-      // No anchors → don't push the camera. The route fitBounds writer (still
-      // in place pending task 320) and the constructor's initial framing
-      // remain authoritative until clips with timestamps exist.
+      // No anchors → don't push the camera. The route region-fit jumpTo and
+      // the constructor's initial framing remain authoritative until clips
+      // with timestamps exist.
       if (track.anchors.length === 0) {
         timeoutId = window.setTimeout(tick, STEP_MS);
         return;
