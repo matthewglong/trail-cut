@@ -204,6 +204,18 @@ pub struct MapOverrides {
     pub bearing_stops: Option<u32>,
 }
 
+/// Project-level "transition feel" knob (§3.6 of MAP_ARCHITECTURE_MIGRATION.md).
+/// Drives the duration multiplier for cross-anchor Van Wijk arcs in the live
+/// preview (and, eventually, the export render). Persisted as the lowercase
+/// string variant so the on-disk JSON matches the frontend's literal union.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransitionFeel {
+    Natural,
+    Snappy,
+    Slow,
+}
+
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
@@ -231,6 +243,12 @@ pub struct Project {
     pub exports: Vec<ExportConfig>,
     #[serde(default)]
     pub map_settings: Option<MapSettings>,
+    /// `None` on disk for v1 projects pre-dating the camera migration. The
+    /// frontend resolves `None` to `'natural'` at the call site rather than
+    /// defaulting here, so save round-trips are observable (an unset field
+    /// stays unset on disk).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_feel: Option<TransitionFeel>,
 }
 
 impl Default for Project {
@@ -243,6 +261,7 @@ impl Default for Project {
             route: None,
             exports: Vec::new(),
             map_settings: None,
+            transition_feel: None,
         }
     }
 }

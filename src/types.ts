@@ -130,6 +130,12 @@ export interface ExportConfig {
   quality: string;
 }
 
+/** Project-level "transition feel" knob (§3.6). Drives the duration
+ *  multiplier for cross-anchor Van Wijk arcs. Mirrors the union in
+ *  cameraIntent.ts; duplicated here so types.ts stays free of cameraIntent
+ *  imports (cameraIntent itself imports from types.ts). */
+export type TransitionFeel = 'natural' | 'snappy' | 'slow';
+
 export interface Project {
   version: number;
   name: string;
@@ -138,6 +144,10 @@ export interface Project {
   route: Route | null;
   exports: ExportConfig[];
   map_settings?: MapSettings;
+  /** Optional: defaults to 'natural' at the consumer. Pre-task-350 projects
+   *  on disk lack this field; Rust serde fills in `None` and the frontend
+   *  resolves at the call site via `?? 'natural'`. */
+  transition_feel?: TransitionFeel;
 }
 
 export interface RecentProject {

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { Clip, Project, Route, TrimRange, FocalPoint, Effects, MapSettings } from '../types';
+import type { Clip, Project, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 
 /** Minimum gap (ms) required between the playhead and either trim edge for a
@@ -19,6 +19,7 @@ interface UseProjectParams {
   route: Route | null;
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
+  setTransitionFeel: React.Dispatch<React.SetStateAction<TransitionFeel | undefined>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -36,6 +37,7 @@ export function useProject({
   route: _route,
   setRoute,
   setMapSettings,
+  setTransitionFeel,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -61,6 +63,7 @@ export function useProject({
       setClips(project.clips);
       setRoute(project.route);
       setMapSettings({ ...DEFAULT_MAP_SETTINGS, ...project.map_settings });
+      setTransitionFeel(project.transition_feel);
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -91,6 +94,7 @@ export function useProject({
       setClips([]);
       setRoute(null);
       setMapSettings(DEFAULT_MAP_SETTINGS);
+      setTransitionFeel(undefined);
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -124,6 +128,7 @@ export function useProject({
     setClips([]);
     setRoute(null);
     setMapSettings(DEFAULT_MAP_SETTINGS);
+    setTransitionFeel(undefined);
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);

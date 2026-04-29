@@ -11,8 +11,8 @@ import {
   clipWallClockMs,
   indexRoute,
 } from '../lib/routeLocation';
-import { buildMapTrack, type TransitionFeel } from '../lib/cameraIntent';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides } from '../types';
+import { buildMapTrack } from '../lib/cameraIntent';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, TransitionFeel } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -38,6 +38,7 @@ interface ProjectViewProps {
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
   mapSettings: MapSettings;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
+  transitionFeel: TransitionFeel | undefined;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -70,6 +71,7 @@ export default function ProjectView({
   setRoute,
   mapSettings,
   setMapSettings,
+  transitionFeel,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -166,7 +168,7 @@ export default function ProjectView({
 
   // The project-level transition-feel knob (§3.6). Read from the persisted
   // project field with a 'natural' default for v1 projects that pre-date it.
-  const projectTransitionFeel: TransitionFeel = 'natural';
+  const projectTransitionFeel: TransitionFeel = transitionFeel ?? 'natural';
 
   // The single source of truth for camera-state derivation. MapView consumes
   // this each tick of its live ease loop (§3.5).

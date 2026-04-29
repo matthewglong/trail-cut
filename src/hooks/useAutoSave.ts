@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Clip, Route, Project, MapSettings } from '../types';
+import type { Clip, Route, Project, MapSettings, TransitionFeel } from '../types';
 
 interface AutoSaveParams {
   projectDir: string | null;
@@ -9,9 +9,10 @@ interface AutoSaveParams {
   projectName: string;
   projectThumbnail: string | null;
   mapSettings: MapSettings;
+  transitionFeel: TransitionFeel | undefined;
 }
 
-export function useAutoSave({ projectDir, clips, route, projectName, projectThumbnail, mapSettings }: AutoSaveParams) {
+export function useAutoSave({ projectDir, clips, route, projectName, projectThumbnail, mapSettings, transitionFeel }: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -27,6 +28,7 @@ export function useAutoSave({ projectDir, clips, route, projectName, projectThum
         route,
         exports: [],
         map_settings: mapSettings,
+        transition_feel: transitionFeel,
       };
       invoke('save_project', { project, projectDir }).catch(() => {});
       invoke('register_recent_project', { projectDir }).catch(() => {});
@@ -35,5 +37,5 @@ export function useAutoSave({ projectDir, clips, route, projectName, projectThum
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings]);
+  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings, transitionFeel]);
 }
