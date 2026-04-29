@@ -26,7 +26,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 210 | ✅     | 2 (route tests)   | Tests for parseTimestamp, indexRoute, locationAt                   | 200               | 067b73a |
 | 220 | ✅     | 2 (route tests)   | Tests for trailUpTo, clipWaypointLocation, forwardAzimuth          | 200               | 00fe6b7 |
 | 230 | ✅     | 2 (route tests)   | Tests for bearing math (90% coverage gate)                         | 200               | 0a62220 |
-| 300 | ⬜     | 3 (MapView)       | Build MapTrack in ProjectView and pass to MapView                  | 120, 230          | —      |
+| 300 | ✅     | 3 (MapView)       | Build MapTrack in ProjectView and pass to MapView                  | 120, 230          | ebc8771 |
 | 310 | ⬜     | 3 (MapView)       | Replace Writers 1, 4, 5, 6 with the live ease loop                 | 300               | —      |
 | 320 | ⬜     | 3 (MapView)       | Convert Writer 3 (full-route fitBounds) to a region intent         | 300, 310          | —      |
 | 330 | ⬜     | 3 (MapView)       | Delete the six cross-effect refs and all recordEvent calls         | 310, 320          | —      |
