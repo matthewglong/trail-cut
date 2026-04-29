@@ -12,7 +12,12 @@ import {
   type IndexedRoute,
   type ResolvedLocation,
 } from '../lib/routeLocation';
-import type { MapTrack } from '../lib/cameraIntent';
+import {
+  cameraAt,
+  resolveIntent,
+  type MapTrack,
+  type Viewport,
+} from '../lib/cameraIntent';
 import type { MapRecorder } from '../hooks/useMapRecorder';
 
 interface MapViewProps {
@@ -105,92 +110,8 @@ const LIVE_MARKER_PULSE_KEYFRAMES = `
 }
 `;
 
-// ---- Clip-transition camera animation ----
-// When switching between clips, if the destination waypoint is outside the
-// current viewport, arc the camera out to a zoom level that fits both the
-// current and next points, then back in to the target — a single Van Wijk
-// flyTo with minZoom pinning the peak. Duration scales with the sum of the
-// zoom work (out + in) so short hops stay snappy and long jumps get room to
-// breathe. Within-clip tracking uses a separate 220 ms easeTo and is not
-// affected.
-interface MapTransitionConfig {
-  baseMs: number;           // floor duration when zoomSum = 0
-  msPerZoomLevel: number;   // added per zoom level of work (out + in)
-  minDurationMs: number;    // clamp floor
-  maxDurationMs: number;    // clamp ceiling
-  fitPaddingPx: number;     // padding for cameraForBounds when computing peak
-  curve: number;            // flyTo arc aggressiveness
-}
-
-const DEFAULT_MAP_TRANSITION: MapTransitionConfig = {
-  baseMs: 1100,
-  msPerZoomLevel: 580,
-  minDurationMs: 1100,
-  maxDurationMs: 7000,
-  fitPaddingPx: 80,
-  curve: 1.42,
-};
-
-function runClipTransition(
-  map: maplibregl.Map,
-  start: { lng: number; lat: number },
-  end: { lng: number; lat: number },
-  startZoom: number,
-  targetZoom: number,
-  targetBearing: number,
-  cfg: MapTransitionConfig = DEFAULT_MAP_TRANSITION,
-): number {
-  const endLngLat: [number, number] = [end.lng, end.lat];
-  const clampDuration = (raw: number) =>
-    Math.max(cfg.minDurationMs, Math.min(cfg.maxDurationMs, raw));
-
-  // Fast path: target already inside the current viewport → flat ease, no arc.
-  if (map.getBounds().contains(endLngLat)) {
-    const duration = clampDuration(
-      cfg.baseMs + Math.abs(targetZoom - startZoom) * cfg.msPerZoomLevel,
-    );
-    map.easeTo({
-      center: endLngLat,
-      zoom: targetZoom,
-      bearing: targetBearing,
-      duration,
-      essential: true,
-    });
-    return duration;
-  }
-
-  // Compute the zoom level that fits both points with padding.
-  const fitBounds = new maplibregl.LngLatBounds()
-    .extend([start.lng, start.lat])
-    .extend(endLngLat);
-  const cam = map.cameraForBounds(fitBounds, { padding: cfg.fitPaddingPx });
-  const boundsZoom =
-    cam && typeof cam.zoom === 'number' ? cam.zoom : Math.min(startZoom, targetZoom);
-
-  // Only zoom out as far as needed — never below what fits both points.
-  const peakZoom = Math.min(startZoom, targetZoom, boundsZoom);
-
-  const zoomOut = Math.max(0, startZoom - peakZoom);
-  const zoomIn = Math.max(0, targetZoom - peakZoom);
-  const zoomSum = zoomOut + zoomIn;
-
-  const duration = clampDuration(cfg.baseMs + zoomSum * cfg.msPerZoomLevel);
-
-  map.flyTo({
-    center: endLngLat,
-    zoom: targetZoom,
-    bearing: targetBearing,
-    minZoom: peakZoom, // pins the peak of the Van Wijk arc
-    duration,
-    curve: cfg.curve,
-    essential: true,
-  });
-  return duration;
-}
-
 export default function MapView({
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  track: _track,
+  track,
   clips,
   selectedClipId,
   route,
@@ -220,17 +141,26 @@ export default function MapView({
   const liveMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveMarkerElRef = useRef<HTMLDivElement | null>(null);
   const lastFitRouteRef = useRef<Route | null>(null);
-  const lastFollowAtRef = useRef<number>(0);
-  const lastFollowedClipRef = useRef<string | null>(null);
   const prevZoomRef = useRef<number>(mapSettings.zoom);
-  const prevBearingRef = useRef<number>(mapBearing);
-  // Tracks when an in-flight clip transition (flyTo/easeTo from
-  // runClipTransition) is expected to end. The bearing effect gates on this —
-  // a bearing-only easeTo fired mid-transition would cancel the flyTo and
-  // leave the zoom arc stranded at its interrupted frame.
-  const clipTransitionEndsAtRef = useRef<number>(0);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
+
+  // Effective wall-clock time the ease loop should target. When the video is
+  // playing this mirrors the playhead. When no playhead has fired yet (e.g.
+  // right after project load or a clip selection), fall back to the selected
+  // clip's start so the first ease-loop tick targets the user's intent rather
+  // than the previous clip's last frame.
+  const currentTimeMs = useMemo<number | null>(() => {
+    if (playheadMs != null) return playheadMs;
+    if (!selectedClipId) return null;
+    const clip = clips.find((c) => c.id === selectedClipId);
+    if (!clip?.created_at) return null;
+    const base = parseTimestamp(clip.created_at);
+    if (Number.isNaN(base)) return null;
+    return base + (clip.trim?.in_ms ?? 0);
+  }, [playheadMs, clips, selectedClipId]);
+  const currentTimeMsRef = useRef(currentTimeMs);
+  currentTimeMsRef.current = currentTimeMs;
 
   // ---- Initialize map ----
   useEffect(() => {
@@ -509,105 +439,78 @@ export default function MapView({
     recordEvent(`zoom:setZoom(${mapSettings.zoom})`);
   }, [mapSettings.zoom, recordEvent]);
 
-  // ---- Live bearing updates ----
-  // Drives map rotation from the toolbar (fixed-mode stepper edits) and from
-  // auto-mode GPX tracking. Uses a short easeTo so stepper clicks look smooth
-  // and auto-mode rotations blend naturally with the 220 ms playhead-tracking
-  // ease in the effect below. The prevBearingRef gate prevents redundant
-  // updates when the resolved bearing hasn't actually changed. The transition
-  // gate prevents a bearing-only easeTo from cancelling an in-flight clip
-  // transition (which already includes the current target bearing).
+  // ---- Live preview ease loop (replaces Writers 1, 4, 5, 6) ----
+  // Per §3.5: every STEP_MS we compute target = cameraAt(track, t + lookahead)
+  // and fire map.easeTo at the same duration. MapLibre keeps chasing a moving
+  // target — clip-to-clip handoff, bearing rotation, and within-clip tracking
+  // all collapse into this one loop. The pure cameraAt + resolveIntent
+  // pipeline is the single source of truth for camera state.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (prevBearingRef.current === mapBearing) return;
-    // While a clip transition owns the camera, skip without updating
-    // prevBearingRef — that way once the transition ends, the next render
-    // will see the drift and catch up with a small easeTo.
-    if (performance.now() < clipTransitionEndsAtRef.current) {
-      const left = Math.round(clipTransitionEndsAtRef.current - performance.now());
-      recordEvent(`bearing:GATED(${left}ms)`);
-      return;
-    }
-    prevBearingRef.current = mapBearing;
-    map.easeTo({ bearing: mapBearing, duration: 300, essential: true });
-    recordEvent(`bearing:easeTo(${Math.round(mapBearing)}°)`);
-  }, [mapBearing, recordEvent]);
+    const LOOKAHEAD_MS = 100;
+    const STEP_MS = 50;
 
-  // ---- Fly to selected clip's waypoint on manual selection change ----
-  // Only runs when follow is OFF — when following, the playhead effect below
-  // handles camera movement (including a longer ease on clip transitions).
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !selectedClipId) return;
-    if (mapSettings.follow_playhead) return;
-    const clip = clips.find((c) => c.id === selectedClipId);
-    if (!clip) return;
-    const loc = clipWaypointLocation(clip, indexedRoute);
-    if (!loc) return;
-    const startCenter = map.getCenter();
-    const duration = runClipTransition(
-      map,
-      { lng: startCenter.lng, lat: startCenter.lat },
-      { lng: loc.lng, lat: loc.lat },
-      map.getZoom(),
-      mapSettings.zoom,
-      mapBearingRef.current,
-    );
-    clipTransitionEndsAtRef.current = performance.now() + duration;
-    prevBearingRef.current = mapBearingRef.current;
-    recordEvent(`manual:transition(${duration}ms) z=${mapSettings.zoom} b=${Math.round(mapBearingRef.current)}°`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClipId]);
+    let timeoutId = 0;
+    let stopped = false;
+
+    const tick = () => {
+      if (stopped) return;
+      // No anchors → don't push the camera. The route fitBounds writer (still
+      // in place pending task 320) and the constructor's initial framing
+      // remain authoritative until clips with timestamps exist.
+      if (track.anchors.length === 0) {
+        timeoutId = window.setTimeout(tick, STEP_MS);
+        return;
+      }
+      const t = currentTimeMsRef.current ?? track.anchors[0].timeMs;
+      const intent = cameraAt(track, t + LOOKAHEAD_MS);
+      const viewport: Viewport = {
+        width: map.getContainer().clientWidth,
+        height: map.getContainer().clientHeight,
+        dpr: window.devicePixelRatio,
+      };
+      const target = resolveIntent(intent, viewport);
+      map.easeTo({
+        center: [target.center.lng, target.center.lat],
+        zoom: target.zoom,
+        bearing: target.bearing,
+        pitch: target.pitch,
+        duration: STEP_MS,
+        essential: true,
+      });
+      timeoutId = window.setTimeout(tick, STEP_MS);
+    };
+
+    tick();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [track]);
 
   // ---- Live playhead marker ----
+  // Marker DOM management only. Position derives from the same routeLocation
+  // pipeline the camera reads, so the marker stays anchored to the resolved
+  // GPX location while the ease loop above handles the camera itself.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    // Resolve current location
     const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
     const fallback = selectedClip?.gps ?? null;
     const resolved =
       playheadMs != null ? locationAt(playheadMs, indexedRoute, fallback) : null;
 
-    // Hide marker if nothing to show
     if (!resolved) {
       if (liveMarkerRef.current) {
         liveMarkerRef.current.remove();
         liveMarkerRef.current = null;
         liveMarkerElRef.current = null;
       }
-
-      // Even without a playhead, handle clip selection transitions so the
-      // first clip on project load gets its zoom + center applied. The
-      // waypoint location is available from GPX or embedded GPS.
-      if (mapSettings.follow_playhead && selectedClipId) {
-        const selectionChanged = lastFollowedClipRef.current !== selectedClipId;
-        if (selectionChanged) {
-          lastFollowedClipRef.current = selectedClipId;
-          const wp = selectedClip ? clipWaypointLocation(selectedClip, indexedRoute) : null;
-          if (wp) {
-            lastFollowAtRef.current = performance.now();
-            const startCenter = map.getCenter();
-            const duration = runClipTransition(
-              map,
-              { lng: startCenter.lng, lat: startCenter.lat },
-              { lng: wp.lng, lat: wp.lat },
-              map.getZoom(),
-              mapSettings.zoom,
-              mapBearingRef.current,
-            );
-            clipTransitionEndsAtRef.current = performance.now() + duration;
-            prevBearingRef.current = mapBearingRef.current;
-            recordEvent(`follow-noplay:transition(${duration}ms) z=${mapSettings.zoom} b=${Math.round(mapBearingRef.current)}°`);
-          }
-        }
-      }
       return;
     }
 
-    // Lazy-create marker element
     if (!liveMarkerRef.current) {
       const el = document.createElement('div');
       el.style.width = '18px';
@@ -625,54 +528,7 @@ export default function MapView({
     } else {
       liveMarkerRef.current.setLngLat([resolved.lng, resolved.lat]);
     }
-
-    // Follow playhead. On clip boundary crossings (selection change) do a
-    // longer ease so it reads as a deliberate transition between clips;
-    // within a single clip, throttle to ~10Hz for smooth tracking.
-    if (mapSettings.follow_playhead) {
-      const selectionChanged = lastFollowedClipRef.current !== selectedClipId;
-      lastFollowedClipRef.current = selectedClipId;
-      if (selectionChanged) {
-        // Target the clip's waypoint location (GPX-snapped) rather than the
-        // current playhead, which may not have caught up to the seek yet.
-        const wp = selectedClip ? clipWaypointLocation(selectedClip, indexedRoute) : null;
-        const target = wp ?? resolved;
-        lastFollowAtRef.current = performance.now();
-        const startCenter = map.getCenter();
-        const duration = runClipTransition(
-          map,
-          { lng: startCenter.lng, lat: startCenter.lat },
-          { lng: target.lng, lat: target.lat },
-          map.getZoom(),
-          mapSettings.zoom,
-          mapBearingRef.current,
-        );
-        clipTransitionEndsAtRef.current = performance.now() + duration;
-        prevBearingRef.current = mapBearingRef.current;
-        recordEvent(`follow:transition(${duration}ms) z=${mapSettings.zoom} b=${Math.round(mapBearingRef.current)}°`);
-      } else {
-        const now = performance.now();
-        const transitionLeft = clipTransitionEndsAtRef.current - now;
-        if (transitionLeft > 0) {
-          recordEvent(`follow:GATED(${Math.round(transitionLeft)}ms left)`);
-        } else if (now - lastFollowAtRef.current <= 100) {
-          recordEvent(`follow:THROTTLED(${Math.round(now - lastFollowAtRef.current)}ms since last)`);
-        } else {
-          lastFollowAtRef.current = now;
-          map.easeTo({
-            center: [resolved.lng, resolved.lat],
-            bearing: mapBearingRef.current,
-            duration: 220,
-          });
-          prevBearingRef.current = mapBearingRef.current;
-          recordEvent(`follow:easeTo b=${Math.round(mapBearingRef.current)}° center=[${resolved.lng.toFixed(4)},${resolved.lat.toFixed(4)}]`);
-        }
-      }
-    } else {
-      lastFollowedClipRef.current = selectedClipId;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playheadMs, indexedRoute, clips, selectedClipId, mapSettings.follow_playhead, recordEvent]);
+  }, [playheadMs, indexedRoute, clips, selectedClipId]);
 
   // ---- Slime trail data updates ----
   useEffect(() => {
