@@ -33,7 +33,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 340 | ✅     | 3 (MapView)       | Delete useMapRecorder hook, recorder prop, and Debug popover       | 330               | a0abcf4 |
 | 350 | ✅     | 3 (Persistence)   | Add transition_feel field to Project (frontend + Rust)             | 010               | 29f6c0e |
 | 360 | ✅     | 3 (Persistence)   | Add schema_version and v1→v2 migration logic                       | 350               | 7b1c7ec |
-| 370 | ⬜     | 3 (Persistence)   | Drop persisted route from project.json; re-parse on load           | 360               | —      |
+| 370 | ✅     | 3 (Persistence)   | Drop persisted route from project.json; re-parse on load           | 360               | 76c1993 |
 | 400 | ⬜     | 4 (Export)        | Add render_map_frames Tauri command shell                          | 360               | —      |
 | 410 | ⬜     | 4 (Export)        | Build hidden /export-renderer Tauri window route                   | 400               | —      |
 | 420 | ⬜     | 4 (Export)        | Wire IPC: parent → renderer sends (track, layout_per_frame, fps)   | 410               | —      |
