@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Clip, Route, MapSettings, MapStyleId } from '../types';
@@ -123,9 +123,6 @@ export default function MapView({
 }: MapViewProps) {
   const recorderRef = useRef<MapRecorder | undefined>(recorder);
   recorderRef.current = recorder;
-  const recordEvent = useCallback((label: string) => {
-    recorderRef.current?.recordEvent(label);
-  }, []);
   const onSelectClipRef = useRef(onSelectClip);
   onSelectClipRef.current = onSelectClip;
   const mapBearingRef = useRef(mapBearing);
@@ -143,7 +140,6 @@ export default function MapView({
   // Tracks the last route reference we framed via the region-intent jumpTo
   // below. Idempotence guard: we only refit once per unique route.
   const appliedRouteRef = useRef<Route | null>(null);
-  const prevZoomRef = useRef<number>(mapSettings.zoom);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
 
@@ -464,23 +460,6 @@ export default function MapView({
     };
     if (styleReadyRef.current) apply();
   }, [selectedClipId, styleVersion]);
-
-  // ---- Live zoom updates from the toolbar ----
-  // When the user changes the zoom stepper, snap to the new zoom immediately
-  // without waiting for a clip transition. Uses setZoom (instant) rather than
-  // easeTo because in clip scope the stepper triggers a setClips update, which
-  // re-fires the playhead marker effect below — its center-only easeTo would
-  // otherwise cancel an in-flight zoom animation and leave the zoom stuck.
-  // Skips the mount render so the initial DEFAULT_MAP_SETTINGS value doesn't
-  // fight the route fitBounds.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (prevZoomRef.current === mapSettings.zoom) return;
-    prevZoomRef.current = mapSettings.zoom;
-    map.setZoom(mapSettings.zoom);
-    recordEvent(`zoom:setZoom(${mapSettings.zoom})`);
-  }, [mapSettings.zoom, recordEvent]);
 
   // ---- Live preview ease loop (replaces Writers 1, 4, 5, 6) ----
   // Per §3.5: every STEP_MS we compute target = cameraAt(track, t + lookahead)
