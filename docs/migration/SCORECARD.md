@@ -30,7 +30,7 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 | 310 | ✅     | 3 (MapView)       | Replace Writers 1, 4, 5, 6 with the live ease loop                 | 300               | 1911771 |
 | 320 | ✅     | 3 (MapView)       | Convert Writer 3 (full-route fitBounds) to a region intent         | 300, 310          | b2c93c4 |
 | 330 | ✅     | 3 (MapView)       | Delete the six cross-effect refs and all recordEvent calls         | 310, 320          | 9b512c7 |
-| 340 | ⬜     | 3 (MapView)       | Delete useMapRecorder hook, recorder prop, and Debug popover       | 330               | —      |
+| 340 | ✅     | 3 (MapView)       | Delete useMapRecorder hook, recorder prop, and Debug popover       | 330               | a0abcf4 |
 | 350 | ⬜     | 3 (Persistence)   | Add transition_feel field to Project (frontend + Rust)             | 010               | —      |
 | 360 | ⬜     | 3 (Persistence)   | Add schema_version and v1→v2 migration logic                       | 350               | —      |
 | 370 | ⬜     | 3 (Persistence)   | Drop persisted route from project.json; re-parse on load           | 360               | —      |
