@@ -15,6 +15,7 @@ import {
   indexRoute,
   parseTimestamp,
 } from '../lib/routeLocation';
+import { buildMapTrack, type TransitionFeel } from '../lib/cameraIntent';
 import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
@@ -167,6 +168,16 @@ export default function ProjectView({
   // for the selected clip's time range and smoothly interpolate between them.
   // Keyframes recompute when the clip's trim, route, or stop count changes.
   const indexedRoute = useMemo(() => indexRoute(route), [route]);
+
+  // TODO(task 350): replace hardcoded 'natural' with `project.transition_feel ?? 'natural'`.
+  const projectTransitionFeel: TransitionFeel = 'natural';
+
+  // The single source of truth for camera-state derivation. `MapView` will
+  // consume this in tasks 310-320 to drive the live ease loop.
+  const track = useMemo(
+    () => buildMapTrack(clips, indexedRoute, mapSettings, projectTransitionFeel),
+    [clips, indexedRoute, mapSettings, projectTransitionFeel],
+  );
 
   // Derive the selected clip's wall-clock time range (respecting trim).
   const clipTimeRange = useMemo((): { startMs: number; endMs: number } | null => {
@@ -551,6 +562,7 @@ export default function ProjectView({
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
+                track={track}
                 clips={clips}
                 selectedClipId={selectedClipId}
                 route={route}

@@ -12,9 +12,14 @@ import {
   type IndexedRoute,
   type ResolvedLocation,
 } from '../lib/routeLocation';
+import type { MapTrack } from '../lib/cameraIntent';
 import type { MapRecorder } from '../hooks/useMapRecorder';
 
 interface MapViewProps {
+  /** Pure timeline of camera anchors built upstream by `buildMapTrack`. The
+   *  imperative writers in this file still drive the camera today; tasks
+   *  310-320 will replace them with a single ease loop that consumes this. */
+  track: MapTrack;
   clips: Clip[];
   selectedClipId: string | null;
   route: Route | null;
@@ -184,6 +189,8 @@ function runClipTransition(
 }
 
 export default function MapView({
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  track: _track,
   clips,
   selectedClipId,
   route,
