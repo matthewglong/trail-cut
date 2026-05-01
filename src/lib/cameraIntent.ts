@@ -1,7 +1,12 @@
 // Pure, renderer-portable camera-intent surface. Composes with
 // `routeLocation.ts` to drive the map's framing in a viewport-agnostic way.
 
-import type { Clip, MapSettings } from '../types';
+import type {
+  Clip,
+  ClipEntryTransition,
+  MapSettings,
+  ProjectStartCamera,
+} from '../types';
 import { resolveMapSettings, type BearingMode } from '../types';
 import {
   parseTimestamp,
@@ -536,29 +541,46 @@ export function resolveIntent(
  *  camera ultimately renders. */
 const CANONICAL_VIEWPORT: Viewport = { width: 1024, height: 1024, dpr: 1 };
 
-/** Resolve an anchor to a `ResolvedCamera` at the canonical viewport.
- *  Used inside `interpolateAnchors` to give the Van Wijk arc two concrete
- *  endpoints regardless of intent kind.
+/** Resolve a CameraIntent to a `ResolvedCamera` at the canonical viewport.
+ *  The "follow snapshot" function: for `follow` intents it overwrites
+ *  `playheadMs` with the supplied wall-clock reference time so the
+ *  resulting camera is the snapshot of where the marker is at *that*
+ *  instant. Per `COMPILED_TIMELINE_PLAN.md` §"Camera State During a
+ *  Transition": follow intents collapse to point intents during the
+ *  transition window — the transition is between two snapshots, not a
+ *  moving-target chase. This is the helper that does the collapse.
  *
  *  - `point`: trivial pass-through (point intents already carry a zoom).
  *  - `region`: resolved against the canonical 1024×1024 viewport. The
  *    actual render-time framing may differ — that's `resolveIntent`'s job
  *    when the renderer takes over after the gap closes.
- *  - `follow`: evaluate at `refTimeMs` (boundary of the anchor's range).
- *    `refTimeMs` is `endTimeMs` for the outgoing anchor and `timeMs` for
- *    the incoming anchor. */
-function canonicalCamera(
-  anchor: MapAnchor,
-  refTimeMs: number,
+ *  - `follow`: evaluate at `refWallClockMs` (boundary of the clip's
+ *    range, in wall-clock).
+ *
+ *  Used by both the legacy `interpolateAnchors` path (via the wrapper
+ *  `canonicalCamera`) and the new `compileTimeline` (task 520) /
+ *  `cameraAt(timeline, t)` (task 530). */
+function resolveCanonical(
+  intent: CameraIntent,
+  refWallClockMs: number,
 ): ResolvedCamera {
-  const intent = anchor.intent;
   if (intent.kind === 'follow') {
     return resolveIntent(
-      { ...intent, playheadMs: refTimeMs },
+      { ...intent, playheadMs: refWallClockMs },
       CANONICAL_VIEWPORT,
     );
   }
   return resolveIntent(intent, CANONICAL_VIEWPORT);
+}
+
+/** Wall-clock-anchor wrapper around `resolveCanonical`. Kept for the
+ *  legacy `interpolateAnchors` call site; deleted in task 570 along with
+ *  the rest of the wall-clock anchor surface. */
+function canonicalCamera(
+  anchor: MapAnchor,
+  refTimeMs: number,
+): ResolvedCamera {
+  return resolveCanonical(anchor.intent, refTimeMs);
 }
 
 /** Clamp a number into [0, 1]. Internal helper for `interpolateAnchors`. */
@@ -872,4 +894,300 @@ export function arcDurationMs(arc: VanWijkArc, feel: TransitionFeel): number {
   const raw = arc.S * MS_PER_S_UNIT;
   const base = Math.max(MIN_MS, Math.min(MAX_MS, raw));
   return base * feelMultiplier(feel);
+}
+
+// -- Compiled-timeline compiler ---------------------------------------------
+//
+// Pure compiler that walks the ordered clip list, applies authored entry-
+// transition settings, and produces a `CompiledTimeline`. Same authored
+// inputs → same compiled output, deeply equal across calls. See
+// `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Implementation Plan → 3" and
+// §"Entry Placement → Boundary Formula" for the design.
+//
+// The compiler is the single place where authored data meets media reality:
+// clip-local trim ranges + clip ordering + speed → project-time spans;
+// authored `entryBias` / `durationMs` + neighboring media availability →
+// clamped transition spans.
+//
+// Reuses `anchorIntentForClip` (above) for per-clip intents,
+// `vanWijkArc` + `arcDurationMs` for auto-derived transition durations,
+// and `resolveCanonical` for collapsing follow intents into the snapshot
+// cameras a Van Wijk arc connects.
+
+/** Settings the compiler reads off the project. Narrow object so this
+ *  module stays free of a transitive dependency on the full `Project`
+ *  type. Field names match the persisted shape in `types.ts` /
+ *  `models.rs`. */
+export interface CompileTimelineProjectSettings {
+  transition_feel?: TransitionFeel;
+  start_camera?: ProjectStartCamera;
+  default_entry_transition?: ClipEntryTransition;
+}
+
+/** Merge a project-level entry-transition default with a per-clip
+ *  override. Per-field override → fall back to default. The compiler
+ *  treats this merged shape as the authoritative authoring for the
+ *  destination clip's transition. */
+function mergeEntryTransition(
+  base: ClipEntryTransition | undefined,
+  override: ClipEntryTransition | undefined,
+): ClipEntryTransition {
+  return {
+    enabled: override?.enabled ?? base?.enabled,
+    duration_ms: override?.duration_ms ?? base?.duration_ms,
+    entry_bias: override?.entry_bias ?? base?.entry_bias,
+    feel: override?.feel ?? base?.feel,
+  };
+}
+
+/** Resolve the project's start camera. Honors `project.start_camera` when
+ *  present; otherwise computes the default per `COMPILED_TIMELINE_PLAN.md`
+ *  §"Project Start Camera": centroid of clip starting locations, zoom 12,
+ *  bearing 0, pitch 0/60-by-style.
+ *
+ *  Pure: no DOM, no MapLibre, no `performance.now`. */
+export function resolveProjectStartCamera(
+  clips: Clip[],
+  settings: CompileTimelineProjectSettings,
+  projectMapSettings: MapSettings,
+  route: IndexedRoute | null,
+): ResolvedCamera {
+  if (settings.start_camera) {
+    return {
+      center: {
+        lng: settings.start_camera.center.lng,
+        lat: settings.start_camera.center.lat,
+      },
+      zoom: settings.start_camera.zoom,
+      bearing: settings.start_camera.bearing,
+      pitch: settings.start_camera.pitch,
+    };
+  }
+
+  let sumLng = 0;
+  let sumLat = 0;
+  let count = 0;
+  for (const clip of clips) {
+    const wp = clipWaypointLocation(clip, route);
+    if (wp) {
+      sumLng += wp.lng;
+      sumLat += wp.lat;
+      count += 1;
+    }
+  }
+  const center: LngLat =
+    count > 0
+      ? { lng: sumLng / count, lat: sumLat / count }
+      : { lng: 0, lat: 0 };
+
+  return {
+    center,
+    zoom: 12,
+    bearing: 0,
+    pitch: projectMapSettings.map_style === '3d' ? 60 : 0,
+  };
+}
+
+/** Apply the same skip rules `buildMapTrack` enforces: invisible clips,
+ *  missing/unparseable `created_at`, degenerate trim ranges. Returns the
+ *  filtered list in the same order. */
+function filterCompilableClips(clips: Clip[]): Clip[] {
+  const out: Clip[] = [];
+  for (const clip of clips) {
+    if (clip.visible === false) continue;
+    if (!clip.created_at) continue;
+    if (Number.isNaN(parseTimestamp(clip.created_at))) continue;
+    const inMs = clip.trim?.in_ms ?? 0;
+    const outMs = clip.trim?.out_ms ?? clip.duration_ms ?? 0;
+    if (outMs <= inMs) continue;
+    out.push(clip);
+  }
+  return out;
+}
+
+/** Wall-clock equivalent of a clip-span endpoint. Used for `resolveCanonical`
+ *  on follow intents — the wall-clock the marker should snapshot at. */
+function wallClockAtClipSpanEdge(
+  clip: Clip,
+  span: ClipSpan,
+  edge: 'start' | 'end',
+): number {
+  const base = parseTimestamp(clip.created_at!);
+  return edge === 'start' ? base + span.mediaInMs : base + span.mediaOutMs;
+}
+
+/** Compile an ordered clip list into a CompiledTimeline. Pure.
+ *
+ *  - Clip spans tile the project-time axis end-to-end with no gaps.
+ *  - Each transition span (one per visible clip, including the project-
+ *    start → clip-1 transition) is computed by the boundary formula in
+ *    `COMPILED_TIMELINE_PLAN.md` §"Entry Placement → Boundary Formula"
+ *    and clamped against neighboring span lengths.
+ *  - The startCamera is `project.start_camera` if set, else the computed
+ *    default centroid camera.
+ *  - `transitionFeel` propagates from `project.transition_feel ??
+ *    'natural'`.
+ *
+ *  Skip rules match `buildMapTrack`: invisible clips, missing or
+ *  unparseable `created_at`, and degenerate trim ranges (`out <= in`) are
+ *  excluded. An empty clip list produces a valid, empty CompiledTimeline.
+ *
+ *  Note on consumer: the new `cameraAt(timeline, t)` evaluator (task 530)
+ *  reads this output. `MapAnchor` / `MapTrack` produced by `buildMapTrack`
+ *  are an independent path that survives until task 570. */
+export function compileTimeline(
+  clips: Clip[],
+  route: IndexedRoute | null,
+  projectMapSettings: MapSettings,
+  settings: CompileTimelineProjectSettings,
+): CompiledTimeline {
+  const transitionFeel: TransitionFeel = settings.transition_feel ?? 'natural';
+
+  const validClips = filterCompilableClips(clips);
+
+  // Pre-compute the start camera (used both for clip 1's transition arc
+  // and stored on the CompiledTimeline for the t<0 hold).
+  const startCamera = resolveProjectStartCamera(
+    validClips,
+    settings,
+    projectMapSettings,
+    route,
+  );
+
+  if (validClips.length === 0) {
+    return {
+      clipSpans: [],
+      transitionSpans: [],
+      totalDurationMs: 0,
+      startCamera,
+      transitionFeel,
+    };
+  }
+
+  // Build clip spans by tiling the project-time axis end-to-end.
+  const clipSpans: ClipSpan[] = [];
+  let cursor = 0;
+  for (const clip of validClips) {
+    const inMs = clip.trim?.in_ms ?? 0;
+    const outMs = clip.trim?.out_ms ?? clip.duration_ms ?? 0;
+    // Defensive: speed should be positive per the schema. A non-positive
+    // speed would produce a non-positive lengthMs and break tiling.
+    const speed = clip.effects.speed > 0 ? clip.effects.speed : 1;
+    const lengthMs = (outMs - inMs) / speed;
+
+    const spanStartMs = cursor;
+    const spanEndMs = cursor + lengthMs;
+
+    // Build the per-clip intent. anchorIntentForClip wants wall-clock
+    // anchor start/end so it can pre-compute bearing keyframes against
+    // GPX trackpoint timestamps. The bearing keyframes stay on the
+    // wall-clock axis; the new evaluator translates project-time →
+    // wall-clock at evaluation time before reading them.
+    const baseWallMs = parseTimestamp(clip.created_at!);
+    const settingsForClip = resolveMapSettings(projectMapSettings, clip.map_overrides);
+    const intent = anchorIntentForClip(
+      clip,
+      settingsForClip,
+      route,
+      baseWallMs + inMs,
+      baseWallMs + outMs,
+    );
+
+    clipSpans.push({
+      clipId: clip.id,
+      startMs: spanStartMs,
+      endMs: spanEndMs,
+      mediaInMs: inMs,
+      mediaOutMs: outMs,
+      // canonicalSeekMs lands at the start of the clip's media, after any
+      // incoming transition that sits entirely pre-cut. For transitions
+      // whose post-cut content extends into this span, the camera shown
+      // will still be the in-flight arc until t == transitionSpan.endMs;
+      // selecting a clip seeks to startMs and the ease loop catches up
+      // naturally on the next tick. See plan §"Preview Semantics".
+      canonicalSeekMs: spanStartMs,
+      intent,
+    });
+    cursor = spanEndMs;
+  }
+
+  // Build one transition span per clip. fromClipId is null for clip 1
+  // (project-start → clip-1 transition).
+  const transitionSpans: TransitionSpan[] = [];
+  for (let i = 0; i < clipSpans.length; i++) {
+    const currSpan = clipSpans[i];
+    const currClip = validClips[i];
+    const prevSpan = i > 0 ? clipSpans[i - 1] : null;
+    const prevClip = i > 0 ? validClips[i - 1] : null;
+    const cutTime = prevSpan ? prevSpan.endMs : 0;
+
+    // Resolve authored fields: per-clip override beats project default.
+    const authored = mergeEntryTransition(
+      settings.default_entry_transition,
+      currClip.entry_transition,
+    );
+
+    // When transitions are explicitly disabled, the span collapses to a
+    // zero-length window at the cut. Continuity still holds — fromCamera
+    // and toCamera coincide as the same instant.
+    let durationMs: number;
+    let entryBias: number;
+    if (authored.enabled === false) {
+      durationMs = 0;
+      entryBias = 0;
+    } else {
+      entryBias = authored.entry_bias ?? 0;
+      // Clip 1 has no pre-cut media available, so any non-+1 bias is
+      // equivalent to +1 after clamping. Authoring UI should hint at
+      // this; here we clamp the math without warning.
+
+      if (authored.duration_ms != null) {
+        // Authored duration: respected literally per plan §"Duration:
+        // Authored vs. Auto-Derived". `transitionFeel` does not apply to
+        // an authored duration.
+        durationMs = authored.duration_ms;
+      } else {
+        // Auto-derived from the Van Wijk arc length.
+        const fromCamera = prevSpan && prevClip
+          ? resolveCanonical(
+              prevSpan.intent,
+              wallClockAtClipSpanEdge(prevClip, prevSpan, 'end'),
+            )
+          : startCamera;
+        const toCamera = resolveCanonical(
+          currSpan.intent,
+          wallClockAtClipSpanEdge(currClip, currSpan, 'start'),
+        );
+        const arc = vanWijkArc(fromCamera, toCamera);
+        const feel: TransitionFeel = authored.feel ?? transitionFeel;
+        durationMs = arcDurationMs(arc, feel);
+      }
+    }
+
+    const requestedPreCut = (durationMs * (1 - entryBias)) / 2;
+    const requestedPostCut = (durationMs * (1 + entryBias)) / 2;
+    const availablePreCut = prevSpan ? prevSpan.endMs - prevSpan.startMs : 0;
+    const availablePostCut = currSpan.endMs - currSpan.startMs;
+    const effectivePreCut = Math.min(requestedPreCut, availablePreCut);
+    const effectivePostCut = Math.min(requestedPostCut, availablePostCut);
+
+    const start = cutTime - effectivePreCut;
+    const end = cutTime + effectivePostCut;
+
+    transitionSpans.push({
+      fromClipId: prevClip ? prevClip.id : null,
+      toClipId: currClip.id,
+      startMs: start,
+      endMs: end,
+      effectiveDurationMs: end - start,
+    });
+  }
+
+  return {
+    clipSpans,
+    transitionSpans,
+    totalDurationMs: clipSpans[clipSpans.length - 1].endMs,
+    startCamera,
+    transitionFeel,
+  };
 }

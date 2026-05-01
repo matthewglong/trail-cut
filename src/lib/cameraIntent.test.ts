@@ -10,6 +10,8 @@ import {
   cameraAt,
   resolveIntent,
   interpolateAnchors,
+  compileTimeline,
+  resolveProjectStartCamera,
   DEFAULT_INTENT,
 } from './cameraIntent';
 import type {
@@ -19,9 +21,15 @@ import type {
   CameraIntent,
   MapAnchor,
   MapTrack,
+  CompileTimelineProjectSettings,
 } from './cameraIntent';
 import { circularLerp, type IndexedRoute } from './routeLocation';
-import { DEFAULT_MAP_SETTINGS, type Clip, type MapSettings } from '../types';
+import {
+  DEFAULT_MAP_SETTINGS,
+  type Clip,
+  type ClipEntryTransition,
+  type MapSettings,
+} from '../types';
 
 // 1° of longitude at the equator ≈ 111320 m. Used to build small geodesic
 // squares centered on (0, 0) where Mercator distortion is negligible.
@@ -792,5 +800,563 @@ describe('interpolateAnchors', () => {
 describe('circularLerp short-way', () => {
   it('350° → 10° at t=0.5 lands on 0° (the short-way arc, 20° clockwise)', () => {
     expect(circularLerp(350, 10, 0.5)).toBeCloseTo(0, 6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compileTimeline + resolveProjectStartCamera (task 520)
+//
+// Tests the pure compiler that walks the ordered clip list, applies authored
+// entry-transition settings, and produces a CompiledTimeline. Coverage:
+//
+//   - empty clip list → empty timeline with a non-null startCamera
+//   - skip rules (invisible / missing or unparseable created_at / degenerate
+//     trim) match buildMapTrack
+//   - clip span tiling (no project-time gaps, lengths derived from media +
+//     speed)
+//   - boundary formula at entryBias = -1, 0, +1 (no clamp, both clips long)
+//   - clamping when one or both sides overrun the available media
+//   - first-clip clamping (always post-cut only, since availablePreCut == 0)
+//   - authored durationMs respected literally (transitionFeel ignored)
+//   - feel: per-clip override beats project default; project default beats
+//     'natural'
+//   - resolveProjectStartCamera: override wins; default centroid + zoom 12 +
+//     bearing 0 + pitch by style
+//   - purity: same input → deeply-equal output across two calls
+// ---------------------------------------------------------------------------
+
+const COMPILER_POINT_SETTINGS: MapSettings = {
+  ...DEFAULT_MAP_SETTINGS,
+  follow_playhead: false,
+  bearing_mode: 'fixed',
+  bearing_degrees: 0,
+};
+
+/** Build a Clip for compileTimeline tests. Provides a full record so the
+ *  helper can override individual fields without TypeScript noise. */
+function compilerClip(overrides: Partial<Clip> = {}): Clip {
+  return {
+    id: 'c',
+    path: '/tmp/c.mov',
+    filename: 'c.mov',
+    created_at: '2026-04-04T15:00:00Z',
+    duration_ms: 10_000,
+    gps: { lat: 37.77, lng: -122.4 },
+    resolution: null,
+    frame_rate: null,
+    trim: { in_ms: 0, out_ms: 10_000 },
+    focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+    effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
+    visible: true,
+    map_overrides: null,
+    ...overrides,
+  };
+}
+
+const NO_PROJECT_SETTINGS: CompileTimelineProjectSettings = {};
+
+describe('resolveProjectStartCamera', () => {
+  it('honors explicit override on the project', () => {
+    const settings: CompileTimelineProjectSettings = {
+      start_camera: {
+        center: { lng: -120.0, lat: 35.0 },
+        zoom: 14.5,
+        bearing: 90,
+        pitch: 30,
+      },
+    };
+    const cam = resolveProjectStartCamera(
+      [compilerClip()],
+      settings,
+      DEFAULT_MAP_SETTINGS,
+      null,
+    );
+    expect(cam).toEqual({
+      center: { lng: -120.0, lat: 35.0 },
+      zoom: 14.5,
+      bearing: 90,
+      pitch: 30,
+    });
+  });
+
+  it('default centroid camera averages clip waypoint locations', () => {
+    const clips = [
+      compilerClip({ id: 'a', gps: { lat: 30, lng: -120 } }),
+      compilerClip({ id: 'b', gps: { lat: 40, lng: -100 } }),
+    ];
+    const cam = resolveProjectStartCamera(
+      clips,
+      NO_PROJECT_SETTINGS,
+      DEFAULT_MAP_SETTINGS,
+      null,
+    );
+    expect(cam.center.lng).toBeCloseTo(-110, 6);
+    expect(cam.center.lat).toBeCloseTo(35, 6);
+    expect(cam.zoom).toBe(12);
+    expect(cam.bearing).toBe(0);
+    expect(cam.pitch).toBe(0);
+  });
+
+  it('default pitch is 60 for 3d style, 0 otherwise', () => {
+    const clips = [compilerClip()];
+    const settings3d: MapSettings = { ...DEFAULT_MAP_SETTINGS, map_style: '3d' };
+    const sat: MapSettings = { ...DEFAULT_MAP_SETTINGS, map_style: 'satellite' };
+    const cam3d = resolveProjectStartCamera(clips, NO_PROJECT_SETTINGS, settings3d, null);
+    const camSat = resolveProjectStartCamera(clips, NO_PROJECT_SETTINGS, sat, null);
+    expect(cam3d.pitch).toBe(60);
+    expect(camSat.pitch).toBe(0);
+  });
+
+  it('falls back to {0,0} when no clip resolves a location', () => {
+    // No GPS, no route → clipWaypointLocation returns null, centroid count 0.
+    const clip = compilerClip({ id: 'no-loc', gps: null, created_at: null });
+    const cam = resolveProjectStartCamera(
+      [clip],
+      NO_PROJECT_SETTINGS,
+      DEFAULT_MAP_SETTINGS,
+      null,
+    );
+    expect(cam.center).toEqual({ lng: 0, lat: 0 });
+    expect(cam.zoom).toBe(12);
+  });
+});
+
+describe('compileTimeline', () => {
+  it('empty clip list → empty timeline with valid startCamera', () => {
+    const tl = compileTimeline([], null, DEFAULT_MAP_SETTINGS, NO_PROJECT_SETTINGS);
+    expect(tl.clipSpans).toHaveLength(0);
+    expect(tl.transitionSpans).toHaveLength(0);
+    expect(tl.totalDurationMs).toBe(0);
+    expect(tl.transitionFeel).toBe('natural');
+    expect(tl.startCamera.zoom).toBe(12);
+  });
+
+  it('passes transition_feel through from project settings', () => {
+    const tl = compileTimeline([], null, DEFAULT_MAP_SETTINGS, {
+      transition_feel: 'snappy',
+    });
+    expect(tl.transitionFeel).toBe('snappy');
+  });
+
+  it('skip rules: invisible, missing/unparseable created_at, degenerate trim', () => {
+    const clips: Clip[] = [
+      compilerClip({ id: 'invisible', visible: false }),
+      compilerClip({ id: 'no-ts', created_at: null }),
+      compilerClip({ id: 'bad-ts', created_at: 'not-a-date' }),
+      compilerClip({ id: 'zero-trim', trim: { in_ms: 1000, out_ms: 1000 } }),
+      compilerClip({ id: 'inverted-trim', trim: { in_ms: 5000, out_ms: 1000 } }),
+      compilerClip({ id: 'good' }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, NO_PROJECT_SETTINGS);
+    expect(tl.clipSpans.map((s) => s.clipId)).toEqual(['good']);
+    expect(tl.transitionSpans.map((t) => t.toClipId)).toEqual(['good']);
+  });
+
+  it('clip span tiling: no gaps, lengths from (out-in)/speed', () => {
+    const clips = [
+      compilerClip({
+        id: 'a',
+        trim: { in_ms: 1000, out_ms: 5000 },
+        effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 2 },
+      }),
+      compilerClip({ id: 'b', trim: { in_ms: 0, out_ms: 6000 } }),
+      compilerClip({
+        id: 'c',
+        trim: { in_ms: 0, out_ms: 9000 },
+        effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 0.5 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, NO_PROJECT_SETTINGS);
+    expect(tl.clipSpans).toHaveLength(3);
+    // a: (5000-1000)/2 = 2000
+    expect(tl.clipSpans[0].startMs).toBe(0);
+    expect(tl.clipSpans[0].endMs).toBe(2000);
+    // b: 6000/1 = 6000
+    expect(tl.clipSpans[1].startMs).toBe(2000);
+    expect(tl.clipSpans[1].endMs).toBe(8000);
+    // c: 9000/0.5 = 18000
+    expect(tl.clipSpans[2].startMs).toBe(8000);
+    expect(tl.clipSpans[2].endMs).toBe(26000);
+    expect(tl.totalDurationMs).toBe(26000);
+    // Tiling: each span starts where the previous one ended.
+    for (let i = 1; i < tl.clipSpans.length; i++) {
+      expect(tl.clipSpans[i].startMs).toBe(tl.clipSpans[i - 1].endMs);
+    }
+    // canonicalSeekMs == clipSpan.startMs.
+    for (const span of tl.clipSpans) {
+      expect(span.canonicalSeekMs).toBe(span.startMs);
+    }
+    // mediaIn/Out match the trim.
+    expect(tl.clipSpans[0].mediaInMs).toBe(1000);
+    expect(tl.clipSpans[0].mediaOutMs).toBe(5000);
+  });
+
+  it('boundary formula: bias=-1 places transition entirely pre-cut', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 600, entry_bias: -1 },
+    };
+    const clips = [
+      compilerClip({
+        id: 'a',
+        created_at: '2026-04-04T15:00:00Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    // The cut between a and b is at project-time 10000.
+    const t0 = tl.transitionSpans[0]; // project-start → a (clip 1)
+    const t1 = tl.transitionSpans[1]; // a → b
+    expect(t0.fromClipId).toBeNull();
+    expect(t1.fromClipId).toBe('a');
+    expect(t1.toClipId).toBe('b');
+    // bias=-1: requestedPreCut=600, requestedPostCut=0. Both available.
+    expect(t1.startMs).toBe(10_000 - 600);
+    expect(t1.endMs).toBe(10_000);
+    expect(t1.effectiveDurationMs).toBe(600);
+  });
+
+  it('boundary formula: bias=+1 places transition entirely post-cut', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 600, entry_bias: 1 },
+    };
+    const clips = [
+      compilerClip({
+        id: 'a',
+        created_at: '2026-04-04T15:00:00Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const t1 = tl.transitionSpans[1]; // a → b
+    expect(t1.startMs).toBe(10_000);
+    expect(t1.endMs).toBe(10_000 + 600);
+    expect(t1.effectiveDurationMs).toBe(600);
+  });
+
+  it('boundary formula: bias=0 centers transition on the cut', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    };
+    const clips = [
+      compilerClip({
+        id: 'a',
+        created_at: '2026-04-04T15:00:00Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const t1 = tl.transitionSpans[1];
+    expect(t1.startMs).toBe(10_000 - 300);
+    expect(t1.endMs).toBe(10_000 + 300);
+    expect(t1.effectiveDurationMs).toBe(600);
+  });
+
+  it('first-clip clamp: pre-cut clamps to 0 regardless of bias', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    };
+    const clips = [
+      compilerClip({
+        id: 'only',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const t0 = tl.transitionSpans[0];
+    expect(t0.fromClipId).toBeNull();
+    expect(t0.startMs).toBe(0);
+    // bias=0 requested 300ms post-cut and 300ms pre-cut. Pre-cut clamps
+    // to 0; post-cut survives.
+    expect(t0.endMs).toBe(300);
+    expect(t0.effectiveDurationMs).toBe(300);
+  });
+
+  it('first-clip clamp: bias=+1 with duration shorter than clip yields full transition', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 600, entry_bias: 1 },
+    };
+    const clips = [
+      compilerClip({
+        id: 'only',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const t0 = tl.transitionSpans[0];
+    expect(t0.startMs).toBe(0);
+    expect(t0.endMs).toBe(600);
+  });
+
+  it('both-sides overrun: 10s transition between two 1s clips clamps to 2s', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 10_000, entry_bias: 0 },
+    };
+    // A 1s clip A then a 1s clip B.
+    const clips = [
+      compilerClip({
+        id: 'a',
+        trim: { in_ms: 0, out_ms: 1_000 },
+      }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 1_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const t1 = tl.transitionSpans[1];
+    // Effective duration = sum of available media on both sides.
+    expect(t1.effectiveDurationMs).toBe(2_000);
+    expect(t1.startMs).toBe(0); // cut at 1000, pre-cut clamped from 5000 to 1000
+    expect(t1.endMs).toBe(2_000); // post-cut clamped from 5000 to 1000
+  });
+
+  it('single-side overrun: longer clip survives, shorter side clamps', () => {
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { duration_ms: 10_000, entry_bias: 0 },
+    };
+    const clips = [
+      compilerClip({
+        id: 'a',
+        trim: { in_ms: 0, out_ms: 1_000 }, // short
+      }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 100_000 }, // very long
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const t1 = tl.transitionSpans[1];
+    // Pre-cut requested 5000 ms, only 1000 available → clamps to 1000.
+    // Post-cut requested 5000 ms, plenty available → 5000.
+    expect(t1.startMs).toBe(0);
+    expect(t1.endMs).toBe(6_000); // 1000 + 5000
+    expect(t1.effectiveDurationMs).toBe(6_000);
+  });
+
+  it('authored durationMs is respected literally regardless of feel', () => {
+    // Two distinct cameras (point intents) so the auto-derived path would
+    // produce a non-trivial duration. Authored value must win anyway.
+    const clipA = compilerClip({
+      id: 'a',
+      gps: { lat: 37.77, lng: -122.4 },
+      trim: { in_ms: 0, out_ms: 10_000 },
+    });
+    const clipB = compilerClip({
+      id: 'b',
+      created_at: '2026-04-04T15:01:00Z',
+      gps: { lat: 38.0, lng: -120.0 },
+      trim: { in_ms: 0, out_ms: 10_000 },
+    });
+
+    const literal = compileTimeline([clipA, clipB], null, COMPILER_POINT_SETTINGS, {
+      transition_feel: 'slow',
+      default_entry_transition: { duration_ms: 750, entry_bias: 1 },
+    });
+    expect(literal.transitionSpans[1].effectiveDurationMs).toBe(750);
+
+    const sameLiteralWithDifferentFeel = compileTimeline(
+      [clipA, clipB],
+      null,
+      COMPILER_POINT_SETTINGS,
+      {
+        transition_feel: 'snappy',
+        default_entry_transition: { duration_ms: 750, entry_bias: 1 },
+      },
+    );
+    expect(sameLiteralWithDifferentFeel.transitionSpans[1].effectiveDurationMs).toBe(
+      750,
+    );
+  });
+
+  it('auto-derived duration uses transitionFeel; per-clip feel beats project default', () => {
+    const clipA = compilerClip({
+      id: 'a',
+      gps: { lat: 37.77, lng: -122.4 },
+      trim: { in_ms: 0, out_ms: 10_000 },
+    });
+    const clipBProject: Clip = compilerClip({
+      id: 'b',
+      created_at: '2026-04-04T15:01:00Z',
+      gps: { lat: 38.0, lng: -120.0 },
+      trim: { in_ms: 0, out_ms: 10_000 },
+    });
+    const clipBOverride: Clip = {
+      ...clipBProject,
+      entry_transition: { feel: 'snappy' },
+    };
+
+    const projectSlow: CompileTimelineProjectSettings = {
+      transition_feel: 'slow',
+    };
+    const projectSnappy: CompileTimelineProjectSettings = {
+      transition_feel: 'snappy',
+    };
+
+    const slow = compileTimeline(
+      [clipA, clipBProject],
+      null,
+      COMPILER_POINT_SETTINGS,
+      projectSlow,
+    );
+    const snappy = compileTimeline(
+      [clipA, clipBProject],
+      null,
+      COMPILER_POINT_SETTINGS,
+      projectSnappy,
+    );
+    // Different feels must yield different auto-derived durations.
+    expect(slow.transitionSpans[1].effectiveDurationMs).not.toBe(
+      snappy.transitionSpans[1].effectiveDurationMs,
+    );
+
+    // Per-clip feel='snappy' under a project default of 'slow' should
+    // match the project default of 'snappy' for the same clips.
+    const overridden = compileTimeline(
+      [clipA, clipBOverride],
+      null,
+      COMPILER_POINT_SETTINGS,
+      projectSlow,
+    );
+    expect(overridden.transitionSpans[1].effectiveDurationMs).toBeCloseTo(
+      snappy.transitionSpans[1].effectiveDurationMs,
+      6,
+    );
+  });
+
+  it('disabled transition collapses to a zero-length window at the cut', () => {
+    const disabled: ClipEntryTransition = { enabled: false };
+    const clips = [
+      compilerClip({
+        id: 'a',
+        trim: { in_ms: 0, out_ms: 10_000 },
+      }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 10_000 },
+        entry_transition: disabled,
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, NO_PROJECT_SETTINGS);
+    const t1 = tl.transitionSpans[1];
+    expect(t1.startMs).toBe(10_000);
+    expect(t1.endMs).toBe(10_000);
+    expect(t1.effectiveDurationMs).toBe(0);
+  });
+
+  it('per-clip entry_transition overrides project default per-field', () => {
+    const projectDefault: ClipEntryTransition = { duration_ms: 600, entry_bias: 0 };
+    const clipB: Clip = compilerClip({
+      id: 'b',
+      created_at: '2026-04-04T15:00:30Z',
+      trim: { in_ms: 0, out_ms: 10_000 },
+      // Override only entry_bias; duration_ms inherits.
+      entry_transition: { entry_bias: -1 },
+    });
+    const clips = [compilerClip({ id: 'a', trim: { in_ms: 0, out_ms: 10_000 } }), clipB];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, {
+      default_entry_transition: projectDefault,
+    });
+    const t1 = tl.transitionSpans[1];
+    // Inherited 600ms duration, overridden bias=-1 → entirely pre-cut.
+    expect(t1.startMs).toBe(10_000 - 600);
+    expect(t1.endMs).toBe(10_000);
+  });
+
+  it('purity: same input → deeply-equal output across two calls', () => {
+    const clips = [
+      compilerClip({ id: 'a', gps: { lat: 37.77, lng: -122.4 } }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:01:00Z',
+        gps: { lat: 38.0, lng: -120.0 },
+      }),
+    ];
+    const settings: CompileTimelineProjectSettings = {
+      transition_feel: 'natural',
+      default_entry_transition: { duration_ms: 800, entry_bias: 0 },
+    };
+    const a = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    const b = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+    expect(a).toEqual(b);
+  });
+
+  it('no inverted spans: every span has start <= end', () => {
+    const clips = [
+      compilerClip({ id: 'a', trim: { in_ms: 0, out_ms: 1_000 } }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 1_000 },
+      }),
+      compilerClip({
+        id: 'c',
+        created_at: '2026-04-04T15:01:00Z',
+        trim: { in_ms: 0, out_ms: 1_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, {
+      default_entry_transition: { duration_ms: 5_000, entry_bias: 0 },
+    });
+    for (const cs of tl.clipSpans) {
+      expect(cs.endMs).toBeGreaterThanOrEqual(cs.startMs);
+    }
+    for (const ts of tl.transitionSpans) {
+      expect(ts.endMs).toBeGreaterThanOrEqual(ts.startMs);
+    }
+  });
+
+  it('one transition span per visible clip; clip 1 has fromClipId === null', () => {
+    const clips = [
+      compilerClip({ id: 'a', trim: { in_ms: 0, out_ms: 5_000 } }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        trim: { in_ms: 0, out_ms: 5_000 },
+      }),
+      compilerClip({
+        id: 'c',
+        created_at: '2026-04-04T15:01:00Z',
+        trim: { in_ms: 0, out_ms: 5_000 },
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, NO_PROJECT_SETTINGS);
+    expect(tl.transitionSpans).toHaveLength(3);
+    expect(tl.transitionSpans[0].fromClipId).toBeNull();
+    expect(tl.transitionSpans[0].toClipId).toBe('a');
+    expect(tl.transitionSpans[1].fromClipId).toBe('a');
+    expect(tl.transitionSpans[1].toClipId).toBe('b');
+    expect(tl.transitionSpans[2].fromClipId).toBe('b');
+    expect(tl.transitionSpans[2].toClipId).toBe('c');
+  });
+
+  it('preserves order of valid clips after skip filtering', () => {
+    const clips = [
+      compilerClip({ id: 'first' }),
+      compilerClip({ id: 'skipme', visible: false }),
+      compilerClip({
+        id: 'second',
+        created_at: '2026-04-04T15:00:30Z',
+      }),
+    ];
+    const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, NO_PROJECT_SETTINGS);
+    expect(tl.clipSpans.map((s) => s.clipId)).toEqual(['first', 'second']);
   });
 });
