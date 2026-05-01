@@ -13,7 +13,7 @@ import {
   type ResolvedLocation,
 } from '../lib/routeLocation';
 import {
-  cameraAt,
+  cameraAtWallClock,
   resolveIntent,
   type MapTrack,
   type Viewport,
@@ -440,11 +440,13 @@ export default function MapView({
   }, [selectedClipId, styleVersion]);
 
   // ---- Live preview ease loop ----
-  // Every STEP_MS we compute target = cameraAt(track, t + lookahead) and
-  // fire map.easeTo at the same duration. MapLibre keeps chasing a moving
+  // Every STEP_MS we compute target = cameraAtWallClock(track, t + lookahead)
+  // and fire map.easeTo at the same duration. MapLibre keeps chasing a moving
   // target — clip-to-clip handoff, bearing rotation, and within-clip
-  // tracking all collapse into this one loop. The pure cameraAt +
+  // tracking all collapse into this one loop. The pure evaluator +
   // resolveIntent pipeline is the single source of truth for camera state.
+  // Task 550 swaps the wall-clock track for the project-time CompiledTimeline
+  // and switches the call back to the new `cameraAt(timeline, t)`.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -464,7 +466,7 @@ export default function MapView({
         return;
       }
       const t = currentTimeMsRef.current ?? track.anchors[0].timeMs;
-      const intent = cameraAt(track, t + LOOKAHEAD_MS);
+      const intent = cameraAtWallClock(track, t + LOOKAHEAD_MS);
       const viewport: Viewport = {
         width: map.getContainer().clientWidth,
         height: map.getContainer().clientHeight,

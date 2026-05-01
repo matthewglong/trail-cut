@@ -158,6 +158,15 @@ export interface ClipSpan {
   mediaOutMs: number;
   /** Project-time, ms. Where preview selection lands for this clip. */
   canonicalSeekMs: number;
+  /** Equals `clip.effects.speed`. Stored on the span so the project-time →
+   *  clip-local → wall-clock translation in `cameraAt(timeline, t)` is a
+   *  pure function of the timeline (no `Clip` lookup required). */
+  speed: number;
+  /** `parseTimestamp(clip.created_at)`. The wall-clock anchor of `mediaInMs
+   *  = 0`. Stored here so the evaluator can resolve follow intents without
+   *  re-parsing timestamps. NaN is impossible — `compileTimeline` filters
+   *  unparseable `created_at` upstream. */
+  wallClockBaseMs: number;
   /** The camera intent active inside this clip span. Produced by the
    *  existing `anchorIntentForClip` (or its successor). */
   intent: CameraIntent;
@@ -418,9 +427,16 @@ function anchorIntentForClip(
   };
 }
 
-/** The single source of truth.
- *  Returns the intent that should be active at wall-clock time t.
- *  Pure: deterministic in (track, t). No hidden state. No MapLibre.
+/** Wall-clock evaluator (legacy path). Returns the intent that should be
+ *  active at wall-clock time t against a `MapTrack`. Pure: deterministic in
+ *  (track, t). No hidden state. No MapLibre.
+ *
+ *  Renamed from `cameraAt` in task 530 to disambiguate from the new
+ *  project-time `cameraAt(timeline, t)` further down. Surviving call sites
+ *  (the legacy `MapView` ease loop) hand off to the new evaluator in task
+ *  550; this function plus the rest of the wall-clock anchor surface
+ *  (`MapAnchor`, `MapTrack`, `buildMapTrack`, `interpolateAnchors`) is
+ *  removed in task 570.
  *
  *  Output kinds:
  *    - empty track                    → DEFAULT_INTENT
@@ -432,7 +448,7 @@ function anchorIntentForClip(
  *      follow marker into "no-clip" territory)
  *    - in a gap between two anchors   → `interpolateAnchors(a, next, t, feel)`
  *      (always returns a `point` intent) */
-export function cameraAt(track: MapTrack, t: number): CameraIntent {
+export function cameraAtWallClock(track: MapTrack, t: number): CameraIntent {
   const { anchors } = track;
   if (anchors.length === 0) {
     return DEFAULT_INTENT;
@@ -1106,6 +1122,8 @@ export function compileTimeline(
       // selecting a clip seeks to startMs and the ease loop catches up
       // naturally on the next tick. See plan §"Preview Semantics".
       canonicalSeekMs: spanStartMs,
+      speed,
+      wallClockBaseMs: baseWallMs,
       intent,
     });
     cursor = spanEndMs;
@@ -1190,4 +1208,190 @@ export function compileTimeline(
     startCamera,
     transitionFeel,
   };
+}
+
+// -- Compiled-timeline evaluator (project-time) -----------------------------
+//
+// The new project-time `cameraAt(timeline, t)`. Single source of truth for
+// preview AND export. Pure in (timeline, t): same inputs → same output.
+// Routes by t-region:
+//
+//   - empty timeline           → startCamera as a point intent
+//   - t < 0                    → startCamera as a point intent
+//   - t >= totalDurationMs     → last clip's intent, clamped to its endMs
+//   - inside a transition span → Van Wijk between the canonical resolved
+//                                 cameras at the boundary, parameterized by
+//                                 a cubic-eased localT
+//   - inside a clip span       → the clip's authored intent, with project-
+//                                 time → clip-local → wall-clock translation
+//                                 for follow intents
+//
+// Span-lookup tradeoff: clip and transition spans are short (≤ a few dozen
+// per project), so a linear scan is the simplest correct routing. Binary
+// search would be valid but over-engineered for this size. Transition span
+// lookup explicitly preserves "later span wins" in the pathological both-
+// sides-overrun case where two adjacent transitions share project-time.
+
+/** Promote a `ResolvedCamera` to a `point` CameraIntent. Used at the t<0
+ *  hold and the empty-timeline fallback so callers always receive a
+ *  CameraIntent (not a ResolvedCamera) — viewport stays out of this layer. */
+function startCameraAsPointIntent(cam: ResolvedCamera): CameraIntent {
+  return {
+    kind: 'point',
+    center: { lng: cam.center.lng, lat: cam.center.lat },
+    zoom: cam.zoom,
+    bearing: cam.bearing,
+    pitch: cam.pitch,
+  };
+}
+
+/** Inside-clip-span live intent. For follow intents, translates project-time
+ *  `t` → clip-local → wall-clock per `COMPILED_TIMELINE_PLAN.md` §"Time-Axis
+ *  Translation" and overwrites `playheadMs`. For point/region, returns the
+ *  intent unchanged (time-invariant within a clip span).
+ *
+ *  Clamps `t` into `[span.startMs, span.endMs]` before translating so a
+ *  caller probing `t > span.endMs` does not drag the follow marker past the
+ *  clip's last GPX point. */
+function liveIntentForClipSpan(span: ClipSpan, t: number): CameraIntent {
+  if (span.intent.kind !== 'follow') return span.intent;
+  const tClamped =
+    t < span.startMs ? span.startMs : t > span.endMs ? span.endMs : t;
+  const clipLocalMs = (tClamped - span.startMs) * span.speed + span.mediaInMs;
+  const wallClockMs = span.wallClockBaseMs + clipLocalMs;
+  return { ...span.intent, playheadMs: wallClockMs };
+}
+
+/** Find the clip span containing project-time `t`. All but the last span
+ *  use a half-open `[start, end)` interval so the seam between adjacent
+ *  spans belongs to the later span; the last span is closed on the right
+ *  to handle `t == totalDurationMs` exactly. Returns null only for
+ *  out-of-range `t`, which the caller's region-routing rules out. */
+function findClipSpanAt(spans: ClipSpan[], t: number): ClipSpan | null {
+  for (let i = 0; i < spans.length; i++) {
+    const s = spans[i];
+    const isLast = i === spans.length - 1;
+    if (t >= s.startMs && (isLast ? t <= s.endMs : t < s.endMs)) return s;
+  }
+  return null;
+}
+
+/** Find the transition span that owns project-time `t`. Closed on both ends
+ *  so `cameraAt(transitionSpan.endMs)` returns the localT=1 sample (= the
+ *  destination clip's initial canonical camera) — directly satisfying the
+ *  continuity invariant in `COMPILED_TIMELINE_PLAN.md` §"Continuity
+ *  Invariants". Zero-duration spans (disabled / clamped to nothing) are
+ *  skipped and the caller falls through to clip-span lookup.
+ *
+ *  Pathological overlap: when two transitions cover `t` (only possible when
+ *  both sides of an adjacent boundary overrun a too-short clip per the
+ *  clamping policy), the LATER one wins. Its `toCamera` is more recent and
+ *  matches the seam handoff direction. */
+function findTransitionSpanAt(
+  spans: TransitionSpan[],
+  t: number,
+): TransitionSpan | null {
+  let result: TransitionSpan | null = null;
+  for (const s of spans) {
+    if (s.effectiveDurationMs <= 0) continue;
+    if (t >= s.startMs && t <= s.endMs) result = s;
+  }
+  return result;
+}
+
+/** Evaluate a transition span at project-time `t`. Returns a `point` intent
+ *  on the Van Wijk arc between the previous clip's terminal canonical camera
+ *  (or `startCamera` for clip 1) and the destination clip's initial canonical
+ *  camera. Bearing is short-way circular-lerped; pitch is linearly lerped;
+ *  center+zoom come from `vanWijkSample`. The cubic ease-in-out matches the
+ *  legacy `interpolateAnchors` behavior — gentle entry, fast middle, gentle
+ *  landing. */
+function evaluateTransitionSpan(
+  timeline: CompiledTimeline,
+  span: TransitionSpan,
+  t: number,
+): CameraIntent {
+  const { clipSpans, startCamera, transitionFeel } = timeline;
+
+  const fromSpan = span.fromClipId
+    ? clipSpans.find((s) => s.clipId === span.fromClipId) ?? null
+    : null;
+  const toSpan = clipSpans.find((s) => s.clipId === span.toClipId) ?? null;
+
+  // toSpan must exist for any well-formed timeline (transitions always point
+  // at an existing clip). Guard for paranoia, returning startCamera so the
+  // caller still receives a valid intent.
+  if (!toSpan) return startCameraAsPointIntent(startCamera);
+
+  const fromCamera: ResolvedCamera = fromSpan
+    ? resolveCanonical(
+        fromSpan.intent,
+        fromSpan.wallClockBaseMs + fromSpan.mediaOutMs,
+      )
+    : startCamera;
+  const toCamera: ResolvedCamera = resolveCanonical(
+    toSpan.intent,
+    toSpan.wallClockBaseMs + toSpan.mediaInMs,
+  );
+
+  // localT is well-defined here because findTransitionSpanAt skipped any
+  // zero-duration span. Clamp to [0, 1] defensively for the case where t
+  // sits exactly at startMs/endMs and float math kicks it slightly out.
+  const lengthMs = span.endMs - span.startMs;
+  const rawLocalT = (t - span.startMs) / lengthMs;
+  const localT = rawLocalT < 0 ? 0 : rawLocalT > 1 ? 1 : rawLocalT;
+  const eased = easeInOut(localT, transitionFeel);
+
+  const arc = vanWijkArc(fromCamera, toCamera);
+  const sample = vanWijkSample(fromCamera, toCamera, arc, arc.S * eased);
+  const bearing = circularLerp(fromCamera.bearing, toCamera.bearing, eased);
+  const pitch = fromCamera.pitch + (toCamera.pitch - fromCamera.pitch) * eased;
+
+  return {
+    kind: 'point',
+    center: sample.center,
+    zoom: sample.zoom,
+    bearing,
+    pitch,
+  };
+}
+
+/** Evaluate the compiled timeline at project-time `t`. Pure, deterministic,
+ *  viewport-agnostic — the renderer (preview ease loop OR export frame loop)
+ *  hands the returned intent to `resolveIntent(intent, viewport)` to get a
+ *  concrete camera. See `COMPILED_TIMELINE_PLAN.md` §"Continuity Invariants"
+ *  for the gating contract this function honors.
+ *
+ *  Both preview and export consume this. Preview drives `t` from the
+ *  project-time playhead each animation tick; export drives `t = frame_index
+ *  / fps`. Same evaluator, same output for the same `t`. */
+export function cameraAt(timeline: CompiledTimeline, t: number): CameraIntent {
+  const { clipSpans, transitionSpans, totalDurationMs, startCamera } = timeline;
+
+  if (clipSpans.length === 0) {
+    return startCameraAsPointIntent(startCamera);
+  }
+
+  if (t < 0) {
+    return startCameraAsPointIntent(startCamera);
+  }
+
+  if (t >= totalDurationMs) {
+    const last = clipSpans[clipSpans.length - 1];
+    return liveIntentForClipSpan(last, last.endMs);
+  }
+
+  const transitionSpan = findTransitionSpanAt(transitionSpans, t);
+  if (transitionSpan) {
+    return evaluateTransitionSpan(timeline, transitionSpan, t);
+  }
+
+  const clipSpan = findClipSpanAt(clipSpans, t);
+  if (clipSpan) return liveIntentForClipSpan(clipSpan, t);
+
+  // Unreachable for well-formed (gapless) timelines. Fall back to the last
+  // clip's terminal frame rather than throwing — matches the wall-clock
+  // evaluator's "hold the last frame" defensive posture.
+  const last = clipSpans[clipSpans.length - 1];
+  return liveIntentForClipSpan(last, last.endMs);
 }

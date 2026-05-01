@@ -8,6 +8,7 @@ import {
   arcDurationMs,
   buildMapTrack,
   cameraAt,
+  cameraAtWallClock,
   resolveIntent,
   interpolateAnchors,
   compileTimeline,
@@ -22,6 +23,7 @@ import type {
   MapAnchor,
   MapTrack,
   CompileTimelineProjectSettings,
+  CompiledTimeline,
 } from './cameraIntent';
 import { circularLerp, type IndexedRoute } from './routeLocation';
 import {
@@ -310,13 +312,13 @@ function makeIndexedRoute(): import('./routeLocation').IndexedRoute {
   };
 }
 
-describe('buildMapTrack + cameraAt', () => {
+describe('buildMapTrack + cameraAtWallClock', () => {
   it('empty clips → empty track → cameraAt returns DEFAULT_INTENT', () => {
     const track = buildMapTrack([], null, DEFAULT_MAP_SETTINGS, 'natural');
     expect(track.anchors).toHaveLength(0);
     expect(track.transitionFeel).toBe('natural');
 
-    const intent = cameraAt(track, 0);
+    const intent = cameraAtWallClock(track, 0);
     expect(intent).toEqual(DEFAULT_INTENT);
   });
 
@@ -361,7 +363,7 @@ describe('buildMapTrack + cameraAt', () => {
     expect(track.anchors[0].intent.kind).toBe('follow');
 
     const probeT = t0 + 3_000;
-    const intent = cameraAt(track, probeT);
+    const intent = cameraAtWallClock(track, probeT);
     expect(intent.kind).toBe('follow');
     if (intent.kind === 'follow') {
       expect(intent.playheadMs).toBe(probeT);
@@ -384,7 +386,7 @@ describe('buildMapTrack + cameraAt', () => {
     // Inside the clip range, the live intent is identity (point intents are
     // time-invariant — liveIntent returns them unchanged).
     for (const t of [t0, t0 + 1, t0 + 5_000, t0 + 9_999]) {
-      const intent = cameraAt(track, t);
+      const intent = cameraAtWallClock(track, t);
       expect(intent).toBe(anchorIntent);
     }
   });
@@ -402,7 +404,7 @@ describe('buildMapTrack + cameraAt', () => {
 
     // Strictly before the first anchor's start.
     const probeT = t0 - 5_000;
-    const intent = cameraAt(track, probeT);
+    const intent = cameraAtWallClock(track, probeT);
     // For follow: playheadMs is overwritten with the probe t per liveIntent.
     expect(intent.kind).toBe('follow');
     if (intent.kind === 'follow' && first.intent.kind === 'follow') {
@@ -427,7 +429,7 @@ describe('buildMapTrack + cameraAt', () => {
     const last = track.anchors[track.anchors.length - 1];
 
     // Strictly after the last anchor's end.
-    const intent = cameraAt(track, last.endTimeMs + 60_000);
+    const intent = cameraAtWallClock(track, last.endTimeMs + 60_000);
     expect(intent.kind).toBe('follow');
     if (intent.kind === 'follow') {
       // Clamping behavior: playheadMs pinned to last.endTimeMs, not the
@@ -444,7 +446,7 @@ describe('buildMapTrack + cameraAt', () => {
       'natural',
     );
     const last = track.anchors[track.anchors.length - 1];
-    const intent = cameraAt(track, last.endTimeMs + 60_000);
+    const intent = cameraAtWallClock(track, last.endTimeMs + 60_000);
     // Point intents are time-invariant; identity passthrough.
     expect(intent).toBe(last.intent);
   });
@@ -467,8 +469,8 @@ describe('buildMapTrack + cameraAt', () => {
     // route reference would still pass equality but the explicit `route`
     // identity assertion below catches it.
     const probeT = t0 + 1_234;
-    const a = cameraAt(track, probeT);
-    const b = cameraAt(track, probeT);
+    const a = cameraAtWallClock(track, probeT);
+    const b = cameraAtWallClock(track, probeT);
     expect(a).toEqual(b);
     if (a.kind === 'follow' && b.kind === 'follow') {
       expect(a.route).toBe(b.route);
@@ -504,7 +506,7 @@ describe('buildMapTrack + cameraAt', () => {
     // center is strictly between the two anchors (since cubic ease-in-out
     // at t=0.5 yields exactly 0.5 — a midway sample along the arc).
     const gapMidT = t0 + 25_000;
-    const intent = cameraAt(track, gapMidT);
+    const intent = cameraAtWallClock(track, gapMidT);
     expect(intent.kind).toBe('point');
     if (intent.kind === 'point') {
       // Center sits strictly between the two anchor centers in lng/lat.
@@ -1358,5 +1360,321 @@ describe('compileTimeline', () => {
     ];
     const tl = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, NO_PROJECT_SETTINGS);
     expect(tl.clipSpans.map((s) => s.clipId)).toEqual(['first', 'second']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cameraAt(timeline, t) — task 530.
+//
+// The new project-time evaluator. Both preview and export consume this. The
+// continuity invariants are the gating contract; the rest of the suite
+// exercises region routing (before-zero, in-clip, in-transition, after-end),
+// follow-intent project-time → wall-clock translation, and purity.
+//
+// Synthetic input: 3-clip point-intent timelines so canonical resolution is
+// deterministic and viewport-free (point intents pass straight through
+// resolveCanonical without going through cameraForBounds).
+// ---------------------------------------------------------------------------
+
+const TEN_S = 10_000;
+
+/** Three point-intent clips with distinct GPS for distinct canonical
+ *  cameras. Each clip is 10s of media at speed=1, so project-time spans
+ *  are 10s each. Matching `created_at` spacing is intentional — the
+ *  compiler does not depend on it (project-time is derived) but it makes
+ *  any wall-clock translation easier to reason about. */
+function threeClipPointTimeline(
+  settings: CompileTimelineProjectSettings = {},
+): { timeline: CompiledTimeline; clips: Clip[] } {
+  const clips = [
+    compilerClip({
+      id: 'a',
+      created_at: '2026-04-04T15:00:00Z',
+      gps: { lat: 37.77, lng: -122.40 },
+      trim: { in_ms: 0, out_ms: TEN_S },
+    }),
+    compilerClip({
+      id: 'b',
+      created_at: '2026-04-04T15:00:30Z',
+      gps: { lat: 37.80, lng: -122.35 },
+      trim: { in_ms: 0, out_ms: TEN_S },
+    }),
+    compilerClip({
+      id: 'c',
+      created_at: '2026-04-04T15:01:00Z',
+      gps: { lat: 37.83, lng: -122.30 },
+      trim: { in_ms: 0, out_ms: TEN_S },
+    }),
+  ];
+  const timeline = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, settings);
+  return { timeline, clips };
+}
+
+describe('cameraAt(timeline, t)', () => {
+  it('empty timeline: returns startCamera as a point intent for any t', () => {
+    const tl = compileTimeline([], null, DEFAULT_MAP_SETTINGS, {});
+    for (const t of [-1000, 0, 5000, 1_000_000]) {
+      const intent = cameraAt(tl, t);
+      expect(intent.kind).toBe('point');
+      if (intent.kind === 'point') {
+        expect(intent.center).toEqual(tl.startCamera.center);
+        expect(intent.zoom).toBe(tl.startCamera.zoom);
+        expect(intent.bearing).toBe(tl.startCamera.bearing);
+        expect(intent.pitch).toBe(tl.startCamera.pitch);
+      }
+    }
+  });
+
+  it('t < 0: holds startCamera as a point intent', () => {
+    const { timeline } = threeClipPointTimeline();
+    const intent = cameraAt(timeline, -5_000);
+    expect(intent.kind).toBe('point');
+    if (intent.kind === 'point') {
+      expect(intent.center).toEqual(timeline.startCamera.center);
+      expect(intent.zoom).toBe(timeline.startCamera.zoom);
+    }
+  });
+
+  it('t >= totalDurationMs: returns last clip intent (point intents pass through unchanged)', () => {
+    const { timeline } = threeClipPointTimeline();
+    const intent = cameraAt(timeline, timeline.totalDurationMs + 60_000);
+    // Last clip is 'c' with point intent at gps c. Point intent passes
+    // through liveIntentForClipSpan unchanged → identity with the span's
+    // intent reference.
+    const lastSpan = timeline.clipSpans[timeline.clipSpans.length - 1];
+    expect(intent).toBe(lastSpan.intent);
+  });
+
+  it('inside a clip span (point intent): returns the clip intent unchanged (identity)', () => {
+    const { timeline } = threeClipPointTimeline();
+    const middleSpan = timeline.clipSpans[1];
+    // Probe the middle of clip B's span. Choose a t safely inside the
+    // clip's media — past any post-cut transition overrun. With default
+    // (no settings) the auto-derived transitions clamp small relative to
+    // a 10s clip, so the strict middle is in-clip.
+    const midT = (middleSpan.startMs + middleSpan.endMs) / 2;
+    const intent = cameraAt(timeline, midT);
+    expect(intent).toBe(middleSpan.intent);
+  });
+
+  it('inside a clip span (follow intent): translates project-time → wall-clock per the plan', () => {
+    // Use FOLLOW_SETTINGS (defined for the legacy buildMapTrack tests
+    // above) and a route so anchorIntentForClip emits a follow intent.
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route: import('./routeLocation').IndexedRoute = {
+      points: [
+        { lat: 37.77, lng: -122.40, timeMs: t0 },
+        { lat: 37.78, lng: -122.39, timeMs: t0 + TEN_S },
+      ],
+      minTimeMs: t0,
+      maxTimeMs: t0 + TEN_S,
+    };
+    const clips = [
+      compilerClip({
+        id: 'follow-clip',
+        created_at: '2026-04-04T15:00:00Z',
+        trim: { in_ms: 1000, out_ms: 5000 },
+        // 2× speed → project-time span = (5000-1000)/2 = 2000 ms.
+        effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 2 },
+        // Disable the entry transition so the entire span is in-clip and
+        // the project-time → wall-clock translation is the only path
+        // exercised at the probe.
+        entry_transition: { enabled: false },
+      }),
+    ];
+    const followSettings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      follow_playhead: true,
+      bearing_mode: 'fixed',
+      bearing_degrees: 0,
+    };
+    const timeline = compileTimeline(clips, route, followSettings, {});
+    const span = timeline.clipSpans[0];
+    expect(span.intent.kind).toBe('follow');
+
+    // Probe at project-time = startMs + 500 (ms). Per §"Time-Axis
+    // Translation": clipLocalMs = 500*2 + 1000 = 2000; wallClockMs =
+    // parseTimestamp(created_at) + 2000.
+    const t = span.startMs + 500;
+    const intent = cameraAt(timeline, t);
+    expect(intent.kind).toBe('follow');
+    if (intent.kind === 'follow') {
+      expect(intent.playheadMs).toBe(t0 + 2000);
+      // Other follow fields preserved.
+      expect(intent.route).toBe(route);
+      expect(intent.bearingMode).toBe('fixed');
+    }
+  });
+
+  it('continuity invariant: cameraAt(transitionSpan.startMs) ≈ previous canonical (or startCamera)', () => {
+    // Use authored durations that don't extend into adjacent clips so the
+    // invariant test is unambiguous (no overlap with the next transition).
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    const viewport: Viewport = { width: 1024, height: 1024, dpr: 1 };
+
+    for (const tspan of timeline.transitionSpans) {
+      if (tspan.effectiveDurationMs <= 0) continue;
+      const intent = cameraAt(timeline, tspan.startMs);
+      const cam = resolveIntent(intent, viewport);
+
+      // Expected fromCamera: previous clip's terminal canonical, or
+      // startCamera for clip 1.
+      let expected: ResolvedCamera;
+      if (tspan.fromClipId == null) {
+        expected = timeline.startCamera;
+      } else {
+        const fromSpan = timeline.clipSpans.find((s) => s.clipId === tspan.fromClipId)!;
+        expected = resolveIntent(fromSpan.intent, viewport);
+      }
+      expect(cam.center.lng).toBeCloseTo(expected.center.lng, 6);
+      expect(cam.center.lat).toBeCloseTo(expected.center.lat, 6);
+      expect(Math.abs(cam.zoom - expected.zoom)).toBeLessThan(1e-3);
+      expect(cam.bearing).toBeCloseTo(expected.bearing, 6);
+      expect(cam.pitch).toBeCloseTo(expected.pitch, 9);
+    }
+  });
+
+  it('continuity invariant: cameraAt(transitionSpan.endMs) ≈ destination clip initial canonical', () => {
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    const viewport: Viewport = { width: 1024, height: 1024, dpr: 1 };
+
+    for (const tspan of timeline.transitionSpans) {
+      if (tspan.effectiveDurationMs <= 0) continue;
+      const intent = cameraAt(timeline, tspan.endMs);
+      const cam = resolveIntent(intent, viewport);
+
+      const toSpan = timeline.clipSpans.find((s) => s.clipId === tspan.toClipId)!;
+      const expected = resolveIntent(toSpan.intent, viewport);
+      expect(cam.center.lng).toBeCloseTo(expected.center.lng, 6);
+      expect(cam.center.lat).toBeCloseTo(expected.center.lat, 6);
+      expect(Math.abs(cam.zoom - expected.zoom)).toBeLessThan(1e-3);
+      expect(cam.bearing).toBeCloseTo(expected.bearing, 6);
+      expect(cam.pitch).toBeCloseTo(expected.pitch, 9);
+    }
+  });
+
+  it('continuity invariant: smooth across every span boundary (no jumps)', () => {
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    const viewport: Viewport = { width: 1024, height: 1024, dpr: 1 };
+    const eps = 0.5; // half a millisecond — well below any STEP_MS
+
+    // Collect every distinct boundary t in the timeline.
+    const boundaries = new Set<number>();
+    for (const s of timeline.clipSpans) {
+      boundaries.add(s.startMs);
+      boundaries.add(s.endMs);
+    }
+    for (const s of timeline.transitionSpans) {
+      if (s.effectiveDurationMs <= 0) continue;
+      boundaries.add(s.startMs);
+      boundaries.add(s.endMs);
+    }
+
+    for (const t of boundaries) {
+      // Skip 0 (no t-eps neighborhood) and totalDurationMs (clamp boundary).
+      if (t <= 0 || t >= timeline.totalDurationMs) continue;
+      const before = resolveIntent(cameraAt(timeline, t - eps), viewport);
+      const after = resolveIntent(cameraAt(timeline, t + eps), viewport);
+      // 1e-3 tolerance: ½-ms steps near the boundary, so easeInOut should
+      // not move the camera measurably. Tighter would catch float drift;
+      // looser would miss real seams.
+      expect(Math.abs(before.center.lng - after.center.lng)).toBeLessThan(1e-3);
+      expect(Math.abs(before.center.lat - after.center.lat)).toBeLessThan(1e-3);
+      expect(Math.abs(before.zoom - after.zoom)).toBeLessThan(1e-3);
+      expect(Math.abs(before.bearing - after.bearing)).toBeLessThan(1e-3);
+      expect(Math.abs(before.pitch - after.pitch)).toBeLessThan(1e-3);
+    }
+  });
+
+  it('purity: same (timeline, t) produces deeply-equal output', () => {
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    for (const t of [0, 5_000, 10_300, 15_500, 20_000, 25_000]) {
+      const a = cameraAt(timeline, t);
+      const b = cameraAt(timeline, t);
+      expect(a).toEqual(b);
+    }
+  });
+
+  it('mid-transition: returns a point intent strictly between the boundary cameras', () => {
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    // Mid of the a→b transition (transitionSpans[1]).
+    const tspan = timeline.transitionSpans[1];
+    expect(tspan.fromClipId).toBe('a');
+    expect(tspan.toClipId).toBe('b');
+    const midT = (tspan.startMs + tspan.endMs) / 2;
+    const intent = cameraAt(timeline, midT);
+    expect(intent.kind).toBe('point');
+    if (intent.kind === 'point') {
+      // Point a is at (-122.40, 37.77); b at (-122.35, 37.80). Mid-arc
+      // sits between in lng/lat (Van Wijk's u-fraction at eased=0.5 is
+      // strictly in (0, 1)).
+      expect(intent.center.lng).toBeGreaterThan(-122.40);
+      expect(intent.center.lng).toBeLessThan(-122.35);
+      expect(intent.center.lat).toBeGreaterThan(37.77);
+      expect(intent.center.lat).toBeLessThan(37.80);
+    }
+  });
+
+  it('disabled transition: zero-length window falls through to clip span intent', () => {
+    const clips = [
+      compilerClip({ id: 'a', trim: { in_ms: 0, out_ms: TEN_S } }),
+      compilerClip({
+        id: 'b',
+        created_at: '2026-04-04T15:00:30Z',
+        gps: { lat: 37.80, lng: -122.35 },
+        trim: { in_ms: 0, out_ms: TEN_S },
+        entry_transition: { enabled: false },
+      }),
+    ];
+    const timeline = compileTimeline(clips, null, COMPILER_POINT_SETTINGS, {});
+    const tspan = timeline.transitionSpans[1];
+    expect(tspan.effectiveDurationMs).toBe(0);
+    // At the cut t, the disabled span is skipped and clip B's span owns t.
+    const intent = cameraAt(timeline, tspan.startMs);
+    const bSpan = timeline.clipSpans[1];
+    expect(intent).toBe(bSpan.intent);
+  });
+
+  it('continuity invariant: cameraAt(clipSpan.startMs) and cameraAt(clipSpan.endMs) match the clip canonical', () => {
+    // Pick a setup where transitions don't extend into the clip span (use
+    // tiny authored durations + bias=-1 so transitions sit purely pre-cut).
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 200, entry_bias: -1 },
+    });
+    const viewport: Viewport = { width: 1024, height: 1024, dpr: 1 };
+
+    for (const span of timeline.clipSpans) {
+      const expected = resolveIntent(span.intent, viewport);
+
+      // span.startMs may sit at the previous transition's endMs (for
+      // bias=-1, transition ends at cut == span.startMs). The transition
+      // span's endMs is still INCLUSIVE in our routing, so cameraAt at
+      // span.startMs may return the transition's localT=1 sample (=
+      // canonical for THIS clip). Either way, the resolved camera matches.
+      const startCam = resolveIntent(cameraAt(timeline, span.startMs), viewport);
+      expect(startCam.center.lng).toBeCloseTo(expected.center.lng, 6);
+      expect(startCam.center.lat).toBeCloseTo(expected.center.lat, 6);
+      expect(Math.abs(startCam.zoom - expected.zoom)).toBeLessThan(1e-3);
+
+      // span.endMs (last span uses inclusive right). For non-last spans,
+      // span.endMs == next span.startMs which goes to the next clip — skip.
+      const isLast = span === timeline.clipSpans[timeline.clipSpans.length - 1];
+      if (isLast) {
+        const endCam = resolveIntent(cameraAt(timeline, span.endMs), viewport);
+        expect(endCam.center.lng).toBeCloseTo(expected.center.lng, 6);
+        expect(endCam.center.lat).toBeCloseTo(expected.center.lat, 6);
+        expect(Math.abs(endCam.zoom - expected.zoom)).toBeLessThan(1e-3);
+      }
+    }
   });
 });
