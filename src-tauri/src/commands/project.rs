@@ -54,12 +54,19 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
         .unwrap_or(1);
 
     let mut project = match version {
-        1 => migrate_v1_to_v2(raw)?,
-        2 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v2 project: {}", e))?,
+        1 => {
+            // Chain v1 → v2 → v3. Each step is purely additive at this
+            // point, so chaining is safe; future shape changes may collapse
+            // into per-version `migrate_vN_to_vM` bodies.
+            let v2 = migrate_v1_to_v2_value(raw)?;
+            migrate_v2_to_v3(v2)?
+        }
+        2 => migrate_v2_to_v3(raw)?,
+        3 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v3 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1 and v2)",
+                "Unknown project schema version {} (this app supports v1, v2, and v3)",
                 version
             ));
         }
@@ -78,12 +85,43 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 /// v1 → v2 migration. v1 is the pre-camera-architecture shape: `route`
 /// present in JSON, no `transition_feel`. Today this is effectively additive
 /// (serde defaults handle the missing field), but the migration step exists
-/// to make the version bump load-bearing for future shape changes. Task 370
-/// will extend this to drop the persisted `route` from the in-memory result
-/// and re-parse from `route.gpx`.
+/// to make the version bump load-bearing for future shape changes. Returns
+/// a Value rather than a Project so the caller can chain v2 → v3 without an
+/// intermediate deserialize / reserialize round-trip.
+fn migrate_v1_to_v2_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert("schema_version".into(), serde_json::Value::from(2u32));
+    } else {
+        return Err("v1 project root is not a JSON object".into());
+    }
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v1 → v2 migration that returns a parsed
+/// Project. Wraps `migrate_v1_to_v2_value` and finalizes via serde so
+/// existing callers (and tests) keep working.
+#[cfg(test)]
 fn migrate_v1_to_v2(raw: serde_json::Value) -> Result<Project, String> {
-    let mut project: Project = serde_json::from_value(raw)
+    let v2 = migrate_v1_to_v2_value(raw)?;
+    let mut project: Project = serde_json::from_value(v2)
         .map_err(|e| format!("Failed to parse v1 project: {}", e))?;
+    project.schema_version = 2;
+    Ok(project)
+}
+
+/// v2 → v3 migration. Purely additive: v3 introduces optional
+/// `start_camera`, `default_entry_transition`, and per-clip
+/// `entry_transition` fields, all of which deserialize as `None` when
+/// absent thanks to `#[serde(default)]`. We only need to lift the version
+/// number on the JSON value before letting serde finalize it.
+fn migrate_v2_to_v3(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert("schema_version".into(), serde_json::Value::from(3u32));
+    } else {
+        return Err("v2 project root is not a JSON object".into());
+    }
+    let mut project: Project = serde_json::from_value(raw)
+        .map_err(|e| format!("Failed to parse v2 project during v3 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
@@ -165,14 +203,40 @@ mod tests {
     fn migrate_v1_to_v2_lifts_schema_version() {
         let raw: serde_json::Value = serde_json::from_str(V1_PROJECT_JSON).unwrap();
         let project = migrate_v1_to_v2(raw).expect("v1 project must migrate cleanly");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(project.schema_version, 2);
         assert!(project.transition_feel.is_none());
         assert_eq!(project.name, "Old Project");
     }
 
+    /// A v2 project on disk: post-camera-architecture, schema_version: 2,
+    /// optional `transition_feel` set, no compiled-timeline authoring fields.
+    const V2_PROJECT_JSON: &str = r#"{
+        "schema_version": 2,
+        "version": 1,
+        "name": "Mid Project",
+        "thumbnail": null,
+        "clips": [],
+        "exports": [],
+        "map_settings": null,
+        "transition_feel": "snappy"
+    }"#;
+
     #[test]
-    fn save_then_load_round_trip_writes_v2() {
+    fn migrate_v2_to_v3_is_purely_additive() {
+        let raw: serde_json::Value = serde_json::from_str(V2_PROJECT_JSON).unwrap();
+        let project = migrate_v2_to_v3(raw).expect("v2 project must migrate cleanly");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 3);
+        // Original fields preserved.
+        assert_eq!(project.name, "Mid Project");
+        assert!(matches!(project.transition_feel, Some(TransitionFeel::Snappy)));
+        // New v3 fields default to None.
+        assert!(project.start_camera.is_none());
+        assert!(project.default_entry_transition.is_none());
+    }
+
+    #[test]
+    fn save_then_load_round_trip_writes_v3() {
         let dir = std::env::temp_dir().join(format!(
             "trailcut-test-{}-{}",
             std::process::id(),
@@ -183,30 +247,62 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Seed the bundle with a v1-shaped project.json.
+        // Seed the bundle with a v1-shaped project.json (exercises the
+        // chained v1 → v2 → v3 path).
         std::fs::write(dir.join("project.json"), V1_PROJECT_JSON).unwrap();
 
         let dir_str = dir.to_string_lossy().into_owned();
         let loaded = load_project(dir_str.clone()).expect("load v1 must succeed");
         assert_eq!(
             loaded.schema_version, CURRENT_SCHEMA_VERSION,
-            "load must surface migrated v2 in memory"
+            "load must surface migrated v3 in memory"
         );
+        assert!(loaded.start_camera.is_none());
+        assert!(loaded.default_entry_transition.is_none());
 
         save_project(loaded, dir_str.clone()).expect("save must succeed");
 
-        // After save, the on-disk file is v2 and has no top-level `route`.
+        // After save, the on-disk file is v3 and has no top-level `route`.
         let on_disk = std::fs::read_to_string(dir.join("project.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
         assert_eq!(
             parsed.get("schema_version").and_then(|v| v.as_u64()),
-            Some(2),
-            "save must write schema_version: 2"
+            Some(3),
+            "save must write schema_version: 3"
         );
         assert!(
             parsed.get("route").is_none(),
             "save must omit the `route` key (re-parsed from route.gpx on load)"
         );
+        // Empty options stay omitted from the on-disk JSON.
+        assert!(parsed.get("start_camera").is_none());
+        assert!(parsed.get("default_entry_transition").is_none());
+
+        // Reload — the round-trip must keep the schema at v3.
+        let reloaded = load_project(dir_str).expect("reload v3 must succeed");
+        assert_eq!(reloaded.schema_version, 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_project_loads_as_v3_in_memory() {
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-v2load",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("project.json"), V2_PROJECT_JSON).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("load v2 must succeed");
+        assert_eq!(loaded.schema_version, 3);
+        assert!(matches!(loaded.transition_feel, Some(TransitionFeel::Snappy)));
+        assert_eq!(loaded.name, "Mid Project");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

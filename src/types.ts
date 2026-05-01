@@ -51,6 +51,10 @@ export interface Clip {
   effects: Effects;
   visible: boolean;
   map_overrides: MapOverrides | null;
+  /** Optional per-clip entry-transition authoring. See
+   *  `ClipEntryTransition`. Project-level defaults still apply for unset
+   *  fields. */
+  entry_transition?: ClipEntryTransition;
 }
 
 export interface TrackPoint {
@@ -136,6 +140,43 @@ export interface ExportConfig {
  *  (cameraIntent itself imports from types.ts). */
 export type TransitionFeel = 'natural' | 'snappy' | 'slow';
 
+/** The fully-resolved camera the compiled timeline holds before clip 1 (and
+ *  uses as the "from" endpoint of clip 1's entry transition). Persisted only
+ *  when the user overrides the computed default. See
+ *  `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Project Start Camera". */
+export interface ProjectStartCamera {
+  center: GpsCoord;
+  zoom: number;
+  bearing: number;
+  pitch: number;
+}
+
+/** Per-clip (and project-default) authoring of an entry transition. All
+ *  fields are clip-local; nothing here lives on project-time. The compiler
+ *  (task 520) consumes these together with media duration and clip ordering
+ *  to produce a TransitionSpan on the project-time axis.
+ *
+ *  Field semantics (per `COMPILED_TIMELINE_PLAN.md` §"Data Model"):
+ *  - `enabled` — when `false`, the transition window collapses to zero
+ *    duration and the camera jumps from previous → current at the cut.
+ *  - `duration_ms` — clip-local; if unset, the compiler auto-derives via
+ *    `arcDurationMs(arc, feel)`.
+ *  - `entry_bias` — float in `[-1, 1]`. -1 = entirely pre-cut, 0 = centered,
+ *    +1 = entirely post-cut. Compiler clamps; no runtime clamping here.
+ *  - `feel` — optional per-clip override of the project-level feel.
+ *    `feel` only affects the auto-derived duration; an authored
+ *    `duration_ms` is respected literally.
+ *
+ *  Field names are snake_case to match the rest of project.json (which is
+ *  Rust-serde-serialized) — same convention as `transition_feel`,
+ *  `map_overrides`, `bearing_mode`, etc. */
+export interface ClipEntryTransition {
+  enabled?: boolean;
+  duration_ms?: number;
+  entry_bias?: number;
+  feel?: TransitionFeel;
+}
+
 export interface Project {
   version: number;
   name: string;
@@ -148,6 +189,13 @@ export interface Project {
    *  on disk lack this field; Rust serde fills in `None` and the frontend
    *  resolves at the call site via `?? 'natural'`. */
   transition_feel?: TransitionFeel;
+  /** Optional override of the computed project start camera. When absent,
+   *  the compiler synthesizes a sensible default (centroid of clip starts,
+   *  zoom 12, bearing 0, pitch 0/60-by-style). */
+  start_camera?: ProjectStartCamera;
+  /** Project-level defaults for every clip's entry transition. Each clip's
+   *  own `entry_transition` overrides individual fields. */
+  default_entry_transition?: ClipEntryTransition;
 }
 
 export interface RecentProject {

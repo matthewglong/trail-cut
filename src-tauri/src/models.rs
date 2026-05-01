@@ -69,6 +69,10 @@ pub struct Clip {
     pub visible: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_overrides: Option<MapOverrides>,
+    /// Per-clip entry-transition authoring. Project-level
+    /// `default_entry_transition` still applies for unset fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_transition: Option<ClipEntryTransition>,
 }
 
 impl From<ClipMetadata> for Clip {
@@ -94,6 +98,7 @@ impl From<ClipMetadata> for Clip {
             },
             visible: true,
             map_overrides: None,
+            entry_transition: None,
         }
     }
 }
@@ -216,9 +221,48 @@ pub enum TransitionFeel {
     Slow,
 }
 
+/// Authored override of the project's start camera (the camera held at
+/// project-time `t < 0` and used as the "from" endpoint of clip 1's entry
+/// transition arc). Persisted only when the user overrides the computed
+/// default — see `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Project Start
+/// Camera". The compiler synthesizes a default when this field is `None`.
+///
+/// Field names are snake_case on disk (Rust serde default) to match the
+/// rest of project.json.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectStartCamera {
+    pub center: GpsCoord,
+    pub zoom: f64,
+    pub bearing: f64,
+    pub pitch: f64,
+}
+
+/// Per-clip (and project-default) authoring of an entry transition. All
+/// fields are clip-local; nothing here lives on project-time. The compiler
+/// (task 520) consumes these together with media duration and clip ordering
+/// to produce a TransitionSpan on the project-time axis. See
+/// `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Data Model → Authored Data".
+///
+/// `entry_bias` is expected in `[-1, 1]`. No runtime clamping here; the
+/// compiler clamps when materializing the TransitionSpan boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClipEntryTransition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_bias: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feel: Option<TransitionFeel>,
+}
+
 /// Current persisted-project schema version. Bump when a field's *shape*
-/// changes (not just additive).
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// changes (not just additive). v3 adds the compiled-timeline authored
+/// fields (`start_camera`, `default_entry_transition`, per-clip
+/// `entry_transition`) — all optional, so the v2→v3 migration is purely
+/// additive.
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -270,6 +314,15 @@ pub struct Project {
     /// stays unset on disk).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition_feel: Option<TransitionFeel>,
+    /// Optional override of the computed project start camera. Compiler
+    /// synthesizes a default (centroid of clip starts, zoom 12, bearing 0,
+    /// pitch 0/60-by-style) when this field is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_camera: Option<ProjectStartCamera>,
+    /// Project-level defaults for every clip's entry transition. Each
+    /// clip's own `entry_transition` overrides individual fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_entry_transition: Option<ClipEntryTransition>,
 }
 
 impl Default for Project {
@@ -284,6 +337,8 @@ impl Default for Project {
             exports: Vec::new(),
             map_settings: None,
             transition_feel: None,
+            start_camera: None,
+            default_entry_transition: None,
         }
     }
 }
