@@ -8,6 +8,7 @@ import {
   indexRoute,
   locationAt,
   trailUpTo,
+  progressUpTo,
   clipWaypointLocation,
   forwardAzimuth,
   bearingAt,
@@ -738,6 +739,83 @@ describe('cardinalFromBearing (coverage backfill)', () => {
   it('normalizes negative or out-of-range bearings before quantizing', () => {
     expect(cardinalFromBearing(360)).toBe('N');
     expect(cardinalFromBearing(-90)).toBe('W');
+  });
+});
+
+describe('progressUpTo', () => {
+  const idx = indexRoute(linearRoute)!;
+  const t0 = Date.parse('2026-04-04T15:00:00Z');
+
+  it('returns 0 before the route start', () => {
+    expect(progressUpTo(t0 - 1000, idx)).toBe(0);
+  });
+
+  it('returns 0 exactly at the route start', () => {
+    expect(progressUpTo(t0, idx)).toBe(0);
+  });
+
+  it('returns 1 at and after the route end', () => {
+    expect(progressUpTo(t0 + 4000, idx)).toBe(1);
+    expect(progressUpTo(t0 + 99_999, idx)).toBe(1);
+  });
+
+  it('hits near-exact fraction values at trackpoint boundaries (uniform-speed route)', () => {
+    // linearRoute has 5 evenly-spaced trackpoints over 4 seconds, all
+    // moving due north at constant speed. `progressUpTo` is parameterized
+    // in Web Mercator length (to agree with MapLibre's `line-progress`),
+    // and Mercator stretches the y-axis non-linearly with latitude, so
+    // equal lat steps don't quite produce equal Mercator-length steps.
+    // The deviation is ~7e-6 in fraction over a 0.004° lat span at lat 37°
+    // — sub-pixel even at zoom 22. Tolerance loosened from 5 → 3 decimals.
+    expect(progressUpTo(t0 + 1000, idx)).toBeCloseTo(0.25, 3);
+    expect(progressUpTo(t0 + 2000, idx)).toBeCloseTo(0.5, 3);
+    expect(progressUpTo(t0 + 3000, idx)).toBeCloseTo(0.75, 3);
+  });
+
+  it('lerps inside a tractable gap', () => {
+    expect(progressUpTo(t0 + 500, idx)).toBeCloseTo(0.125, 3);
+  });
+
+  it('snaps to the previous point inside an over-MAX_INTERPOLATION_GAP_MS gap', () => {
+    const gappy = indexRoute(routeWithGap)!;
+    // routeWithGap: t=0,1 then 89s gap then t=90,91. Halfway through the gap
+    // must NOT pretend to interpolate — it should hold at the previous point.
+    const tHalf = Date.parse('2026-04-04T15:00:45Z');
+    const prog = progressUpTo(tHalf, gappy);
+    const expected = gappy.cumulativeDistMeters[1] / gappy.totalDistMeters;
+    expect(prog).toBeCloseTo(expected, 5);
+  });
+
+  it('returns 0 for a degenerate route with no movement', () => {
+    const flat = indexRoute({
+      source_path: '/fixtures/flat.gpx',
+      format: 'gpx',
+      trackpoints: [
+        mkPoint(37.0, -122.0, '2026-04-04T15:00:00Z'),
+        mkPoint(37.0, -122.0, '2026-04-04T15:00:01Z'),
+      ],
+    })!;
+    expect(flat.totalDistMeters).toBe(0);
+    expect(progressUpTo(Date.parse('2026-04-04T15:00:00.5Z'), flat)).toBe(0);
+  });
+});
+
+describe('indexRoute cumulative distances', () => {
+  it('starts at 0 and is monotonically non-decreasing', () => {
+    const idx = indexRoute(linearRoute)!;
+    expect(idx.cumulativeDistMeters[0]).toBe(0);
+    for (let i = 1; i < idx.cumulativeDistMeters.length; i++) {
+      expect(idx.cumulativeDistMeters[i]).toBeGreaterThanOrEqual(
+        idx.cumulativeDistMeters[i - 1],
+      );
+    }
+  });
+
+  it('totalDistMeters equals the last cumulative entry', () => {
+    const idx = indexRoute(linearRoute)!;
+    expect(idx.totalDistMeters).toBe(
+      idx.cumulativeDistMeters[idx.cumulativeDistMeters.length - 1],
+    );
   });
 });
 

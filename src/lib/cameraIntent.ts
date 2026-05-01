@@ -190,6 +190,13 @@ export interface TransitionSpan {
   startMs: number;
   /** Project-time, ms. */
   endMs: number;
+  /** Project-time of the cut between source and destination — i.e., the
+   *  previous clip's `endMs` (or 0 for clip 1). The window splits here:
+   *  `[startMs, cutMs)` is the pre-cut half (source clip's media still
+   *  playing) and `[cutMs, endMs]` is the post-cut half (destination's
+   *  media). Stored on the span so consumers don't have to recompute it
+   *  from neighboring clip spans. */
+  cutMs: number;
   /** Equals `endMs - startMs`. Provided as a named field so call sites can
    *  read "duration after clamping" without recomputing. */
   effectiveDurationMs: number;
@@ -1197,6 +1204,7 @@ export function compileTimeline(
       toClipId: currClip.id,
       startMs: start,
       endMs: end,
+      cutMs: cutTime,
       effectiveDurationMs: end - start,
     });
   }
@@ -1357,19 +1365,23 @@ function evaluateTransitionSpan(
 }
 
 /** Find the clip id that should be treated as "active" for UI highlighting at
- *  project-time `t`. Per `COMPILED_TIMELINE_PLAN.md` §"Implementation Plan →
- *  7": transition spans report the destination clip as active. Returns null
- *  outside the `[0, totalDurationMs]` range or for an empty timeline.
+ *  project-time `t`. Returns null outside the `[0, totalDurationMs]` range or
+ *  for an empty timeline.
+ *
+ *  Active flips at the cut, not at the start of the transition window. The
+ *  pre-cut half of a transition span overlays the source clip's media (the
+ *  source video is still playing those frames), so the source clip remains
+ *  active there; the destination only becomes active once project-time
+ *  reaches `cutMs`. This matches the auto-advance animator, which now picks
+ *  up at the cut rather than rewinding to `transition.startMs`.
  *
  *  Used by Timeline (clip-card highlight), EditToolbar (active clip's
- *  controls), and MapView (waypoint selection styling). Mirrors `cameraAt`'s
- *  routing — transitions win at the seam so the destination becomes "active"
- *  the moment project-time enters the transition window.
+ *  controls), and MapView (waypoint selection styling).
  *
  *  Distinct from `selectedClipId` (the user's persistent selection state):
- *  during an auto-advance transition the user's selection still points at
- *  the source clip while the active clip is the destination. The two
- *  reconverge once the animator lands and selection follows. */
+ *  during an auto-advance transition's post-cut window the user's selection
+ *  still points at the source clip while the active clip is the destination.
+ *  The two reconverge once the animator lands and selection follows. */
 export function activeClipIdAt(
   timeline: CompiledTimeline,
   t: number,
@@ -1377,7 +1389,14 @@ export function activeClipIdAt(
   if (timeline.clipSpans.length === 0) return null;
   if (t < 0 || t > timeline.totalDurationMs) return null;
   const ts = findTransitionSpanAt(timeline.transitionSpans, t);
-  if (ts) return ts.toClipId;
+  if (ts) {
+    // Pre-cut: source clip still active. fromClipId is null only for the
+    // project-start → clip-1 transition, where there is no source — fall
+    // through to clip-span lookup (which yields clip 1).
+    if (t < ts.cutMs && ts.fromClipId != null) return ts.fromClipId;
+    // At/after the cut: destination is active.
+    if (t >= ts.cutMs) return ts.toClipId;
+  }
   const cs = findClipSpanAt(timeline.clipSpans, t);
   return cs ? cs.clipId : null;
 }

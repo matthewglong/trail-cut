@@ -219,18 +219,20 @@ export default function ProjectView({
     ));
   }, [selectedClipId, setClips]);
 
-  // Auto-advance on clip end. Drives project-time across the next clip's
-  // entry transition span (per `COMPILED_TIMELINE_PLAN.md` §"Implementation
-  // Plan → 7"): the source clip's video is paused at its trim-out by the
-  // upstream `handleEnded` in usePlayback, then a RAF animator walks
-  // `playheadMs` from `transitionSpan.startMs` → `transitionSpan.endMs` over
-  // `effectiveDurationMs` real ms while MapView's ease loop renders the Van
-  // Wijk arc. Selection only switches to the destination AFTER the animator
-  // lands so the source clip's video stays on-screen during the cross —
-  // matching the camera's "leaving A → arriving B" semantics.
+  // Auto-advance on clip end. The natural playhead has already covered the
+  // pre-cut half of the entry transition (the source video plays its last
+  // `effectivePreCut` ms of media before `handleEnded` fires), so the
+  // animator only walks the post-cut half: from `transition.cutMs` (where
+  // the natural playhead left off, == prevSpan.endMs) → `transition.endMs`
+  // over `effectivePostCut` real ms while MapView's ease loop renders the
+  // tail of the Van Wijk arc. Selection only switches to the destination
+  // AFTER the animator lands so the source clip's video stays on-screen
+  // during the post-cut window — matching the camera's "leaving A →
+  // arriving B" semantics.
   //
-  // Zero-duration transitions (the only kind authored today) collapse this
-  // to the legacy snap-and-autoplay path.
+  // Zero-duration transitions (or authored entry_bias = -1, where the whole
+  // window is pre-cut and the natural playhead already covered it) collapse
+  // to the snap-and-autoplay path.
   const handleClipEnded = useCallback(() => {
     const currentSpanIdx = timeline.clipSpans.findIndex(
       (s) => s.clipId === selectedClipId,
@@ -251,8 +253,13 @@ export default function ProjectView({
       (ts) => ts.toClipId === nextSpan.clipId,
     );
 
-    if (!transition || transition.effectiveDurationMs <= 0) {
-      // No cross to play — snap to the next clip and autoplay it.
+    const postCutMs = transition ? transition.endMs - transition.cutMs : 0;
+
+    if (!transition || transition.effectiveDurationMs <= 0 || postCutMs <= 0) {
+      // No post-cut window to animate — either the transition is disabled,
+      // collapsed to zero, or authored entry_bias = -1 (whole window is
+      // pre-cut, already covered by the natural playhead). Snap to the next
+      // clip and autoplay.
       setSelectedClipId(nextSpan.clipId);
       setAutoPlayToken((t) => t + 1);
       return;
@@ -266,9 +273,9 @@ export default function ProjectView({
 
     transitioningRef.current = true;
     const startReal = performance.now();
-    const startProj = transition.startMs;
+    const startProj = transition.cutMs;
     const endProj = transition.endMs;
-    const durationMs = transition.effectiveDurationMs;
+    const durationMs = postCutMs;
     setPlayheadMs(startProj);
 
     const tick = (now: number) => {

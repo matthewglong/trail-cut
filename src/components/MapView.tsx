@@ -162,10 +162,14 @@ export default function MapView({
   const currentProjectMsRef = useRef(currentProjectMs);
   currentProjectMsRef.current = currentProjectMs;
 
-  // Project-time → wall-clock for the live marker and slime trail. During a
-  // transition span, the marker holds the previous clip's terminal position
-  // (per task 550 doc, option 2 — keeps the marker on-screen across the
-  // boundary). The project-start → clip-1 transition has no previous clip,
+  // Project-time → wall-clock for the live marker and slime trail. The pre-
+  // cut half of a transition span lives inside the source clip's project-
+  // time, so a clip-span lookup catches it and the marker tracks the source
+  // clip's live position right up to the cut. Only the post-cut half of a
+  // transition (when the source clip's media is finished but the camera arc
+  // is still landing) freezes the marker at the source clip's terminal
+  // position — keeping it on-screen across the boundary, per task 550 doc
+  // option 2. The project-start → clip-1 transition has no previous clip,
   // so the marker is hidden until clip 1 begins.
   const markerTrace = useMemo<{ wallMs: number; clipId: string } | null>(() => {
     if (currentProjectMs == null) return null;
@@ -178,21 +182,23 @@ export default function MapView({
         clipId: last.clipId,
       };
     }
-    // Active transition? Hold previous clip's terminal position. Project-
-    // start transition (fromClipId == null) hides the marker.
+    // Project-start transition (fromClipId == null) hides the marker for its
+    // full window — there is no source clip to track.
     for (const ts of timeline.transitionSpans) {
       if (ts.effectiveDurationMs <= 0) continue;
-      if (currentProjectMs >= ts.startMs && currentProjectMs <= ts.endMs) {
-        if (ts.fromClipId == null) return null;
-        const prev = timeline.clipSpans.find((s) => s.clipId === ts.fromClipId);
-        if (!prev) return null;
-        return {
-          wallMs: prev.wallClockBaseMs + prev.mediaOutMs,
-          clipId: prev.clipId,
-        };
+      if (
+        ts.fromClipId == null &&
+        currentProjectMs >= ts.startMs &&
+        currentProjectMs < ts.endMs
+      ) {
+        return null;
       }
     }
     // Active clip span — translate project-time to clip-local to wall-clock.
+    // This branch wins over a transition's pre-cut half: the source clip's
+    // span covers `[startMs, endMs)` and the pre-cut window ends at the cut
+    // (== prevSpan.endMs), so the source clip's live position is shown right
+    // up to the cut.
     for (let i = 0; i < timeline.clipSpans.length; i++) {
       const span = timeline.clipSpans[i];
       const isLast = i === timeline.clipSpans.length - 1;
@@ -205,6 +211,20 @@ export default function MapView({
         return {
           wallMs: span.wallClockBaseMs + clipLocalMs,
           clipId: span.clipId,
+        };
+      }
+    }
+    // Post-cut half of a transition: source clip's media has ended but the
+    // camera arc is still landing. Hold the source clip's terminal position.
+    for (const ts of timeline.transitionSpans) {
+      if (ts.effectiveDurationMs <= 0) continue;
+      if (ts.fromClipId == null) continue;
+      if (currentProjectMs >= ts.cutMs && currentProjectMs <= ts.endMs) {
+        const prev = timeline.clipSpans.find((s) => s.clipId === ts.fromClipId);
+        if (!prev) return null;
+        return {
+          wallMs: prev.wallClockBaseMs + prev.mediaOutMs,
+          clipId: prev.clipId,
         };
       }
     }
@@ -607,9 +627,13 @@ export default function MapView({
   }, [markerTrace, indexedRoute, clips]);
 
   // ---- Slime trail data updates ----
-  // Driven by the same project-time → wall-clock translation as the marker.
-  // During transitions, the trail freezes at the previous clip's terminal
-  // wall-clock — keeps the trail consistent with the marker position.
+  // Geometric clipping: rebuild the polyline up to the head's wall-clock
+  // position and upload it via setData. Pays a per-frame upload cost but
+  // gives a pixel-precise cutoff at the marker — line-gradient on a static
+  // polyline can't, because MapLibre rasterizes the gradient to a 256-texel
+  // 1D texture and bilinear-samples it (the transition smears across one
+  // texel = 1/256 of total polyline length, which is tens of pixels of
+  // ghost past the marker on long routes).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;

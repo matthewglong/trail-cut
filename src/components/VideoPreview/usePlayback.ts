@@ -45,9 +45,11 @@ export function usePlayback({
   const onClipEndedRef = useRef(onClipEnded);
   const playbackModeRef = useRef(playbackMode);
   const onPlayIntentRef = useRef(onPlayIntent);
+  const draggingRef = useRef(dragging);
   useEffect(() => { onClipEndedRef.current = onClipEnded; }, [onClipEnded]);
   useEffect(() => { playbackModeRef.current = playbackMode; }, [playbackMode]);
   useEffect(() => { onPlayIntentRef.current = onPlayIntent; }, [onPlayIntent]);
+  useEffect(() => { draggingRef.current = dragging; }, [dragging]);
   useEffect(() => {
     if (autoPlayToken && autoPlayToken > 0) pendingAutoPlayRef.current = true;
   }, [autoPlayToken]);
@@ -59,7 +61,17 @@ export function usePlayback({
   const trimInSec = trim ? trim.in_ms / 1000 : 0;
   const trimOutSec = trim ? trim.out_ms / 1000 : duration;
 
-  const fastTimerRef = useRef<number | null>(null);
+  // Refs mirror values the rAF playhead loop reads. The loop is started
+  // imperatively from togglePlay/handleLoadedMetadata; without refs its
+  // closure would not pick up trim/speed edits that happen mid-playback.
+  const trimInSecRef = useRef(trimInSec);
+  const trimOutSecRef = useRef(trimOutSec);
+  const speedRef = useRef(speed);
+  useEffect(() => { trimInSecRef.current = trimInSec; }, [trimInSec]);
+  useEffect(() => { trimOutSecRef.current = trimOutSec; }, [trimOutSec]);
+  useEffect(() => { speedRef.current = speed; }, [speed]);
+
+  const playheadLoopRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);
 
   // Reset state when clip changes
@@ -70,44 +82,57 @@ export function usePlayback({
     setVideoNatural(null);
   }, [proxyPath]);
 
-  function stopFastTimer() {
-    if (fastTimerRef.current !== null) {
-      cancelAnimationFrame(fastTimerRef.current);
-      fastTimerRef.current = null;
+  function stopPlayheadLoop() {
+    if (playheadLoopRef.current !== null) {
+      cancelAnimationFrame(playheadLoopRef.current);
+      playheadLoopRef.current = null;
     }
   }
 
-  function startFastTimer() {
-    stopFastTimer();
+  // rAF-driven playhead loop. Drives React state at frame cadence so
+  // downstream consumers (MapView marker + slime trail) update smoothly
+  // instead of riding the irregular HTMLVideoElement `timeupdate` event.
+  // For speed > 1.0 the loop also manually advances video.currentTime
+  // (the video element's playbackRate caps at 1.0 for the proxy path).
+  function startPlayheadLoop() {
+    stopPlayheadLoop();
     lastFrameTimeRef.current = performance.now();
     const tick = (now: number) => {
       const video = videoRef.current;
       if (!video) return;
-      const elapsed = (now - lastFrameTimeRef.current) / 1000;
-      lastFrameTimeRef.current = now;
-      const newTime = video.currentTime + elapsed * speed;
-      if (newTime >= trimOutSec) {
+      const curSpeed = speedRef.current;
+      const curTrimIn = trimInSecRef.current;
+      const curTrimOut = trimOutSecRef.current;
+      let t: number;
+      if (curSpeed > 1.0) {
+        const elapsed = (now - lastFrameTimeRef.current) / 1000;
+        lastFrameTimeRef.current = now;
+        t = video.currentTime + elapsed * curSpeed;
+        video.currentTime = t;
+      } else {
+        t = video.currentTime;
+      }
+      if (t >= curTrimOut && !draggingRef.current) {
         if (playbackModeRef.current === 'continuous' && onClipEndedRef.current) {
-          stopFastTimer();
+          stopPlayheadLoop();
           video.pause();
           setPlaying(false);
           onClipEndedRef.current();
           return;
         }
-        video.currentTime = trimInSec;
-        setCurrentTime(trimInSec);
-        fastTimerRef.current = requestAnimationFrame(tick);
+        video.currentTime = curTrimIn;
+        setCurrentTime(curTrimIn);
+        playheadLoopRef.current = requestAnimationFrame(tick);
         return;
       }
-      video.currentTime = newTime;
-      setCurrentTime(newTime);
-      fastTimerRef.current = requestAnimationFrame(tick);
+      setCurrentTime(t);
+      playheadLoopRef.current = requestAnimationFrame(tick);
     };
-    fastTimerRef.current = requestAnimationFrame(tick);
+    playheadLoopRef.current = requestAnimationFrame(tick);
   }
 
-  // Clean up timer on unmount or clip change
-  useEffect(() => stopFastTimer, [proxyPath]);
+  // Clean up loop on unmount or clip change
+  useEffect(() => stopPlayheadLoop, [proxyPath]);
 
   // Apply playback speed for slow/normal rates
   useEffect(() => {
@@ -116,24 +141,10 @@ export function usePlayback({
     }
   }, [speed, proxyPath]);
 
-  function handleTimeUpdate() {
-    const video = videoRef.current;
-    if (!video || dragging) return;
-    if (speed > 1.0) return; // fast timer handles this
-    const t = video.currentTime;
-    setCurrentTime(t);
-    if (t >= trimOutSec) {
-      if (playbackModeRef.current === 'continuous' && onClipEndedRef.current) {
-        video.pause();
-        setPlaying(false);
-        onClipEndedRef.current();
-        return;
-      }
-      video.currentTime = trimInSec;
-      setCurrentTime(trimInSec);
-      video.play();
-    }
-  }
+  // Retained as a no-op listener so the <video onTimeUpdate> wire stays
+  // valid; the rAF playhead loop is now the single source of state updates
+  // and trim-out handling while playing.
+  function handleTimeUpdate() {}
 
   useEffect(() => {
     if (onPlayingChange) onPlayingChange(playing);
@@ -150,15 +161,15 @@ export function usePlayback({
       }
       if (speed > 1.0) {
         video.pause();
-        startFastTimer();
       } else {
         video.playbackRate = speed;
         video.play();
       }
+      startPlayheadLoop();
       setPlaying(true);
     } else {
       video.pause();
-      stopFastTimer();
+      stopPlayheadLoop();
       setPlaying(false);
     }
   }
@@ -175,11 +186,11 @@ export function usePlayback({
       setCurrentTime(inSec);
       if (speed > 1.0) {
         video.pause();
-        startFastTimer();
       } else {
         video.playbackRate = speed;
         video.play();
       }
+      startPlayheadLoop();
       setPlaying(true);
     }
   }
@@ -188,6 +199,7 @@ export function usePlayback({
     const video = videoRef.current;
     if (!video) return;
     if (playbackModeRef.current === 'continuous' && onClipEndedRef.current) {
+      stopPlayheadLoop();
       setPlaying(false);
       onClipEndedRef.current();
       return;

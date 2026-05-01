@@ -1712,28 +1712,34 @@ describe('activeClipIdAt(timeline, t)', () => {
     }
   });
 
-  it('inside a transition span: returns the destination clip id', () => {
+  it('post-cut window of a transition span: returns the destination clip id', () => {
     // Force a non-zero transition span by authoring a duration on every clip.
     const { timeline } = threeClipPointTimeline({
       default_entry_transition: { duration_ms: 600, entry_bias: 0 },
     });
     // The clip-1 transition starts at project-time 0 (no pre-cut available
     // for the first clip), so probe a later transition where entryBias=0
-    // splits the window across the cut.
+    // splits the window across the cut. With entry_bias=0 the cut sits at
+    // the midpoint, and `(startMs + endMs) / 2 == cutMs`, where the active
+    // clip flips to the destination.
     const midTransition = timeline.transitionSpans.find(
       (ts) => ts.fromClipId !== null && ts.effectiveDurationMs > 0,
     );
     expect(midTransition).toBeDefined();
     if (midTransition) {
-      const midT = (midTransition.startMs + midTransition.endMs) / 2;
-      expect(activeClipIdAt(timeline, midT)).toBe(midTransition.toClipId);
+      // Probe strictly after the cut so we're unambiguously in the post-cut
+      // half (the cut itself is the flip threshold).
+      const postCutT =
+        midTransition.cutMs + (midTransition.endMs - midTransition.cutMs) * 0.5;
+      expect(activeClipIdAt(timeline, postCutT)).toBe(midTransition.toClipId);
     }
   });
 
-  it('seam at cut: transition wins over previous clip span (destination active)', () => {
-    // A non-zero transition straddling a cut means project-time at the cut
-    // sits inside both the previous clip span (closed-right at endMs) and
-    // the transition span. Per plan §7, transitions win → destination clip.
+  it('pre-cut window of a transition span: source clip stays active', () => {
+    // A non-zero transition straddling a cut means project-time before the
+    // cut sits inside both the previous clip span (closed-right at endMs)
+    // and the transition span. The pre-cut half belongs to the source clip
+    // (its media is still playing), so active should remain on fromClipId.
     const { timeline } = threeClipPointTimeline({
       default_entry_transition: { duration_ms: 600, entry_bias: 0 },
     });
@@ -1742,21 +1748,38 @@ describe('activeClipIdAt(timeline, t)', () => {
     );
     expect(transition).toBeDefined();
     if (transition) {
-      // The cut is at the previous clip's endMs == this transition's
-      // straddle midpoint by construction (entryBias 0). Probe a t strictly
-      // before the cut (still inside the prev clip span) but inside the
-      // transition window.
       const beforeCut =
         transition.startMs +
-        (transition.endMs - transition.startMs) * 0.25;
-      // Must be inside the previous clip span (sanity check on construction).
+        (transition.cutMs - transition.startMs) * 0.5;
+      // Sanity: must be inside the previous clip span and inside the
+      // transition window.
       const prevSpan = timeline.clipSpans.find(
         (s) => s.clipId === transition.fromClipId,
       )!;
       expect(beforeCut).toBeGreaterThan(prevSpan.startMs);
       expect(beforeCut).toBeLessThan(prevSpan.endMs);
-      // Transition wins → destination, not previous.
-      expect(activeClipIdAt(timeline, beforeCut)).toBe(transition.toClipId);
+      expect(beforeCut).toBeGreaterThan(transition.startMs);
+      expect(beforeCut).toBeLessThan(transition.cutMs);
+      // Source clip stays active during pre-cut.
+      expect(activeClipIdAt(timeline, beforeCut)).toBe(transition.fromClipId);
+    }
+  });
+
+  it('flip happens at cutMs: t = startMs+1 → fromClipId, t = cutMs → toClipId', () => {
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    const transition = timeline.transitionSpans.find(
+      (ts) => ts.fromClipId !== null && ts.effectiveDurationMs > 0,
+    );
+    expect(transition).toBeDefined();
+    if (transition) {
+      expect(activeClipIdAt(timeline, transition.startMs + 1)).toBe(
+        transition.fromClipId,
+      );
+      expect(activeClipIdAt(timeline, transition.cutMs)).toBe(
+        transition.toClipId,
+      );
     }
   });
 
