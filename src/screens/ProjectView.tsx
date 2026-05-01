@@ -7,11 +7,8 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
-import {
-  clipWallClockMs,
-  indexRoute,
-} from '../lib/routeLocation';
-import { buildMapTrack } from '../lib/cameraIntent';
+import { indexRoute } from '../lib/routeLocation';
+import { compileTimeline } from '../lib/cameraIntent';
 import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, TransitionFeel } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
@@ -161,20 +158,33 @@ export default function ProjectView({
     return Object.values(selectedClip.map_overrides).some((v) => v !== undefined);
   }, [selectedClip]);
 
-  // Indexed route — used by buildMapTrack below. Per-clip bearing keyframes
-  // are now pre-computed inside buildMapTrack's anchor builder, so ProjectView
-  // no longer derives effectiveBearing for the camera.
+  // Indexed route — consumed by `compileTimeline` for per-clip bearing
+  // keyframes and follow-intent construction.
   const indexedRoute = useMemo(() => indexRoute(route), [route]);
 
   // The project-level transition-feel knob. Read from the persisted project
   // field with a 'natural' default for v1 projects that pre-date it.
   const projectTransitionFeel: TransitionFeel = transitionFeel ?? 'natural';
 
-  // The single source of truth for camera-state derivation. MapView consumes
-  // this each tick of its live ease loop.
-  const track = useMemo(
-    () => buildMapTrack(clips, indexedRoute, mapSettings, projectTransitionFeel),
+  // The compiled project-time timeline. Single source of truth for camera
+  // scheduling; consumed by MapView's ease loop and (eventually) by the
+  // export frame loop. Pure: same inputs → identical timeline. See
+  // `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Data Model → Compiled Data".
+  const timeline = useMemo(
+    () =>
+      compileTimeline(clips, indexedRoute, mapSettings, {
+        transition_feel: projectTransitionFeel,
+      }),
     [clips, indexedRoute, mapSettings, projectTransitionFeel],
+  );
+
+  // The active clip's compiled span. `null` when the selected clip isn't
+  // compilable (invisible, missing/unparseable created_at, degenerate
+  // trim) — in that case `playheadMs` stays null and the map holds the
+  // last good frame via the ease loop's fallback.
+  const selectedClipSpan = useMemo(
+    () => timeline.clipSpans.find((s) => s.clipId === selectedClipId) ?? null,
+    [timeline, selectedClipId],
   );
 
   // Clear the selected clip's map overrides, letting it follow project defaults.
@@ -441,7 +451,21 @@ export default function ProjectView({
                 onPlayIntent={handlePlayIntent}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
-                  setPlayheadMs(clipWallClockMs(selectedClip, s));
+                  // Translate clip-local media time (seconds, from source
+                  // start) into project-time. `effects.speed` cancels: the
+                  // clip span was elongated by 1/speed, the clip-local axis
+                  // compresses at the same rate. Per
+                  // `COMPILED_TIMELINE_PLAN.md` §"Time-Axis Translation".
+                  if (!selectedClipSpan) {
+                    setPlayheadMs(null);
+                    return;
+                  }
+                  const clipLocalMs = s * 1000;
+                  const projectMs =
+                    selectedClipSpan.startMs +
+                    (clipLocalMs - selectedClipSpan.mediaInMs) /
+                      selectedClipSpan.speed;
+                  setPlayheadMs(projectMs);
                 }}
               />
             </div>
@@ -465,7 +489,7 @@ export default function ProjectView({
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
-                track={track}
+                timeline={timeline}
                 clips={clips}
                 selectedClipId={selectedClipId}
                 route={route}
