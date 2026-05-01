@@ -20,7 +20,7 @@ Each task maps 1:1 to a step in `COMPILED_TIMELINE_PLAN.md` §"Implementation Pl
 | 500 | ✅     | Compiled Timeline (1)      | Add authored types and bump schema v2→v3                           | —                 | 5f27ebb |
 | 510 | ✅     | Compiled Timeline (2)      | Add compiled types (ClipSpan, TransitionSpan, CompiledTimeline)    | —                 | e0b9b3e |
 | 520 | ✅     | Compiled Timeline (3)      | Implement compileTimeline (pure compiler)                          | 500, 510          | 2948bbc |
-| 530 | ⬜     | Compiled Timeline (4)      | Implement new cameraAt(timeline, t) evaluator                      | 520               | —      |
+| 530 | ✅     | Compiled Timeline (4)      | Implement new cameraAt(timeline, t) evaluator                      | 520               | 548bce4 |
 | 540 | ⬜     | Compiled Timeline (5)      | Switch playhead axis from wall-clock to project-time               | 530               | —      |
 | 550 | ⬜     | Compiled Timeline (6)      | Update MapView ease loop to consume cameraAt(timeline, t)          | 530, 540          | —      |
 | 560 | ⬜     | Compiled Timeline (7)      | Rework auto-advance, selection, active-clip lookup                 | 540               | —      |
