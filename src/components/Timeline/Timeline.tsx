@@ -7,7 +7,13 @@ import { styles } from './styles';
 
 interface TimelineProps {
   clips: Clip[];
-  selectedClipId: string | null;
+  /** The clip to highlight as currently "active." Project-time-derived per
+   *  `COMPILED_TIMELINE_PLAN.md` §"Implementation Plan → 7": during an auto-
+   *  advance transition this is the destination clip, not the source. The
+   *  user's persistent selection (`selectedClipId` upstream) drives video
+   *  playback; the highlight follows whichever clip the timeline currently
+   *  points at. The two reconverge whenever no transition is in flight. */
+  activeClipId: string | null;
   onSelectClip: (id: string) => void;
   thumbnails?: Record<string, string>;
   proxies?: Record<string, string | 'generating' | null>;
@@ -17,7 +23,7 @@ interface TimelineProps {
 
 export default function Timeline({
   clips,
-  selectedClipId,
+  activeClipId,
   onSelectClip,
   thumbnails = {},
   proxies = {},
@@ -39,7 +45,7 @@ export default function Timeline({
     <div style={styles.container}>
       <div style={styles.strip}>
         {clips.map((clip, index) => {
-          const isSelected = selectedClipId === clip.id;
+          const isSelected = activeClipId === clip.id;
           const isHidden = !clip.visible;
 
           return (

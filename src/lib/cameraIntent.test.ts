@@ -13,6 +13,7 @@ import {
   interpolateAnchors,
   compileTimeline,
   resolveProjectStartCamera,
+  activeClipIdAt,
   DEFAULT_INTENT,
 } from './cameraIntent';
 import type {
@@ -1676,5 +1677,110 @@ describe('cameraAt(timeline, t)', () => {
         expect(Math.abs(endCam.zoom - expected.zoom)).toBeLessThan(1e-3);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// activeClipIdAt — task 560.
+//
+// Identifies which clip is "active" for UI highlighting at a given project-
+// time. Mirrors `cameraAt` routing: transitions win at the seam so the
+// destination clip is highlighted the moment project-time enters the
+// transition window.
+// ---------------------------------------------------------------------------
+
+describe('activeClipIdAt(timeline, t)', () => {
+  it('empty timeline: returns null at any t', () => {
+    const tl = compileTimeline([], null, DEFAULT_MAP_SETTINGS, {});
+    expect(activeClipIdAt(tl, -1)).toBeNull();
+    expect(activeClipIdAt(tl, 0)).toBeNull();
+    expect(activeClipIdAt(tl, 5_000)).toBeNull();
+  });
+
+  it('out of range: t < 0 and t > totalDurationMs return null', () => {
+    const { timeline } = threeClipPointTimeline();
+    expect(activeClipIdAt(timeline, -1)).toBeNull();
+    expect(activeClipIdAt(timeline, timeline.totalDurationMs + 1)).toBeNull();
+  });
+
+  it('inside a clip span: returns that clip id', () => {
+    const { timeline } = threeClipPointTimeline();
+    for (const span of timeline.clipSpans) {
+      // Strict middle of the clip — past any post-cut transition overrun.
+      const midT = (span.startMs + span.endMs) / 2;
+      expect(activeClipIdAt(timeline, midT)).toBe(span.clipId);
+    }
+  });
+
+  it('inside a transition span: returns the destination clip id', () => {
+    // Force a non-zero transition span by authoring a duration on every clip.
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    // The clip-1 transition starts at project-time 0 (no pre-cut available
+    // for the first clip), so probe a later transition where entryBias=0
+    // splits the window across the cut.
+    const midTransition = timeline.transitionSpans.find(
+      (ts) => ts.fromClipId !== null && ts.effectiveDurationMs > 0,
+    );
+    expect(midTransition).toBeDefined();
+    if (midTransition) {
+      const midT = (midTransition.startMs + midTransition.endMs) / 2;
+      expect(activeClipIdAt(timeline, midT)).toBe(midTransition.toClipId);
+    }
+  });
+
+  it('seam at cut: transition wins over previous clip span (destination active)', () => {
+    // A non-zero transition straddling a cut means project-time at the cut
+    // sits inside both the previous clip span (closed-right at endMs) and
+    // the transition span. Per plan §7, transitions win → destination clip.
+    const { timeline } = threeClipPointTimeline({
+      default_entry_transition: { duration_ms: 600, entry_bias: 0 },
+    });
+    const transition = timeline.transitionSpans.find(
+      (ts) => ts.fromClipId !== null && ts.effectiveDurationMs > 0,
+    );
+    expect(transition).toBeDefined();
+    if (transition) {
+      // The cut is at the previous clip's endMs == this transition's
+      // straddle midpoint by construction (entryBias 0). Probe a t strictly
+      // before the cut (still inside the prev clip span) but inside the
+      // transition window.
+      const beforeCut =
+        transition.startMs +
+        (transition.endMs - transition.startMs) * 0.25;
+      // Must be inside the previous clip span (sanity check on construction).
+      const prevSpan = timeline.clipSpans.find(
+        (s) => s.clipId === transition.fromClipId,
+      )!;
+      expect(beforeCut).toBeGreaterThan(prevSpan.startMs);
+      expect(beforeCut).toBeLessThan(prevSpan.endMs);
+      // Transition wins → destination, not previous.
+      expect(activeClipIdAt(timeline, beforeCut)).toBe(transition.toClipId);
+    }
+  });
+
+  it('zero-duration transitions are ignored: clip-span lookup wins at the seam', () => {
+    // Default settings produce auto-derived transition durations on the
+    // three-clip point timeline. Override with explicit-disabled transitions
+    // so the only routing left is clip-span lookup.
+    const settings: CompileTimelineProjectSettings = {
+      default_entry_transition: { enabled: false },
+    };
+    const { timeline } = threeClipPointTimeline(settings);
+    // At each clip's startMs (== previous clip's endMs for clips 2+), the
+    // half-open clip-span policy means the next clip wins.
+    for (let i = 1; i < timeline.clipSpans.length; i++) {
+      const span = timeline.clipSpans[i];
+      expect(activeClipIdAt(timeline, span.startMs)).toBe(span.clipId);
+    }
+  });
+
+  it('boundary at totalDurationMs: returns the last clip id', () => {
+    const { timeline } = threeClipPointTimeline();
+    const last = timeline.clipSpans[timeline.clipSpans.length - 1];
+    expect(activeClipIdAt(timeline, timeline.totalDurationMs)).toBe(
+      last.clipId,
+    );
   });
 });

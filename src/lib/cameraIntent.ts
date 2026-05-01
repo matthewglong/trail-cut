@@ -1356,6 +1356,32 @@ function evaluateTransitionSpan(
   };
 }
 
+/** Find the clip id that should be treated as "active" for UI highlighting at
+ *  project-time `t`. Per `COMPILED_TIMELINE_PLAN.md` §"Implementation Plan →
+ *  7": transition spans report the destination clip as active. Returns null
+ *  outside the `[0, totalDurationMs]` range or for an empty timeline.
+ *
+ *  Used by Timeline (clip-card highlight), EditToolbar (active clip's
+ *  controls), and MapView (waypoint selection styling). Mirrors `cameraAt`'s
+ *  routing — transitions win at the seam so the destination becomes "active"
+ *  the moment project-time enters the transition window.
+ *
+ *  Distinct from `selectedClipId` (the user's persistent selection state):
+ *  during an auto-advance transition the user's selection still points at
+ *  the source clip while the active clip is the destination. The two
+ *  reconverge once the animator lands and selection follows. */
+export function activeClipIdAt(
+  timeline: CompiledTimeline,
+  t: number,
+): string | null {
+  if (timeline.clipSpans.length === 0) return null;
+  if (t < 0 || t > timeline.totalDurationMs) return null;
+  const ts = findTransitionSpanAt(timeline.transitionSpans, t);
+  if (ts) return ts.toClipId;
+  const cs = findClipSpanAt(timeline.clipSpans, t);
+  return cs ? cs.clipId : null;
+}
+
 /** Evaluate the compiled timeline at project-time `t`. Pure, deterministic,
  *  viewport-agnostic — the renderer (preview ease loop OR export frame loop)
  *  hands the returned intent to `resolveIntent(intent, viewport)` to get a

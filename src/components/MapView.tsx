@@ -31,7 +31,17 @@ interface MapViewProps {
    *  the video element fires its first time-update. */
   playheadMs: number | null;
   mapSettings: MapSettings;
+  /** The user's persistent selection. Drives the playhead-bootstrap fallback
+   *  in `currentProjectMs` (when no playhead has fired yet, the ease loop
+   *  targets this clip's `canonicalSeekMs`). For waypoint highlighting use
+   *  `activeClipId` instead — the two diverge during an auto-advance
+   *  transition. */
   selectedClipId: string | null;
+  /** The clip whose camera state is current at this moment in project-time
+   *  per `activeClipIdAt`. During a transition this is the destination clip;
+   *  outside a transition it equals `selectedClipId`. Drives waypoint
+   *  highlighting only — the ease loop reads project-time directly. */
+  activeClipId: string | null;
   route: Route | null;
   /** Per-clip data (id, gps) for the waypoint layer's circle features and
    *  the marker's GPS fallback. The compiled timeline carries clip ids and
@@ -114,6 +124,7 @@ export default function MapView({
   timeline,
   clips,
   selectedClipId,
+  activeClipId,
   route,
   playheadMs,
   mapSettings,
@@ -472,24 +483,28 @@ export default function MapView({
   }, [positionedWaypoints, styleVersion]);
 
   // ---- Waypoint selection styling (data-driven, no re-render) ----
+  // Highlights the project-time-derived `activeClipId`, not the persistent
+  // `selectedClipId`. During an auto-advance transition the two diverge —
+  // the highlight follows the destination so the user's eye tracks where
+  // the camera is heading instead of where it left.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       if (!map.getLayer('waypoints-circle')) return;
-      const selected: unknown = selectedClipId ?? '';
+      const active: unknown = activeClipId ?? '';
       map.setPaintProperty('waypoints-circle', 'circle-radius', [
-        'case', ['==', ['get', 'id'], selected], 14, 11,
+        'case', ['==', ['get', 'id'], active], 14, 11,
       ]);
       map.setPaintProperty('waypoints-circle', 'circle-color', [
-        'case', ['==', ['get', 'id'], selected], '#4a9eff', colors.accent,
+        'case', ['==', ['get', 'id'], active], '#4a9eff', colors.accent,
       ]);
       map.setPaintProperty('waypoints-circle', 'circle-stroke-color', [
-        'case', ['==', ['get', 'id'], selected], '#ffffff', 'rgba(255,255,255,0.85)',
+        'case', ['==', ['get', 'id'], active], '#ffffff', 'rgba(255,255,255,0.85)',
       ]);
     };
     if (styleReadyRef.current) apply();
-  }, [selectedClipId, styleVersion]);
+  }, [activeClipId, styleVersion]);
 
   // ---- Live preview ease loop ----
   // Every STEP_MS we compute target = cameraAt(timeline, t + lookahead) and

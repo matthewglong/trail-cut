@@ -8,7 +8,7 @@ import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
-import { compileTimeline } from '../lib/cameraIntent';
+import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, TransitionFeel } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
@@ -95,6 +95,13 @@ export default function ProjectView({
   const [resetPillHover, setResetPillHover] = useState(false);
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
+  // Project-time animator state. `transitionRafRef` holds the active RAF
+  // handle while we drive `playheadMs` across a non-zero transition span;
+  // `transitioningRef` gates `VideoPreview.onPlayheadChange` writes so the
+  // (still-paused) source clip's stable `currentTime` cannot clobber the
+  // animator's per-frame writes during the cross.
+  const transitioningRef = useRef(false);
+  const transitionRafRef = useRef<number | null>(null);
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -187,6 +194,23 @@ export default function ProjectView({
     [timeline, selectedClipId],
   );
 
+  // The clip "active" for UI highlighting and edit-toolbar controls, derived
+  // from the project-time playhead per `COMPILED_TIMELINE_PLAN.md`
+  // §"Implementation Plan → 7". During an auto-advance transition this
+  // returns the destination clip; outside transitions it equals
+  // `selectedClipId`. Falls back to `selectedClipId` when no playhead has
+  // been emitted yet (project just loaded, no clip ever played) so the
+  // active-clip UI matches the user's intent on cold start.
+  const activeClipId = useMemo<string | null>(() => {
+    if (playheadMs == null) return selectedClipId;
+    return activeClipIdAt(timeline, playheadMs) ?? selectedClipId;
+  }, [timeline, playheadMs, selectedClipId]);
+
+  const activeClip = useMemo<Clip | null>(
+    () => clips.find((c) => c.id === activeClipId) ?? null,
+    [clips, activeClipId],
+  );
+
   // Clear the selected clip's map overrides, letting it follow project defaults.
   const handleResetClipMapOverrides = useCallback(() => {
     if (!selectedClipId) return;
@@ -195,47 +219,131 @@ export default function ProjectView({
     ));
   }, [selectedClipId, setClips]);
 
+  // Auto-advance on clip end. Drives project-time across the next clip's
+  // entry transition span (per `COMPILED_TIMELINE_PLAN.md` §"Implementation
+  // Plan → 7"): the source clip's video is paused at its trim-out by the
+  // upstream `handleEnded` in usePlayback, then a RAF animator walks
+  // `playheadMs` from `transitionSpan.startMs` → `transitionSpan.endMs` over
+  // `effectiveDurationMs` real ms while MapView's ease loop renders the Van
+  // Wijk arc. Selection only switches to the destination AFTER the animator
+  // lands so the source clip's video stays on-screen during the cross —
+  // matching the camera's "leaving A → arriving B" semantics.
+  //
+  // Zero-duration transitions (the only kind authored today) collapse this
+  // to the legacy snap-and-autoplay path.
   const handleClipEnded = useCallback(() => {
-    const idx = clips.findIndex((c) => c.id === selectedClipId);
-    if (idx < 0) return;
-    for (let i = idx + 1; i < clips.length; i++) {
-      if (clips[i].visible !== false) {
-        setSelectedClipId(clips[i].id);
+    const currentSpanIdx = timeline.clipSpans.findIndex(
+      (s) => s.clipId === selectedClipId,
+    );
+    if (currentSpanIdx < 0) {
+      // Selected clip isn't compilable (invisible/unparseable) — nothing
+      // sensible to advance to. Fall through to the rewind sentinel so the
+      // next play press jumps back to the first visible clip.
+      needsRewindRef.current = true;
+      return;
+    }
+    const nextSpan = timeline.clipSpans[currentSpanIdx + 1];
+    if (!nextSpan) {
+      needsRewindRef.current = true;
+      return;
+    }
+    const transition = timeline.transitionSpans.find(
+      (ts) => ts.toClipId === nextSpan.clipId,
+    );
+
+    if (!transition || transition.effectiveDurationMs <= 0) {
+      // No cross to play — snap to the next clip and autoplay it.
+      setSelectedClipId(nextSpan.clipId);
+      setAutoPlayToken((t) => t + 1);
+      return;
+    }
+
+    // Cancel any prior animator (e.g. user double-tapped end-of-clip).
+    if (transitionRafRef.current != null) {
+      cancelAnimationFrame(transitionRafRef.current);
+      transitionRafRef.current = null;
+    }
+
+    transitioningRef.current = true;
+    const startReal = performance.now();
+    const startProj = transition.startMs;
+    const endProj = transition.endMs;
+    const durationMs = transition.effectiveDurationMs;
+    setPlayheadMs(startProj);
+
+    const tick = (now: number) => {
+      const elapsed = now - startReal;
+      if (elapsed >= durationMs) {
+        // Land cleanly at endMs (== nextSpan.startMs == canonicalSeekMs).
+        setPlayheadMs(endProj);
+        transitionRafRef.current = null;
+        // Switch the user's selection to the destination and autoplay. The
+        // VideoPreview clip swap that follows will reset currentTime to 0;
+        // the onPlayheadChange clamp keeps playheadMs at endProj until
+        // playback (re)starts and emits real time updates.
+        setSelectedClipId(nextSpan.clipId);
         setAutoPlayToken((t) => t + 1);
+        transitioningRef.current = false;
         return;
       }
-    }
-    // End of timeline — stop on last clip, but remember to rewind on next play.
-    needsRewindRef.current = true;
-  }, [clips, selectedClipId, setSelectedClipId]);
+      const projMs = startProj + (endProj - startProj) * (elapsed / durationMs);
+      setPlayheadMs(projMs);
+      transitionRafRef.current = requestAnimationFrame(tick);
+    };
+    transitionRafRef.current = requestAnimationFrame(tick);
+  }, [timeline, selectedClipId, setSelectedClipId, setPlayheadMs]);
 
   // Intercept play-press: if we're parked at the end of the timeline, jump
-  // back to the first visible clip and auto-play it instead.
+  // back to the first visible clip and auto-play it instead. Also seeks
+  // project-time so the map lands on clip 1's canonical position before
+  // playback resumes.
   const handlePlayIntent = useCallback(() => {
     if (!needsRewindRef.current) return false;
     const first = clips.find((c) => c.visible !== false);
     if (!first) return false;
     needsRewindRef.current = false;
     setSelectedClipId(first.id);
+    const span = timeline.clipSpans.find((s) => s.clipId === first.id);
+    if (span) setPlayheadMs(span.canonicalSeekMs);
     setAutoPlayToken((t) => t + 1);
     return true;
-  }, [clips, setSelectedClipId]);
+  }, [clips, setSelectedClipId, setPlayheadMs, timeline]);
 
-  // Wrap clip selection: if a clip is currently playing, the newly-selected
-  // clip should auto-play too. Also clears any end-of-timeline rewind flag.
+  // Wrap clip selection: seek project-time to the clip's `canonicalSeekMs`
+  // (per plan §"Preview Semantics" — selection should show what export would
+  // show at that t) and, if a clip was playing, autoplay the new one. Also
+  // cancels any in-flight transition animator and clears the end-of-timeline
+  // rewind flag.
   const handleSelectClip = useCallback((id: string) => {
     needsRewindRef.current = false;
-    if (id === selectedClipId) {
-      setSelectedClipId(id);
-      return;
+    if (transitionRafRef.current != null) {
+      cancelAnimationFrame(transitionRafRef.current);
+      transitionRafRef.current = null;
+      transitioningRef.current = false;
     }
+    const wasSame = id === selectedClipId;
     setSelectedClipId(id);
-    if (isPlayingRef.current) setAutoPlayToken((t) => t + 1);
-  }, [selectedClipId, setSelectedClipId]);
+    const span = timeline.clipSpans.find((s) => s.clipId === id);
+    if (span) setPlayheadMs(span.canonicalSeekMs);
+    if (!wasSame && isPlayingRef.current) setAutoPlayToken((t) => t + 1);
+  }, [selectedClipId, setSelectedClipId, setPlayheadMs, timeline]);
 
   const handlePlayingChange = useCallback((p: boolean) => {
     isPlayingRef.current = p;
   }, []);
+
+  // Abort any in-flight transition animator if the timeline recompiles
+  // (clips added/removed/reordered) — its captured span endpoints may no
+  // longer be valid. Also runs on unmount.
+  useEffect(() => {
+    return () => {
+      if (transitionRafRef.current != null) {
+        cancelAnimationFrame(transitionRafRef.current);
+        transitionRafRef.current = null;
+        transitioningRef.current = false;
+      }
+    };
+  }, [timeline]);
 
   // Resizer state
   const [vSplit, setVSplit] = useState(V_SPLIT_DEFAULT); // fraction of width for video pane
@@ -425,7 +533,7 @@ export default function ProjectView({
           {/* Video pane */}
           <div style={{ ...styles.videoPane, width: `calc(${vSplit * 100}% - 3px)` }}>
             <EditToolbar
-              clip={selectedClip}
+              clip={activeClip}
               onUpdateFocalPoint={onUpdateFocalPoint}
               onUpdateEffects={onUpdateEffects}
               previewAspect={previewAspect}
@@ -451,16 +559,37 @@ export default function ProjectView({
                 onPlayIntent={handlePlayIntent}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
+                  // While a transition animator is driving project-time
+                  // across a clip boundary, the source clip's video stays
+                  // paused at its trim-out and would otherwise re-emit a
+                  // stale `currentTime` on every render. Skip those writes
+                  // — the animator owns the playhead.
+                  if (transitioningRef.current) return;
+                  if (!selectedClipSpan) {
+                    setPlayheadMs(null);
+                    return;
+                  }
                   // Translate clip-local media time (seconds, from source
                   // start) into project-time. `effects.speed` cancels: the
                   // clip span was elongated by 1/speed, the clip-local axis
                   // compresses at the same rate. Per
                   // `COMPILED_TIMELINE_PLAN.md` §"Time-Axis Translation".
-                  if (!selectedClipSpan) {
-                    setPlayheadMs(null);
-                    return;
-                  }
-                  const clipLocalMs = s * 1000;
+                  //
+                  // Clamp the input to the clip's authored media range. The
+                  // video element briefly sits at currentTime = 0 after a
+                  // proxy swap (before play seeks to trim.in_ms) and may
+                  // emit one stale value from the previous clip during the
+                  // commit-then-effect handoff; without clamping either
+                  // case lands `playheadMs` outside the active clip span
+                  // and the map chases a t that doesn't belong to this
+                  // clip.
+                  const raw = s * 1000;
+                  const clipLocalMs =
+                    raw < selectedClipSpan.mediaInMs
+                      ? selectedClipSpan.mediaInMs
+                      : raw > selectedClipSpan.mediaOutMs
+                        ? selectedClipSpan.mediaOutMs
+                        : raw;
                   const projectMs =
                     selectedClipSpan.startMs +
                     (clipLocalMs - selectedClipSpan.mediaInMs) /
@@ -492,6 +621,7 @@ export default function ProjectView({
                 timeline={timeline}
                 clips={clips}
                 selectedClipId={selectedClipId}
+                activeClipId={activeClipId}
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
@@ -531,7 +661,7 @@ export default function ProjectView({
         <div style={{ ...styles.clipsArea, height: clipsHeight }}>
           <Timeline
             clips={clips}
-            selectedClipId={selectedClipId}
+            activeClipId={activeClipId}
             onSelectClip={handleSelectClip}
             thumbnails={thumbnails}
             proxies={proxies}
