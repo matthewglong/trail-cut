@@ -17,7 +17,7 @@ Each task maps 1:1 to a step in `COMPILED_TIMELINE_PLAN.md` §"Implementation Pl
 
 | ID  | Status | Step                       | Title                                                              | Depends on        | Commit |
 |-----|--------|----------------------------|--------------------------------------------------------------------|-------------------|--------|
-| 500 | ✅     | Compiled Timeline (1)      | Add authored types and bump schema v2→v3                           | —                 | e031655 |
+| 500 | ✅     | Compiled Timeline (1)      | Add authored types and bump schema v2→v3                           | —                 | 5f27ebb |
 | 510 | ✅     | Compiled Timeline (2)      | Add compiled types (ClipSpan, TransitionSpan, CompiledTimeline)    | —                 | e0b9b3e |
 | 520 | ⬜     | Compiled Timeline (3)      | Implement compileTimeline (pure compiler)                          | 500, 510          | —      |
 | 530 | ⬜     | Compiled Timeline (4)      | Implement new cameraAt(timeline, t) evaluator                      | 520               | —      |
