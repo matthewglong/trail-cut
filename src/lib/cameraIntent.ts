@@ -1,9 +1,5 @@
 // Pure, renderer-portable camera-intent surface. Composes with
 // `routeLocation.ts` to drive the map's framing in a viewport-agnostic way.
-// See `docs/MAP_ARCHITECTURE_MIGRATION.md` §3 for the full design.
-//
-// This file currently scaffolds the *type* surface and stub function
-// signatures only. Logic bodies are filled in by tasks 100/110/120/130.
 
 import type { Clip, MapSettings } from '../types';
 import { resolveMapSettings, type BearingMode } from '../types';
@@ -18,7 +14,7 @@ import {
   type BearingKeyframe,
 } from './routeLocation';
 
-// -- §3.1  Core geometric / camera types ------------------------------------
+// -- Core geometric / camera types ------------------------------------------
 
 export interface LngLat {
   lng: number;
@@ -101,7 +97,7 @@ export type CameraIntent =
       pitch: number;
     };
 
-// -- §3.2  Timeline anchors and the MapTrack --------------------------------
+// -- Timeline anchors and the MapTrack --------------------------------------
 
 /** A timeline anchor. One per clip. The MapTrack contains *only anchors*. */
 export interface MapAnchor {
@@ -116,13 +112,94 @@ export interface MapAnchor {
 /** A pure timeline. Built from (clips, route, mapSettings). No DOM. */
 export interface MapTrack {
   anchors: MapAnchor[];
-  /** Project-level "transition feel" knob. See §3.6. */
+  /** Project-level "transition feel" knob. */
   transitionFeel: TransitionFeel;
 }
 
 export type TransitionFeel = 'natural' | 'snappy' | 'slow';
 
-// -- §3.4  Van Wijk arc parameters ------------------------------------------
+// -- Compiled timeline (project-time) ---------------------------------------
+//
+// Runtime-only. Produced by `compileTimeline` (task 520) from the ordered
+// clip list, authored entry-transition settings, and media durations. Never
+// persisted: project-time is fully derived. See
+// `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Data Model → Compiled Data"
+// for the design contract — compiler purity, span endpoints, and continuity
+// invariants.
+//
+// Coexists with the wall-clock `MapAnchor`/`MapTrack` above during the 500-
+// series migration. Task 570 removes the wall-clock types once the new path
+// is fully wired.
+
+/** A clip's contribution to the compiled timeline. `startMs`/`endMs` live on
+ *  the project-time axis; `mediaInMs`/`mediaOutMs` live on the clip-local
+ *  axis (matching `clip.trim`). The two axes are related by
+ *  `endMs - startMs = (mediaOutMs - mediaInMs) / clip.effects.speed`.
+ *
+ *  `canonicalSeekMs` is the project-time the preview should land on when the
+ *  user selects this clip. Per `COMPILED_TIMELINE_PLAN.md` §"Preview
+ *  Semantics", this is typically `startMs` — i.e. *after* any incoming
+ *  transition — so selecting a clip shows the camera state export would
+ *  render at the start of that clip's media. */
+export interface ClipSpan {
+  clipId: string;
+  /** Project-time, ms. Inclusive start of the clip's contribution. */
+  startMs: number;
+  /** Project-time, ms. Exclusive end of the clip's contribution. */
+  endMs: number;
+  /** Clip-local, ms. Equals `clip.trim.in_ms`. */
+  mediaInMs: number;
+  /** Clip-local, ms. Equals `clip.trim.out_ms`. */
+  mediaOutMs: number;
+  /** Project-time, ms. Where preview selection lands for this clip. */
+  canonicalSeekMs: number;
+  /** The camera intent active inside this clip span. Produced by the
+   *  existing `anchorIntentForClip` (or its successor). */
+  intent: CameraIntent;
+}
+
+/** A camera transition's contribution to the compiled timeline. One per clip
+ *  including clip 1's project-start → clip 1 transition (`fromClipId: null`).
+ *
+ *  Spans the project-time window over which a Van Wijk arc plays between two
+ *  canonical resolved cameras: the previous clip's terminal camera (or the
+ *  project start camera, for clip 1) and the destination clip's initial
+ *  camera. `effectiveDurationMs` is the post-clamp width of that window —
+ *  `endMs - startMs` after the boundary formula's `min(requestedX,
+ *  availableX)` clamps the requested pre/post-cut sides against neighboring
+ *  media availability. See `COMPILED_TIMELINE_PLAN.md` §"Boundary Formula". */
+export interface TransitionSpan {
+  /** `null` for the project-start → clip-1 transition. */
+  fromClipId: string | null;
+  toClipId: string;
+  /** Project-time, ms. */
+  startMs: number;
+  /** Project-time, ms. */
+  endMs: number;
+  /** Equals `endMs - startMs`. Provided as a named field so call sites can
+   *  read "duration after clamping" without recomputing. */
+  effectiveDurationMs: number;
+}
+
+/** The fully compiled timeline. Pure function of (ordered clips, indexed
+ *  route, project settings). Same inputs → deeply-equal output. See
+ *  `COMPILED_TIMELINE_PLAN.md` §"Continuity Invariants" for the gating
+ *  guarantees the compiler/evaluator must satisfy. */
+export interface CompiledTimeline {
+  clipSpans: ClipSpan[];
+  transitionSpans: TransitionSpan[];
+  /** Equals `clipSpans[clipSpans.length - 1].endMs`, or 0 if no clips. */
+  totalDurationMs: number;
+  /** Resolved at compile time from `Project.start_camera` (override) or the
+   *  computed default. Used as the `from` endpoint of clip 1's transition
+   *  arc and as the `t < 0` hold camera in the evaluator. */
+  startCamera: ResolvedCamera;
+  /** Project-level feel pass-through. Applies only to auto-derived
+   *  transition durations; authored `durationMs` is respected literally. */
+  transitionFeel: TransitionFeel;
+}
+
+// -- Van Wijk arc parameters ------------------------------------------------
 
 /** Pre-computed parameters of an arc between two cameras. Computed once
  *  per (camA, camB) pair and reused for every sample along the arc.
@@ -183,7 +260,7 @@ function lngLatToMercator(ll: LngLat): { x: number; y: number } {
  *  inset of `padding * min(width, height)` pixels. Bearing and pitch are
  *  passed through unchanged from `extra`.
  *
- *  Algorithm — §5.2 of `docs/MAP_ARCHITECTURE_MIGRATION.md`:
+ *  Algorithm:
  *    1. `pad = padding * min(viewport.width, viewport.height)` (px)
  *    2. Project `sw` and `ne` to world pixels at zoom 0 (Web Mercator).
  *    3. `dx = ne.x - sw.x`, `dy = sw.y - ne.y` (mercator Y grows southward).
@@ -238,12 +315,9 @@ export function cameraForBounds(
   };
 }
 
-// -- Stub function signatures ----------------------------------------------
-// Bodies are filled in by Step 1 tasks (110, 120, 130). The signatures
-// match §3.2-3.4 verbatim so consumers can already type-check usage.
+// -- Function signatures ----------------------------------------------------
 
 /** Build a MapTrack from project state. Pure.
- *  See §3.2.
  *
  *  For each visible clip with a parseable `created_at` and a non-degenerate
  *  trim range, builds one anchor whose `intent` is chosen by
@@ -328,8 +402,7 @@ function anchorIntentForClip(
   }
 
   // Fallback: a static point on the clip's waypoint. Coordinates fall back
-  // to {lng:0, lat:0} when neither GPX nor embedded GPS resolves — matches
-  // the spec in §3.2 of MAP_ARCHITECTURE_MIGRATION.md.
+  // to {lng:0, lat:0} when neither GPX nor embedded GPS resolves.
   const wp = clipWaypointLocation(clip, route);
   return {
     kind: 'point',
@@ -353,7 +426,7 @@ function anchorIntentForClip(
  *      framing the last frame of that clip rendered, not advance the
  *      follow marker into "no-clip" territory)
  *    - in a gap between two anchors   → `interpolateAnchors(a, next, t, feel)`
- *      (always returns a `point` intent — see §3.4) */
+ *      (always returns a `point` intent) */
 export function cameraAt(track: MapTrack, t: number): CameraIntent {
   const { anchors } = track;
   if (anchors.length === 0) {
@@ -379,7 +452,7 @@ export function cameraAt(track: MapTrack, t: number): CameraIntent {
     }
     const next = anchors[i + 1];
     if (next && t > a.endTimeMs && t < next.timeMs) {
-      // Gap between clips — Van Wijk interpolation. Lives in §3.4 / task 130.
+      // Gap between clips — Van Wijk interpolation.
       return interpolateAnchors(a, next, t, track.transitionFeel);
     }
   }
@@ -402,10 +475,10 @@ function liveIntent(intent: CameraIntent, t: number): CameraIntent {
  *  viewport. Pure in (intent, viewport). The same intent resolved against
  *  two different viewports correctly produces two different framings.
  *
- *  This is the **only** aspect-aware function in the architecture (see
- *  §3.3 of MAP_ARCHITECTURE_MIGRATION.md). The fractional `Padding` on a
- *  `region` intent is converted to pixels here against the viewport's
- *  smaller dimension; everywhere else, padding stays unitless.
+ *  This is the **only** aspect-aware function in the architecture. The
+ *  fractional `Padding` on a `region` intent is converted to pixels here
+ *  against the viewport's smaller dimension; everywhere else, padding stays
+ *  unitless.
  *
  *  `follow` resolution intentionally does NOT walk the IndexedRoute for
  *  bearing — `bearingKeyframes` are precomputed once per anchor by
@@ -473,7 +546,7 @@ const CANONICAL_VIEWPORT: Viewport = { width: 1024, height: 1024, dpr: 1 };
  *    when the renderer takes over after the gap closes.
  *  - `follow`: evaluate at `refTimeMs` (boundary of the anchor's range).
  *    `refTimeMs` is `endTimeMs` for the outgoing anchor and `timeMs` for
- *    the incoming anchor, per §3.4. */
+ *    the incoming anchor. */
 function canonicalCamera(
   anchor: MapAnchor,
   refTimeMs: number,
@@ -519,16 +592,12 @@ function easeInOut(x: number, _feel: TransitionFeel): number {
  *  the boundaries — but `clamp01` ensures values strictly outside snap to
  *  exactly camA/camB, not just "very close").
  *
- *  Bearing in gap arcs: §8.3 flagged that lerping between camA.bearing and
- *  camB.bearing at the canonical-time endpoints (a.endTimeMs / b.timeMs)
- *  may diverge from the GPX direction-of-travel mid-gap when the two clips
- *  point very different ways. Visual parity for gap arcs needs a sanity
- *  check on a real ≥3-clip project with `bearing_mode: 'auto'`; deferred
- *  to user review at the end of Step 3. If the arc rotation looks wrong,
+ *  Bearing in gap arcs: lerping between camA.bearing and camB.bearing at
+ *  the canonical-time endpoints (a.endTimeMs / b.timeMs) may diverge from
+ *  the GPX direction-of-travel mid-gap when the two clips point very
+ *  different ways. If the arc rotation looks wrong,
  *  the fix is to consult GPX bearing at intermediate times rather than
- *  lerp endpoints — that's a contained follow-up, not a redesign.
- *
- *  See §3.4 of MAP_ARCHITECTURE_MIGRATION.md for the full algorithm. */
+ *  lerp endpoints — that's a contained follow-up, not a redesign. */
 export function interpolateAnchors(
   a: MapAnchor,
   b: MapAnchor,
@@ -559,7 +628,7 @@ export function interpolateAnchors(
   };
 }
 
-// -- §3.4  Van Wijk arc primitives -----------------------------------------
+// -- Van Wijk arc primitives ------------------------------------------------
 //
 // Implementation of Van Wijk & Nuij (2003), "Smooth and Efficient Zooming
 // and Panning." Equations (1)-(9) plus the eq. (10) linear-pan special
@@ -747,8 +816,7 @@ export function vanWijkSample(
   // here (the paper's small-area assumption holds at the meter scale of
   // hiking footage). Great-circle interpolation is overkill at this scale
   // and would diverge negligibly from the linear path inside any single
-  // viewport's worth of geography. Documented in §3.4 of the migration
-  // doc as an acceptable approximation.
+  // viewport's worth of geography.
   const center: LngLat = {
     lng: camA.center.lng + (camB.center.lng - camA.center.lng) * uFraction,
     lat: camA.center.lat + (camB.center.lat - camA.center.lat) * uFraction,
@@ -762,7 +830,7 @@ export function vanWijkSample(
   return { center, zoom };
 }
 
-/** Per-feel duration multiplier. From §3.6 of MAP_ARCHITECTURE_MIGRATION.md:
+/** Per-feel duration multiplier:
  *    natural: 1.0 (matches today's defaults baseMs:1100, msPerZoomLevel:580)
  *    snappy:  0.6 (≈ baseMs:600,  msPerZoomLevel:320)
  *    slow:    1.5 (≈ baseMs:1800, msPerZoomLevel:900)
@@ -786,9 +854,8 @@ function feelMultiplier(feel: TransitionFeel): number {
  *    (roughly 1-2 zoom levels of zoom-out + a viewport of pan) lands near
  *    today's `runClipTransition` defaults (baseMs ≈ 1100). For the canonical
  *    "1 zoom level + 1 viewport pan" arc, S ≈ 1.4, giving base ≈ 1120ms —
- *    well within the ±10% target of today's 1100ms baseline. Will be
- *    re-tuned in task 140 against the spike harness; treat as a starting
- *    point, not gospel.
+ *    well within the ±10% target of today's 1100ms baseline. Treat as a
+ *    starting point, not gospel.
  *  - `MIN_MS = 1100`: floor — pure zoom-only (S≈0) transitions still need a
  *    perceptible duration. Matches today's `DEFAULT_MAP_TRANSITION.baseMs`.
  *  - `MAX_MS = 7000`: ceiling — extreme cross-country jumps shouldn't run
