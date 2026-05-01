@@ -1,7 +1,7 @@
 # Camera Architecture Migration — Scorecard
 
 Branch: `migration/cameraAt`
-Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.md)
+Source plan: [docs/migration/COMPILED_TIMELINE_PLAN.md](./COMPILED_TIMELINE_PLAN.md)
 
 ## Status legend
 
@@ -11,43 +11,38 @@ Source plan: [docs/MAP_ARCHITECTURE_MIGRATION.md](../MAP_ARCHITECTURE_MIGRATION.
 - ⛔ blocked
 - 🛑 hard-stop (awaiting user)
 
-## Tasks
+## Tasks (compiled-timeline redesign, 500-series)
 
-| ID  | Status | Step              | Title                                                              | Depends on        | Commit |
-|-----|--------|-------------------|--------------------------------------------------------------------|-------------------|--------|
-| 001 | ✅     | Setup             | Install and configure Vitest                                       | —                 | 78f5e77 |
-| 010 | ✅     | Setup             | Scaffold src/lib/cameraIntent.ts with type definitions             | —                 | deac2d3 |
-| 100 | ✅     | 1 (Spike)         | Implement pure cameraForBounds helper                              | 010               | f7f6363 |
-| 110 | ✅     | 1 (Spike)         | Implement Van Wijk arc primitives                                  | 010               | 9a864e0 |
-| 120 | ✅     | 1 (Spike)         | Implement buildMapTrack, cameraAt, liveIntent                      | 010               | 430a5f1 |
-| 130 | ✅     | 1 (Spike)         | Implement resolveIntent and interpolateAnchors                     | 100, 110, 120     | 94f4bae |
-| 140 | 🛑     | 1 (Spike)         | Build CameraSpikeHarness with two-pane preview (HARD STOP)         | 100, 110, 120, 130| 2c88756 |
-| 200 | ✅     | 2 (route tests)   | Scaffold routeLocation test file structure                         | 001               | 9e9640a |
-| 210 | ✅     | 2 (route tests)   | Tests for parseTimestamp, indexRoute, locationAt                   | 200               | 067b73a |
-| 220 | ✅     | 2 (route tests)   | Tests for trailUpTo, clipWaypointLocation, forwardAzimuth          | 200               | 00fe6b7 |
-| 230 | ✅     | 2 (route tests)   | Tests for bearing math (90% coverage gate)                         | 200               | 0a62220 |
-| 300 | ✅     | 3 (MapView)       | Build MapTrack in ProjectView and pass to MapView                  | 120, 230          | ebc8771 |
-| 310 | ✅     | 3 (MapView)       | Replace Writers 1, 4, 5, 6 with the live ease loop                 | 300               | 1911771 |
-| 320 | ✅     | 3 (MapView)       | Convert Writer 3 (full-route fitBounds) to a region intent         | 300, 310          | b2c93c4 |
-| 330 | ✅     | 3 (MapView)       | Delete the six cross-effect refs and all recordEvent calls         | 310, 320          | 9b512c7 |
-| 340 | ✅     | 3 (MapView)       | Delete useMapRecorder hook, recorder prop, and Debug popover       | 330               | a0abcf4 |
-| 350 | ✅     | 3 (Persistence)   | Add transition_feel field to Project (frontend + Rust)             | 010               | 29f6c0e |
-| 360 | ✅     | 3 (Persistence)   | Add schema_version and v1→v2 migration logic                       | 350               | 7b1c7ec |
-| 370 | ✅     | 3 (Persistence)   | Drop persisted route from project.json; re-parse on load           | 360               | 76c1993 |
-| 400 | ⬜     | 4 (Export)        | Add render_map_frames Tauri command shell                          | 360               | —      |
-| 410 | ⬜     | 4 (Export)        | Build hidden /export-renderer Tauri window route                   | 400               | —      |
-| 420 | ⬜     | 4 (Export)        | Wire IPC: parent → renderer sends (track, layout_per_frame, fps)   | 410               | —      |
-| 430 | ⬜     | 4 (Export)        | Per-frame render loop with tile-load determinism check             | 420               | —      |
-| 440 | ⬜     | 4 (Export)        | Pass criterion test: render 30-frame sequence for a real project   | 430               | —      |
+Each task maps 1:1 to a step in `COMPILED_TIMELINE_PLAN.md` §"Implementation Plan".
+
+| ID  | Status | Step                       | Title                                                              | Depends on        | Commit |
+|-----|--------|----------------------------|--------------------------------------------------------------------|-------------------|--------|
+| 500 | ⬜     | Compiled Timeline (1)      | Add authored types and bump schema v2→v3                           | —                 | —      |
+| 510 | ⬜     | Compiled Timeline (2)      | Add compiled types (ClipSpan, TransitionSpan, CompiledTimeline)    | —                 | —      |
+| 520 | ⬜     | Compiled Timeline (3)      | Implement compileTimeline (pure compiler)                          | 500, 510          | —      |
+| 530 | ⬜     | Compiled Timeline (4)      | Implement new cameraAt(timeline, t) evaluator                      | 520               | —      |
+| 540 | ⬜     | Compiled Timeline (5)      | Switch playhead axis from wall-clock to project-time               | 530               | —      |
+| 550 | ⬜     | Compiled Timeline (6)      | Update MapView ease loop to consume cameraAt(timeline, t)          | 530, 540          | —      |
+| 560 | ⬜     | Compiled Timeline (7)      | Rework auto-advance, selection, active-clip lookup                 | 540               | —      |
+| 570 | ⬜     | Compiled Timeline (8)      | Delete old wall-clock anchor code (MapAnchor, MapTrack, etc.)      | 550, 560          | —      |
+| 580 | ⬜     | Compiled Timeline (9)      | Author 600-series export tasks against the compiled timeline       | 570               | —      |
+| 590 | ⬜     | Compiled Timeline (10)     | Validate end-to-end behavior; capture sign-off report              | 570               | —      |
+
+### Coupling notes
+
+- **530 + 540 + 550 land together in one PR.** The plan: "The playhead axis switch (step 5) lands in the same PR as the new `cameraAt` (step 4) — splitting causes a half-translated regime." 550 is the only consumer of the new evaluator, so we bundle all three to avoid a throwaway dual-wire shim in MapView.
+- 580 is a planning task (no code); it produces the 600-series export tasks, which will be added to this scorecard once authored.
 
 ## Hard stops
 
-- After task 140: human visual-parity review of the spike (per §6.1 pass criteria A and B). Do NOT proceed to Step 2/3/4 until the user signs off.
-  - Status: 🛑 awaiting human review — open with `?camera-spike=1` query param after `npm run tauri dev`.
+- After task 590: sign-off on the compiled-timeline preview before resuming export work. The 600-series cannot start until 590 is PASS.
 
 ## Notes
 
-- Pre-existing TS errors (fixed in commit 2a98cdf) — see [PREEXISTING_ERRORS.md](PREEXISTING_ERRORS.md)
-- After Step 4: stop. Step 5 (layout/compositing) is out of scope.
-- §8 open questions are mapped to tasks: §8.1 → 430, §8.2 → 140, §8.3 → 340.
-- Persistence work (§3.9) is split into 350/360/370 — independent of the camera surface, can land in parallel with Step 3 MapView refactor.
+- Critical constraints carried into the 500-series:
+  - Authoring is clip-local only — no project-time in `project.json`.
+  - The compiler is pure; project-time is fully derived.
+  - `MapAnchor` / `MapTrack` are fully replaced, not kept parallel (task 570).
+  - Van Wijk primitives, `cameraForBounds`, `resolveIntent`, route indexing, and bearing keyframe math are not to be touched.
+  - Schema bump v2 → v3; the existing v1 → v2 migration in `commands/project.rs` is the template.
+- Export work (layout / compositing) remains out of scope for the camera migration. Tasks 600+ will cover only camera-side export.

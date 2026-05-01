@@ -21,9 +21,13 @@ pub fn create_project(project_dir: String) -> Result<(), String> {
 
 /// Save project to project bundle. Always writes `schema_version =
 /// CURRENT_SCHEMA_VERSION` regardless of what came in from the frontend.
+/// Also clears the in-memory `route` field before serialization — the
+/// canonical route lives in `<bundle>/route.gpx`, and `Project.route` has
+/// `skip_serializing_if = "Option::is_none"` so `None` drops the key.
 #[tauri::command]
 pub fn save_project(mut project: Project, project_dir: String) -> Result<(), String> {
     project.schema_version = CURRENT_SCHEMA_VERSION;
+    project.route = None;
     let path = Path::new(&project_dir).join("project.json");
     let json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {}", e))?;
@@ -61,8 +65,8 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
         }
     };
 
-    // §3.9.2: route is no longer persisted in project.json. Re-parse from
-    // the bundle's route.gpx as the canonical source. Missing file → None.
+    // Route is not persisted in project.json. Re-parse from the bundle's
+    // route.gpx as the canonical source. Missing file → None.
     let route_path = dir.join("route.gpx");
     if route_path.exists() {
         project.route = Some(super::gpx::parse_gpx_internal(&route_path)?);
@@ -135,8 +139,7 @@ mod tests {
     use super::*;
 
     /// A v1 project on disk: no `schema_version`, no `transition_feel`,
-    /// `route` field present (will be dropped by task 370 — for now it's
-    /// preserved through migration since the route field still exists).
+    /// `route` field present.
     const V1_PROJECT_JSON: &str = r#"{
         "version": 1,
         "name": "Old Project",

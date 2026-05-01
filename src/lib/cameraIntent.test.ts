@@ -1,8 +1,4 @@
 // Unit tests for the pure geometric helpers in `cameraIntent.ts`.
-// Scope is intentionally narrow: this file covers the math added in
-// migration task 100 (§5.2 of MAP_ARCHITECTURE_MIGRATION.md) — i.e. the
-// `cameraForBounds` Web-Mercator port. Tests for `cameraAt`,
-// `resolveIntent`, `vanWijkArc`, etc. land in tasks 110/120/130.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -44,8 +40,8 @@ const NO_TILT = { bearing: 0, pitch: 0 };
 describe('cameraForBounds', () => {
   it('frames a ~1km equatorial square at the expected zoom in a 1024×1024 viewport', () => {
     // Algorithm-derived expected zoom for a 1km square at the equator with
-    // padding=0 in a 1024² viewport, computed directly from §5.2 (world
-    // size 512px). Cross-checked once by hand:
+    // padding=0 in a 1024² viewport, computed directly from the algorithm
+    // (world size 512px). Cross-checked once by hand:
     //   dLng       = 1000 / 111320         ≈ 8.983e-3 deg
     //   dx_pixels  = (dLng / 360) * 512    ≈ 1.278e-2 px @ z=0
     //   zoom       = log2(1024 / dx_pixels) ≈ 16.29
@@ -124,7 +120,7 @@ describe('cameraForBounds', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Van Wijk arc primitives — task 110.
+// Van Wijk arc primitives.
 //
 // Tests verify endpoint exactness, degenerate-arc handling, feel-multiplier
 // ordering, and arc-direction symmetry. The math itself is covered by the
@@ -243,10 +239,9 @@ describe('arcDurationMs', () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildMapTrack / cameraAt — task 120.
+// buildMapTrack / cameraAt
 //
-// The contract is in §3.2 of MAP_ARCHITECTURE_MIGRATION.md. These tests
-// cover:
+// These tests cover:
 //   - empty-clip / empty-track handling (DEFAULT_INTENT fallback)
 //   - single-anchor follow vs. point: liveIntent semantics
 //   - before-first / after-last clamping
@@ -533,7 +528,7 @@ describe('buildMapTrack + cameraAt', () => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveIntent — task 130.
+// resolveIntent.
 //
 // resolveIntent is the only aspect-aware function in the architecture. The
 // tests below cover all three intent kinds and verify the critical
@@ -704,7 +699,7 @@ describe('resolveIntent', () => {
 });
 
 // ---------------------------------------------------------------------------
-// interpolateAnchors — task 130.
+// interpolateAnchors.
 //
 // Endpoint exactness: at t = a.endTimeMs the interpolated camera should
 // match canonicalCamera(a). At t = a.endTimeMs + arcDurationMs(arc, feel)
@@ -790,8 +785,8 @@ describe('interpolateAnchors', () => {
 
 // ---------------------------------------------------------------------------
 // circularLerp — short-way bearing interpolation. Already tested by usage
-// in resolveIntent's auto-bearing path, but the §3.4 acceptance criterion
-// calls out the 350° → 10° wraparound case explicitly. Guard it here.
+// in resolveIntent's auto-bearing path; the 350° → 10° wraparound case is
+// guarded explicitly here.
 // ---------------------------------------------------------------------------
 
 describe('circularLerp short-way', () => {

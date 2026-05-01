@@ -130,10 +130,10 @@ export interface ExportConfig {
   quality: string;
 }
 
-/** Project-level "transition feel" knob (§3.6). Drives the duration
- *  multiplier for cross-anchor Van Wijk arcs. Mirrors the union in
- *  cameraIntent.ts; duplicated here so types.ts stays free of cameraIntent
- *  imports (cameraIntent itself imports from types.ts). */
+/** Project-level "transition feel" knob. Drives the duration multiplier for
+ *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
+ *  duplicated here so types.ts stays free of cameraIntent imports
+ *  (cameraIntent itself imports from types.ts). */
 export type TransitionFeel = 'natural' | 'snappy' | 'slow';
 
 export interface Project {

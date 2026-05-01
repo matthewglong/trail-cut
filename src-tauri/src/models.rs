@@ -204,10 +204,10 @@ pub struct MapOverrides {
     pub bearing_stops: Option<u32>,
 }
 
-/// Project-level "transition feel" knob (§3.6 of MAP_ARCHITECTURE_MIGRATION.md).
-/// Drives the duration multiplier for cross-anchor Van Wijk arcs in the live
-/// preview (and, eventually, the export render). Persisted as the lowercase
-/// string variant so the on-disk JSON matches the frontend's literal union.
+/// Project-level "transition feel" knob. Drives the duration multiplier for
+/// cross-anchor Van Wijk arcs in the live preview and the export render.
+/// Persisted as the lowercase string variant so the on-disk JSON matches the
+/// frontend's literal union.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransitionFeel {
@@ -217,9 +217,7 @@ pub enum TransitionFeel {
 }
 
 /// Current persisted-project schema version. Bump when a field's *shape*
-/// changes (not just additive). v2 = post-camera-architecture migration:
-/// `route` is no longer in JSON (re-parsed from `route.gpx` — task 370),
-/// `transition_feel` is present (task 350).
+/// changes (not just additive).
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 fn default_schema_version() -> u32 {
@@ -255,11 +253,13 @@ pub struct Project {
     #[serde(default)]
     pub thumbnail: Option<String>,
     pub clips: Vec<Clip>,
-    /// In-memory only as of v2 (§3.9.2). The canonical source is the
-    /// `route.gpx` file in the bundle, re-parsed by `load_project` on every
-    /// load. `#[serde(skip)]` keeps this out of `project.json` on save and
-    /// causes serde to ignore any leftover `route` key on v1 deserialize.
-    #[serde(skip)]
+    /// In-memory only as of v2. The canonical source is the `route.gpx`
+    /// file in the bundle, re-parsed by `load_project` on every load.
+    /// `save_project` clears this to `None` before writing so the
+    /// `skip_serializing_if` below drops the key from on-disk JSON. The
+    /// field still rides Tauri's IPC serialization to the frontend, which
+    /// distinguishes `null` from `undefined` at the call site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<Route>,
     pub exports: Vec<ExportConfig>,
     #[serde(default)]

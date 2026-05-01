@@ -166,12 +166,12 @@ export default function ProjectView({
   // no longer derives effectiveBearing for the camera.
   const indexedRoute = useMemo(() => indexRoute(route), [route]);
 
-  // The project-level transition-feel knob (§3.6). Read from the persisted
-  // project field with a 'natural' default for v1 projects that pre-date it.
+  // The project-level transition-feel knob. Read from the persisted project
+  // field with a 'natural' default for v1 projects that pre-date it.
   const projectTransitionFeel: TransitionFeel = transitionFeel ?? 'natural';
 
   // The single source of truth for camera-state derivation. MapView consumes
-  // this each tick of its live ease loop (§3.5).
+  // this each tick of its live ease loop.
   const track = useMemo(
     () => buildMapTrack(clips, indexedRoute, mapSettings, projectTransitionFeel),
     [clips, indexedRoute, mapSettings, projectTransitionFeel],

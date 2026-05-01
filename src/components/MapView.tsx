@@ -29,10 +29,10 @@ interface MapViewProps {
   mapSettings: MapSettings;
   selectedClipId: string | null;
   route: Route | null;
-  /** Retained beyond §6.3's listing because the waypoint paint writer and the
-   *  marker's GPS fallback both need per-clip data (id, created_at, gps).
-   *  `track.anchors` does not carry clip identity, so there's no path from
-   *  `selectedClipId` back to a `Clip` without this prop. */
+  /** The waypoint paint writer and the marker's GPS fallback both need
+   *  per-clip data (id, created_at, gps). `track.anchors` does not carry
+   *  clip identity, so there's no path from `selectedClipId` back to a
+   *  `Clip` without this prop. */
   clips: Clip[];
   onSelectClip?: (clipId: string) => void;
 }
@@ -290,12 +290,12 @@ export default function MapView({
   }, [mapStyleId]);
 
   // ---- Update full-route line + region-intent fit when route changes ----
-  // On a new route, frame the full bounds via a `region` CameraIntent resolved
-  // through the same pipeline the ease loop uses (§6.3 step 3). jumpTo (not
+  // On a new route, frame the full bounds via a `region` CameraIntent
+  // resolved through the same pipeline the ease loop uses. jumpTo (not
   // easeTo) is intentional: the initial fit has no continuity to preserve,
-  // and the §3.5 ease loop picks up smoothly from this state on the next
-  // tick once anchors exist. Padding 0.06 matches the follow-anchor default
-  // (§3.2) — at a typical map pane this is comparable to today's 60 px inset.
+  // and the ease loop picks up smoothly from this state on the next tick
+  // once anchors exist. Padding 0.06 matches the follow-anchor default — at
+  // a typical map pane this is comparable to today's 60 px inset.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -439,12 +439,12 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [selectedClipId, styleVersion]);
 
-  // ---- Live preview ease loop (replaces Writers 1, 4, 5, 6) ----
-  // Per §3.5: every STEP_MS we compute target = cameraAt(track, t + lookahead)
-  // and fire map.easeTo at the same duration. MapLibre keeps chasing a moving
-  // target — clip-to-clip handoff, bearing rotation, and within-clip tracking
-  // all collapse into this one loop. The pure cameraAt + resolveIntent
-  // pipeline is the single source of truth for camera state.
+  // ---- Live preview ease loop ----
+  // Every STEP_MS we compute target = cameraAt(track, t + lookahead) and
+  // fire map.easeTo at the same duration. MapLibre keeps chasing a moving
+  // target — clip-to-clip handoff, bearing rotation, and within-clip
+  // tracking all collapse into this one loop. The pure cameraAt +
+  // resolveIntent pipeline is the single source of truth for camera state.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;

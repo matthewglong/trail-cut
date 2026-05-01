@@ -1,11 +1,6 @@
 // Unit tests for the pure helpers in `routeLocation.ts` — the timestamp,
-// position, trail, and bearing pipeline that powers both the live preview and
-// the future Rust exporter (see §6.2 of MAP_ARCHITECTURE_MIGRATION.md).
-//
-// Test bodies for parseTimestamp / indexRoute / locationAt land in task 210.
-// trailUpTo / clipWaypointLocation / forwardAzimuth land in task 220.
-// bearingAt / circularLerp / computeBearingKeyframes / bearingFromKeyframes
-// land in task 230.
+// position, trail, and bearing pipeline that powers both the live preview
+// and the future Rust exporter.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -659,10 +654,8 @@ describe('bearingFromKeyframes', () => {
 });
 
 // ---- Coverage backfill ----
-// The §6.2 table doesn't list these two functions, but they live in the same
-// file and the Step 2 pass criterion requires ≥90% line coverage on
-// routeLocation.ts as a whole. These are minimal targeted tests to push the
-// file across the gate without adding redundant cases.
+// Minimal targeted tests for the helpers below to keep routeLocation.ts at
+// the ≥90% line-coverage gate without adding redundant cases.
 
 describe('clipWallClockMs (coverage backfill)', () => {
   it('returns null when clip is null', () => {
