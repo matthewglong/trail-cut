@@ -95,13 +95,6 @@ export default function ProjectView({
   const [resetPillHover, setResetPillHover] = useState(false);
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
-  // Project-time animator state. `transitionRafRef` holds the active RAF
-  // handle while we drive `playheadMs` across a non-zero transition span;
-  // `transitioningRef` gates `VideoPreview.onPlayheadChange` writes so the
-  // (still-paused) source clip's stable `currentTime` cannot clobber the
-  // animator's per-frame writes during the cross.
-  const transitioningRef = useRef(false);
-  const transitionRafRef = useRef<number | null>(null);
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -219,20 +212,13 @@ export default function ProjectView({
     ));
   }, [selectedClipId, setClips]);
 
-  // Auto-advance on clip end. The natural playhead has already covered the
-  // pre-cut half of the entry transition (the source video plays its last
-  // `effectivePreCut` ms of media before `handleEnded` fires), so the
-  // animator only walks the post-cut half: from `transition.cutMs` (where
-  // the natural playhead left off, == prevSpan.endMs) → `transition.endMs`
-  // over `effectivePostCut` real ms while MapView's ease loop renders the
-  // tail of the Van Wijk arc. Selection only switches to the destination
-  // AFTER the animator lands so the source clip's video stays on-screen
-  // during the post-cut window — matching the camera's "leaving A →
-  // arriving B" semantics.
-  //
-  // Zero-duration transitions (or authored entry_bias = -1, where the whole
-  // window is pre-cut and the natural playhead already covered it) collapse
-  // to the snap-and-autoplay path.
+  // Auto-advance on clip end. Snap to the next clip and autoplay; the
+  // camera keeps animating naturally because `cameraAt` resolves the
+  // transition span on both sides of the cut. The pre-cut half is
+  // covered while the source video plays its last `effectivePreCut` ms
+  // of media; the post-cut half is covered while the destination video
+  // plays its first `effectivePostCut` ms — one continuous arc, no
+  // freeze in between.
   const handleClipEnded = useCallback(() => {
     const currentSpanIdx = timeline.clipSpans.findIndex(
       (s) => s.clipId === selectedClipId,
@@ -249,56 +235,9 @@ export default function ProjectView({
       needsRewindRef.current = true;
       return;
     }
-    const transition = timeline.transitionSpans.find(
-      (ts) => ts.toClipId === nextSpan.clipId,
-    );
-
-    const postCutMs = transition ? transition.endMs - transition.cutMs : 0;
-
-    if (!transition || transition.effectiveDurationMs <= 0 || postCutMs <= 0) {
-      // No post-cut window to animate — either the transition is disabled,
-      // collapsed to zero, or authored entry_bias = -1 (whole window is
-      // pre-cut, already covered by the natural playhead). Snap to the next
-      // clip and autoplay.
-      setSelectedClipId(nextSpan.clipId);
-      setAutoPlayToken((t) => t + 1);
-      return;
-    }
-
-    // Cancel any prior animator (e.g. user double-tapped end-of-clip).
-    if (transitionRafRef.current != null) {
-      cancelAnimationFrame(transitionRafRef.current);
-      transitionRafRef.current = null;
-    }
-
-    transitioningRef.current = true;
-    const startReal = performance.now();
-    const startProj = transition.cutMs;
-    const endProj = transition.endMs;
-    const durationMs = postCutMs;
-    setPlayheadMs(startProj);
-
-    const tick = (now: number) => {
-      const elapsed = now - startReal;
-      if (elapsed >= durationMs) {
-        // Land cleanly at endMs (== nextSpan.startMs == canonicalSeekMs).
-        setPlayheadMs(endProj);
-        transitionRafRef.current = null;
-        // Switch the user's selection to the destination and autoplay. The
-        // VideoPreview clip swap that follows will reset currentTime to 0;
-        // the onPlayheadChange clamp keeps playheadMs at endProj until
-        // playback (re)starts and emits real time updates.
-        setSelectedClipId(nextSpan.clipId);
-        setAutoPlayToken((t) => t + 1);
-        transitioningRef.current = false;
-        return;
-      }
-      const projMs = startProj + (endProj - startProj) * (elapsed / durationMs);
-      setPlayheadMs(projMs);
-      transitionRafRef.current = requestAnimationFrame(tick);
-    };
-    transitionRafRef.current = requestAnimationFrame(tick);
-  }, [timeline, selectedClipId, setSelectedClipId, setPlayheadMs]);
+    setSelectedClipId(nextSpan.clipId);
+    setAutoPlayToken((t) => t + 1);
+  }, [timeline, selectedClipId, setSelectedClipId]);
 
   // Intercept play-press: if we're parked at the end of the timeline, jump
   // back to the first visible clip and auto-play it instead. Also seeks
@@ -319,15 +258,9 @@ export default function ProjectView({
   // Wrap clip selection: seek project-time to the clip's `canonicalSeekMs`
   // (per plan §"Preview Semantics" — selection should show what export would
   // show at that t) and, if a clip was playing, autoplay the new one. Also
-  // cancels any in-flight transition animator and clears the end-of-timeline
-  // rewind flag.
+  // clears the end-of-timeline rewind flag.
   const handleSelectClip = useCallback((id: string) => {
     needsRewindRef.current = false;
-    if (transitionRafRef.current != null) {
-      cancelAnimationFrame(transitionRafRef.current);
-      transitionRafRef.current = null;
-      transitioningRef.current = false;
-    }
     const wasSame = id === selectedClipId;
     setSelectedClipId(id);
     const span = timeline.clipSpans.find((s) => s.clipId === id);
@@ -338,19 +271,6 @@ export default function ProjectView({
   const handlePlayingChange = useCallback((p: boolean) => {
     isPlayingRef.current = p;
   }, []);
-
-  // Abort any in-flight transition animator if the timeline recompiles
-  // (clips added/removed/reordered) — its captured span endpoints may no
-  // longer be valid. Also runs on unmount.
-  useEffect(() => {
-    return () => {
-      if (transitionRafRef.current != null) {
-        cancelAnimationFrame(transitionRafRef.current);
-        transitionRafRef.current = null;
-        transitioningRef.current = false;
-      }
-    };
-  }, [timeline]);
 
   // Resizer state
   const [vSplit, setVSplit] = useState(V_SPLIT_DEFAULT); // fraction of width for video pane
@@ -566,12 +486,6 @@ export default function ProjectView({
                 onPlayIntent={handlePlayIntent}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
-                  // While a transition animator is driving project-time
-                  // across a clip boundary, the source clip's video stays
-                  // paused at its trim-out and would otherwise re-emit a
-                  // stale `currentTime` on every render. Skip those writes
-                  // — the animator owns the playhead.
-                  if (transitioningRef.current) return;
                   if (!selectedClipSpan) {
                     setPlayheadMs(null);
                     return;
