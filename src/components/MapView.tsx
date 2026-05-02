@@ -165,12 +165,9 @@ export default function MapView({
   // Project-time → wall-clock for the live marker and slime trail. The pre-
   // cut half of a transition span lives inside the source clip's project-
   // time, so a clip-span lookup catches it and the marker tracks the source
-  // clip's live position right up to the cut. Only the post-cut half of a
-  // transition (when the source clip's media is finished but the camera arc
-  // is still landing) freezes the marker at the source clip's terminal
-  // position — keeping it on-screen across the boundary, per task 550 doc
-  // option 2. The project-start → clip-1 transition has no previous clip,
-  // so the marker is hidden until clip 1 begins.
+  // clip's live position right up to the cut. The project-start → clip-1
+  // transition's window also falls inside clip 1's span (cutMs = 0 = clip
+  // 1's startMs), so the marker tracks clip 1 from the very first frame.
   const markerTrace = useMemo<{ wallMs: number; clipId: string } | null>(() => {
     if (currentProjectMs == null) return null;
     if (currentProjectMs < 0) return null;
@@ -181,18 +178,6 @@ export default function MapView({
         wallMs: last.wallClockBaseMs + last.mediaOutMs,
         clipId: last.clipId,
       };
-    }
-    // Project-start transition (fromClipId == null) hides the marker for its
-    // full window — there is no source clip to track.
-    for (const ts of timeline.transitionSpans) {
-      if (ts.effectiveDurationMs <= 0) continue;
-      if (
-        ts.fromClipId == null &&
-        currentProjectMs >= ts.startMs &&
-        currentProjectMs < ts.endMs
-      ) {
-        return null;
-      }
     }
     // Active clip span — translate project-time to clip-local to wall-clock.
     // This branch wins over a transition's pre-cut half: the source clip's
