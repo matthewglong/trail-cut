@@ -36,6 +36,10 @@ interface ProjectViewProps {
   mapSettings: MapSettings;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   transitionFeel: TransitionFeel | undefined;
+  /** Project-level default for the live preview camera's per-tick easing
+   *  duration (ms). Forwarded to `MapView`'s ease loop; undefined falls
+   *  back to MapView's internal baseline. */
+  defaultEaseDurationMs: number | undefined;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -69,6 +73,7 @@ export default function ProjectView({
   mapSettings,
   setMapSettings,
   transitionFeel,
+  defaultEaseDurationMs,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -546,6 +551,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
+                defaultEaseDurationMs={defaultEaseDurationMs}
                 onSelectClip={handleSelectClip}
               />
               <div

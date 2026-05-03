@@ -323,6 +323,14 @@ pub struct Project {
     /// clip's own `entry_transition` overrides individual fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_entry_transition: Option<ClipEntryTransition>,
+    /// Project-level default for the live preview camera's per-tick
+    /// easing duration (ms). Frontend's `MapView` ease loop reads this
+    /// to size both `easeTo`'s `duration` argument and its lookahead
+    /// (so the camera's arrival point lines up with the playhead at
+    /// easing completion). Absent on disk for projects pre-dating this
+    /// field; the frontend falls back to a 50 ms baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_ease_duration_ms: Option<u64>,
 }
 
 impl Default for Project {
@@ -339,6 +347,7 @@ impl Default for Project {
             transition_feel: None,
             start_camera: None,
             default_entry_transition: None,
+            default_ease_duration_ms: None,
         }
     }
 }

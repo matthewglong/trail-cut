@@ -47,6 +47,14 @@ interface MapViewProps {
    *  the marker's GPS fallback. The compiled timeline carries clip ids and
    *  spans but not embedded GPS, so we still need the clip list here. */
   clips: Clip[];
+  /** Project-level default for the live preview camera's per-tick easing
+   *  duration (ms). The ease loop sizes both `easeTo`'s `duration` and its
+   *  lookahead from this value so the camera's arrival point coincides
+   *  with the playhead at easing completion. Falls back to a 50ms baseline
+   *  when undefined. Reserved hook for future distance-driven dynamics:
+   *  `pickEaseDurationMs` will eventually take this as the baseline and
+   *  modulate it by the inter-tick camera distance. */
+  defaultEaseDurationMs?: number;
   onSelectClip?: (clipId: string) => void;
 }
 
@@ -120,6 +128,30 @@ const LIVE_MARKER_PULSE_KEYFRAMES = `
 }
 `;
 
+/** Tick cadence for the live ease loop (ms). How often we re-aim the
+ *  camera. Independent of `easeTo` duration — the duration is chosen per
+ *  tick by `pickEaseDurationMs` and may exceed `POLL_MS`, in which case
+ *  each tick interrupts a half-finished `easeTo` with a fresh target
+ *  (MapLibre handles that by resampling from the current camera state). */
+const POLL_MS = 50;
+
+/** Fallback for `defaultEaseDurationMs` when the project doesn't specify
+ *  one. Sized to match `POLL_MS` so unconfigured projects behave like
+ *  pre-refactor (single 50ms tick = single 50ms easing). */
+const DEFAULT_EASE_DURATION_MS_FALLBACK = 50;
+
+/** Pick the per-tick `easeTo` duration. Today returns the project-level
+ *  baseline unmodified; reserved hook for future distance-driven dynamics
+ *  (e.g. clamp(centerDistanceMeters * k, min, max) or a velocity-aware
+ *  schedule). When that lands, expand the signature to take the current
+ *  and target `ResolvedCamera`s and the ease loop will compute them per
+ *  tick from the live map state. The contract callers rely on: the
+ *  returned value is used for both `easeTo`'s `duration` AND the loop's
+ *  lookahead horizon, so they cannot drift apart. */
+function pickEaseDurationMs(baselineMs: number): number {
+  return baselineMs;
+}
+
 export default function MapView({
   timeline,
   clips,
@@ -128,10 +160,18 @@ export default function MapView({
   route,
   playheadMs,
   mapSettings,
+  defaultEaseDurationMs,
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
   onSelectClipRef.current = onSelectClip;
+  // Read the ease baseline off a ref so the ease loop doesn't restart on
+  // project-default changes (e.g. user tweaks the value mid-session).
+  const easeBaselineMsRef = useRef(
+    defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK,
+  );
+  easeBaselineMsRef.current =
+    defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
@@ -526,8 +566,6 @@ export default function MapView({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const LOOKAHEAD_MS = 100;
-    const STEP_MS = 50;
 
     let timeoutId = 0;
     let stopped = false;
@@ -538,11 +576,16 @@ export default function MapView({
       // and the constructor's initial framing remain authoritative until
       // compilable clips exist.
       if (timeline.clipSpans.length === 0) {
-        timeoutId = window.setTimeout(tick, STEP_MS);
+        timeoutId = window.setTimeout(tick, POLL_MS);
         return;
       }
       const t = currentProjectMsRef.current ?? 0;
-      const intent = cameraAt(timeline, t + LOOKAHEAD_MS);
+      // Per-tick easing duration — the contract: lookahead == duration, so
+      // the camera's arrival point lines up with the playhead at easing
+      // completion. `pickEaseDurationMs` is the future-flexibility hook;
+      // today it returns the project-level baseline unmodified.
+      const duration = pickEaseDurationMs(easeBaselineMsRef.current);
+      const intent = cameraAt(timeline, t + duration);
       const viewport: Viewport = {
         width: map.getContainer().clientWidth,
         height: map.getContainer().clientHeight,
@@ -554,10 +597,10 @@ export default function MapView({
         zoom: target.zoom,
         bearing: target.bearing,
         pitch: target.pitch,
-        duration: STEP_MS,
+        duration,
         essential: true,
       });
-      timeoutId = window.setTimeout(tick, STEP_MS);
+      timeoutId = window.setTimeout(tick, POLL_MS);
     };
 
     tick();

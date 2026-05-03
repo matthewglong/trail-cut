@@ -196,6 +196,17 @@ export interface Project {
   /** Project-level defaults for every clip's entry transition. Each clip's
    *  own `entry_transition` overrides individual fields. */
   default_entry_transition?: ClipEntryTransition;
+  /** Project-level default for the live preview camera's per-tick easing
+   *  duration (ms). Sized in the same regime as the ease loop's tick
+   *  cadence — a larger value smooths the camera (each tick interrupts a
+   *  longer in-flight easeTo with a fresh target), a smaller value snaps
+   *  it. Lookahead in the ease loop tracks this value so the camera's
+   *  arrival point coincides with the playhead at easing completion.
+   *  When absent, the consumer falls back to a 50ms baseline. Reserved
+   *  for future distance-driven dynamics — `pickEaseDurationMs` may
+   *  later compute a per-tick duration from this baseline plus the
+   *  inter-tick camera distance. */
+  default_ease_duration_ms?: number;
 }
 
 export interface RecentProject {

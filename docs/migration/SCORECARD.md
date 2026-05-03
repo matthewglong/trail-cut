@@ -25,13 +25,26 @@ Each task maps 1:1 to a step in `COMPILED_TIMELINE_PLAN.md` §"Implementation Pl
 | 550 | ✅     | Compiled Timeline (6)      | Update MapView ease loop to consume cameraAt(timeline, t)          | 530, 540          | 3f01001 |
 | 560 | ✅     | Compiled Timeline (7)      | Rework auto-advance, selection, active-clip lookup                 | 540               | ae07cc5 |
 | 570 | ✅     | Compiled Timeline (8)      | Delete old wall-clock anchor code (MapAnchor, MapTrack, etc.)      | 550, 560          | eb38179 |
-| 580 | ⬜     | Compiled Timeline (9)      | Author 600-series export tasks against the compiled timeline       | 570               | —      |
+| 580 | ✅     | Compiled Timeline (9)      | Author 600-series export tasks against the compiled timeline       | 570               | —      |
 | 590 | ⬜     | Compiled Timeline (10)     | Validate end-to-end behavior; capture sign-off report              | 570               | —      |
+
+## Tasks (compiled-timeline export, 600-series)
+
+Authored by task 580. Each task maps 1:1 to a step in the export pipeline. All five together implement export against `cameraAt(timeline, t)` per `COMPILED_TIMELINE_PLAN.md` §"Export Semantics".
+
+| ID  | Status | Step                     | Title                                                                | Depends on | Commit |
+|-----|--------|--------------------------|----------------------------------------------------------------------|------------|--------|
+| 600 | ⬜     | Export (1)               | Register `render_map_frames` Tauri command shell                     | 570        | —      |
+| 610 | ⬜     | Export (2)               | Hidden `/export-renderer` Tauri window route                         | 600        | —      |
+| 620 | ⬜     | Export (3)               | IPC wiring: parent → renderer frame stream                           | 610        | —      |
+| 630 | ⬜     | Export (4)               | Per-frame render loop with tile-load determinism check               | 620        | —      |
+| 640 | ⬜     | Export (5)               | Render parity verification: rendered frames vs. `cameraAt(timeline, t)` truth | 630 | —      |
 
 ### Coupling notes
 
 - **530 + 540 + 550 land together in one PR.** The plan: "The playhead axis switch (step 5) lands in the same PR as the new `cameraAt` (step 4) — splitting causes a half-translated regime." 550 is the only consumer of the new evaluator, so we bundle all three to avoid a throwaway dual-wire shim in MapView.
-- 580 is a planning task (no code); it produces the 600-series export tasks, which will be added to this scorecard once authored.
+- 580 is a planning task (no code); it produced the 600-series tasks above.
+- The 600-series cannot start until 590 is PASS (see "Hard stops" below). 600 → 610 → 620 → 630 → 640 chain strictly in sequence; each task's output is the next task's input.
 
 ## Hard stops
 

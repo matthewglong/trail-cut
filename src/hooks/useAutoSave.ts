@@ -10,9 +10,10 @@ interface AutoSaveParams {
   projectThumbnail: string | null;
   mapSettings: MapSettings;
   transitionFeel: TransitionFeel | undefined;
+  defaultEaseDurationMs: number | undefined;
 }
 
-export function useAutoSave({ projectDir, clips, route, projectName, projectThumbnail, mapSettings, transitionFeel }: AutoSaveParams) {
+export function useAutoSave({ projectDir, clips, route, projectName, projectThumbnail, mapSettings, transitionFeel, defaultEaseDurationMs }: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -29,6 +30,7 @@ export function useAutoSave({ projectDir, clips, route, projectName, projectThum
         exports: [],
         map_settings: mapSettings,
         transition_feel: transitionFeel,
+        default_ease_duration_ms: defaultEaseDurationMs,
       };
       invoke('save_project', { project, projectDir }).catch(() => {});
       invoke('register_recent_project', { projectDir }).catch(() => {});
@@ -37,5 +39,5 @@ export function useAutoSave({ projectDir, clips, route, projectName, projectThum
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings, transitionFeel]);
+  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings, transitionFeel, defaultEaseDurationMs]);
 }

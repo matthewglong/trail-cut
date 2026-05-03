@@ -17,6 +17,7 @@ export default function App() {
   const [route, setRoute] = useState<Route | null>(null);
   const [mapSettings, setMapSettings] = useState<MapSettings>(DEFAULT_MAP_SETTINGS);
   const [transitionFeel, setTransitionFeel] = useState<TransitionFeel | undefined>(undefined);
+  const [defaultEaseDurationMs, setDefaultEaseDurationMs] = useState<number | undefined>(undefined);
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
@@ -39,6 +40,7 @@ export default function App() {
     setRoute,
     setMapSettings,
     setTransitionFeel,
+    setDefaultEaseDurationMs,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -54,6 +56,7 @@ export default function App() {
     projectThumbnail: project.projectThumbnail,
     mapSettings,
     transitionFeel,
+    defaultEaseDurationMs,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
@@ -115,6 +118,7 @@ export default function App() {
       mapSettings={mapSettings}
       setMapSettings={setMapSettings}
       transitionFeel={transitionFeel}
+      defaultEaseDurationMs={defaultEaseDurationMs}
       playheadMs={playheadMs}
       setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}

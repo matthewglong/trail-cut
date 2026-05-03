@@ -1124,15 +1124,28 @@ function evaluateTransitionSpan(
   // caller still receives a valid intent.
   if (!toSpan) return startCameraAsPointIntent(startCamera);
 
+  // Anchor each side of the arc at the wall-clock time the playhead
+  // actually occupies at the span's edge — not the clip's mediaOut/mediaIn.
+  // For follow intents this matters: the source clip is still playing for
+  // `span.cutMs - span.startMs` ms after the transition begins, and the
+  // destination clip has already been playing for `span.endMs - span.cutMs`
+  // ms when the transition ends. Resolving against mediaOut/mediaIn would
+  // arc to/from a marker position the playhead never visits, producing a
+  // visible jolt at span.endMs as the clip-span evaluator catches up.
+  // Mirrors the wall-clock formula in liveIntentForClipSpan (line 1062).
   const fromCamera: ResolvedCamera = fromSpan
     ? resolveCanonical(
         fromSpan.intent,
-        fromSpan.wallClockBaseMs + fromSpan.mediaOutMs,
+        fromSpan.wallClockBaseMs +
+          fromSpan.mediaInMs +
+          (span.startMs - fromSpan.startMs) * fromSpan.speed,
       )
     : startCamera;
   const toCamera: ResolvedCamera = resolveCanonical(
     toSpan.intent,
-    toSpan.wallClockBaseMs + toSpan.mediaInMs,
+    toSpan.wallClockBaseMs +
+      toSpan.mediaInMs +
+      (span.endMs - toSpan.startMs) * toSpan.speed,
   );
 
   // localT is well-defined here because findTransitionSpanAt skipped any
