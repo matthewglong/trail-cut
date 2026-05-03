@@ -93,8 +93,8 @@ export type CameraIntent =
       padding: Padding;
       /** Used in 'fixed' bearing mode. Ignored in 'auto'. */
       fixedBearingDegrees?: number;
-      /** Precomputed once per anchor in `buildMapTrack` and frozen on the
-       *  intent. Used in 'auto' bearing mode. Empty array in 'fixed' mode.
+      /** Precomputed once per clip in `anchorIntentForClip` and frozen on
+       *  the intent. Used in 'auto' bearing mode. Empty array in 'fixed' mode.
        *  Precomputing here keeps `resolveIntent` pure in (intent, viewport)
        *  with zero coupling back to `IndexedRoute` math at render time. */
       bearingKeyframes: BearingKeyframe[];
@@ -102,39 +102,16 @@ export type CameraIntent =
       pitch: number;
     };
 
-// -- Timeline anchors and the MapTrack --------------------------------------
-
-/** A timeline anchor. One per clip. The MapTrack contains *only anchors*. */
-export interface MapAnchor {
-  /** Wall-clock ms when this anchor takes effect (== clip start). */
-  timeMs: number;
-  /** Wall-clock ms when this anchor ends (== clip end). */
-  endTimeMs: number;
-  /** The intent active for the duration of the clip. */
-  intent: CameraIntent;
-}
-
-/** A pure timeline. Built from (clips, route, mapSettings). No DOM. */
-export interface MapTrack {
-  anchors: MapAnchor[];
-  /** Project-level "transition feel" knob. */
-  transitionFeel: TransitionFeel;
-}
-
 export type TransitionFeel = 'natural' | 'snappy' | 'slow';
 
 // -- Compiled timeline (project-time) ---------------------------------------
 //
-// Runtime-only. Produced by `compileTimeline` (task 520) from the ordered
-// clip list, authored entry-transition settings, and media durations. Never
-// persisted: project-time is fully derived. See
+// Runtime-only. Produced by `compileTimeline` from the ordered clip list,
+// authored entry-transition settings, and media durations. Never persisted:
+// project-time is fully derived. See
 // `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Data Model → Compiled Data"
 // for the design contract — compiler purity, span endpoints, and continuity
 // invariants.
-//
-// Coexists with the wall-clock `MapAnchor`/`MapTrack` above during the 500-
-// series migration. Task 570 removes the wall-clock types once the new path
-// is fully wired.
 
 /** A clip's contribution to the compiled timeline. `startMs`/`endMs` live on
  *  the project-time axis; `mediaInMs`/`mediaOutMs` live on the clip-local
@@ -242,19 +219,6 @@ export interface VanWijkArc {
   S: number;
 }
 
-// -- DEFAULT_INTENT constant ------------------------------------------------
-
-/** Fallback intent used by `cameraAt` when a track has no anchors. The
- *  coordinates are an arbitrary marker (San Francisco) that's only ever
- *  seen if a project has no visible, timestamped clips. */
-export const DEFAULT_INTENT: CameraIntent = {
-  kind: 'point',
-  center: { lng: -122.4194, lat: 37.7749 },
-  zoom: 10,
-  bearing: 0,
-  pitch: 0,
-};
-
 // -- Pure geometric helpers -------------------------------------------------
 
 /** World pixel size at zoom 0. We pick 512 to match MapLibre's default
@@ -338,42 +302,6 @@ export function cameraForBounds(
 
 // -- Function signatures ----------------------------------------------------
 
-/** Build a MapTrack from project state. Pure.
- *
- *  For each visible clip with a parseable `created_at` and a non-degenerate
- *  trim range, builds one anchor whose `intent` is chosen by
- *  `anchorIntentForClip`. Anchors are sorted by start time so `cameraAt`'s
- *  linear scan can rely on monotonicity.
- *
- *  Note on `route`: caller is responsible for indexing the GPX route via
- *  `indexRoute` before calling. We do *not* call `indexRoute` here so this
- *  function stays a pure mapping over already-derived inputs. */
-export function buildMapTrack(
-  clips: Clip[],
-  route: IndexedRoute | null,
-  projectMapSettings: MapSettings,
-  transitionFeel: TransitionFeel = 'natural',
-): MapTrack {
-  const anchors: MapAnchor[] = [];
-  for (const clip of clips) {
-    if (clip.visible === false) continue;
-    if (!clip.created_at) continue;
-    const baseMs = parseTimestamp(clip.created_at);
-    if (Number.isNaN(baseMs)) continue;
-    const inMs = clip.trim?.in_ms ?? 0;
-    const outMs = clip.trim?.out_ms ?? clip.duration_ms ?? 0;
-    if (outMs <= inMs) continue;
-
-    const settings = resolveMapSettings(projectMapSettings, clip.map_overrides);
-    const startMs = baseMs + inMs;
-    const endMs = baseMs + outMs;
-    const intent = anchorIntentForClip(clip, settings, route, startMs, endMs);
-    anchors.push({ timeMs: startMs, endTimeMs: endMs, intent });
-  }
-  anchors.sort((a, b) => a.timeMs - b.timeMs);
-  return { anchors, transitionFeel };
-}
-
 /** Pick the right CameraIntent kind for an anchor based on per-clip settings.
  *
  *  For `follow` anchors in `auto` bearing mode, we precompute the
@@ -407,7 +335,8 @@ function anchorIntentForClip(
         : [];
     return {
       kind: 'follow',
-      // Initial value; `cameraAt` overwrites this per-frame via `liveIntent`.
+      // Initial value; the evaluator overwrites this per-frame via
+      // `liveIntentForClipSpan` (project-time → wall-clock translation).
       playheadMs: anchorStartMs,
       route,
       targetZoom: settings.zoom,
@@ -434,71 +363,6 @@ function anchorIntentForClip(
   };
 }
 
-/** Wall-clock evaluator (legacy path). Returns the intent that should be
- *  active at wall-clock time t against a `MapTrack`. Pure: deterministic in
- *  (track, t). No hidden state. No MapLibre.
- *
- *  Renamed from `cameraAt` in task 530 to disambiguate from the new
- *  project-time `cameraAt(timeline, t)` further down. Surviving call sites
- *  (the legacy `MapView` ease loop) hand off to the new evaluator in task
- *  550; this function plus the rest of the wall-clock anchor surface
- *  (`MapAnchor`, `MapTrack`, `buildMapTrack`, `interpolateAnchors`) is
- *  removed in task 570.
- *
- *  Output kinds:
- *    - empty track                    → DEFAULT_INTENT
- *    - before first anchor's start    → `liveIntent(first.intent, t)`
- *    - inside an anchor's range       → `liveIntent(active.intent, t)`
- *    - after last anchor's end        → `liveIntent(last.intent, last.endTimeMs)`
- *      (clamped t — holding past the last clip should display the same
- *      framing the last frame of that clip rendered, not advance the
- *      follow marker into "no-clip" territory)
- *    - in a gap between two anchors   → `interpolateAnchors(a, next, t, feel)`
- *      (always returns a `point` intent) */
-export function cameraAtWallClock(track: MapTrack, t: number): CameraIntent {
-  const { anchors } = track;
-  if (anchors.length === 0) {
-    return DEFAULT_INTENT;
-  }
-  // Before the first anchor: hold the first anchor's framing at t.
-  if (t <= anchors[0].timeMs) {
-    return liveIntent(anchors[0].intent, t);
-  }
-  // After the last anchor: hold the last anchor's framing at its endTimeMs
-  // (i.e. don't drag the follow marker beyond the last clip's end).
-  const last = anchors[anchors.length - 1];
-  if (t >= last.endTimeMs) {
-    return liveIntent(last.intent, last.endTimeMs);
-  }
-
-  // Find the active anchor or the bracketing pair for a gap.
-  for (let i = 0; i < anchors.length; i++) {
-    const a = anchors[i];
-    if (t >= a.timeMs && t <= a.endTimeMs) {
-      // Inside clip i — return the live (per-frame) intent.
-      return liveIntent(a.intent, t);
-    }
-    const next = anchors[i + 1];
-    if (next && t > a.endTimeMs && t < next.timeMs) {
-      // Gap between clips — Van Wijk interpolation.
-      return interpolateAnchors(a, next, t, track.transitionFeel);
-    }
-  }
-  // Unreachable in well-formed (sorted, non-overlapping) tracks; fall back
-  // to holding the last anchor rather than throwing.
-  return liveIntent(last.intent, last.endTimeMs);
-}
-
-/** For `follow` intents, evaluate at the current t (overwrite `playheadMs`).
- *  For `point` and `region`, return as-is — they are time-invariant within
- *  the clip's range. Pure. */
-function liveIntent(intent: CameraIntent, t: number): CameraIntent {
-  if (intent.kind === 'follow') {
-    return { ...intent, playheadMs: t };
-  }
-  return intent;
-}
-
 /** Resolve a CameraIntent to a concrete camera given the renderer's
  *  viewport. Pure in (intent, viewport). The same intent resolved against
  *  two different viewports correctly produces two different framings.
@@ -509,8 +373,8 @@ function liveIntent(intent: CameraIntent, t: number): CameraIntent {
  *  unitless.
  *
  *  `follow` resolution intentionally does NOT walk the IndexedRoute for
- *  bearing — `bearingKeyframes` are precomputed once per anchor by
- *  `buildMapTrack` and frozen on the intent. The empty-array fallback
+ *  bearing — `bearingKeyframes` are precomputed once per clip by
+ *  `anchorIntentForClip` and frozen on the intent. The empty-array fallback
  *  (bearing = 0) handles degenerate inputs (no route, zero-length window,
  *  etc.) without coupling this function back to route math. */
 export function resolveIntent(
@@ -555,13 +419,12 @@ export function resolveIntent(
   }
 }
 
-/** Canonical 1024×1024 viewport used for cross-anchor interpolation.
- *  Anchor-to-anchor interpolation is intrinsically not viewport-aware —
- *  `interpolateAnchors` must produce a single arc that the renderer can
- *  later re-frame for any viewport via `resolveIntent`. We collapse
- *  region/follow anchors to a fixed reference viewport so `vanWijkArc`'s
- *  endpoints (LngLat + zoom) are well-defined regardless of where the
- *  camera ultimately renders. */
+/** Canonical 1024×1024 viewport used for cross-clip transition arcs.
+ *  Transition endpoints are intrinsically not viewport-aware — the
+ *  evaluator must produce a single arc that the renderer can later re-frame
+ *  for any viewport via `resolveIntent`. We collapse region/follow intents
+ *  to a fixed reference viewport so `vanWijkArc`'s endpoints (LngLat + zoom)
+ *  are well-defined regardless of where the camera ultimately renders. */
 const CANONICAL_VIEWPORT: Viewport = { width: 1024, height: 1024, dpr: 1 };
 
 /** Resolve a CameraIntent to a `ResolvedCamera` at the canonical viewport.
@@ -580,9 +443,8 @@ const CANONICAL_VIEWPORT: Viewport = { width: 1024, height: 1024, dpr: 1 };
  *  - `follow`: evaluate at `refWallClockMs` (boundary of the clip's
  *    range, in wall-clock).
  *
- *  Used by both the legacy `interpolateAnchors` path (via the wrapper
- *  `canonicalCamera`) and the new `compileTimeline` (task 520) /
- *  `cameraAt(timeline, t)` (task 530). */
+ *  Used by `compileTimeline` and `evaluateTransitionSpan` to collapse
+ *  endpoint intents into the snapshot cameras a Van Wijk arc connects. */
 function resolveCanonical(
   intent: CameraIntent,
   refWallClockMs: number,
@@ -596,21 +458,6 @@ function resolveCanonical(
   return resolveIntent(intent, CANONICAL_VIEWPORT);
 }
 
-/** Wall-clock-anchor wrapper around `resolveCanonical`. Kept for the
- *  legacy `interpolateAnchors` call site; deleted in task 570 along with
- *  the rest of the wall-clock anchor surface. */
-function canonicalCamera(
-  anchor: MapAnchor,
-  refTimeMs: number,
-): ResolvedCamera {
-  return resolveCanonical(anchor.intent, refTimeMs);
-}
-
-/** Clamp a number into [0, 1]. Internal helper for `interpolateAnchors`. */
-function clamp01(x: number): number {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
-}
-
 /** Standard cubic ease-in-out on [0, 1].
  *  Matches the curve used by most UI animation libraries: gentle start,
  *  fast middle, gentle end. The `_feel` parameter is accepted for API
@@ -620,57 +467,6 @@ function easeInOut(x: number, _feel: TransitionFeel): number {
   return x < 0.5
     ? 4 * x * x * x
     : 1 - Math.pow(-2 * x + 2, 3) / 2;
-}
-
-/** Interpolate from anchor A to anchor B at time t.
- *  Uses Van Wijk & Nuij (2003) "Smooth and Efficient Zooming and Panning"
- *  to produce a smooth zoom-out + pan + zoom-in arc between the two
- *  anchors' canonical resolved cameras.
- *
- *  Returns a `point` intent (the interpolated state at t). The renderer
- *  passes this through `resolveIntent` like any other intent — gap frames
- *  and clip frames go through the same pipeline.
- *
- *  Time mapping: the arc's wall-clock duration is `arcDurationMs(arc, feel)`,
- *  starting at `a.endTimeMs`. `t` outside that window clamps to the
- *  appropriate endpoint (cubic ease-in-out compresses the [0,1] map at
- *  the boundaries — but `clamp01` ensures values strictly outside snap to
- *  exactly camA/camB, not just "very close").
- *
- *  Bearing in gap arcs: lerping between camA.bearing and camB.bearing at
- *  the canonical-time endpoints (a.endTimeMs / b.timeMs) may diverge from
- *  the GPX direction-of-travel mid-gap when the two clips point very
- *  different ways. If the arc rotation looks wrong,
- *  the fix is to consult GPX bearing at intermediate times rather than
- *  lerp endpoints — that's a contained follow-up, not a redesign. */
-export function interpolateAnchors(
-  a: MapAnchor,
-  b: MapAnchor,
-  t: number,
-  feel: TransitionFeel,
-): CameraIntent {
-  const camA = canonicalCamera(a, a.endTimeMs);
-  const camB = canonicalCamera(b, b.timeMs);
-
-  const arc = vanWijkArc(camA, camB);
-
-  const tStart = a.endTimeMs;
-  const tEnd = tStart + arcDurationMs(arc, feel);
-  const localT = clamp01((t - tStart) / Math.max(1, tEnd - tStart));
-  const eased = easeInOut(localT, feel);
-  const s = arc.S * eased;
-
-  const point = vanWijkSample(camA, camB, arc, s);
-  const bearing = circularLerp(camA.bearing, camB.bearing, eased);
-  const pitch = camA.pitch + (camB.pitch - camA.pitch) * eased;
-
-  return {
-    kind: 'point',
-    center: point.center,
-    zoom: point.zoom,
-    bearing,
-    pitch,
-  };
 }
 
 // -- Van Wijk arc primitives ------------------------------------------------
@@ -1011,9 +807,9 @@ export function resolveProjectStartCamera(
   };
 }
 
-/** Apply the same skip rules `buildMapTrack` enforces: invisible clips,
- *  missing/unparseable `created_at`, degenerate trim ranges. Returns the
- *  filtered list in the same order. */
+/** Skip clips the compiler can't place on the project-time axis: invisible
+ *  clips, missing/unparseable `created_at`, degenerate trim ranges. Returns
+ *  the filtered list in the same order. */
 function filterCompilableClips(clips: Clip[]): Clip[] {
   const out: Clip[] = [];
   for (const clip of clips) {
@@ -1051,13 +847,11 @@ function wallClockAtClipSpanEdge(
  *  - `transitionFeel` propagates from `project.transition_feel ??
  *    'natural'`.
  *
- *  Skip rules match `buildMapTrack`: invisible clips, missing or
- *  unparseable `created_at`, and degenerate trim ranges (`out <= in`) are
- *  excluded. An empty clip list produces a valid, empty CompiledTimeline.
+ *  Skip rules: invisible clips, missing or unparseable `created_at`, and
+ *  degenerate trim ranges (`out <= in`) are excluded. An empty clip list
+ *  produces a valid, empty CompiledTimeline.
  *
- *  Note on consumer: the new `cameraAt(timeline, t)` evaluator (task 530)
- *  reads this output. `MapAnchor` / `MapTrack` produced by `buildMapTrack`
- *  are an independent path that survives until task 570. */
+ *  Consumer: `cameraAt(timeline, t)` (and `activeClipIdAt`). */
 export function compileTimeline(
   clips: Clip[],
   route: IndexedRoute | null,
@@ -1311,9 +1105,8 @@ function findTransitionSpanAt(
  *  on the Van Wijk arc between the previous clip's terminal canonical camera
  *  (or `startCamera` for clip 1) and the destination clip's initial canonical
  *  camera. Bearing is short-way circular-lerped; pitch is linearly lerped;
- *  center+zoom come from `vanWijkSample`. The cubic ease-in-out matches the
- *  legacy `interpolateAnchors` behavior — gentle entry, fast middle, gentle
- *  landing. */
+ *  center+zoom come from `vanWijkSample`. Cubic ease-in-out — gentle entry,
+ *  fast middle, gentle landing. */
 function evaluateTransitionSpan(
   timeline: CompiledTimeline,
   span: TransitionSpan,
@@ -1435,8 +1228,8 @@ export function cameraAt(timeline: CompiledTimeline, t: number): CameraIntent {
   if (clipSpan) return liveIntentForClipSpan(clipSpan, t);
 
   // Unreachable for well-formed (gapless) timelines. Fall back to the last
-  // clip's terminal frame rather than throwing — matches the wall-clock
-  // evaluator's "hold the last frame" defensive posture.
+  // clip's terminal frame rather than throwing — "hold the last frame"
+  // defensive posture mirroring the t >= totalDurationMs branch above.
   const last = clipSpans[clipSpans.length - 1];
   return liveIntentForClipSpan(last, last.endMs);
 }
