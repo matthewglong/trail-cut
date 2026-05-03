@@ -11,6 +11,7 @@ export function newClipFromMetadata(meta: ClipMetadata): Clip {
       speed: 1.0,
     },
     visible: true,
+    map_overrides: null,
   };
 }
 

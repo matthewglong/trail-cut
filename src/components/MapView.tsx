@@ -8,22 +8,53 @@ import {
   locationAt,
   trailUpTo,
   clipWaypointLocation,
-  parseTimestamp,
   type IndexedRoute,
+  type ResolvedLocation,
 } from '../lib/routeLocation';
+import {
+  cameraAt,
+  resolveIntent,
+  type CompiledTimeline,
+  type Viewport,
+} from '../lib/cameraIntent';
 
 interface MapViewProps {
-  clips: Clip[];
-  selectedClipId: string | null;
-  route: Route | null;
-  /** Wall-clock playback time in ms (clip start + media time). null when no
-   *  clip is selected or its created_at is missing. */
+  /** The compiled project-time timeline. Single source of truth for camera
+   *  scheduling — the ease loop below evaluates `cameraAt(timeline, t)`
+   *  every tick. See `COMPILED_TIMELINE_PLAN.md` §"Data Model → Compiled
+   *  Data". */
+  timeline: CompiledTimeline;
+  /** Project-time playhead (ms). null when no clip is selected or the
+   *  selected clip is not compilable. The ease loop falls back to the
+   *  selected clip's `canonicalSeekMs` when this is null but a clip is
+   *  selected, so the camera lands on the right initial frame even before
+   *  the video element fires its first time-update. */
   playheadMs: number | null;
   mapSettings: MapSettings;
-  /** Effective bearing the map should face, in degrees [0, 360). Resolved
-   *  upstream in ProjectView from `bearing_mode`/`bearing_degrees` and the
-   *  live GPX heading. */
-  mapBearing: number;
+  /** The user's persistent selection. Drives the playhead-bootstrap fallback
+   *  in `currentProjectMs` (when no playhead has fired yet, the ease loop
+   *  targets this clip's `canonicalSeekMs`). For waypoint highlighting use
+   *  `activeClipId` instead — the two diverge during an auto-advance
+   *  transition. */
+  selectedClipId: string | null;
+  /** The clip whose camera state is current at this moment in project-time
+   *  per `activeClipIdAt`. During a transition this is the destination clip;
+   *  outside a transition it equals `selectedClipId`. Drives waypoint
+   *  highlighting only — the ease loop reads project-time directly. */
+  activeClipId: string | null;
+  route: Route | null;
+  /** Per-clip data (id, gps) for the waypoint layer's circle features and
+   *  the marker's GPS fallback. The compiled timeline carries clip ids and
+   *  spans but not embedded GPS, so we still need the clip list here. */
+  clips: Clip[];
+  /** Project-level default for the live preview camera's per-tick easing
+   *  duration (ms). The ease loop sizes both `easeTo`'s `duration` and its
+   *  lookahead from this value so the camera's arrival point coincides
+   *  with the playhead at easing completion. Falls back to a 50ms baseline
+   *  when undefined. Reserved hook for future distance-driven dynamics:
+   *  `pickEaseDurationMs` will eventually take this as the baseline and
+   *  modulate it by the inter-tick camera distance. */
+  defaultEaseDurationMs?: number;
   onSelectClip?: (clipId: string) => void;
 }
 
@@ -97,101 +128,50 @@ const LIVE_MARKER_PULSE_KEYFRAMES = `
 }
 `;
 
-// ---- Clip-transition camera animation ----
-// When switching between clips, if the destination waypoint is outside the
-// current viewport, arc the camera out to a zoom level that fits both the
-// current and next points, then back in to the target — a single Van Wijk
-// flyTo with minZoom pinning the peak. Duration scales with the sum of the
-// zoom work (out + in) so short hops stay snappy and long jumps get room to
-// breathe. Within-clip tracking uses a separate 220 ms easeTo and is not
-// affected.
-interface MapTransitionConfig {
-  baseMs: number;           // floor duration when zoomSum = 0
-  msPerZoomLevel: number;   // added per zoom level of work (out + in)
-  minDurationMs: number;    // clamp floor
-  maxDurationMs: number;    // clamp ceiling
-  fitPaddingPx: number;     // padding for cameraForBounds when computing peak
-  curve: number;            // flyTo arc aggressiveness
-}
+/** Tick cadence for the live ease loop (ms). How often we re-aim the
+ *  camera. Independent of `easeTo` duration — the duration is chosen per
+ *  tick by `pickEaseDurationMs` and may exceed `POLL_MS`, in which case
+ *  each tick interrupts a half-finished `easeTo` with a fresh target
+ *  (MapLibre handles that by resampling from the current camera state). */
+const POLL_MS = 50;
 
-const DEFAULT_MAP_TRANSITION: MapTransitionConfig = {
-  baseMs: 1100,
-  msPerZoomLevel: 580,
-  minDurationMs: 1100,
-  maxDurationMs: 7000,
-  fitPaddingPx: 80,
-  curve: 1.42,
-};
+/** Fallback for `defaultEaseDurationMs` when the project doesn't specify
+ *  one. Sized to match `POLL_MS` so unconfigured projects behave like
+ *  pre-refactor (single 50ms tick = single 50ms easing). */
+const DEFAULT_EASE_DURATION_MS_FALLBACK = 50;
 
-function runClipTransition(
-  map: maplibregl.Map,
-  start: { lng: number; lat: number },
-  end: { lng: number; lat: number },
-  startZoom: number,
-  targetZoom: number,
-  targetBearing: number,
-  cfg: MapTransitionConfig = DEFAULT_MAP_TRANSITION,
-): void {
-  const endLngLat: [number, number] = [end.lng, end.lat];
-  const clampDuration = (raw: number) =>
-    Math.max(cfg.minDurationMs, Math.min(cfg.maxDurationMs, raw));
-
-  // Fast path: target already inside the current viewport → flat ease, no arc.
-  if (map.getBounds().contains(endLngLat)) {
-    const duration = clampDuration(
-      cfg.baseMs + Math.abs(targetZoom - startZoom) * cfg.msPerZoomLevel,
-    );
-    map.easeTo({
-      center: endLngLat,
-      zoom: targetZoom,
-      bearing: targetBearing,
-      duration,
-      essential: true,
-    });
-    return;
-  }
-
-  // Compute the zoom level that fits both points with padding.
-  const fitBounds = new maplibregl.LngLatBounds()
-    .extend([start.lng, start.lat])
-    .extend(endLngLat);
-  const cam = map.cameraForBounds(fitBounds, { padding: cfg.fitPaddingPx });
-  const boundsZoom =
-    cam && typeof cam.zoom === 'number' ? cam.zoom : Math.min(startZoom, targetZoom);
-
-  // Only zoom out as far as needed — never below what fits both points.
-  const peakZoom = Math.min(startZoom, targetZoom, boundsZoom);
-
-  const zoomOut = Math.max(0, startZoom - peakZoom);
-  const zoomIn = Math.max(0, targetZoom - peakZoom);
-  const zoomSum = zoomOut + zoomIn;
-
-  const duration = clampDuration(cfg.baseMs + zoomSum * cfg.msPerZoomLevel);
-
-  map.flyTo({
-    center: endLngLat,
-    zoom: targetZoom,
-    bearing: targetBearing,
-    minZoom: peakZoom, // pins the peak of the Van Wijk arc
-    duration,
-    curve: cfg.curve,
-    essential: true,
-  });
+/** Pick the per-tick `easeTo` duration. Today returns the project-level
+ *  baseline unmodified; reserved hook for future distance-driven dynamics
+ *  (e.g. clamp(centerDistanceMeters * k, min, max) or a velocity-aware
+ *  schedule). When that lands, expand the signature to take the current
+ *  and target `ResolvedCamera`s and the ease loop will compute them per
+ *  tick from the live map state. The contract callers rely on: the
+ *  returned value is used for both `easeTo`'s `duration` AND the loop's
+ *  lookahead horizon, so they cannot drift apart. */
+function pickEaseDurationMs(baselineMs: number): number {
+  return baselineMs;
 }
 
 export default function MapView({
+  timeline,
   clips,
   selectedClipId,
+  activeClipId,
   route,
   playheadMs,
   mapSettings,
-  mapBearing,
+  defaultEaseDurationMs,
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
   onSelectClipRef.current = onSelectClip;
-  const mapBearingRef = useRef(mapBearing);
-  mapBearingRef.current = mapBearing;
+  // Read the ease baseline off a ref so the ease loop doesn't restart on
+  // project-default changes (e.g. user tweaks the value mid-session).
+  const easeBaselineMsRef = useRef(
+    defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK,
+  );
+  easeBaselineMsRef.current =
+    defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK;
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
@@ -202,14 +182,79 @@ export default function MapView({
 
   const liveMarkerRef = useRef<maplibregl.Marker | null>(null);
   const liveMarkerElRef = useRef<HTMLDivElement | null>(null);
-  const lastFitRouteRef = useRef<Route | null>(null);
-  const lastFollowAtRef = useRef<number>(0);
-  const lastFollowedClipRef = useRef<string | null>(null);
-  const prevZoomRef = useRef<number>(mapSettings.zoom);
-  const prevBearingRef = useRef<number>(mapBearing);
+  // Tracks the last route reference we framed via the region-intent jumpTo
+  // below. Idempotence guard: we only refit once per unique route.
+  const appliedRouteRef = useRef<Route | null>(null);
 
   const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
-  const routeLoaded = indexedRoute !== null;
+
+  // Effective project-time the ease loop should target. When the video is
+  // playing this mirrors the playhead. When no playhead has fired yet (e.g.
+  // right after project load or a clip selection), fall back to the selected
+  // clip span's `canonicalSeekMs` so the first ease-loop tick targets the
+  // user's intent rather than the previous clip's last frame.
+  const currentProjectMs = useMemo<number | null>(() => {
+    if (playheadMs != null) return playheadMs;
+    if (!selectedClipId) return null;
+    const span = timeline.clipSpans.find((s) => s.clipId === selectedClipId);
+    return span ? span.canonicalSeekMs : null;
+  }, [playheadMs, timeline, selectedClipId]);
+  const currentProjectMsRef = useRef(currentProjectMs);
+  currentProjectMsRef.current = currentProjectMs;
+
+  // Project-time → wall-clock for the live marker and slime trail. The pre-
+  // cut half of a transition span lives inside the source clip's project-
+  // time, so a clip-span lookup catches it and the marker tracks the source
+  // clip's live position right up to the cut. The project-start → clip-1
+  // transition's window also falls inside clip 1's span (cutMs = 0 = clip
+  // 1's startMs), so the marker tracks clip 1 from the very first frame.
+  const markerTrace = useMemo<{ wallMs: number; clipId: string } | null>(() => {
+    if (currentProjectMs == null) return null;
+    if (currentProjectMs < 0) return null;
+    if (timeline.clipSpans.length === 0) return null;
+    if (currentProjectMs >= timeline.totalDurationMs) {
+      const last = timeline.clipSpans[timeline.clipSpans.length - 1];
+      return {
+        wallMs: last.wallClockBaseMs + last.mediaOutMs,
+        clipId: last.clipId,
+      };
+    }
+    // Active clip span — translate project-time to clip-local to wall-clock.
+    // This branch wins over a transition's pre-cut half: the source clip's
+    // span covers `[startMs, endMs)` and the pre-cut window ends at the cut
+    // (== prevSpan.endMs), so the source clip's live position is shown right
+    // up to the cut.
+    for (let i = 0; i < timeline.clipSpans.length; i++) {
+      const span = timeline.clipSpans[i];
+      const isLast = i === timeline.clipSpans.length - 1;
+      const inside =
+        currentProjectMs >= span.startMs &&
+        (isLast ? currentProjectMs <= span.endMs : currentProjectMs < span.endMs);
+      if (inside) {
+        const clipLocalMs =
+          (currentProjectMs - span.startMs) * span.speed + span.mediaInMs;
+        return {
+          wallMs: span.wallClockBaseMs + clipLocalMs,
+          clipId: span.clipId,
+        };
+      }
+    }
+    // Post-cut half of a transition: source clip's media has ended but the
+    // camera arc is still landing. Hold the source clip's terminal position.
+    for (const ts of timeline.transitionSpans) {
+      if (ts.effectiveDurationMs <= 0) continue;
+      if (ts.fromClipId == null) continue;
+      if (currentProjectMs >= ts.cutMs && currentProjectMs <= ts.endMs) {
+        const prev = timeline.clipSpans.find((s) => s.clipId === ts.fromClipId);
+        if (!prev) return null;
+        return {
+          wallMs: prev.wallClockBaseMs + prev.mediaOutMs,
+          clipId: prev.clipId,
+        };
+      }
+    }
+    return null;
+  }, [currentProjectMs, timeline]);
 
   // ---- Initialize map ----
   useEffect(() => {
@@ -220,7 +265,7 @@ export default function MapView({
       style: styleForId(mapStyleIdRef.current),
       center: [-122.4194, 37.7749],
       zoom: 10,
-      bearing: mapBearingRef.current,
+      bearing: 0,
       attributionControl: false,
     });
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -349,7 +394,13 @@ export default function MapView({
     map.easeTo({ pitch: mapStyleId === '3d' ? 60 : 0, duration: 400 });
   }, [mapStyleId]);
 
-  // ---- Update full-route line + fit bounds when route changes ----
+  // ---- Update full-route line + region-intent fit when route changes ----
+  // On a new route, frame the full bounds via a `region` CameraIntent
+  // resolved through the same pipeline the ease loop uses. jumpTo (not
+  // easeTo) is intentional: the initial fit has no continuity to preserve,
+  // and the ease loop picks up smoothly from this state on the next tick
+  // once anchors exist. Padding 0.06 matches the follow-anchor default — at
+  // a typical map pane this is comparable to today's 60 px inset.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -369,11 +420,46 @@ export default function MapView({
         geometry: { type: 'LineString', coordinates },
       });
 
-      if (lastFitRouteRef.current !== route) {
-        lastFitRouteRef.current = route;
-        const bounds = new maplibregl.LngLatBounds();
-        coordinates.forEach((c) => bounds.extend(c));
-        map.fitBounds(bounds, { padding: 60, duration: 0 });
+      if (appliedRouteRef.current !== route) {
+        appliedRouteRef.current = route;
+        let minLng = Infinity;
+        let minLat = Infinity;
+        let maxLng = -Infinity;
+        let maxLat = -Infinity;
+        for (const tp of route.trackpoints) {
+          if (tp.lng < minLng) minLng = tp.lng;
+          if (tp.lng > maxLng) maxLng = tp.lng;
+          if (tp.lat < minLat) minLat = tp.lat;
+          if (tp.lat > maxLat) maxLat = tp.lat;
+        }
+        // Skip degenerate routes (single point or zero extent on either axis)
+        // — `cameraForBounds` would return -Infinity zoom on a zero span.
+        if (Number.isFinite(minLng) && maxLng > minLng && maxLat > minLat) {
+          const viewport: Viewport = {
+            width: map.getContainer().clientWidth,
+            height: map.getContainer().clientHeight,
+            dpr: window.devicePixelRatio,
+          };
+          const target = resolveIntent(
+            {
+              kind: 'region',
+              bounds: {
+                sw: { lng: minLng, lat: minLat },
+                ne: { lng: maxLng, lat: maxLat },
+              },
+              padding: 0.06,
+              bearing: 0,
+              pitch: 0,
+            },
+            viewport,
+          );
+          map.jumpTo({
+            center: [target.center.lng, target.center.lat],
+            zoom: target.zoom,
+            bearing: target.bearing,
+            pitch: target.pitch,
+          });
+        }
       }
     };
 
@@ -403,6 +489,9 @@ export default function MapView({
   }, [mapSettings.route_mode, styleVersion]);
 
   // Compute the set of visible waypoints. Memoized so effect deps are stable.
+  // 'visited' mode: a clip counts as visited once the project-time playhead
+  // has crossed into its compiled span. Pre-540 this used wall-clock; the
+  // semantics are the same (a clip becomes visible at its scheduled start).
   const positionedWaypoints = useMemo(() => {
     if (mapSettings.waypoints_mode === 'none') return [];
     return clips
@@ -410,14 +499,14 @@ export default function MapView({
         const loc = clipWaypointLocation(clip, indexedRoute);
         if (!loc) return null;
         if (mapSettings.waypoints_mode === 'visited') {
-          if (playheadMs == null) return null;
-          const startMs = parseTimestamp(clip.created_at);
-          if (Number.isNaN(startMs) || startMs > playheadMs) return null;
+          if (currentProjectMs == null) return null;
+          const span = timeline.clipSpans.find((s) => s.clipId === clip.id);
+          if (!span || span.startMs > currentProjectMs) return null;
         }
         return { clip, originalIndex, loc };
       })
-      .filter((x): x is { clip: Clip; originalIndex: number; loc: { lat: number; lng: number } } => x !== null);
-  }, [clips, indexedRoute, mapSettings.waypoints_mode, playheadMs]);
+      .filter((x): x is { clip: Clip; originalIndex: number; loc: ResolvedLocation } => x !== null);
+  }, [clips, indexedRoute, mapSettings.waypoints_mode, currentProjectMs, timeline]);
 
   // ---- Waypoint source data (one feature per visible clip) ----
   useEffect(() => {
@@ -439,91 +528,104 @@ export default function MapView({
   }, [positionedWaypoints, styleVersion]);
 
   // ---- Waypoint selection styling (data-driven, no re-render) ----
+  // Highlights the project-time-derived `activeClipId`, not the persistent
+  // `selectedClipId`. During an auto-advance transition the two diverge —
+  // the highlight follows the destination so the user's eye tracks where
+  // the camera is heading instead of where it left.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       if (!map.getLayer('waypoints-circle')) return;
-      const selected: unknown = selectedClipId ?? '';
+      const active: unknown = activeClipId ?? '';
       map.setPaintProperty('waypoints-circle', 'circle-radius', [
-        'case', ['==', ['get', 'id'], selected], 14, 11,
+        'case', ['==', ['get', 'id'], active], 14, 11,
       ]);
       map.setPaintProperty('waypoints-circle', 'circle-color', [
-        'case', ['==', ['get', 'id'], selected], '#4a9eff', colors.accent,
+        'case', ['==', ['get', 'id'], active], '#4a9eff', colors.accent,
       ]);
       map.setPaintProperty('waypoints-circle', 'circle-stroke-color', [
-        'case', ['==', ['get', 'id'], selected], '#ffffff', 'rgba(255,255,255,0.85)',
+        'case', ['==', ['get', 'id'], active], '#ffffff', 'rgba(255,255,255,0.85)',
       ]);
     };
     if (styleReadyRef.current) apply();
-  }, [selectedClipId, styleVersion]);
+  }, [activeClipId, styleVersion]);
 
-  // ---- Live zoom updates from the toolbar ----
-  // When the user changes the zoom stepper, snap to the new zoom immediately
-  // without waiting for a clip transition. Uses setZoom (instant) rather than
-  // easeTo because in clip scope the stepper triggers a setClips update, which
-  // re-fires the playhead marker effect below — its center-only easeTo would
-  // otherwise cancel an in-flight zoom animation and leave the zoom stuck.
-  // Skips the mount render so the initial DEFAULT_MAP_SETTINGS value doesn't
-  // fight the route fitBounds.
+  // ---- Live preview ease loop ----
+  // Every STEP_MS we compute target = cameraAt(timeline, t + lookahead) and
+  // fire map.easeTo at the same duration. MapLibre keeps chasing a moving
+  // target — clip-to-clip handoff (now via the compiled transition spans),
+  // bearing rotation, and within-clip tracking all collapse into this one
+  // loop. The pure cameraAt + resolveIntent pipeline is the single source
+  // of truth for camera state.
+  //
+  // Playhead is read off a ref (not via the dep array) so per-frame
+  // playhead updates don't restart the loop. Restart only on timeline
+  // change (clips/route/settings) — the loop body still picks up the new
+  // playhead on the very next tick.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (prevZoomRef.current === mapSettings.zoom) return;
-    prevZoomRef.current = mapSettings.zoom;
-    map.setZoom(mapSettings.zoom);
-  }, [mapSettings.zoom]);
 
-  // ---- Live bearing updates ----
-  // Drives map rotation from the toolbar (fixed-mode stepper edits) and from
-  // auto-mode GPX tracking. Uses a short easeTo so stepper clicks look smooth
-  // and auto-mode rotations blend naturally with the 220 ms playhead-tracking
-  // ease in the effect below. The prevBearingRef gate prevents redundant
-  // updates when the resolved bearing hasn't actually changed.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    if (prevBearingRef.current === mapBearing) return;
-    prevBearingRef.current = mapBearing;
-    map.easeTo({ bearing: mapBearing, duration: 300, essential: true });
-  }, [mapBearing]);
+    let timeoutId = 0;
+    let stopped = false;
 
-  // ---- Fly to selected clip's waypoint on manual selection change ----
-  // Only runs when follow is OFF — when following, the playhead effect below
-  // handles camera movement (including a longer ease on clip transitions).
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !selectedClipId) return;
-    if (mapSettings.follow_playhead) return;
-    const clip = clips.find((c) => c.id === selectedClipId);
-    if (!clip) return;
-    const loc = clipWaypointLocation(clip, indexedRoute);
-    if (!loc) return;
-    const startCenter = map.getCenter();
-    runClipTransition(
-      map,
-      { lng: startCenter.lng, lat: startCenter.lat },
-      { lng: loc.lng, lat: loc.lat },
-      map.getZoom(),
-      mapSettings.zoom,
-      mapBearingRef.current,
-    );
-    prevBearingRef.current = mapBearingRef.current;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClipId]);
+    const tick = () => {
+      if (stopped) return;
+      // Empty timeline → don't push the camera. The route region-fit jumpTo
+      // and the constructor's initial framing remain authoritative until
+      // compilable clips exist.
+      if (timeline.clipSpans.length === 0) {
+        timeoutId = window.setTimeout(tick, POLL_MS);
+        return;
+      }
+      const t = currentProjectMsRef.current ?? 0;
+      // Per-tick easing duration — the contract: lookahead == duration, so
+      // the camera's arrival point lines up with the playhead at easing
+      // completion. `pickEaseDurationMs` is the future-flexibility hook;
+      // today it returns the project-level baseline unmodified.
+      const duration = pickEaseDurationMs(easeBaselineMsRef.current);
+      const intent = cameraAt(timeline, t + duration);
+      const viewport: Viewport = {
+        width: map.getContainer().clientWidth,
+        height: map.getContainer().clientHeight,
+        dpr: window.devicePixelRatio,
+      };
+      const target = resolveIntent(intent, viewport);
+      map.easeTo({
+        center: [target.center.lng, target.center.lat],
+        zoom: target.zoom,
+        bearing: target.bearing,
+        pitch: target.pitch,
+        duration,
+        essential: true,
+      });
+      timeoutId = window.setTimeout(tick, POLL_MS);
+    };
+
+    tick();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [timeline]);
 
   // ---- Live playhead marker ----
+  // Marker DOM management only. The position comes from the same
+  // routeLocation pipeline the export will use; project-time is translated
+  // to wall-clock per the active clip span (see `markerTrace` above), then
+  // `locationAt` resolves the GPX position. During a transition the marker
+  // holds the previous clip's last position — see the `markerTrace` doc.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    // Resolve current location
-    const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
-    const fallback = selectedClip?.gps ?? null;
+    const fallbackClip =
+      markerTrace ? clips.find((c) => c.id === markerTrace.clipId) ?? null : null;
+    const fallback = fallbackClip?.gps ?? null;
     const resolved =
-      playheadMs != null ? locationAt(playheadMs, indexedRoute, fallback) : null;
+      markerTrace ? locationAt(markerTrace.wallMs, indexedRoute, fallback) : null;
 
-    // Hide marker if nothing to show
     if (!resolved) {
       if (liveMarkerRef.current) {
         liveMarkerRef.current.remove();
@@ -533,7 +635,6 @@ export default function MapView({
       return;
     }
 
-    // Lazy-create marker element
     if (!liveMarkerRef.current) {
       const el = document.createElement('div');
       el.style.width = '18px';
@@ -551,61 +652,30 @@ export default function MapView({
     } else {
       liveMarkerRef.current.setLngLat([resolved.lng, resolved.lat]);
     }
-
-    // Follow playhead. On clip boundary crossings (selection change) do a
-    // longer ease so it reads as a deliberate transition between clips;
-    // within a single clip, throttle to ~10Hz for smooth tracking.
-    if (mapSettings.follow_playhead) {
-      const selectionChanged = lastFollowedClipRef.current !== selectedClipId;
-      lastFollowedClipRef.current = selectedClipId;
-      if (selectionChanged) {
-        // Target the clip's waypoint location (GPX-snapped) rather than the
-        // current playhead, which may not have caught up to the seek yet.
-        const wp = selectedClip ? clipWaypointLocation(selectedClip, indexedRoute) : null;
-        const target = wp ?? resolved;
-        lastFollowAtRef.current = performance.now();
-        const startCenter = map.getCenter();
-        runClipTransition(
-          map,
-          { lng: startCenter.lng, lat: startCenter.lat },
-          { lng: target.lng, lat: target.lat },
-          map.getZoom(),
-          mapSettings.zoom,
-          mapBearingRef.current,
-        );
-        prevBearingRef.current = mapBearingRef.current;
-      } else {
-        const now = performance.now();
-        if (now - lastFollowAtRef.current > 100) {
-          lastFollowAtRef.current = now;
-          map.easeTo({
-            center: [resolved.lng, resolved.lat],
-            bearing: mapBearingRef.current,
-            duration: 220,
-          });
-          prevBearingRef.current = mapBearingRef.current;
-        }
-      }
-    } else {
-      lastFollowedClipRef.current = selectedClipId;
-    }
-  }, [playheadMs, indexedRoute, clips, selectedClipId, mapSettings.follow_playhead]);
+  }, [markerTrace, indexedRoute, clips]);
 
   // ---- Slime trail data updates ----
+  // Geometric clipping: rebuild the polyline up to the head's wall-clock
+  // position and upload it via setData. Pays a per-frame upload cost but
+  // gives a pixel-precise cutoff at the marker — line-gradient on a static
+  // polyline can't, because MapLibre rasterizes the gradient to a 256-texel
+  // 1D texture and bilinear-samples it (the transition smears across one
+  // texel = 1/256 of total polyline length, which is tens of pixels of
+  // ghost past the marker on long routes).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       const src = map.getSource('route-trail') as maplibregl.GeoJSONSource | undefined;
       if (!src) return;
-      if (!indexedRoute || mapSettings.route_mode !== 'visited' || playheadMs == null) {
+      if (!indexedRoute || mapSettings.route_mode !== 'visited' || !markerTrace) {
         src.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
         return;
       }
-      src.setData(trailUpTo(playheadMs, indexedRoute));
+      src.setData(trailUpTo(markerTrace.wallMs, indexedRoute));
     };
     if (styleReadyRef.current) apply();
-  }, [playheadMs, indexedRoute, mapSettings.route_mode, styleVersion]);
+  }, [markerTrace, indexedRoute, mapSettings.route_mode, styleVersion]);
 
   return (
     <>

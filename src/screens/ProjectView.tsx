@@ -7,12 +7,9 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
-import {
-  bearingAt,
-  clipWallClockMs,
-  indexRoute,
-} from '../lib/routeLocation';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides } from '../types';
+import { indexRoute } from '../lib/routeLocation';
+import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, TransitionFeel } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -38,6 +35,11 @@ interface ProjectViewProps {
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
   mapSettings: MapSettings;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
+  transitionFeel: TransitionFeel | undefined;
+  /** Project-level default for the live preview camera's per-tick easing
+   *  duration (ms). Forwarded to `MapView`'s ease loop; undefined falls
+   *  back to MapView's internal baseline. */
+  defaultEaseDurationMs: number | undefined;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -70,6 +72,8 @@ export default function ProjectView({
   setRoute,
   mapSettings,
   setMapSettings,
+  transitionFeel,
+  defaultEaseDurationMs,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -159,27 +163,51 @@ export default function ProjectView({
     return Object.values(selectedClip.map_overrides).some((v) => v !== undefined);
   }, [selectedClip]);
 
-  // ---- Direction of travel ----
-  // `currentBearing` is derived from GPX geometry at the current playhead.
-  // This is *movement* direction — not camera facing (that would need iPhone
-  // CoreMotion data). It drives the map's effective bearing in auto mode and
-  // the live readout in the bearing toolbar control.
+  // Indexed route — consumed by `compileTimeline` for per-clip bearing
+  // keyframes and follow-intent construction.
   const indexedRoute = useMemo(() => indexRoute(route), [route]);
-  const currentBearing: number | null = useMemo(() => {
-    if (playheadMs == null) return null;
-    return bearingAt(playheadMs, indexedRoute);
-  }, [playheadMs, indexedRoute]);
 
-  // Effective bearing actually handed to MapView. In auto mode, prefer the
-  // live GPX heading; when it's unavailable (GPX gap, out of range) fall back
-  // to the stored fixed value so the map holds steady instead of snapping to
-  // north mid-playback.
-  const effectiveBearing: number = useMemo(() => {
-    if (toolbarSettings.bearing_mode === 'auto' && currentBearing != null) {
-      return currentBearing;
-    }
-    return toolbarSettings.bearing_degrees;
-  }, [toolbarSettings.bearing_mode, toolbarSettings.bearing_degrees, currentBearing]);
+  // The project-level transition-feel knob. Read from the persisted project
+  // field with a 'natural' default for v1 projects that pre-date it.
+  const projectTransitionFeel: TransitionFeel = transitionFeel ?? 'natural';
+
+  // The compiled project-time timeline. Single source of truth for camera
+  // scheduling; consumed by MapView's ease loop and (eventually) by the
+  // export frame loop. Pure: same inputs → identical timeline. See
+  // `docs/migration/COMPILED_TIMELINE_PLAN.md` §"Data Model → Compiled Data".
+  const timeline = useMemo(
+    () =>
+      compileTimeline(clips, indexedRoute, mapSettings, {
+        transition_feel: projectTransitionFeel,
+      }),
+    [clips, indexedRoute, mapSettings, projectTransitionFeel],
+  );
+
+  // The active clip's compiled span. `null` when the selected clip isn't
+  // compilable (invisible, missing/unparseable created_at, degenerate
+  // trim) — in that case `playheadMs` stays null and the map holds the
+  // last good frame via the ease loop's fallback.
+  const selectedClipSpan = useMemo(
+    () => timeline.clipSpans.find((s) => s.clipId === selectedClipId) ?? null,
+    [timeline, selectedClipId],
+  );
+
+  // The clip "active" for UI highlighting and edit-toolbar controls, derived
+  // from the project-time playhead per `COMPILED_TIMELINE_PLAN.md`
+  // §"Implementation Plan → 7". During an auto-advance transition this
+  // returns the destination clip; outside transitions it equals
+  // `selectedClipId`. Falls back to `selectedClipId` when no playhead has
+  // been emitted yet (project just loaded, no clip ever played) so the
+  // active-clip UI matches the user's intent on cold start.
+  const activeClipId = useMemo<string | null>(() => {
+    if (playheadMs == null) return selectedClipId;
+    return activeClipIdAt(timeline, playheadMs) ?? selectedClipId;
+  }, [timeline, playheadMs, selectedClipId]);
+
+  const activeClip = useMemo<Clip | null>(
+    () => clips.find((c) => c.id === activeClipId) ?? null,
+    [clips, activeClipId],
+  );
 
   // Clear the selected clip's map overrides, letting it follow project defaults.
   const handleResetClipMapOverrides = useCallback(() => {
@@ -189,43 +217,61 @@ export default function ProjectView({
     ));
   }, [selectedClipId, setClips]);
 
+  // Auto-advance on clip end. Snap to the next clip and autoplay; the
+  // camera keeps animating naturally because `cameraAt` resolves the
+  // transition span on both sides of the cut. The pre-cut half is
+  // covered while the source video plays its last `effectivePreCut` ms
+  // of media; the post-cut half is covered while the destination video
+  // plays its first `effectivePostCut` ms — one continuous arc, no
+  // freeze in between.
   const handleClipEnded = useCallback(() => {
-    const idx = clips.findIndex((c) => c.id === selectedClipId);
-    if (idx < 0) return;
-    for (let i = idx + 1; i < clips.length; i++) {
-      if (clips[i].visible !== false) {
-        setSelectedClipId(clips[i].id);
-        setAutoPlayToken((t) => t + 1);
-        return;
-      }
+    const currentSpanIdx = timeline.clipSpans.findIndex(
+      (s) => s.clipId === selectedClipId,
+    );
+    if (currentSpanIdx < 0) {
+      // Selected clip isn't compilable (invisible/unparseable) — nothing
+      // sensible to advance to. Fall through to the rewind sentinel so the
+      // next play press jumps back to the first visible clip.
+      needsRewindRef.current = true;
+      return;
     }
-    // End of timeline — stop on last clip, but remember to rewind on next play.
-    needsRewindRef.current = true;
-  }, [clips, selectedClipId, setSelectedClipId]);
+    const nextSpan = timeline.clipSpans[currentSpanIdx + 1];
+    if (!nextSpan) {
+      needsRewindRef.current = true;
+      return;
+    }
+    setSelectedClipId(nextSpan.clipId);
+    setAutoPlayToken((t) => t + 1);
+  }, [timeline, selectedClipId, setSelectedClipId]);
 
   // Intercept play-press: if we're parked at the end of the timeline, jump
-  // back to the first visible clip and auto-play it instead.
+  // back to the first visible clip and auto-play it instead. Also seeks
+  // project-time so the map lands on clip 1's canonical position before
+  // playback resumes.
   const handlePlayIntent = useCallback(() => {
     if (!needsRewindRef.current) return false;
     const first = clips.find((c) => c.visible !== false);
     if (!first) return false;
     needsRewindRef.current = false;
     setSelectedClipId(first.id);
+    const span = timeline.clipSpans.find((s) => s.clipId === first.id);
+    if (span) setPlayheadMs(span.canonicalSeekMs);
     setAutoPlayToken((t) => t + 1);
     return true;
-  }, [clips, setSelectedClipId]);
+  }, [clips, setSelectedClipId, setPlayheadMs, timeline]);
 
-  // Wrap clip selection: if a clip is currently playing, the newly-selected
-  // clip should auto-play too. Also clears any end-of-timeline rewind flag.
+  // Wrap clip selection: seek project-time to the clip's `canonicalSeekMs`
+  // (per plan §"Preview Semantics" — selection should show what export would
+  // show at that t) and, if a clip was playing, autoplay the new one. Also
+  // clears the end-of-timeline rewind flag.
   const handleSelectClip = useCallback((id: string) => {
     needsRewindRef.current = false;
-    if (id === selectedClipId) {
-      setSelectedClipId(id);
-      return;
-    }
+    const wasSame = id === selectedClipId;
     setSelectedClipId(id);
-    if (isPlayingRef.current) setAutoPlayToken((t) => t + 1);
-  }, [selectedClipId, setSelectedClipId]);
+    const span = timeline.clipSpans.find((s) => s.clipId === id);
+    if (span) setPlayheadMs(span.canonicalSeekMs);
+    if (!wasSame && isPlayingRef.current) setAutoPlayToken((t) => t + 1);
+  }, [selectedClipId, setSelectedClipId, setPlayheadMs, timeline]);
 
   const handlePlayingChange = useCallback((p: boolean) => {
     isPlayingRef.current = p;
@@ -419,7 +465,7 @@ export default function ProjectView({
           {/* Video pane */}
           <div style={{ ...styles.videoPane, width: `calc(${vSplit * 100}% - 3px)` }}>
             <EditToolbar
-              clip={selectedClip}
+              clip={activeClip}
               onUpdateFocalPoint={onUpdateFocalPoint}
               onUpdateEffects={onUpdateEffects}
               previewAspect={previewAspect}
@@ -445,7 +491,36 @@ export default function ProjectView({
                 onPlayIntent={handlePlayIntent}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
-                  setPlayheadMs(clipWallClockMs(selectedClip, s));
+                  if (!selectedClipSpan) {
+                    setPlayheadMs(null);
+                    return;
+                  }
+                  // Translate clip-local media time (seconds, from source
+                  // start) into project-time. `effects.speed` cancels: the
+                  // clip span was elongated by 1/speed, the clip-local axis
+                  // compresses at the same rate. Per
+                  // `COMPILED_TIMELINE_PLAN.md` §"Time-Axis Translation".
+                  //
+                  // Clamp the input to the clip's authored media range. The
+                  // video element briefly sits at currentTime = 0 after a
+                  // proxy swap (before play seeks to trim.in_ms) and may
+                  // emit one stale value from the previous clip during the
+                  // commit-then-effect handoff; without clamping either
+                  // case lands `playheadMs` outside the active clip span
+                  // and the map chases a t that doesn't belong to this
+                  // clip.
+                  const raw = s * 1000;
+                  const clipLocalMs =
+                    raw < selectedClipSpan.mediaInMs
+                      ? selectedClipSpan.mediaInMs
+                      : raw > selectedClipSpan.mediaOutMs
+                        ? selectedClipSpan.mediaOutMs
+                        : raw;
+                  const projectMs =
+                    selectedClipSpan.startMs +
+                    (clipLocalMs - selectedClipSpan.mediaInMs) /
+                      selectedClipSpan.speed;
+                  setPlayheadMs(projectMs);
                 }}
               />
             </div>
@@ -466,16 +541,17 @@ export default function ProjectView({
               scope={mapScope}
               onScopeChange={setMapScope}
               overriddenKeys={overriddenKeys}
-              currentBearing={currentBearing}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
+                timeline={timeline}
                 clips={clips}
                 selectedClipId={selectedClipId}
+                activeClipId={activeClipId}
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
-                mapBearing={effectiveBearing}
+                defaultEaseDurationMs={defaultEaseDurationMs}
                 onSelectClip={handleSelectClip}
               />
               <div
@@ -512,7 +588,7 @@ export default function ProjectView({
         <div style={{ ...styles.clipsArea, height: clipsHeight }}>
           <Timeline
             clips={clips}
-            selectedClipId={selectedClipId}
+            activeClipId={activeClipId}
             onSelectClip={handleSelectClip}
             thumbnails={thumbnails}
             proxies={proxies}

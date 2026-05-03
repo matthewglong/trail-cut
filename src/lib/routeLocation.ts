@@ -45,12 +45,46 @@ export interface IndexedRoute {
   points: IndexedPoint[];
   minTimeMs: number;
   maxTimeMs: number;
+  /** Cumulative geodesic arc length (haversine) in metres at each indexed
+   *  point (parallel array). cumulativeDistMeters[0] is always 0. Real-world
+   *  distance — exposed for any consumer that needs "how far has the hiker
+   *  walked." Not used by `progressUpTo` (see cumulativeMercatorMeters). */
+  cumulativeDistMeters: number[];
+  totalDistMeters: number;
+  /** Cumulative Web Mercator (EPSG:3857, metres) length at each indexed
+   *  point. Used by `progressUpTo` to produce a fraction that MapLibre's
+   *  `line-progress` evaluator agrees with — `line-progress` is computed
+   *  in projected (tile) space, not geodesic, so a geodesic fraction at
+   *  high latitudes can disagree with the painted gradient stop by tens of
+   *  pixels at high zoom (validated empirically: ~36px offset at zoom 20,
+   *  lat 37.7°). Same length as `cumulativeDistMeters`; first entry 0. */
+  cumulativeMercatorMeters: number[];
+  totalMercatorMeters: number;
 }
 
 export interface ResolvedLocation {
   lat: number;
   lng: number;
   source: 'gpx' | 'fallback';
+}
+
+const EARTH_RADIUS_METERS = 6_371_000;
+
+/** Great-circle distance in metres between two lat/lng points. */
+function haversineMeters(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number,
+): number {
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δφ = toRad(lat2 - lat1);
+  const Δλ = toRad(lng2 - lng1);
+  const a =
+    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
 /** Parse a route's trackpoints into a sorted, time-indexed structure. Drops
@@ -71,10 +105,38 @@ export function indexRoute(route: Route | null): IndexedRoute | null {
   // GPX trkseg points are typically already in order, but don't trust it.
   points.sort((a, b) => a.timeMs - b.timeMs);
 
+  const cumulativeDistMeters: number[] = new Array(points.length);
+  const cumulativeMercatorMeters: number[] = new Array(points.length);
+  cumulativeDistMeters[0] = 0;
+  cumulativeMercatorMeters[0] = 0;
+  // Web Mercator (EPSG:3857), in metres. R is the equatorial radius used by
+  // the Web Mercator standard. We accumulate Euclidean length in (mercX,
+  // mercY) space, which is what MapLibre's `line-progress` parameterizes
+  // against.
+  const R_MERCATOR = 6378137;
+  const mercX = (lng: number) => (R_MERCATOR * lng * Math.PI) / 180;
+  const mercY = (lat: number) =>
+    R_MERCATOR * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+  for (let i = 1; i < points.length; i++) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    cumulativeDistMeters[i] =
+      cumulativeDistMeters[i - 1] + haversineMeters(prev.lat, prev.lng, cur.lat, cur.lng);
+    const dx = mercX(cur.lng) - mercX(prev.lng);
+    const dy = mercY(cur.lat) - mercY(prev.lat);
+    cumulativeMercatorMeters[i] =
+      cumulativeMercatorMeters[i - 1] + Math.hypot(dx, dy);
+  }
+
   return {
     points,
     minTimeMs: points[0].timeMs,
     maxTimeMs: points[points.length - 1].timeMs,
+    cumulativeDistMeters,
+    totalDistMeters: cumulativeDistMeters[cumulativeDistMeters.length - 1],
+    cumulativeMercatorMeters,
+    totalMercatorMeters:
+      cumulativeMercatorMeters[cumulativeMercatorMeters.length - 1],
   };
 }
 
@@ -183,6 +245,57 @@ export function trailUpTo(
   return { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } };
 }
 
+/** Map a wall-clock time onto a [0, 1] line-progress fraction along the
+ *  indexed route, parameterized in Web Mercator (projected) length so the
+ *  result agrees with MapLibre's `line-progress` evaluator at the same
+ *  fraction. Geodesic fractions can disagree with `line-progress` by tens
+ *  of pixels at high zoom and high latitude (the projection stretches
+ *  N-S vs E-W differently), which manifests as a slime-trail head that
+ *  paints away from the live POV marker. See `IndexedRoute.cumulativeMercatorMeters`.
+ *
+ *  Semantics mirror `trailUpTo`:
+ *    - Before route start → 0.
+ *    - At/after route end → 1.
+ *    - Inside a tractable gap → linear-in-time interpolation between the
+ *      bracketing points' cumulative projected lengths. (Time-linear within
+ *      a single segment is correct: MapLibre's `line-progress` is also
+ *      length-linear within a segment, and we model the hiker as moving
+ *      uniformly between adjacent GPX samples.)
+ *    - Inside an over-MAX_INTERPOLATION_GAP_MS gap → snaps to the previous
+ *      point's progress (matches `locationAt`'s fallback behavior — no
+ *      pretend movement across coverage holes).
+ *    - Empty route (totalMercatorMeters == 0) → 0. */
+export function progressUpTo(
+  wallClockMs: number,
+  route: IndexedRoute,
+): number {
+  if (route.totalMercatorMeters <= 0) return 0;
+  if (wallClockMs <= route.minTimeMs) return 0;
+  if (wallClockMs >= route.maxTimeMs) return 1;
+
+  const pts = route.points;
+  const cum = route.cumulativeMercatorMeters;
+  const total = route.totalMercatorMeters;
+  const i = bisectLeft(pts, wallClockMs);
+
+  if (i <= 0) return 0;
+  if (i >= pts.length) return 1;
+  if (pts[i].timeMs === wallClockMs) {
+    return cum[i] / total;
+  }
+
+  const before = pts[i - 1];
+  const after = pts[i];
+  const gap = after.timeMs - before.timeMs;
+  if (gap <= 0) return cum[i - 1] / total;
+  if (gap > MAX_INTERPOLATION_GAP_MS) {
+    return cum[i - 1] / total;
+  }
+  const t = (wallClockMs - before.timeMs) / gap;
+  const dist = cum[i - 1] + t * (cum[i] - cum[i - 1]);
+  return dist / total;
+}
+
 /** Convert a clip + media-time-in-seconds to a wall-clock timestamp in ms.
  *  Returns null if the clip has no created_at anchor. */
 export function clipWallClockMs(clip: Clip | null, mediaSeconds: number): number | null {
@@ -281,6 +394,112 @@ export function bearingAt(
   if (a.lat === b.lat && a.lng === b.lng) return null;
 
   return forwardAzimuth(a.lat, a.lng, b.lat, b.lng);
+}
+
+// ---- Predetermined bearing keyframes ----
+// Instead of computing a noisy bearing every frame, we pre-derive a small set
+// of keyframes for a clip's time range and smoothly interpolate between them.
+// Recomputed whenever the clip's trim, route, or stop count changes.
+
+export interface BearingKeyframe {
+  timeMs: number;
+  bearing: number;
+}
+
+/** Shortest-arc circular interpolation between two angles in degrees.
+ *  Handles the 360°/0° wraparound correctly (e.g. 350° → 10° arcs 20°
+ *  clockwise, not 340° counterclockwise). Returns a value in [0, 360). */
+export function circularLerp(a: number, b: number, t: number): number {
+  // Normalize both into [0, 360)
+  a = ((a % 360) + 360) % 360;
+  b = ((b % 360) + 360) % 360;
+  let diff = b - a;
+  // Pick shortest arc
+  if (diff > 180) diff -= 360;
+  else if (diff < -180) diff += 360;
+  return ((a + diff * t) % 360 + 360) % 360;
+}
+
+/** Compute bearing keyframes for a clip's wall-clock time range.
+ *  Divides the range into `stops` equal-time segments, computes the
+ *  representative bearing for each segment midpoint, and returns one
+ *  keyframe per segment boundary (start of each segment + end of last).
+ *
+ *  For `stops = 1`, returns a single keyframe at the midpoint of the clip
+ *  (one fixed bearing for the whole clip).
+ *
+ *  Returns null if bearings can't be computed (no route, etc.). */
+export function computeBearingKeyframes(
+  clipStartMs: number,
+  clipEndMs: number,
+  route: IndexedRoute | null,
+  stops: number,
+): BearingKeyframe[] | null {
+  if (!route || route.points.length < 2) return null;
+  if (clipEndMs <= clipStartMs) return null;
+  if (stops < 1) return null;
+
+  const duration = clipEndMs - clipStartMs;
+  const segLen = duration / stops;
+
+  // Compute one bearing per segment using the segment's full extent as the
+  // sampling window (start → end of that segment).
+  const segmentBearings: number[] = [];
+  for (let i = 0; i < stops; i++) {
+    const segStart = clipStartMs + i * segLen;
+    const segEnd = segStart + segLen;
+    const a = locationAt(segStart, route, null);
+    const b = locationAt(segEnd, route, null);
+    if (!a || !b) return null;
+    if (a.lat === b.lat && a.lng === b.lng) {
+      // Stationary segment — try the old windowed approach as fallback
+      const mid = (segStart + segEnd) / 2;
+      const fb = bearingAt(mid, route, DEFAULT_BEARING_WINDOW_MS);
+      if (fb == null) return null;
+      segmentBearings.push(fb);
+    } else {
+      segmentBearings.push(forwardAzimuth(a.lat, a.lng, b.lat, b.lng));
+    }
+  }
+
+  // Build keyframes: each segment's bearing is placed at the segment midpoint.
+  // This way interpolation arcs smoothly between segment centers.
+  const keyframes: BearingKeyframe[] = [];
+  for (let i = 0; i < stops; i++) {
+    const midTime = clipStartMs + (i + 0.5) * segLen;
+    keyframes.push({ timeMs: midTime, bearing: segmentBearings[i] });
+  }
+
+  return keyframes;
+}
+
+/** Resolve a bearing at a given wall-clock time from pre-computed keyframes.
+ *  Before the first keyframe, holds the first bearing; after the last,
+ *  holds the last bearing; between keyframes, circular-lerps. */
+export function bearingFromKeyframes(
+  wallClockMs: number,
+  keyframes: BearingKeyframe[],
+): number {
+  if (keyframes.length === 0) return 0;
+  if (keyframes.length === 1) return keyframes[0].bearing;
+
+  // Before first keyframe — hold
+  if (wallClockMs <= keyframes[0].timeMs) return keyframes[0].bearing;
+  // After last keyframe — hold
+  const last = keyframes[keyframes.length - 1];
+  if (wallClockMs >= last.timeMs) return last.bearing;
+
+  // Find the two keyframes we're between
+  for (let i = 0; i < keyframes.length - 1; i++) {
+    const kA = keyframes[i];
+    const kB = keyframes[i + 1];
+    if (wallClockMs >= kA.timeMs && wallClockMs <= kB.timeMs) {
+      const t = (wallClockMs - kA.timeMs) / (kB.timeMs - kA.timeMs);
+      return circularLerp(kA.bearing, kB.bearing, t);
+    }
+  }
+
+  return last.bearing;
 }
 
 const CARDINALS_8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
