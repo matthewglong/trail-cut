@@ -24,7 +24,7 @@ Each task maps 1:1 to a step in `COMPILED_TIMELINE_PLAN.md` §"Implementation Pl
 | 540 | ✅     | Compiled Timeline (5)      | Switch playhead axis from wall-clock to project-time               | 530               | 3f01001 |
 | 550 | ✅     | Compiled Timeline (6)      | Update MapView ease loop to consume cameraAt(timeline, t)          | 530, 540          | 3f01001 |
 | 560 | ✅     | Compiled Timeline (7)      | Rework auto-advance, selection, active-clip lookup                 | 540               | ae07cc5 |
-| 570 | ⬜     | Compiled Timeline (8)      | Delete old wall-clock anchor code (MapAnchor, MapTrack, etc.)      | 550, 560          | —      |
+| 570 | ✅     | Compiled Timeline (8)      | Delete old wall-clock anchor code (MapAnchor, MapTrack, etc.)      | 550, 560          | eb38179 |
 | 580 | ⬜     | Compiled Timeline (9)      | Author 600-series export tasks against the compiled timeline       | 570               | —      |
 | 590 | ⬜     | Compiled Timeline (10)     | Validate end-to-end behavior; capture sign-off report              | 570               | —      |
 
