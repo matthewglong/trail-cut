@@ -1,22 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { Clip, Route, MapSettings, MapStyleId } from '../types';
-import { colors } from '../theme/tokens';
+import type { Clip, Route, MapSettings } from '../types';
 import {
-  indexRoute,
-  locationAt,
-  trailUpTo,
-  clipWaypointLocation,
-  type IndexedRoute,
-  type ResolvedLocation,
-} from '../lib/routeLocation';
-import {
-  cameraAt,
   resolveIntent,
   type CompiledTimeline,
   type Viewport,
 } from '../lib/cameraIntent';
+import { indexRoute } from '../lib/routeLocation';
+import {
+  buildStyleSpec,
+  buildStaticSourceData,
+  buildPerFrameState,
+  BUILDINGS_LAYER_SPEC,
+  LIVE_MARKER_PULSE_LAYER,
+  LIVE_MARKER_DOT_LAYER,
+  ROUTE_FULL_LAYER,
+  ROUTE_TRAIL_LAYER,
+  WAYPOINTS_CIRCLE_LAYER,
+  WAYPOINTS_LABEL_LAYER,
+} from '../lib/mapVisuals';
 
 interface MapViewProps {
   /** The compiled project-time timeline. Single source of truth for camera
@@ -58,76 +61,6 @@ interface MapViewProps {
   onSelectClip?: (clipId: string) => void;
 }
 
-const TRAIL_COLOR = colors.accent;
-const FULL_ROUTE_COLOR = colors.accent;
-
-const DEFAULT_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
-
-const SATELLITE_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
-  sources: {
-    satellite: {
-      type: 'raster',
-      tiles: [
-        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      ],
-      tileSize: 256,
-      attribution:
-        'Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
-    },
-  },
-  layers: [{ id: 'satellite', type: 'raster', source: 'satellite' }],
-};
-
-function styleForId(id: MapStyleId): string | maplibregl.StyleSpecification {
-  if (id === 'satellite') return SATELLITE_STYLE;
-  // 'default' and '3d' both use the OpenFreeMap liberty vector style;
-  // 3D adds fill-extrusion + pitch on top after style.load.
-  return DEFAULT_STYLE_URL;
-}
-
-function add3DBuildings(map: maplibregl.Map) {
-  if (map.getLayer('3d-buildings')) return;
-  // The OpenFreeMap liberty style exposes building polygons under the
-  // "openmaptiles" vector source, source-layer "building".
-  if (!map.getSource('openmaptiles')) return;
-  try {
-    map.addLayer({
-      id: '3d-buildings',
-      source: 'openmaptiles',
-      'source-layer': 'building',
-      type: 'fill-extrusion',
-      minzoom: 14,
-      paint: {
-        'fill-extrusion-color': '#cfd3d8',
-        'fill-extrusion-height': [
-          'coalesce',
-          ['get', 'render_height'],
-          ['get', 'height'],
-          3,
-        ],
-        'fill-extrusion-base': [
-          'coalesce',
-          ['get', 'render_min_height'],
-          ['get', 'min_height'],
-          0,
-        ],
-        'fill-extrusion-opacity': 0.85,
-      },
-    });
-  } catch {
-    // building layer not available in this style — ignore
-  }
-}
-const LIVE_MARKER_PULSE_KEYFRAMES = `
-@keyframes trailcut-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(255, 107, 53, 0.55); }
-  70%  { box-shadow: 0 0 0 14px rgba(255, 107, 53, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(255, 107, 53, 0); }
-}
-`;
-
 /** Tick cadence for the live ease loop (ms). How often we re-aim the
  *  camera. Independent of `easeTo` duration — the duration is chosen per
  *  tick by `pickEaseDurationMs` and may exceed `POLL_MS`, in which case
@@ -164,108 +97,78 @@ export default function MapView({
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
-  onSelectClipRef.current = onSelectClip;
   // Read the ease baseline off a ref so the ease loop doesn't restart on
   // project-default changes (e.g. user tweaks the value mid-session).
   const easeBaselineMsRef = useRef(
     defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK,
   );
-  easeBaselineMsRef.current =
-    defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK;
+  useEffect(() => {
+    onSelectClipRef.current = onSelectClip;
+  }, [onSelectClip]);
+  useEffect(() => {
+    easeBaselineMsRef.current =
+      defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK;
+  }, [defaultEaseDurationMs]);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
   const [styleVersion, setStyleVersion] = useState(0);
   const mapStyleId = mapSettings.map_style;
-  const mapStyleIdRef = useRef(mapStyleId);
-  mapStyleIdRef.current = mapStyleId;
 
-  const liveMarkerRef = useRef<maplibregl.Marker | null>(null);
-  const liveMarkerElRef = useRef<HTMLDivElement | null>(null);
   // Tracks the last route reference we framed via the region-intent jumpTo
   // below. Idempotence guard: we only refit once per unique route.
   const appliedRouteRef = useRef<Route | null>(null);
 
-  const indexedRoute: IndexedRoute | null = useMemo(() => indexRoute(route), [route]);
-
+  // Mirror props on refs so the per-frame ease-loop tick reads fresh values
+  // without re-subscribing on every prop change. The loop only restarts when
+  // `timeline` changes; everything else flows through refs. Refresh runs in
+  // a passive useEffect (post-paint) so worst-case staleness is one tick =
+  // 50ms — below user-perceptible.
+  const mapSettingsRef = useRef(mapSettings);
+  const clipsRef = useRef(clips);
+  const routeRef = useRef(route);
+  const activeClipIdRef = useRef(activeClipId);
+  const currentProjectMsRef = useRef<number | null>(null);
+  useEffect(() => {
+    mapSettingsRef.current = mapSettings;
+  }, [mapSettings]);
+  useEffect(() => {
+    clipsRef.current = clips;
+  }, [clips]);
+  useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+  useEffect(() => {
+    activeClipIdRef.current = activeClipId;
+  }, [activeClipId]);
   // Effective project-time the ease loop should target. When the video is
   // playing this mirrors the playhead. When no playhead has fired yet (e.g.
   // right after project load or a clip selection), fall back to the selected
   // clip span's `canonicalSeekMs` so the first ease-loop tick targets the
   // user's intent rather than the previous clip's last frame.
-  const currentProjectMs = useMemo<number | null>(() => {
-    if (playheadMs != null) return playheadMs;
-    if (!selectedClipId) return null;
-    const span = timeline.clipSpans.find((s) => s.clipId === selectedClipId);
-    return span ? span.canonicalSeekMs : null;
-  }, [playheadMs, timeline, selectedClipId]);
-  const currentProjectMsRef = useRef(currentProjectMs);
-  currentProjectMsRef.current = currentProjectMs;
-
-  // Project-time → wall-clock for the live marker and slime trail. The pre-
-  // cut half of a transition span lives inside the source clip's project-
-  // time, so a clip-span lookup catches it and the marker tracks the source
-  // clip's live position right up to the cut. The project-start → clip-1
-  // transition's window also falls inside clip 1's span (cutMs = 0 = clip
-  // 1's startMs), so the marker tracks clip 1 from the very first frame.
-  const markerTrace = useMemo<{ wallMs: number; clipId: string } | null>(() => {
-    if (currentProjectMs == null) return null;
-    if (currentProjectMs < 0) return null;
-    if (timeline.clipSpans.length === 0) return null;
-    if (currentProjectMs >= timeline.totalDurationMs) {
-      const last = timeline.clipSpans[timeline.clipSpans.length - 1];
-      return {
-        wallMs: last.wallClockBaseMs + last.mediaOutMs,
-        clipId: last.clipId,
-      };
+  useEffect(() => {
+    if (playheadMs != null) {
+      currentProjectMsRef.current = playheadMs;
+    } else if (selectedClipId) {
+      const span = timeline.clipSpans.find((s) => s.clipId === selectedClipId);
+      currentProjectMsRef.current = span ? span.canonicalSeekMs : null;
+    } else {
+      currentProjectMsRef.current = null;
     }
-    // Active clip span — translate project-time to clip-local to wall-clock.
-    // This branch wins over a transition's pre-cut half: the source clip's
-    // span covers `[startMs, endMs)` and the pre-cut window ends at the cut
-    // (== prevSpan.endMs), so the source clip's live position is shown right
-    // up to the cut.
-    for (let i = 0; i < timeline.clipSpans.length; i++) {
-      const span = timeline.clipSpans[i];
-      const isLast = i === timeline.clipSpans.length - 1;
-      const inside =
-        currentProjectMs >= span.startMs &&
-        (isLast ? currentProjectMs <= span.endMs : currentProjectMs < span.endMs);
-      if (inside) {
-        const clipLocalMs =
-          (currentProjectMs - span.startMs) * span.speed + span.mediaInMs;
-        return {
-          wallMs: span.wallClockBaseMs + clipLocalMs,
-          clipId: span.clipId,
-        };
-      }
-    }
-    // Post-cut half of a transition: source clip's media has ended but the
-    // camera arc is still landing. Hold the source clip's terminal position.
-    for (const ts of timeline.transitionSpans) {
-      if (ts.effectiveDurationMs <= 0) continue;
-      if (ts.fromClipId == null) continue;
-      if (currentProjectMs >= ts.cutMs && currentProjectMs <= ts.endMs) {
-        const prev = timeline.clipSpans.find((s) => s.clipId === ts.fromClipId);
-        if (!prev) return null;
-        return {
-          wallMs: prev.wallClockBaseMs + prev.mediaOutMs,
-          clipId: prev.clipId,
-        };
-      }
-    }
-    return null;
-  }, [currentProjectMs, timeline]);
+  }, [playheadMs, selectedClipId, timeline]);
 
   // ---- Initialize map ----
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
+    const initial = buildStyleSpec(mapSettingsRef.current);
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: styleForId(mapStyleIdRef.current),
+      style: initial.style,
       center: [-122.4194, 37.7749],
       zoom: 10,
       bearing: 0,
+      pitch: initial.defaultPitch,
       attributionControl: false,
     });
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -275,80 +178,65 @@ export default function MapView({
     resizeObserver.observe(containerRef.current);
     mapRef.current = map;
 
+    const emptyLine: GeoJSON.Feature<GeoJSON.LineString> = {
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'LineString', coordinates: [] },
+    };
+    const emptyFc: GeoJSON.FeatureCollection<GeoJSON.Point> = {
+      type: 'FeatureCollection',
+      features: [],
+    };
+
     const onStyleLoad = () => {
       styleReadyRef.current = true;
-      if (mapStyleIdRef.current === '3d') {
-        add3DBuildings(map);
+
+      // 3D-buildings layer for `'3d'` mode. The buildings source only exists
+      // in the OpenFreeMap liberty style — guarded + try/catch so satellite
+      // and other raster styles silently skip it.
+      if (mapSettingsRef.current.map_style === '3d') {
+        try {
+          if (!map.getLayer('3d-buildings') && map.getSource('openmaptiles')) {
+            map.addLayer(BUILDINGS_LAYER_SPEC);
+          }
+        } catch {
+          // building source not available in this style — ignore
+        }
       }
-      // Pre-create the two route sources/layers so we can update their data
-      // dynamically without re-adding layers each time.
+
+      // Pre-create source/layer pairs. Stacking order: routes → waypoints →
+      // live-marker (marker on top).
       if (!map.getSource('route-full')) {
-        map.addSource('route-full', {
-          type: 'geojson',
-          data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } },
-        });
-        map.addLayer({
-          id: 'route-full-line',
-          type: 'line',
-          source: 'route-full',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': FULL_ROUTE_COLOR,
-            'line-width': 3,
-            'line-opacity': 0.8,
-          },
-        });
+        map.addSource('route-full', { type: 'geojson', data: emptyLine });
+        map.addLayer(ROUTE_FULL_LAYER);
       }
       if (!map.getSource('route-trail')) {
-        map.addSource('route-trail', {
-          type: 'geojson',
-          data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } },
-        });
-        map.addLayer({
-          id: 'route-trail-line',
-          type: 'line',
-          source: 'route-trail',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': TRAIL_COLOR,
-            'line-width': 4,
-            'line-opacity': 0.95,
-          },
-        });
+        map.addSource('route-trail', { type: 'geojson', data: emptyLine });
+        map.addLayer(ROUTE_TRAIL_LAYER);
       }
       if (!map.getSource('waypoints')) {
-        map.addSource('waypoints', {
-          type: 'geojson',
-          data: { type: 'FeatureCollection', features: [] },
-        });
-        map.addLayer({
-          id: 'waypoints-circle',
-          type: 'circle',
-          source: 'waypoints',
-          paint: {
-            'circle-radius': 11,
-            'circle-color': colors.accent,
-            'circle-stroke-width': 2,
-            'circle-stroke-color': 'rgba(255,255,255,0.85)',
-          },
-        });
-        map.addLayer({
-          id: 'waypoints-label',
-          type: 'symbol',
-          source: 'waypoints',
-          layout: {
-            'text-field': ['to-string', ['+', ['get', 'index'], 1]],
-            'text-font': ['Noto Sans Bold'],
-            'text-size': 11,
-            'text-allow-overlap': true,
-            'text-ignore-placement': true,
-          },
-          paint: {
-            'text-color': '#fff',
-          },
-        });
-
+        map.addSource('waypoints', { type: 'geojson', data: emptyFc });
+        map.addLayer(WAYPOINTS_CIRCLE_LAYER);
+        map.addLayer(WAYPOINTS_LABEL_LAYER);
       }
+      if (!map.getSource('live-marker')) {
+        map.addSource('live-marker', { type: 'geojson', data: emptyFc });
+        map.addLayer(LIVE_MARKER_PULSE_LAYER);
+        map.addLayer(LIVE_MARKER_DOT_LAYER);
+      }
+
+      // Seed static data once. Route-fit + waypoint-seed effects below redo
+      // this on subsequent route/clips/styleVersion changes.
+      const staticData = buildStaticSourceData({
+        route: routeRef.current,
+        clips: clipsRef.current,
+        mapSettings: mapSettingsRef.current,
+      });
+      (map.getSource('route-full') as maplibregl.GeoJSONSource | undefined)
+        ?.setData(staticData['route-full']);
+      (map.getSource('waypoints') as maplibregl.GeoJSONSource | undefined)
+        ?.setData(staticData.waypoints);
+
       // Trigger data effects to re-seed sources after a (re)style.
       setStyleVersion((v) => v + 1);
     };
@@ -373,26 +261,25 @@ export default function MapView({
       map.remove();
       mapRef.current = null;
       styleReadyRef.current = false;
-      liveMarkerRef.current = null;
-      liveMarkerElRef.current = null;
     };
   }, []);
 
   // ---- Switch base map style ----
-  const lastAppliedStyleRef = useRef<MapStyleId>(mapStyleId);
+  const lastAppliedStyleRef = useRef(mapStyleId);
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
+    const { style, defaultPitch } = buildStyleSpec(mapSettings);
     if (lastAppliedStyleRef.current === mapStyleId) {
       // First mount: style was set in the constructor; just sync pitch.
-      map.easeTo({ pitch: mapStyleId === '3d' ? 60 : 0, duration: 0 });
+      map.easeTo({ pitch: defaultPitch, duration: 0 });
       return;
     }
     lastAppliedStyleRef.current = mapStyleId;
     styleReadyRef.current = false;
-    map.setStyle(styleForId(mapStyleId));
-    map.easeTo({ pitch: mapStyleId === '3d' ? 60 : 0, duration: 400 });
-  }, [mapStyleId]);
+    map.setStyle(style);
+    map.easeTo({ pitch: defaultPitch, duration: 400 });
+  }, [mapStyleId, mapSettings]);
 
   // ---- Update full-route line + region-intent fit when route changes ----
   // On a new route, frame the full bounds via a `region` CameraIntent
@@ -409,16 +296,13 @@ export default function MapView({
       const src = map.getSource('route-full') as maplibregl.GeoJSONSource | undefined;
       if (!src) return;
 
-      if (!route || route.trackpoints.length === 0) {
-        src.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
-        return;
-      }
-      const coordinates = route.trackpoints.map((tp) => [tp.lng, tp.lat] as [number, number]);
-      src.setData({
-        type: 'Feature',
-        properties: {},
-        geometry: { type: 'LineString', coordinates },
-      });
+      // Source data comes from the shared module — preserves visual parity
+      // with the export renderer and keeps LineString construction in one
+      // place.
+      const staticData = buildStaticSourceData({ route, clips, mapSettings });
+      src.setData(staticData['route-full']);
+
+      if (!route || route.trackpoints.length === 0) return;
 
       if (appliedRouteRef.current !== route) {
         appliedRouteRef.current = route;
@@ -464,7 +348,7 @@ export default function MapView({
     };
 
     if (styleReadyRef.current) apply();
-  }, [route, styleVersion]);
+  }, [route, clips, mapSettings, styleVersion]);
 
   // ---- Update route-line visibility based on route_mode ----
   useEffect(() => {
@@ -488,81 +372,31 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [mapSettings.route_mode, styleVersion]);
 
-  // Compute the set of visible waypoints. Memoized so effect deps are stable.
-  // 'visited' mode: a clip counts as visited once the project-time playhead
-  // has crossed into its compiled span. Pre-540 this used wall-clock; the
-  // semantics are the same (a clip becomes visible at its scheduled start).
-  const positionedWaypoints = useMemo(() => {
-    if (mapSettings.waypoints_mode === 'none') return [];
-    return clips
-      .map((clip, originalIndex) => {
-        const loc = clipWaypointLocation(clip, indexedRoute);
-        if (!loc) return null;
-        if (mapSettings.waypoints_mode === 'visited') {
-          if (currentProjectMs == null) return null;
-          const span = timeline.clipSpans.find((s) => s.clipId === clip.id);
-          if (!span || span.startMs > currentProjectMs) return null;
-        }
-        return { clip, originalIndex, loc };
-      })
-      .filter((x): x is { clip: Clip; originalIndex: number; loc: ResolvedLocation } => x !== null);
-  }, [clips, indexedRoute, mapSettings.waypoints_mode, currentProjectMs, timeline]);
-
-  // ---- Waypoint source data (one feature per visible clip) ----
+  // ---- Waypoint static seed ----
+  // Whenever clips/route/mapSettings/styleVersion changes, push the full
+  // waypoints FeatureCollection. Per-frame `visited` filtering happens in
+  // the ease-loop tick automatically (the module returns a 'waypoints' key
+  // in `sources` when mode is 'visited').
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       const src = map.getSource('waypoints') as maplibregl.GeoJSONSource | undefined;
       if (!src) return;
-      src.setData({
-        type: 'FeatureCollection',
-        features: positionedWaypoints.map(({ clip, originalIndex, loc }) => ({
-          type: 'Feature',
-          properties: { id: clip.id, index: originalIndex },
-          geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
-        })),
-      });
+      const staticData = buildStaticSourceData({ route, clips, mapSettings });
+      src.setData(staticData.waypoints);
     };
     if (styleReadyRef.current) apply();
-  }, [positionedWaypoints, styleVersion]);
-
-  // ---- Waypoint selection styling (data-driven, no re-render) ----
-  // Highlights the project-time-derived `activeClipId`, not the persistent
-  // `selectedClipId`. During an auto-advance transition the two diverge —
-  // the highlight follows the destination so the user's eye tracks where
-  // the camera is heading instead of where it left.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      if (!map.getLayer('waypoints-circle')) return;
-      const active: unknown = activeClipId ?? '';
-      map.setPaintProperty('waypoints-circle', 'circle-radius', [
-        'case', ['==', ['get', 'id'], active], 14, 11,
-      ]);
-      map.setPaintProperty('waypoints-circle', 'circle-color', [
-        'case', ['==', ['get', 'id'], active], '#4a9eff', colors.accent,
-      ]);
-      map.setPaintProperty('waypoints-circle', 'circle-stroke-color', [
-        'case', ['==', ['get', 'id'], active], '#ffffff', 'rgba(255,255,255,0.85)',
-      ]);
-    };
-    if (styleReadyRef.current) apply();
-  }, [activeClipId, styleVersion]);
+  }, [clips, route, mapSettings, styleVersion]);
 
   // ---- Live preview ease loop ----
-  // Every STEP_MS we compute target = cameraAt(timeline, t + lookahead) and
-  // fire map.easeTo at the same duration. MapLibre keeps chasing a moving
-  // target — clip-to-clip handoff (now via the compiled transition spans),
-  // bearing rotation, and within-clip tracking all collapse into this one
-  // loop. The pure cameraAt + resolveIntent pipeline is the single source
-  // of truth for camera state.
-  //
-  // Playhead is read off a ref (not via the dep array) so per-frame
-  // playhead updates don't restart the loop. Restart only on timeline
-  // change (clips/route/settings) — the loop body still picks up the new
-  // playhead on the very next tick.
+  // Every POLL_MS we compose a per-frame snapshot via `buildPerFrameState`
+  // and apply it: easeTo for camera, setData for sources, setPaintProperty
+  // for paints. Module owns *what* the state is; this loop owns *when* it's
+  // applied. Time arg = `projectTimeMs + easeBaseline` preserves the
+  // pre-refactor lookahead so the camera's arrival aligns with the playhead
+  // at easing completion. Refs feed per-frame inputs; loop only restarts on
+  // timeline change.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -579,27 +413,62 @@ export default function MapView({
         timeoutId = window.setTimeout(tick, POLL_MS);
         return;
       }
-      const t = currentProjectMsRef.current ?? 0;
-      // Per-tick easing duration — the contract: lookahead == duration, so
-      // the camera's arrival point lines up with the playhead at easing
-      // completion. `pickEaseDurationMs` is the future-flexibility hook;
-      // today it returns the project-level baseline unmodified.
+      const projectTimeMs = currentProjectMsRef.current ?? 0;
+      // lookahead == duration: camera arrival lines up with the playhead at
+      // ease completion. `indexRoute` is pure + cheap so re-call per tick.
       const duration = pickEaseDurationMs(easeBaselineMsRef.current);
-      const intent = cameraAt(timeline, t + duration);
+      const container = map.getContainer();
       const viewport: Viewport = {
-        width: map.getContainer().clientWidth,
-        height: map.getContainer().clientHeight,
-        dpr: window.devicePixelRatio,
+        width: container.clientWidth,
+        height: container.clientHeight,
+        dpr: window.devicePixelRatio || 1,
       };
-      const target = resolveIntent(intent, viewport);
+      const state = buildPerFrameState(
+        timeline,
+        projectTimeMs + duration,
+        activeClipIdRef.current,
+        indexRoute(routeRef.current),
+        clipsRef.current,
+        mapSettingsRef.current,
+        viewport,
+      );
+
       map.easeTo({
-        center: [target.center.lng, target.center.lat],
-        zoom: target.zoom,
-        bearing: target.bearing,
-        pitch: target.pitch,
+        center: [state.camera.center.lng, state.camera.center.lat],
+        zoom: state.camera.zoom,
+        bearing: state.camera.bearing,
+        pitch: state.camera.pitch,
         duration,
         essential: true,
       });
+
+      // Sources / paints. Guard with styleReadyRef — setStyle() drops
+      // sources/layers and the loop fires before they're re-added.
+      if (styleReadyRef.current) {
+        for (const [id, data] of Object.entries(state.sources)) {
+          const src = map.getSource(id) as
+            | maplibregl.GeoJSONSource
+            | undefined;
+          // Module returns `GeoJSON.GeoJsonObject`; `setData` wants
+          // `GeoJSON.GeoJSON`. Runtime-equivalent — cast through unknown.
+          if (src) src.setData(data as unknown as GeoJSON.GeoJSON);
+        }
+        if (map.getLayer('waypoints-circle')) {
+          map.setPaintProperty('waypoints-circle', 'circle-radius',
+            state.paints.waypointCircleRadius);
+          map.setPaintProperty('waypoints-circle', 'circle-color',
+            state.paints.waypointCircleColor);
+          map.setPaintProperty('waypoints-circle', 'circle-stroke-color',
+            state.paints.waypointCircleStrokeColor);
+        }
+        if (map.getLayer('live-marker-pulse')) {
+          map.setPaintProperty('live-marker-pulse', 'circle-radius',
+            state.paints.pulseRadius);
+          map.setPaintProperty('live-marker-pulse', 'circle-opacity',
+            state.paints.pulseOpacity);
+        }
+      }
+
       timeoutId = window.setTimeout(tick, POLL_MS);
     };
 
@@ -610,84 +479,15 @@ export default function MapView({
     };
   }, [timeline]);
 
-  // ---- Live playhead marker ----
-  // Marker DOM management only. The position comes from the same
-  // routeLocation pipeline the export will use; project-time is translated
-  // to wall-clock per the active clip span (see `markerTrace` above), then
-  // `locationAt` resolves the GPX position. During a transition the marker
-  // holds the previous clip's last position — see the `markerTrace` doc.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const fallbackClip =
-      markerTrace ? clips.find((c) => c.id === markerTrace.clipId) ?? null : null;
-    const fallback = fallbackClip?.gps ?? null;
-    const resolved =
-      markerTrace ? locationAt(markerTrace.wallMs, indexedRoute, fallback) : null;
-
-    if (!resolved) {
-      if (liveMarkerRef.current) {
-        liveMarkerRef.current.remove();
-        liveMarkerRef.current = null;
-        liveMarkerElRef.current = null;
-      }
-      return;
-    }
-
-    if (!liveMarkerRef.current) {
-      const el = document.createElement('div');
-      el.style.width = '18px';
-      el.style.height = '18px';
-      el.style.borderRadius = '50%';
-      el.style.backgroundColor = '#fff';
-      el.style.border = `3px solid ${colors.accent}`;
-      el.style.boxShadow = '0 0 0 2px rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.5)';
-      el.style.animation = 'trailcut-pulse 1.6s ease-out infinite';
-      el.style.pointerEvents = 'none';
-      liveMarkerElRef.current = el;
-      liveMarkerRef.current = new maplibregl.Marker({ element: el })
-        .setLngLat([resolved.lng, resolved.lat])
-        .addTo(map);
-    } else {
-      liveMarkerRef.current.setLngLat([resolved.lng, resolved.lat]);
-    }
-  }, [markerTrace, indexedRoute, clips]);
-
-  // ---- Slime trail data updates ----
-  // Geometric clipping: rebuild the polyline up to the head's wall-clock
-  // position and upload it via setData. Pays a per-frame upload cost but
-  // gives a pixel-precise cutoff at the marker — line-gradient on a static
-  // polyline can't, because MapLibre rasterizes the gradient to a 256-texel
-  // 1D texture and bilinear-samples it (the transition smears across one
-  // texel = 1/256 of total polyline length, which is tens of pixels of
-  // ghost past the marker on long routes).
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      const src = map.getSource('route-trail') as maplibregl.GeoJSONSource | undefined;
-      if (!src) return;
-      if (!indexedRoute || mapSettings.route_mode !== 'visited' || !markerTrace) {
-        src.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
-        return;
-      }
-      src.setData(trailUpTo(markerTrace.wallMs, indexedRoute));
-    };
-    if (styleReadyRef.current) apply();
-  }, [markerTrace, indexedRoute, mapSettings.route_mode, styleVersion]);
-
   return (
-    <>
-      <style>{LIVE_MARKER_PULSE_KEYFRAMES}</style>
-      <div
-        ref={containerRef}
-        style={{
-          width: '100%',
-          height: '100%',
-          minHeight: '300px',
-        }}
-      />
-    </>
+    <div
+      ref={containerRef}
+      style={{
+        width: '100%',
+        height: '100%',
+        minHeight: '300px',
+      }}
+    />
   );
 }
+
