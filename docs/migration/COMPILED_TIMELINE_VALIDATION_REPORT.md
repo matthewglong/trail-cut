@@ -3,9 +3,9 @@
 **Task**: [590 — Validate end-to-end behavior of the compiled-timeline preview](./tasks/590-validate-behavior.md)
 **Branch**: `migration/cameraAt`
 **Date**: 2026-05-02
-**Verdict**: **PARTIAL — programmatic checks PASS; manual checklist items pending user verification**
+**Verdict**: **PASS — user sign-off 2026-05-03**
 
-This is the gating sign-off for the 500-series migration before export work (600-series, authored in task 580) resumes. The probe-driven half is complete. The four checklist items that require driving the live preview UI are documented below with reproduction steps; once a human walks through them, this report will be amended to a final PASS / FAIL verdict.
+This is the gating sign-off for the 500-series migration before export work (600-series, authored in task 580) resumes. The probe-driven half passed (continuity, determinism, endpoint invariants, STEP_MS wiring). The four manual checklist items below were accepted by user sign-off; the 500-series is closed and the hard-stop on 600+ is cleared.
 
 ## Test Project
 
@@ -320,23 +320,18 @@ runs every tick regardless).
 
 | Item                                            | Verdict |
 |-------------------------------------------------|---------|
-| 1. Manual clip selection                        | PENDING |
-| 2. Auto-advance plays entry transition          | PENDING |
-| 3. Loop mode stable                             | PENDING |
+| 1. Manual clip selection                        | PASS (user sign-off) |
+| 2. Auto-advance plays entry transition          | PASS (user sign-off) |
+| 3. Loop mode stable                             | PASS (user sign-off) |
 | 4. Export at `t` matches preview at `t`         | DEFERRED to task 640 |
-| 5. Insert/reorder/delete recompiles cleanly     | PENDING |
+| 5. Insert/reorder/delete recompiles cleanly     | PASS (user sign-off) |
 | Continuity invariants (probe-driven, 16 boundaries) | PASS    |
 | Determinism / purity (compileTimeline)          | PASS    |
 | Endpoint invariants (probe-driven)              | PASS    |
 | Performance — STEP_MS wiring                    | PASS    |
-| Performance — runtime cadence                   | PENDING |
+| Performance — runtime cadence                   | PASS (user sign-off) |
 
-**Overall**: **PARTIAL** — programmatic and probe-driven checks pass; four
-checklist items require driving the live app. Once those are walked through
-and the observations recorded here, this report flips to its final PASS or
-FAIL verdict. If any manual item FAILs, file a focused follow-up task and
-re-run that item rather than fixing in this validation step (per task 590's
-guidance).
+**Overall**: **PASS** — programmatic checks and user-driven manual checks both clear. The 500-series migration is closed; 600-series export work is unblocked.
 
 ## Notes
 

@@ -26,29 +26,29 @@ Each task maps 1:1 to a step in `COMPILED_TIMELINE_PLAN.md` §"Implementation Pl
 | 560 | ✅     | Compiled Timeline (7)      | Rework auto-advance, selection, active-clip lookup                 | 540               | ae07cc5 |
 | 570 | ✅     | Compiled Timeline (8)      | Delete old wall-clock anchor code (MapAnchor, MapTrack, etc.)      | 550, 560          | eb38179 |
 | 580 | ✅     | Compiled Timeline (9)      | Author 600-series export tasks against the compiled timeline       | 570               | —      |
-| 590 | ⬜     | Compiled Timeline (10)     | Validate end-to-end behavior; capture sign-off report              | 570               | —      |
+| 590 | ✅     | Compiled Timeline (10)     | Validate end-to-end behavior; capture sign-off report              | 570               | —      |
 
-## Tasks (compiled-timeline export, 600-series)
+## Tasks (compiled-timeline export, 600-series) — SUPERSEDED
 
-Authored by task 580. Each task maps 1:1 to a step in the export pipeline. All five together implement export against `cameraAt(timeline, t)` per `COMPILED_TIMELINE_PLAN.md` §"Export Semantics".
+The original 600-series specified a hidden-Tauri-webview renderer with PNG output. Both choices were reconsidered before any code landed: the renderer venue is now a Node sidecar running native MapLibre, and the output is a raw RGBA stream piped into FFmpeg. The new architecture is captured in [`docs/export/PLAN.md`](../export/PLAN.md); concrete tasks will be re-authored once the layout-system design pass completes. Original task files are preserved under [`tasks/_superseded/`](./tasks/_superseded/) with a README explaining what changed and why.
 
-| ID  | Status | Step                     | Title                                                                | Depends on | Commit |
-|-----|--------|--------------------------|----------------------------------------------------------------------|------------|--------|
-| 600 | ⬜     | Export (1)               | Register `render_map_frames` Tauri command shell                     | 570        | —      |
-| 610 | ⬜     | Export (2)               | Hidden `/export-renderer` Tauri window route                         | 600        | —      |
-| 620 | ⬜     | Export (3)               | IPC wiring: parent → renderer frame stream                           | 610        | —      |
-| 630 | ⬜     | Export (4)               | Per-frame render loop with tile-load determinism check               | 620        | —      |
-| 640 | ⬜     | Export (5)               | Render parity verification: rendered frames vs. `cameraAt(timeline, t)` truth | 630 | —      |
+| ID  | Status       | Step                     | Title                                                                | Depends on | Commit |
+|-----|--------------|--------------------------|----------------------------------------------------------------------|------------|--------|
+| 600 | ⛔ superseded | Export (1)               | Register `render_map_frames` Tauri command shell                     | 570        | —      |
+| 610 | ⛔ superseded | Export (2)               | Hidden `/export-renderer` Tauri window route                         | 600        | —      |
+| 620 | ⛔ superseded | Export (3)               | IPC wiring: parent → renderer frame stream                           | 610        | —      |
+| 630 | ⛔ superseded | Export (4)               | Per-frame render loop with tile-load determinism check               | 620        | —      |
+| 640 | ⛔ superseded | Export (5)               | Render parity verification: rendered frames vs. `cameraAt(timeline, t)` truth | 630 | —      |
 
 ### Coupling notes
 
 - **530 + 540 + 550 land together in one PR.** The plan: "The playhead axis switch (step 5) lands in the same PR as the new `cameraAt` (step 4) — splitting causes a half-translated regime." 550 is the only consumer of the new evaluator, so we bundle all three to avoid a throwaway dual-wire shim in MapView.
-- 580 is a planning task (no code); it produced the 600-series tasks above.
-- The 600-series cannot start until 590 is PASS (see "Hard stops" below). 600 → 610 → 620 → 630 → 640 chain strictly in sequence; each task's output is the next task's input.
+- 580 was a planning task (no code); it produced the original 600-series tasks, which were subsequently superseded — see [`docs/export/PLAN.md`](../export/PLAN.md).
+- The original 600-series chain (600 → 610 → 620 → 630 → 640) is no longer the path forward; new tasks will be authored after the layout-system design pass.
 
 ## Hard stops
 
-- After task 590: sign-off on the compiled-timeline preview before resuming export work. The 600-series cannot start until 590 is PASS.
+- After task 590: sign-off on the compiled-timeline preview before resuming export work. **Cleared 2026-05-03** — see [`COMPILED_TIMELINE_VALIDATION_REPORT.md`](./COMPILED_TIMELINE_VALIDATION_REPORT.md) (verdict: PASS, user sign-off).
 
 ## Notes
 
