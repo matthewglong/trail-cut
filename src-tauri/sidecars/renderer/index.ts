@@ -421,12 +421,33 @@ function renderFrame(cmd: RenderCmd, done: () => void): void {
   map.setPaintProperty('live-marker-pulse', 'circle-radius', state.paints.pulseRadius);
   map.setPaintProperty('live-marker-pulse', 'circle-opacity', state.paints.pulseOpacity);
 
+  // ──── SPIKE: sub-pixel camera jitter (REMOVE TO DISABLE) ────
+  // Workaround for maplibre-native raster_layer_tweaker.cpp:104 snap.
+  // Deterministic ~⅔-pixel offset per frame so consecutive frames
+  // quantize to different pixel grids, converting wobble → dither.
+  const jitter = (() => {
+    const lat = state.camera.center.lat;
+    const z = state.camera.zoom;
+    const worldSize = 512 * Math.pow(2, z);
+    const onePxLng = 360 / (worldSize * Math.cos((lat * Math.PI) / 180));
+    const onePxLat = 360 / worldSize;
+    const phi = 0.6180339887498949;
+    const fx = ((cmd.frame_index * phi) % 1) - 0.5;          // [-0.5, 0.5)
+    const fy = ((cmd.frame_index * phi * phi) % 1) - 0.5;
+    return { dlng: fx * onePxLng * 0.66, dlat: fy * onePxLat * 0.66 };
+  })();
+  const jitteredCenter: [number, number] = [
+    state.camera.center.lng + jitter.dlng,
+    state.camera.center.lat + jitter.dlat,
+  ];
+  // ──── END SPIKE ────
+
   map.render(
     {
       zoom: state.camera.zoom,
       bearing: state.camera.bearing,
       pitch: state.camera.pitch,
-      center: [state.camera.center.lng, state.camera.center.lat],
+      center: jitteredCenter,
       width: viewport.width,
       height: viewport.height,
     },
