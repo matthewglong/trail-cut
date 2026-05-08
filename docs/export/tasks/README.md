@@ -15,21 +15,22 @@ These tasks replace the superseded 600-series under `docs/migration/tasks/_super
 
 | ID  | Status | Title                                                                           | Depends on |
 |-----|--------|---------------------------------------------------------------------------------|------------|
-| 010 | ⬜     | [Shared `mapVisuals` module + MapView refactor](./010-shared-mapvisuals-module.md) | —          |
-| 020 | ⬜     | Renderer worker (Node + maplibre-native + stdio protocol)                       | 010        |
-| 030 | ⬜     | Rust orchestrator skeleton (spawn + frame distribution + ordering)              | 020        |
-| 040 | ⬜     | Encoder probing + selection                                                     | —          |
-| 050 | ⬜     | Layout descriptor types in TS + Rust; project-schema migration                  | —          |
-| 060 | ⬜     | Channel B (map-only) end-to-end                                                 | 030, 040, 050 |
-| 070 | ⬜     | Channel C (video-only) end-to-end                                               | 030, 040, 050 |
-| 080 | ⬜     | First concrete layout (9:16 PiP-bottom-right baseline)                          | 050        |
-| 090 | ⬜     | Channel A (composite) end-to-end                                                | 060, 070, 080 |
-| 100 | ⬜     | Additional layouts + aspects (Split mode; 16:9 and 4:5)                         | 080        |
-| 110 | ⬜     | Layout configurator UI                                                          | 050        |
+| 010 | ✅     | [Shared `mapVisuals` module + MapView refactor](./010-shared-mapvisuals-module.md) | —          |
+| 020 | ✅     | [Renderer worker (Node + maplibre-native + stdio protocol)](./020-renderer-worker.md) | 010        |
+| 030 | ✅     | [Rust orchestrator skeleton (spawn + frame distribution + ordering)](./030-orchestrator-skeleton.md) | 020        |
+| 035 | ✅     | [Shared on-disk tile cache](./035-shared-tile-cache.md)                         | 020        |
+| 040 | ✅     | [Encoder probing + selection](./040-encoder-probing.md)                         | —          |
+| 050 | ✅     | [Layout descriptor types in TS + Rust; project-schema migration](./050-layout-descriptor-types.md) | —          |
+| 060 | ✅     | [Channel B (map-only) end-to-end](./060-channel-b-map-only.md)                  | 030, 040, 050 |
+| 070 | ✅     | [Channel C (video-only) end-to-end](./070-channel-c-video-only.md)              | 030, 040, 050 |
+| 080 | ✅     | [First concrete layout (9:16 PiP-bottom-right baseline)](./080-first-concrete-layout.md) | 050        |
+| 090 | ✅     | [Channel A (composite) end-to-end](./090-channel-a-composite.md)                | 060, 070, 080 |
+| 100 | ⬜     | [Additional layouts + aspects (Split mode; 4:5 and 16:9)](./100-additional-layouts-and-aspects.md) | 050, 060, 070, 080, 090 |
+| 110 | ⬜     | [Layout configurator (interactive editing of `LayoutConfig`)](./110-layout-configurator.md) | 050, 080, 100 |
 | 120 | ⬜     | Render parity verification (preview vs. export at sampled `t`)                  | 090        |
 | 130 | ⬜     | Sidecar bundling + Windows distribution                                         | 020, 030, 040 |
 
-Tasks beyond 010 are not yet authored; they will be written as the preceding tasks land and the implementation surface stabilizes.
+Tasks 120–130 are not yet authored; they will be written as the preceding tasks land and the implementation surface stabilizes — and 130 in particular waits on the renderer-architecture decision (maplibre-native vs. headless-Chromium-running-MapLibre-GL-JS), which fundamentally changes the bundling and Windows distribution stories.
 
 ## Why a foundational 010 before the renderer worker
 

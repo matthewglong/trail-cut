@@ -1,9 +1,9 @@
-import type React from 'react';
 import { ASPECT_RATIOS } from './constants';
 import { colors } from '../../theme/tokens';
 
 interface CropOverlayProps {
-  containerRef: React.RefObject<HTMLDivElement | null>;
+  cw: number;
+  ch: number;
   videoW: number;
   videoH: number;
   focalX: number;
@@ -14,7 +14,8 @@ interface CropOverlayProps {
 
 /** Draws a semi-transparent overlay with a cutout for the crop region */
 export default function CropOverlay({
-  containerRef,
+  cw,
+  ch,
   videoW,
   videoH,
   focalX,
@@ -22,11 +23,6 @@ export default function CropOverlay({
   zoom,
   aspectRatio,
 }: CropOverlayProps) {
-  const container = containerRef.current;
-  if (!container) return null;
-
-  const cw = container.clientWidth;
-  const ch = container.clientHeight;
   if (!cw || !ch) return null;
 
   // Compute where the video is rendered within the container (object-fit: contain)

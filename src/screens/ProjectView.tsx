@@ -1,17 +1,34 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 import Timeline from '../components/Timeline';
 import MapView from '../components/MapView';
 import MapToolbar from '../components/MapToolbar/MapToolbar';
 import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
+import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, TransitionFeel } from '../types';
+import { livePlayheadMs } from '../lib/livePlayhead';
+import { buildExportRequest, type ExportChannel } from '../lib/exportRequest';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
+
+interface RenderExportSummary {
+  frames_written: number;
+  output_path: string;
+  wall_clock_ms: number;
+}
+
+interface RenderExportError {
+  stage: string;
+  message: string;
+  stderr_tail?: string;
+}
 
 // Resizer constraints — easy to tune
 const V_SPLIT_DEFAULT = 0.65; // video takes 65% of width
@@ -21,7 +38,33 @@ const H_CLIPS_MIN_PX = 80;
 const H_CLIPS_MAX_RATIO = 0.50; // clips can't exceed 50% of height
 const H_CLIPS_DEFAULT_PX = 140;
 
+const LAYOUT_PREVIEW_PREF_PREFIX = 'trailcut.layoutPreviewVisible:';
+
+/** Read the layout-preview toggle preference for a given project dir. Stored
+ *  in localStorage rather than the project bundle to keep editor UI state
+ *  out of the shareable on-disk JSON (task 080's "lower-friction" path).
+ *  Returns false on missing/unparseable values — overlay defaults to off. */
+function readLayoutPreviewPref(projectDir: string | null): boolean {
+  if (!projectDir) return false;
+  try {
+    return localStorage.getItem(LAYOUT_PREVIEW_PREF_PREFIX + projectDir) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeLayoutPreviewPref(projectDir: string | null, value: boolean): void {
+  if (!projectDir) return;
+  try {
+    localStorage.setItem(LAYOUT_PREVIEW_PREF_PREFIX + projectDir, value ? '1' : '0');
+  } catch {
+    // Quota exceeded / private mode — silently drop. The toggle still works
+    // for the current session; only cross-session persistence is lost.
+  }
+}
+
 interface ProjectViewProps {
+  projectDir: string | null;
   projectName: string;
   setProjectName: (name: string) => void;
   editingName: boolean;
@@ -36,10 +79,7 @@ interface ProjectViewProps {
   mapSettings: MapSettings;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   transitionFeel: TransitionFeel | undefined;
-  /** Project-level default for the live preview camera's per-tick easing
-   *  duration (ms). Forwarded to `MapView`'s ease loop; undefined falls
-   *  back to MapView's internal baseline. */
-  defaultEaseDurationMs: number | undefined;
+  projectLayouts: ProjectLayouts;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -59,6 +99,7 @@ interface ProjectViewProps {
 }
 
 export default function ProjectView({
+  projectDir,
   projectName,
   setProjectName,
   editingName,
@@ -73,7 +114,7 @@ export default function ProjectView({
   mapSettings,
   setMapSettings,
   transitionFeel,
-  defaultEaseDurationMs,
+  projectLayouts,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -93,6 +134,9 @@ export default function ProjectView({
 }: ProjectViewProps) {
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showGpxMenu, setShowGpxMenu] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<RenderExportError | null>(null);
+  const [exportDetailsOpen, setExportDetailsOpen] = useState(false);
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
   const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
@@ -100,6 +144,42 @@ export default function ProjectView({
   const [resetPillHover, setResetPillHover] = useState(false);
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
+
+  // Layout-preview overlay toggle (task 080). Persisted in localStorage
+  // keyed by projectDir so the preference travels with the project but
+  // doesn't bloat the project bundle's JSON. Defaults to off — the editor's
+  // resting state is "edit clips," not "configure layout."
+  const [layoutPreviewVisible, setLayoutPreviewVisible] = useState(() =>
+    readLayoutPreviewPref(projectDir),
+  );
+  useEffect(() => {
+    setLayoutPreviewVisible(readLayoutPreviewPref(projectDir));
+  }, [projectDir]);
+  const handleToggleLayoutPreview = useCallback(() => {
+    setLayoutPreviewVisible((v) => {
+      const next = !v;
+      writeLayoutPreviewPref(projectDir, next);
+      return next;
+    });
+  }, [projectDir]);
+
+  // Measured size of the video pane content area — fed to LayoutPreview so
+  // its aspect-fit math produces letterbox / pillarbox correctly when the
+  // editor's pane shape doesn't match the layout's output shape.
+  const videoPaneContentRef = useRef<HTMLDivElement>(null);
+  const [videoPaneSize, setVideoPaneSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = videoPaneContentRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setVideoPaneSize({ w: rect.width, h: rect.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -139,14 +219,11 @@ export default function ProjectView({
       setMapSettings(next);
     } else if (selectedClipId) {
       // Compute overrides: only store fields that differ from project defaults
-      const overrides: MapOverrides = {};
-      let hasOverrides = false;
-      for (const key of Object.keys(next) as (keyof MapSettings)[]) {
-        if (next[key] !== mapSettings[key]) {
-          (overrides as any)[key] = next[key];
-          hasOverrides = true;
-        }
-      }
+      const entries = (Object.keys(next) as (keyof MapSettings)[])
+        .filter((key) => next[key] !== mapSettings[key])
+        .map((key) => [key, next[key]] as const);
+      const overrides = Object.fromEntries(entries) as MapOverrides;
+      const hasOverrides = entries.length > 0;
       setClips((prev) => prev.map((c) =>
         c.id === selectedClipId
           ? { ...c, map_overrides: hasOverrides ? overrides : null }
@@ -298,6 +375,129 @@ export default function ProjectView({
     onSplitClip(playheadSecRef.current);
   }, [onSplitClip]);
 
+  // Shared dispatch for the developer-grade export buttons (Channel B
+  // task 060, Channel C task 070, Channel A task 090). Hard-coded to 9:16
+  // until the configurator UI (110) lands an aspect picker. All buttons
+  // share `exporting` so they can't fire in parallel. The `format` arg
+  // parameterizes the file-extension filter and forced suffix so the
+  // composite (.mp4) channel coexists with the .mov intermediates without
+  // a second copy of the dispatch logic.
+  const runExport = useCallback(
+    async (
+      channel: ExportChannel,
+      dialogTitle: string,
+      format: { extension: 'mov' | 'mp4'; filterName: string },
+    ) => {
+      if (exporting) return;
+      setExportError(null);
+      setExportDetailsOpen(false);
+      let outputPath: string | null = null;
+      try {
+        outputPath = await save({
+          title: dialogTitle,
+          filters: [{ name: format.filterName, extensions: [format.extension] }],
+        });
+      } catch {
+        return;
+      }
+      if (!outputPath) return;
+      const suffix = `.${format.extension}`;
+      if (!outputPath.toLowerCase().endsWith(suffix)) {
+        outputPath = `${outputPath}${suffix}`;
+      }
+      const req = buildExportRequest({
+        channel,
+        fps: 30,
+        outputPath,
+        aspect: '9_16',
+        clips,
+        route,
+        mapSettings,
+        transitionFeel,
+        // Task 080: pass the project's seeded layout so the export reads
+        // the stored value rather than rebuilding it via `pickLayout`'s
+        // fallback. The configurator UI (110) will let the user mutate
+        // this; today the value matches `defaultLayout('9_16')` for fresh
+        // projects.
+        layouts: projectLayouts,
+      });
+      setExporting(true);
+      try {
+        await invoke<RenderExportSummary>('render_export', { req });
+      } catch (err) {
+        const e = err as RenderExportError | string;
+        if (typeof e === 'string') {
+          setExportError({ stage: 'unknown', message: e });
+        } else {
+          setExportError(e);
+        }
+      } finally {
+        setExporting(false);
+      }
+    },
+    [exporting, clips, route, mapSettings, transitionFeel, projectLayouts],
+  );
+
+  const handleExportMapOnly = useCallback(
+    () => runExport('map_only', 'Export map-only (.mov)', { extension: 'mov', filterName: 'QuickTime' }),
+    [runExport],
+  );
+
+  // Channel C: per-clip filter chain → concat → ProRes 4444 + PCM s16le
+  // audio at the layout's video slot on a transparent canvas. Stack with
+  // B in any NLE to reconstruct A.
+  const handleExportVideoOnly = useCallback(
+    () => runExport('video_only', 'Export video-only (.mov)', { extension: 'mov', filterName: 'QuickTime' }),
+    [runExport],
+  );
+
+  // Channel A (task 090): the deliverable. Map render stream + per-clip
+  // video chain composited into a single H.265 .mp4 per the configured
+  // layout. AAC audio. Unlike B/C this is opaque (no alpha channel) and
+  // ships in MP4 rather than MOV.
+  const handleExportComposite = useCallback(
+    () => runExport('composite', 'Export composite (.mp4)', { extension: 'mp4', filterName: 'MP4' }),
+    [runExport],
+  );
+
+  // Refs for the synchronous live-playhead callback below. The callback runs
+  // inside the video preview's rAF tick (one frame ahead of any React commit),
+  // so it must read the latest span without depending on render-time props.
+  // Identity is kept stable so VideoPreview's effect chain doesn't churn.
+  const selectedClipSpanRef = useRef(selectedClipSpan);
+  useEffect(() => { selectedClipSpanRef.current = selectedClipSpan; }, [selectedClipSpan]);
+
+  // Invalidate the live-playhead ref when the selected clip changes. The rAF
+  // callback only writes while playing, so without this the map's render loop
+  // would keep reading the previous clip's last project-time when the user
+  // clicks a different clip without pressing play. Clearing forces MapView's
+  // fallback chain (currentProjectMsRef → canonicalSeekMs) to take over.
+  useEffect(() => {
+    livePlayheadMs.current = null;
+  }, [selectedClipId]);
+
+  // Synchronous per-frame bridge: clip-local media-seconds → project-time-ms
+  // → livePlayheadMs. Mirrors the translation in onPlayheadChange below, but
+  // bypasses React state so MapView's render loop reads the freshest value
+  // within the same frame instead of two commits later. The slower
+  // setPlayheadMs path is kept for the timeline scrubber UI.
+  const handleLivePlayheadSeconds = useCallback((s: number) => {
+    const span = selectedClipSpanRef.current;
+    if (!span) {
+      livePlayheadMs.current = null;
+      return;
+    }
+    const raw = s * 1000;
+    const clipLocalMs =
+      raw < span.mediaInMs
+        ? span.mediaInMs
+        : raw > span.mediaOutMs
+          ? span.mediaOutMs
+          : raw;
+    livePlayheadMs.current =
+      span.startMs + (clipLocalMs - span.mediaInMs) / span.speed;
+  }, []);
+
   useEditorShortcuts({
     selectedClip,
     clips,
@@ -412,6 +612,30 @@ export default function ProjectView({
               </div>
             )}
           </div>
+          <button
+            onClick={handleExportMapOnly}
+            disabled={exporting || clips.length === 0}
+            style={styles.button}
+            title="Exports at 9:16. Configure layout per aspect via the layout configurator (coming in a later release)."
+          >
+            {exporting ? 'Exporting…' : 'Export map-only (.mov)'}
+          </button>
+          <button
+            onClick={handleExportVideoOnly}
+            disabled={exporting || clips.length === 0}
+            style={styles.button}
+            title="Exports at 9:16. Configure layout per aspect via the layout configurator (coming in a later release)."
+          >
+            {exporting ? 'Exporting…' : 'Export video-only (.mov)'}
+          </button>
+          <button
+            onClick={handleExportComposite}
+            disabled={exporting || clips.length === 0}
+            style={styles.button}
+            title="Exports at 9:16. Configure layout per aspect via the layout configurator (coming in a later release)."
+          >
+            {exporting ? 'Exporting…' : 'Export composite (.mp4)'}
+          </button>
           <div style={styles.gpxChipWrapper}>
             <div
               style={route ? styles.gpxChipLoaded : styles.gpxChipEmpty}
@@ -456,6 +680,31 @@ export default function ProjectView({
         </div>
       )}
 
+      {exportError && (
+        <div style={styles.error}>
+          <div style={{ flex: 1 }}>
+            <span>Export failed ({exportError.stage}): {exportError.message}</span>
+            {exportError.stderr_tail && (
+              <>
+                {' '}
+                <button
+                  onClick={() => setExportDetailsOpen((o) => !o)}
+                  style={styles.dismissBtn}
+                >
+                  {exportDetailsOpen ? 'Hide details' : 'Show details'}
+                </button>
+                {exportDetailsOpen && (
+                  <pre style={styles.errorPre}>{exportError.stderr_tail}</pre>
+                )}
+              </>
+            )}
+          </div>
+          <button onClick={() => setExportError(null)} style={styles.dismissBtn}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {loading && <div style={styles.loading}>Loading...</div>}
 
       {/* Display + Clips area (fills remaining space) */}
@@ -473,7 +722,7 @@ export default function ProjectView({
               cropPreview={cropPreview}
               onToggleCropPreview={() => setCropPreview(p => !p)}
             />
-            <div style={styles.videoPaneContent}>
+            <div ref={videoPaneContentRef} style={styles.videoPaneContent}>
               <VideoPreview
                 clip={selectedClip}
                 proxyPath={selectedProxyPath}
@@ -489,6 +738,7 @@ export default function ProjectView({
                 autoPlayToken={autoPlayToken}
                 onPlayingChange={handlePlayingChange}
                 onPlayIntent={handlePlayIntent}
+                onLivePlayheadSeconds={handleLivePlayheadSeconds}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
                   if (!selectedClipSpan) {
@@ -523,6 +773,23 @@ export default function ProjectView({
                   setPlayheadMs(projectMs);
                 }}
               />
+              {/* Layout-preview overlay (task 080). Read-only visualization
+                  of the project's stored 9:16 layout — pointer-events: none,
+                  so it never blocks clicks on the underlying video. */}
+              {layoutPreviewVisible && projectLayouts['9_16'] && videoPaneSize.w > 0 && (
+                <LayoutPreview
+                  layout={projectLayouts['9_16']}
+                  aspect="9_16"
+                  containerWidth={videoPaneSize.w}
+                  containerHeight={videoPaneSize.h}
+                />
+              )}
+              <div style={styles.layoutToggleAnchor}>
+                <LayoutPreviewToggle
+                  visible={layoutPreviewVisible}
+                  onToggle={handleToggleLayoutPreview}
+                />
+              </div>
             </div>
           </div>
 
@@ -551,7 +818,6 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
-                defaultEaseDurationMs={defaultEaseDurationMs}
                 onSelectClip={handleSelectClip}
               />
               <div
@@ -768,6 +1034,19 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'underline',
     fontSize: '12px',
   },
+  errorPre: {
+    marginTop: '6px',
+    padding: '6px 8px',
+    backgroundColor: '#2a0a0a',
+    color: '#ffb0b0',
+    fontSize: '11px',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-word' as const,
+    maxHeight: '160px',
+    overflow: 'auto',
+    borderRadius: '4px',
+  },
   loading: {
     padding: '8px 16px',
     backgroundColor: '#1a3a1a',
@@ -797,6 +1076,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     position: 'relative',
+  },
+  layoutToggleAnchor: {
+    position: 'absolute' as const,
+    top: 8,
+    right: 8,
+    zIndex: 12,
   },
   mapPane: {
     display: 'flex',

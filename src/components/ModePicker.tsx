@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
+import { useId, useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react';
 import { colors } from '../theme/tokens';
 
 interface ModeOption<T extends string> {
@@ -53,10 +53,13 @@ export default function ModePicker<T extends string>({
   const [anchor, setAnchor] = useState<{ left: number; top: number; w: number; h: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   // Stable id for the click-outside check (one per instance)
-  const layerIdRef = useRef(`mode-fan-${Math.random().toString(36).slice(2)}`);
+  const layerId = `mode-fan-${useId()}`;
 
+  // Animation entry/exit: mount → next-frame expand on open; expand-out → unmount-after-delay on close.
+  // setState here is intentional — driving the animation timeline.
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMounted(true);
       const id = requestAnimationFrame(() => setExpanded(true));
       return () => cancelAnimationFrame(id);
@@ -88,13 +91,13 @@ export default function ModePicker<T extends string>({
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node;
       if (btnRef.current?.contains(t)) return;
-      const el = document.getElementById(layerIdRef.current);
+      const el = document.getElementById(layerId);
       if (el?.contains(t)) return;
       setOpen(false);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [open]);
+  }, [open, layerId]);
 
   const activeOption = options.find((o) => o.value === value) ?? options[0];
 
@@ -181,7 +184,7 @@ export default function ModePicker<T extends string>({
       </button>
 
       {mounted && anchor && (
-        <div id={layerIdRef.current} style={styles.fanLayer}>
+        <div id={layerId} style={styles.fanLayer}>
           {options.map((opt, i) => {
             const isActive = opt.value === value;
             const disabled = disabledValues.includes(opt.value);

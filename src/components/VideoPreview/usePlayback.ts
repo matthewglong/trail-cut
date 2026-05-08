@@ -13,6 +13,11 @@ interface UsePlaybackOptions {
   autoPlayToken?: number;
   onPlayingChange?: (playing: boolean) => void;
   onPlayIntent?: () => boolean;
+  /** Synchronous per-frame callback fired from inside the rAF tick with the
+   *  current media-seconds playhead. Bypasses React state so consumers (the
+   *  map's render loop) read the freshest value within the same frame
+   *  instead of two commits/effects later. */
+  onLivePlayheadSeconds?: (mediaSeconds: number) => void;
 }
 
 export interface PlaybackState {
@@ -40,16 +45,22 @@ export function usePlayback({
   autoPlayToken,
   onPlayingChange,
   onPlayIntent,
+  onLivePlayheadSeconds,
 }: UsePlaybackOptions): PlaybackState {
   const pendingAutoPlayRef = useRef(false);
   const onClipEndedRef = useRef(onClipEnded);
   const playbackModeRef = useRef(playbackMode);
   const onPlayIntentRef = useRef(onPlayIntent);
   const draggingRef = useRef(dragging);
+  // Mirror onLivePlayheadSeconds on a ref so changes to the callback identity
+  // don't restart the rAF loop. The tick reads the latest callback through
+  // the ref each frame.
+  const onLivePlayheadSecondsRef = useRef(onLivePlayheadSeconds);
   useEffect(() => { onClipEndedRef.current = onClipEnded; }, [onClipEnded]);
   useEffect(() => { playbackModeRef.current = playbackMode; }, [playbackMode]);
   useEffect(() => { onPlayIntentRef.current = onPlayIntent; }, [onPlayIntent]);
   useEffect(() => { draggingRef.current = dragging; }, [dragging]);
+  useEffect(() => { onLivePlayheadSecondsRef.current = onLivePlayheadSeconds; }, [onLivePlayheadSeconds]);
   useEffect(() => {
     if (autoPlayToken && autoPlayToken > 0) pendingAutoPlayRef.current = true;
   }, [autoPlayToken]);
@@ -74,13 +85,17 @@ export function usePlayback({
   const playheadLoopRef = useRef<number | null>(null);
   const lastFrameTimeRef = useRef<number>(0);
 
-  // Reset state when clip changes
-  useEffect(() => {
+  // Reset state when clip changes. Derive-during-render pattern (per
+  // https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // avoids the cascading render an equivalent effect would cause.
+  const [prevProxyPath, setPrevProxyPath] = useState(proxyPath);
+  if (prevProxyPath !== proxyPath) {
+    setPrevProxyPath(proxyPath);
     setPlaying(false);
     setCurrentTime(0);
     setDuration(0);
     setVideoNatural(null);
-  }, [proxyPath]);
+  }
 
   function stopPlayheadLoop() {
     if (playheadLoopRef.current !== null) {
@@ -122,10 +137,12 @@ export function usePlayback({
         }
         video.currentTime = curTrimIn;
         setCurrentTime(curTrimIn);
+        onLivePlayheadSecondsRef.current?.(curTrimIn);
         playheadLoopRef.current = requestAnimationFrame(tick);
         return;
       }
       setCurrentTime(t);
+      onLivePlayheadSecondsRef.current?.(t);
       playheadLoopRef.current = requestAnimationFrame(tick);
     };
     playheadLoopRef.current = requestAnimationFrame(tick);
@@ -139,7 +156,7 @@ export function usePlayback({
     if (videoRef.current) {
       videoRef.current.playbackRate = speed <= 1.0 ? speed : 1.0;
     }
-  }, [speed, proxyPath]);
+  }, [speed, proxyPath, videoRef]);
 
   // Retained as a no-op listener so the <video onTimeUpdate> wire stays
   // valid; the rAF playhead loop is now the single source of state updates

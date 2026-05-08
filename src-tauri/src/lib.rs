@@ -1,4 +1,5 @@
 mod commands;
+pub mod export;
 mod models;
 mod util;
 
@@ -25,6 +26,8 @@ pub fn run() {
             commands::register_recent_project,
             commands::rename_project,
             commands::delete_project,
+            commands::probe_encoders,
+            export::render_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

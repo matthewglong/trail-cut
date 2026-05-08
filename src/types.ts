@@ -114,25 +114,23 @@ export function resolveMapSettings(defaults: MapSettings, overrides: MapOverride
   return { ...defaults, ...overrides };
 }
 
-export interface ExportLayout {
-  video_pct: number;
-  map_position: string;
-  map_visible: string;
-}
+/** Re-exported from `lib/layout.ts` so `types.ts` stays the single import
+ *  surface for project-shape types. The `Project.layouts` field below stores
+ *  one optional layout per output aspect (task 050). */
+export type {
+  AspectRatio,
+  LayoutConfig,
+  PipLayout,
+  SplitLayout,
+  ProjectLayouts,
+  SlotResolution,
+  PixelRect,
+  OutputDimensions,
+  LayoutDescriptor,
+  NormalizedRect,
+} from './lib/layout';
 
-export interface ExportResolution {
-  width: number;
-  height: number;
-}
-
-export interface ExportConfig {
-  name: string;
-  aspect_ratio: string;
-  resolution: ExportResolution;
-  layout: ExportLayout;
-  codec: string;
-  quality: string;
-}
+import type { ProjectLayouts } from './lib/layout';
 
 /** Project-level "transition feel" knob. Drives the duration multiplier for
  *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
@@ -183,7 +181,12 @@ export interface Project {
   thumbnail: string | null;
   clips: Clip[];
   route: Route | null;
-  exports: ExportConfig[];
+  /** Per-aspect layout configuration (v4+). Always populated post-080:
+   *  fresh projects ship with `9_16` seeded by `defaultLayout('9_16')` and
+   *  `4_5` / `16_9` left null until the user picks those aspects in the
+   *  configurator (task 110). The Rust `load_project` backfills pre-080
+   *  bundles where the field was absent or null. */
+  layouts: ProjectLayouts;
   map_settings?: MapSettings;
   /** Optional: defaults to 'natural' at the consumer. Pre-task-350 projects
    *  on disk lack this field; Rust serde fills in `None` and the frontend
@@ -196,17 +199,6 @@ export interface Project {
   /** Project-level defaults for every clip's entry transition. Each clip's
    *  own `entry_transition` overrides individual fields. */
   default_entry_transition?: ClipEntryTransition;
-  /** Project-level default for the live preview camera's per-tick easing
-   *  duration (ms). Sized in the same regime as the ease loop's tick
-   *  cadence — a larger value smooths the camera (each tick interrupts a
-   *  longer in-flight easeTo with a fresh target), a smaller value snaps
-   *  it. Lookahead in the ease loop tracks this value so the camera's
-   *  arrival point coincides with the playhead at easing completion.
-   *  When absent, the consumer falls back to a 50ms baseline. Reserved
-   *  for future distance-driven dynamics — `pickEaseDurationMs` may
-   *  later compute a per-tick duration from this baseline plus the
-   *  inter-tick camera distance. */
-  default_ease_duration_ms?: number;
 }
 
 export interface RecentProject {

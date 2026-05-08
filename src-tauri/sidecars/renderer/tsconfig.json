@@ -1,0 +1,35 @@
+{
+  "// purpose": "Type-check-only config for the renderer worker. esbuild does the actual emit; this just proves the worker (and the shared TS sources it pulls from src/lib/) compiles in a Node CJS context. Distinct from tsconfig.app.json (DOM/JSX, browser) and tsconfig.node.json (vite.config only).",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "index.ts",
+    "tileCache.ts",
+    "__tests__/setupFixture.ts",
+    "../../../src/lib/mapVisuals/**/*.ts",
+    "../../../src/lib/cameraIntent.ts",
+    "../../../src/lib/routeLocation.ts",
+    "../../../src/types.ts",
+    "../../../src/theme/tokens.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "dist/**",
+    "node_modules/**"
+  ]
+}

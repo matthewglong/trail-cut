@@ -3,11 +3,13 @@
 // (timeline, projectTimeMs, activeClipId, indexedRoute, clips, mapSettings,
 // viewport) — same inputs always produce the same output.
 //
-// IMPORTANT for preview/export parity: the caller is responsible for any
-// project-time offset (e.g. preview's ease-loop "lookahead = duration"
-// trick). This function evaluates strictly at the supplied
-// `projectTimeMs` so the export sampler's frame-by-frame stepping produces
-// the exact state the preview shows when the playhead is at that t.
+// Preview/export parity contract: this function is the single source of
+// truth for what the map looks like at project-time `t`. Both the preview
+// (per animation frame) and the export sampler (per output frame) call
+// it with the playhead's actual `t` and apply the result directly — no
+// smoothing, no lookahead, no `easeTo` interpolation in the apply step.
+// Any time-based curve (e.g. transition arcs) lives inside `cameraAt`
+// itself, where both pipelines see it.
 
 import type { Clip, MapSettings } from '../../types';
 import {
@@ -89,12 +91,12 @@ function wallClockTrace(
 }
 
 /** Compose a single per-frame snapshot. The export worker calls this
- *  per-frame; the preview's ease loop calls it per-tick.
+ *  per-frame; the preview's render loop calls it per animation frame.
+ *  Both pass the playhead's actual `projectTimeMs` and apply the result
+ *  directly (preview via `jumpTo`, export via `map.render`).
  *
  *  Camera: `cameraAt(timeline, projectTimeMs)` → `resolveIntent(intent,
- *  viewport)`. The preview ease loop's lookahead (`t + duration`) is the
- *  caller's responsibility — pass an already-offset `t` if the consumer
- *  wants the lookahead behavior.
+ *  viewport)`.
  *
  *  Sources: `route-trail`, `live-marker`, and (when `waypoints_mode ===
  *  'visited'`) `waypoints`. See `buildPerFrameSourceData` for the

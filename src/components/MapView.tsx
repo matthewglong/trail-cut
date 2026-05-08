@@ -8,6 +8,7 @@ import {
   type Viewport,
 } from '../lib/cameraIntent';
 import { indexRoute } from '../lib/routeLocation';
+import { livePlayheadMs } from '../lib/livePlayhead';
 import {
   buildStyleSpec,
   buildStaticSourceData,
@@ -23,19 +24,19 @@ import {
 
 interface MapViewProps {
   /** The compiled project-time timeline. Single source of truth for camera
-   *  scheduling — the ease loop below evaluates `cameraAt(timeline, t)`
-   *  every tick. See `COMPILED_TIMELINE_PLAN.md` §"Data Model → Compiled
-   *  Data". */
+   *  scheduling — the per-frame loop below evaluates `cameraAt(timeline, t)`
+   *  every animation frame. See `COMPILED_TIMELINE_PLAN.md` §"Data Model →
+   *  Compiled Data". */
   timeline: CompiledTimeline;
   /** Project-time playhead (ms). null when no clip is selected or the
-   *  selected clip is not compilable. The ease loop falls back to the
+   *  selected clip is not compilable. The render loop falls back to the
    *  selected clip's `canonicalSeekMs` when this is null but a clip is
    *  selected, so the camera lands on the right initial frame even before
    *  the video element fires its first time-update. */
   playheadMs: number | null;
   mapSettings: MapSettings;
   /** The user's persistent selection. Drives the playhead-bootstrap fallback
-   *  in `currentProjectMs` (when no playhead has fired yet, the ease loop
+   *  in `currentProjectMs` (when no playhead has fired yet, the render loop
    *  targets this clip's `canonicalSeekMs`). For waypoint highlighting use
    *  `activeClipId` instead — the two diverge during an auto-advance
    *  transition. */
@@ -43,46 +44,14 @@ interface MapViewProps {
   /** The clip whose camera state is current at this moment in project-time
    *  per `activeClipIdAt`. During a transition this is the destination clip;
    *  outside a transition it equals `selectedClipId`. Drives waypoint
-   *  highlighting only — the ease loop reads project-time directly. */
+   *  highlighting only — the render loop reads project-time directly. */
   activeClipId: string | null;
   route: Route | null;
   /** Per-clip data (id, gps) for the waypoint layer's circle features and
    *  the marker's GPS fallback. The compiled timeline carries clip ids and
    *  spans but not embedded GPS, so we still need the clip list here. */
   clips: Clip[];
-  /** Project-level default for the live preview camera's per-tick easing
-   *  duration (ms). The ease loop sizes both `easeTo`'s `duration` and its
-   *  lookahead from this value so the camera's arrival point coincides
-   *  with the playhead at easing completion. Falls back to a 50ms baseline
-   *  when undefined. Reserved hook for future distance-driven dynamics:
-   *  `pickEaseDurationMs` will eventually take this as the baseline and
-   *  modulate it by the inter-tick camera distance. */
-  defaultEaseDurationMs?: number;
   onSelectClip?: (clipId: string) => void;
-}
-
-/** Tick cadence for the live ease loop (ms). How often we re-aim the
- *  camera. Independent of `easeTo` duration — the duration is chosen per
- *  tick by `pickEaseDurationMs` and may exceed `POLL_MS`, in which case
- *  each tick interrupts a half-finished `easeTo` with a fresh target
- *  (MapLibre handles that by resampling from the current camera state). */
-const POLL_MS = 50;
-
-/** Fallback for `defaultEaseDurationMs` when the project doesn't specify
- *  one. Sized to match `POLL_MS` so unconfigured projects behave like
- *  pre-refactor (single 50ms tick = single 50ms easing). */
-const DEFAULT_EASE_DURATION_MS_FALLBACK = 50;
-
-/** Pick the per-tick `easeTo` duration. Today returns the project-level
- *  baseline unmodified; reserved hook for future distance-driven dynamics
- *  (e.g. clamp(centerDistanceMeters * k, min, max) or a velocity-aware
- *  schedule). When that lands, expand the signature to take the current
- *  and target `ResolvedCamera`s and the ease loop will compute them per
- *  tick from the live map state. The contract callers rely on: the
- *  returned value is used for both `easeTo`'s `duration` AND the loop's
- *  lookahead horizon, so they cannot drift apart. */
-function pickEaseDurationMs(baselineMs: number): number {
-  return baselineMs;
 }
 
 export default function MapView({
@@ -93,22 +62,12 @@ export default function MapView({
   route,
   playheadMs,
   mapSettings,
-  defaultEaseDurationMs,
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
-  // Read the ease baseline off a ref so the ease loop doesn't restart on
-  // project-default changes (e.g. user tweaks the value mid-session).
-  const easeBaselineMsRef = useRef(
-    defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK,
-  );
   useEffect(() => {
     onSelectClipRef.current = onSelectClip;
   }, [onSelectClip]);
-  useEffect(() => {
-    easeBaselineMsRef.current =
-      defaultEaseDurationMs ?? DEFAULT_EASE_DURATION_MS_FALLBACK;
-  }, [defaultEaseDurationMs]);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
@@ -119,11 +78,10 @@ export default function MapView({
   // below. Idempotence guard: we only refit once per unique route.
   const appliedRouteRef = useRef<Route | null>(null);
 
-  // Mirror props on refs so the per-frame ease-loop tick reads fresh values
+  // Mirror props on refs so the per-frame render loop reads fresh values
   // without re-subscribing on every prop change. The loop only restarts when
   // `timeline` changes; everything else flows through refs. Refresh runs in
-  // a passive useEffect (post-paint) so worst-case staleness is one tick =
-  // 50ms — below user-perceptible.
+  // a passive useEffect (post-paint) so worst-case staleness is one frame.
   const mapSettingsRef = useRef(mapSettings);
   const clipsRef = useRef(clips);
   const routeRef = useRef(route);
@@ -141,11 +99,11 @@ export default function MapView({
   useEffect(() => {
     activeClipIdRef.current = activeClipId;
   }, [activeClipId]);
-  // Effective project-time the ease loop should target. When the video is
+  // Effective project-time the render loop should target. When the video is
   // playing this mirrors the playhead. When no playhead has fired yet (e.g.
   // right after project load or a clip selection), fall back to the selected
-  // clip span's `canonicalSeekMs` so the first ease-loop tick targets the
-  // user's intent rather than the previous clip's last frame.
+  // clip span's `canonicalSeekMs` so the first frame targets the user's
+  // intent rather than the previous clip's last frame.
   useEffect(() => {
     if (playheadMs != null) {
       currentProjectMsRef.current = playheadMs;
@@ -171,6 +129,27 @@ export default function MapView({
       pitch: initial.defaultPitch,
       attributionControl: false,
     });
+    // Defeat MapLibre's "we're at rest, take shortcuts" heuristics. Three
+    // separate code paths read the map's motion flags via `painter.options`:
+    //
+    //  - `moving` (= map.isMoving()) gates `align` in draw_raster.ts:96 and
+    //    its hillshade/color-relief siblings. align=true uses
+    //    `_alignedProjMatrix`, which `Math.round`s camera position to integer
+    //    CSS pixels (mercator_transform.ts:677–681) — visible as 1-pixel
+    //    raster wobble under our per-frame jumpTo loop.
+    //  - `zooming` and `rotating` (= map.isZooming/isRotating) gate the icon
+    //    atlas texture filter in draw_symbol.ts:365,370. At rest the engine
+    //    picks `gl.NEAREST`, which aliases against the texel grid as the
+    //    icon's screen position drifts sub-pixel between frames — visible as
+    //    POI shimmer/jitter on the default vector style.
+    //
+    // Our deterministic per-frame jumpTo loop never enters easeTo/flyTo, so
+    // every frame reads as at-rest. Forcing all three true keeps the
+    // unsnapped raster matrix AND `gl.LINEAR` icon sampling. Camera math
+    // (jumpTo, cameraAt) is unchanged, so determinism is preserved.
+    map.isMoving = () => true;
+    map.isZooming = () => true;
+    map.isRotating = () => true;
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
 
@@ -389,19 +368,21 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [clips, route, mapSettings, styleVersion]);
 
-  // ---- Live preview ease loop ----
-  // Every POLL_MS we compose a per-frame snapshot via `buildPerFrameState`
-  // and apply it: easeTo for camera, setData for sources, setPaintProperty
-  // for paints. Module owns *what* the state is; this loop owns *when* it's
-  // applied. Time arg = `projectTimeMs + easeBaseline` preserves the
-  // pre-refactor lookahead so the camera's arrival aligns with the playhead
-  // at easing completion. Refs feed per-frame inputs; loop only restarts on
-  // timeline change.
+  // ---- Per-frame render loop ----
+  // Each animation frame we compose a per-frame snapshot via
+  // `buildPerFrameState(timeline, projectTimeMs, …)` and apply it:
+  // `jumpTo` for camera, `setData` for sources, `setPaintProperty` for
+  // paints. No smoothing in the apply step — the only allowed source of
+  // visual smoothness is `cameraAt(t)` itself, since export samples the
+  // same function per frame. Anything we layered on top here (e.g.
+  // `easeTo`'s default interpolation) would be preview-only and would
+  // diverge from the export. Refs feed per-frame inputs; loop only
+  // restarts on timeline change.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    let timeoutId = 0;
+    let rafId = 0;
     let stopped = false;
 
     const tick = () => {
@@ -410,13 +391,17 @@ export default function MapView({
       // and the constructor's initial framing remain authoritative until
       // compilable clips exist.
       if (timeline.clipSpans.length === 0) {
-        timeoutId = window.setTimeout(tick, POLL_MS);
+        rafId = window.requestAnimationFrame(tick);
         return;
       }
-      const projectTimeMs = currentProjectMsRef.current ?? 0;
-      // lookahead == duration: camera arrival lines up with the playhead at
-      // ease completion. `indexRoute` is pure + cheap so re-call per tick.
-      const duration = pickEaseDurationMs(easeBaselineMsRef.current);
+      // Prefer livePlayheadMs — it's written from inside usePlayback's rAF
+      // tick (no React state in between), so during follow playback the map
+      // reads the same frame's playhead instead of one set two commits ago.
+      // Fall back to currentProjectMsRef for the bootstrap case (no playhead
+      // has fired yet — selected clip's canonicalSeekMs) and the seek case
+      // (user clicks a clip without playing).
+      const projectTimeMs =
+        livePlayheadMs.current ?? currentProjectMsRef.current ?? 0;
       const container = map.getContainer();
       const viewport: Viewport = {
         width: container.clientWidth,
@@ -425,7 +410,7 @@ export default function MapView({
       };
       const state = buildPerFrameState(
         timeline,
-        projectTimeMs + duration,
+        projectTimeMs,
         activeClipIdRef.current,
         indexRoute(routeRef.current),
         clipsRef.current,
@@ -433,13 +418,11 @@ export default function MapView({
         viewport,
       );
 
-      map.easeTo({
+      map.jumpTo({
         center: [state.camera.center.lng, state.camera.center.lat],
         zoom: state.camera.zoom,
         bearing: state.camera.bearing,
         pitch: state.camera.pitch,
-        duration,
-        essential: true,
       });
 
       // Sources / paints. Guard with styleReadyRef — setStyle() drops
@@ -469,13 +452,13 @@ export default function MapView({
         }
       }
 
-      timeoutId = window.setTimeout(tick, POLL_MS);
+      rafId = window.requestAnimationFrame(tick);
     };
 
-    tick();
+    rafId = window.requestAnimationFrame(tick);
     return () => {
       stopped = true;
-      window.clearTimeout(timeoutId);
+      window.cancelAnimationFrame(rafId);
     };
   }, [timeline]);
 
@@ -486,6 +469,7 @@ export default function MapView({
         width: '100%',
         height: '100%',
         minHeight: '300px',
+        position: 'relative',
       }}
     />
   );

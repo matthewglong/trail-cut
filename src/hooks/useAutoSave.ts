@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Clip, Route, Project, MapSettings, TransitionFeel } from '../types';
+import type { Clip, Route, Project, ProjectLayouts, MapSettings, TransitionFeel } from '../types';
+import { defaultLayout } from '../lib/layout';
 
 interface AutoSaveParams {
   projectDir: string | null;
@@ -10,10 +11,36 @@ interface AutoSaveParams {
   projectThumbnail: string | null;
   mapSettings: MapSettings;
   transitionFeel: TransitionFeel | undefined;
-  defaultEaseDurationMs: number | undefined;
+  /** Per-aspect layouts (task 080). Always populated post-080 — App-level
+   *  state initializes to the seeded shape and the load path backfills any
+   *  missing field from disk. */
+  projectLayouts: ProjectLayouts;
 }
 
-export function useAutoSave({ projectDir, clips, route, projectName, projectThumbnail, mapSettings, transitionFeel, defaultEaseDurationMs }: AutoSaveParams) {
+/** Defensive backfill mirroring `useProject`'s + Rust's `seeded_layouts()`.
+ *  In normal operation this branch is cold — App-level state always supplies
+ *  a populated `ProjectLayouts`. Kept as a safety net so a future regression
+ *  (someone passes `undefined` through prop-drilling) doesn't write a
+ *  `layouts: undefined` row to disk. */
+function ensureLayouts(layouts: ProjectLayouts | undefined): ProjectLayouts {
+  if (layouts) return layouts;
+  return {
+    '9_16': defaultLayout('9_16'),
+    '4_5': null,
+    '16_9': null,
+  };
+}
+
+export function useAutoSave({
+  projectDir,
+  clips,
+  route,
+  projectName,
+  projectThumbnail,
+  mapSettings,
+  transitionFeel,
+  projectLayouts,
+}: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -27,10 +54,9 @@ export function useAutoSave({ projectDir, clips, route, projectName, projectThum
         thumbnail: projectThumbnail,
         clips,
         route,
-        exports: [],
+        layouts: ensureLayouts(projectLayouts),
         map_settings: mapSettings,
         transition_feel: transitionFeel,
-        default_ease_duration_ms: defaultEaseDurationMs,
       };
       invoke('save_project', { project, projectDir }).catch(() => {});
       invoke('register_recent_project', { projectDir }).catch(() => {});
@@ -39,5 +65,5 @@ export function useAutoSave({ projectDir, clips, route, projectName, projectThum
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings, transitionFeel, defaultEaseDurationMs]);
+  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings, transitionFeel, projectLayouts]);
 }

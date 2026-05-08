@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import type { Clip, TrimRange, FocalPoint } from '../../types';
 import { formatTime } from '../../utils/format';
@@ -23,6 +23,10 @@ interface VideoPreviewProps {
   /** Fired whenever the playhead moves, in media seconds from the start of
    *  the source video (unaffected by trim or speed). */
   onPlayheadChange?: (mediaSeconds: number) => void;
+  /** Synchronous per-frame callback fired from inside the rAF tick (no React
+   *  state in between). Same units as `onPlayheadChange`. Used by the map
+   *  render loop to read the freshest playhead within the same frame. */
+  onLivePlayheadSeconds?: (mediaSeconds: number) => void;
   /** Split the current clip at the playhead (right-click menu + ⌘B). */
   onSplitAtPlayhead?: () => void;
   /** 'loop' repeats the current clip; 'continuous' advances to next via onClipEnded. */
@@ -45,6 +49,7 @@ export default function VideoPreview({
   cropPreview,
   togglePlayRef,
   onPlayheadChange,
+  onLivePlayheadSeconds,
   onSplitAtPlayhead,
   playbackMode = 'loop',
   onChangePlaybackMode,
@@ -56,7 +61,38 @@ export default function VideoPreview({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const seekBarRef = useRef<HTMLDivElement>(null);
-  const videoContainerRef = useRef<HTMLDivElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
+
+  // Callback ref: maintain `videoContainerRef` for child consumers AND
+  // track dimensions in state so render-time math reacts to resize.
+  const setVideoContainerNode = useCallback((el: HTMLDivElement | null) => {
+    videoContainerRef.current = el;
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = null;
+    if (!el) {
+      setContainerSize(null);
+      return;
+    }
+    const update = () => {
+      setContainerSize((prev) => {
+        const w = el.clientWidth;
+        const h = el.clientHeight;
+        if (prev && prev.w === w && prev.h === h) return prev;
+        return { w, h };
+      });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    resizeObserverRef.current = ro;
+  }, []);
+
+  useEffect(() => () => {
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = null;
+  }, []);
 
   const speed = clip?.effects.speed ?? 1.0;
   const focalX = clip?.focal_point.x ?? 0.5;
@@ -82,6 +118,7 @@ export default function VideoPreview({
     autoPlayToken,
     onPlayingChange,
     onPlayIntent,
+    onLivePlayheadSeconds,
   });
 
   const { handleSeekBarMouseDown } = useTrimDrag({
@@ -158,12 +195,8 @@ export default function VideoPreview({
 
   // Compute crop-preview transform: scale video so only the crop region is visible
   const cropTransform = (() => {
-    if (!cropPreview || !videoNatural) return undefined;
-    const container = videoContainerRef.current;
-    if (!container) return undefined;
-
-    const cw = container.clientWidth;
-    const ch = container.clientHeight;
+    if (!cropPreview || !videoNatural || !containerSize) return undefined;
+    const { w: cw, h: ch } = containerSize;
     if (!cw || !ch) return undefined;
 
     const videoAspect = videoNatural.w / videoNatural.h;
@@ -220,7 +253,7 @@ export default function VideoPreview({
     <div style={styles.container}>
       {/* Video with crosshair overlay */}
       <div
-        ref={videoContainerRef}
+        ref={setVideoContainerNode}
         style={{
           ...styles.videoWrapper,
           cursor: cropPreview ? 'default' : 'crosshair',
@@ -270,9 +303,10 @@ export default function VideoPreview({
           </div>
         )}
         {/* Aspect ratio crop overlay — hidden in crop preview mode */}
-        {!cropPreview && videoNatural && (
+        {!cropPreview && videoNatural && containerSize && (
           <CropOverlay
-            containerRef={videoContainerRef}
+            cw={containerSize.w}
+            ch={containerSize.h}
             videoW={videoNatural.w}
             videoH={videoNatural.h}
             focalX={focalX}

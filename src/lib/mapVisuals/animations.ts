@@ -1,8 +1,6 @@
 // Project-time-driven animation primitives. Pure functions of `t` so the
 // preview and export agree at any sampled project-time, and so pausing the
-// preview freezes the animation mid-cycle (today's CSS-keyframe pulse runs
-// on wall-clock and continues to animate during a pause — replacing it with
-// `pulseAt` is a small UX improvement on top of the export-parity goal).
+// preview freezes the animation mid-cycle.
 
 import type { PulseState } from './types';
 

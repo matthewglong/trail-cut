@@ -1,0 +1,263 @@
+// Integration test for the Channel B (map-only) end-to-end pipeline (task 060).
+//
+// Drives `render_export` against the real bundled renderer + system FFmpeg,
+// produces a `.mov` on disk, and asserts FFprobe reports the expected
+// (width, height, codec, pixel format with alpha, duration). Reads frame 30
+// of the output and spot-checks alpha=0 outside the inset rect, alpha=255
+// inside.
+//
+// Gated on `--features integration_export` so routine `cargo test` doesn't
+// pay the ~5–15s wall clock and the dependency on FFmpeg + Node + maplibre-
+// native + network (cold tile fetches). Mirrors 030's bundle-guard pattern.
+//
+// PRECONDITIONS (run once before this test):
+//   npm run build:renderer
+//   ffmpeg / ffprobe on PATH
+//
+// Run:
+//   cargo test --test render_export_map_only --features integration_export -- --nocapture
+
+#![cfg(feature = "integration_export")]
+
+use std::path::PathBuf;
+use std::process::Command;
+
+use serde_json::Value;
+use tempfile::TempDir;
+use trail_cut_lib::export::{
+    default_layout, render_export, resolve_slots, AspectRatio, LayoutDescriptor,
+    RenderExportRequest,
+};
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn renderer_cjs() -> PathBuf {
+    manifest_dir()
+        .join("sidecars")
+        .join("renderer")
+        .join("dist")
+        .join("renderer.cjs")
+}
+
+fn setup_fixture_cjs() -> PathBuf {
+    manifest_dir()
+        .join("sidecars")
+        .join("renderer")
+        .join("dist")
+        .join("setup_fixture.cjs")
+}
+
+fn assert_bundle_present() {
+    let renderer = renderer_cjs();
+    let fixture = setup_fixture_cjs();
+    if !renderer.exists() || !fixture.exists() {
+        panic!(
+            "Renderer bundle artifacts missing. Run `npm run build:renderer` first.\n\
+             Expected: {}\n\
+             Expected: {}",
+            renderer.display(),
+            fixture.display(),
+        );
+    }
+}
+
+fn assert_ffmpeg_on_path() {
+    let probe = Command::new("ffmpeg").arg("-version").output();
+    if probe.map(|o| !o.status.success()).unwrap_or(true) {
+        panic!("ffmpeg not on PATH (or non-zero exit). Install via `brew install ffmpeg`.");
+    }
+    let probe = Command::new("ffprobe").arg("-version").output();
+    if probe.map(|o| !o.status.success()).unwrap_or(true) {
+        panic!("ffprobe not on PATH (ships with ffmpeg).");
+    }
+}
+
+/// Build the Rust-side `RenderExportRequest` by exec'ing the same JS fixture
+/// builder the orchestrator integration test uses, then wrapping its output
+/// with a 9:16 PiP layout descriptor and the export envelope keys.
+fn build_request(output_path: &str) -> RenderExportRequest {
+    assert_bundle_present();
+    let fixture = setup_fixture_cjs();
+    let output = Command::new("node")
+        .arg(&fixture)
+        .output()
+        .expect("spawn node fixture");
+    if !output.status.success() {
+        panic!(
+            "fixture builder failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let mut setup_value: Value = serde_json::from_slice(&output.stdout)
+        .expect("fixture stdout → JSON");
+    // Strip wire-only keys the renderer worker expects but `render_export`
+    // doesn't (the SetupPayload re-injects `cmd`/`viewport` itself).
+    if let Some(obj) = setup_value.as_object_mut() {
+        obj.remove("cmd");
+        obj.remove("viewport");
+        obj.remove("fps");
+    }
+
+    let aspect = AspectRatio::NineSixteen;
+    let layout = default_layout(aspect);
+    let resolved = resolve_slots(&layout, aspect);
+    let layout_descriptor = LayoutDescriptor {
+        aspect,
+        layout,
+        resolved,
+    };
+
+    // Build the request manually — `RenderExportRequest` uses
+    // `#[serde(flatten)]` for project_state, so we can pass the whole
+    // setup object as that field.
+    RenderExportRequest {
+        channel: "map_only".to_string(),
+        fps: 30,
+        output_path: output_path.to_string(),
+        layout: layout_descriptor,
+        project_state: setup_value,
+    }
+}
+
+fn ffprobe_streams(path: &PathBuf) -> Value {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_streams",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .expect("spawn ffprobe");
+    if !out.status.success() {
+        panic!(
+            "ffprobe failed for {}:\n{}",
+            path.display(),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+    serde_json::from_slice(&out.stdout).expect("ffprobe stdout → JSON")
+}
+
+fn extract_rgba_frame(input: &PathBuf, frame_idx: u32, w: u32, h: u32) -> Vec<u8> {
+    // FFmpeg pipeline: select the requested frame, decode to rawvideo rgba.
+    let out = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+        ])
+        .arg(input)
+        .args([
+            "-vf",
+            &format!("select=eq(n\\,{})", frame_idx),
+            "-vsync",
+            "0",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-",
+        ])
+        .output()
+        .expect("spawn ffmpeg frame extract");
+    if !out.status.success() {
+        panic!(
+            "ffmpeg frame-extract failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+    let expected = (w as usize) * (h as usize) * 4;
+    assert_eq!(out.stdout.len(), expected, "extracted frame size mismatch");
+    out.stdout
+}
+
+fn alpha_at(rgba: &[u8], w: u32, x: u32, y: u32) -> u8 {
+    rgba[((y * w + x) as usize) * 4 + 3]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn map_only_export_produces_valid_mov() {
+    assert_ffmpeg_on_path();
+    assert_bundle_present();
+
+    let tmp = TempDir::new().expect("tempdir");
+    let output_path = tmp.path().join("map_only.mov");
+    let req = build_request(output_path.to_string_lossy().as_ref());
+    // 2-second route in the fixture × 30 fps = 60 frames expected.
+    let resolved = req.layout.resolved.clone();
+
+    let summary = render_export(req)
+        .await
+        .expect("render_export should succeed end-to-end");
+    assert_eq!(summary.frames_written, 60);
+
+    // ---- ffprobe assertions ----
+    let probe = ffprobe_streams(&output_path);
+    let streams = probe["streams"].as_array().expect("streams array");
+    let video = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .expect("video stream");
+    let audio_count = streams.iter().filter(|s| s["codec_type"] == "audio").count();
+    assert_eq!(audio_count, 0, "Channel B is silent: -an should yield 0 audio streams");
+
+    assert_eq!(video["codec_name"], "prores");
+    assert_eq!(video["pix_fmt"], "yuva444p10le");
+    assert_eq!(video["width"].as_u64().unwrap(), 1080);
+    assert_eq!(video["height"].as_u64().unwrap(), 1920);
+
+    let nb_frames = video["nb_frames"]
+        .as_str()
+        .and_then(|s| s.parse::<u64>().ok())
+        .or_else(|| video["nb_frames"].as_u64())
+        .expect("nb_frames present");
+    assert_eq!(nb_frames, 60);
+
+    let duration = video["duration"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .or_else(|| video["duration"].as_f64())
+        .expect("duration present");
+    assert!(
+        (1.99..=2.01).contains(&duration),
+        "duration {} not in [1.99, 2.01]",
+        duration,
+    );
+
+    // ---- frame-30 alpha spot check ----
+    // Outside the inset (default 9:16 layout puts map_slot at roughly
+    // (702, 1497, 346, 346)): pixel (10, 10) must be alpha=0.
+    // Inside the inset center: alpha=255 and non-zero RGB.
+    let frame = extract_rgba_frame(&output_path, 30, 1080, 1920);
+    let outside_a = alpha_at(&frame, 1080, 10, 10);
+    assert_eq!(
+        outside_a, 0,
+        "pixel (10,10) outside inset must be transparent"
+    );
+
+    let cx = resolved.map_slot.x + resolved.map_slot.w / 2;
+    let cy = resolved.map_slot.y + resolved.map_slot.h / 2;
+    let center_a = alpha_at(&frame, 1080, cx, cy);
+    assert_eq!(
+        center_a, 255,
+        "inset center must be fully opaque (got {})",
+        center_a,
+    );
+    let i = ((cy * 1080 + cx) as usize) * 4;
+    let (r, g, b) = (frame[i], frame[i + 1], frame[i + 2]);
+    assert!(
+        !(r == 0 && g == 0 && b == 0),
+        "inset center should have non-zero RGB (map rendered something), got ({},{},{})",
+        r,
+        g,
+        b,
+    );
+}

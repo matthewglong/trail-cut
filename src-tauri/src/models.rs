@@ -1,3 +1,4 @@
+use crate::export::layout::{default_layout, AspectRatio, ProjectLayouts};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,29 +117,6 @@ pub struct Route {
     pub source_path: String,
     pub format: String,
     pub trackpoints: Vec<TrackPoint>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportLayout {
-    pub video_pct: u8,
-    pub map_position: String,
-    pub map_visible: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportResolution {
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportConfig {
-    pub name: String,
-    pub aspect_ratio: String,
-    pub resolution: ExportResolution,
-    pub layout: ExportLayout,
-    pub codec: String,
-    pub quality: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,8 +239,10 @@ pub struct ClipEntryTransition {
 /// changes (not just additive). v3 adds the compiled-timeline authored
 /// fields (`start_camera`, `default_entry_transition`, per-clip
 /// `entry_transition`) — all optional, so the v2→v3 migration is purely
-/// additive.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+/// additive. v4 drops the placeholder `exports` array (no UI ever wrote it)
+/// and adds the per-aspect `layouts` field per
+/// `docs/export/LAYOUT.md` and task 050.
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -305,7 +285,12 @@ pub struct Project {
     /// distinguishes `null` from `undefined` at the call site.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<Route>,
-    pub exports: Vec<ExportConfig>,
+    /// Per-aspect layout configuration (v4+). `None` until the user
+    /// configures any aspect via the configurator UI (task 110); each aspect
+    /// inside is also `Option` so a user can configure 9:16 without touching
+    /// 4:5 / 16:9. See `docs/export/LAYOUT.md` §4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layouts: Option<ProjectLayouts>,
     #[serde(default)]
     pub map_settings: Option<MapSettings>,
     /// `None` on disk for v1 projects pre-dating the camera migration. The
@@ -323,14 +308,6 @@ pub struct Project {
     /// clip's own `entry_transition` overrides individual fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_entry_transition: Option<ClipEntryTransition>,
-    /// Project-level default for the live preview camera's per-tick
-    /// easing duration (ms). Frontend's `MapView` ease loop reads this
-    /// to size both `easeTo`'s `duration` argument and its lookahead
-    /// (so the camera's arrival point lines up with the playhead at
-    /// easing completion). Absent on disk for projects pre-dating this
-    /// field; the frontend falls back to a 50 ms baseline.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_ease_duration_ms: Option<u64>,
 }
 
 impl Default for Project {
@@ -342,13 +319,27 @@ impl Default for Project {
             thumbnail: None,
             clips: Vec::new(),
             route: None,
-            exports: Vec::new(),
+            // Seed 9:16 with the baseline PiP-bottom-right layout (task 080).
+            // 4:5 / 16:9 stay None — the configurator UI seeds them when the
+            // user picks those aspects, so we don't impose aesthetic
+            // decisions on aspects the user may not use.
+            layouts: Some(seeded_layouts()),
             map_settings: None,
             transition_feel: None,
             start_camera: None,
             default_entry_transition: None,
-            default_ease_duration_ms: None,
         }
+    }
+}
+
+/// First-contact `ProjectLayouts` shape: 9:16 seeded with `default_layout`,
+/// other aspects left `None`. Used by `Project::default` (new projects) and
+/// `load_project`'s backfill (pre-080 v4 projects with `layouts: None`).
+pub fn seeded_layouts() -> ProjectLayouts {
+    ProjectLayouts {
+        aspect_9_16: Some(default_layout(AspectRatio::NineSixteen)),
+        aspect_4_5: None,
+        aspect_16_9: None,
     }
 }
 
