@@ -1,7 +1,0 @@
-node_modules/
-frames/
-frames-nopatch/
-frames-vector/
-frames-vector-nopatch/
-*.mp4
-package-lock.json
