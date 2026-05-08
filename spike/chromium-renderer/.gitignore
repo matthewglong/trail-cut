@@ -1,0 +1,5 @@
+node_modules/
+frames/
+frames-nopatch/
+*.mp4
+package-lock.json
