@@ -132,6 +132,21 @@ export type {
 
 import type { AspectRatio, ProjectLayouts } from './lib/layout';
 
+/** Channel selector for the export pipeline. Mirrors the Rust enum-by-string
+ *  in `RenderExportRequest.channel` and the union already exported from
+ *  `lib/exportRequest.ts`; redeclared here so the export-modal UI can depend
+ *  on `types.ts` without pulling in the request builder. */
+export type ExportChannel = 'composite' | 'map_only' | 'video_only';
+
+/** User's pending choice in the Export modal: which aspects × which channels.
+ *  Cartesian product yields the render-queue jobs (one job per pair).
+ *  Persistence to `project.json` (and the `output_dir` field) lands in task
+ *  280; the v1 shape here carries only the multi-select selections. */
+export interface ExportSelection {
+  aspects: AspectRatio[];
+  channels: ExportChannel[];
+}
+
 /** Project-level "transition feel" knob. Drives the duration multiplier for
  *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
  *  duplicated here so types.ts stays free of cameraIntent imports

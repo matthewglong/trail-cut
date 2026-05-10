@@ -9,6 +9,7 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
 import { LayoutConfigurator } from '../components/LayoutConfigurator';
+import { ExportModal } from '../components/ExportModal';
 import type { LayoutConfig } from '../lib/layout';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
@@ -16,7 +17,7 @@ import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
 import { buildExportRequest, type ExportChannel } from '../lib/exportRequest';
-import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportSelection } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -148,6 +149,11 @@ export default function ProjectView({
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<RenderExportError | null>(null);
   const [exportDetailsOpen, setExportDetailsOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSelection, setExportSelection] = useState<ExportSelection>({
+    aspects: [],
+    channels: [],
+  });
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
   const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
@@ -630,6 +636,14 @@ export default function ProjectView({
             )}
           </div>
           <button
+            onClick={() => setExportModalOpen(true)}
+            disabled={clips.length === 0}
+            style={styles.button}
+            data-testid="open-export-modal"
+          >
+            Export
+          </button>
+          <button
             onClick={handleExportMapOnly}
             disabled={exporting || clips.length === 0}
             style={styles.button}
@@ -933,6 +947,12 @@ export default function ProjectView({
           />
         </div>
       </div>
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        selection={exportSelection}
+        onSelectionChange={setExportSelection}
+      />
     </div>
   );
 }
