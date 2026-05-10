@@ -74,17 +74,17 @@ describe('deriveFilename', () => {
 
 describe('deriveJobs', () => {
   it('returns no jobs when nothing is selected', () => {
-    const sel: ExportSelection = { aspects: [], channels: [] };
+    const sel: ExportSelection = { aspects: [], channels: [], output_dir: null };
     expect(deriveJobs('Hike', '/Users/u/out', sel)).toEqual([]);
   });
 
   it('returns no jobs when aspects are empty', () => {
-    const sel: ExportSelection = { aspects: [], channels: ['composite'] };
+    const sel: ExportSelection = { aspects: [], channels: ['composite'], output_dir: null };
     expect(deriveJobs('Hike', '/Users/u/out', sel)).toEqual([]);
   });
 
   it('returns no jobs when channels are empty', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: [] };
+    const sel: ExportSelection = { aspects: ['9_16'], channels: [], output_dir: null };
     expect(deriveJobs('Hike', '/Users/u/out', sel)).toEqual([]);
   });
 
@@ -92,6 +92,7 @@ describe('deriveJobs', () => {
     const sel: ExportSelection = {
       aspects: ['9_16', '4_5'],
       channels: ['composite', 'map_only'],
+      output_dir: null,
     };
     const jobs = deriveJobs('Hike', '/out', sel);
     expect(jobs.map((j) => j.id)).toEqual([
@@ -106,6 +107,7 @@ describe('deriveJobs', () => {
     const sel: ExportSelection = {
       aspects: ['16_9', '9_16'],
       channels: ['video_only', 'composite'],
+      output_dir: null,
     };
     const jobs = deriveJobs('Hike', '/out', sel);
     expect(jobs.map((j) => j.id)).toEqual([
@@ -117,19 +119,19 @@ describe('deriveJobs', () => {
   });
 
   it('joins outputDir + filename with a single separator (no trailing slash)', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'] };
+    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'], output_dir: null };
     const [job] = deriveJobs('Hike', '/Users/u/out', sel);
     expect(job.outputPath).toBe('/Users/u/out/hike-9_16-composite.mp4');
   });
 
   it('joins outputDir + filename without doubling when outputDir has trailing slash', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'] };
+    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'], output_dir: null };
     const [job] = deriveJobs('Hike', '/Users/u/out/', sel);
     expect(job.outputPath).toBe('/Users/u/out/hike-9_16-composite.mp4');
   });
 
   it('passes folder paths with spaces through verbatim', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'] };
+    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'], output_dir: null };
     const [job] = deriveJobs('Hike', '/Users/u/My Folder', sel);
     expect(job.outputPath).toBe('/Users/u/My Folder/hike-9_16-composite.mp4');
   });
@@ -138,6 +140,7 @@ describe('deriveJobs', () => {
     const sel: ExportSelection = {
       aspects: ['9_16', '4_5', '16_9'],
       channels: ['composite', 'map_only', 'video_only'],
+      output_dir: null,
     };
     const jobs = deriveJobs('Hike', '/out', sel);
     expect(jobs).toHaveLength(9);
@@ -149,6 +152,7 @@ describe('deriveJobs', () => {
     const sel: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite', 'map_only', 'video_only'],
+      output_dir: null,
     };
     const jobs = deriveJobs('Hike2026', '/out', sel);
     expect(jobs).toEqual([

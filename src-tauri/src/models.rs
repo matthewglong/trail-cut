@@ -1,5 +1,6 @@
 use crate::export::layout::{default_pip_layout, AspectRatio, ProjectLayouts};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpsCoord {
@@ -235,14 +236,42 @@ pub struct ClipEntryTransition {
     pub feel: Option<TransitionFeel>,
 }
 
+/// Export-pipeline channel selector. Mirrors the TypeScript `ExportChannel`
+/// union in `src/types.ts`. Used for `Project.last_export_selection` (task
+/// 280) — the persistence path. The ad-hoc `RenderExportRequest.channel`
+/// string field stays as-is; this typed enum lives only on the project file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportChannel {
+    Composite,
+    MapOnly,
+    VideoOnly,
+}
+
+/// Last user-confirmed Export modal selection (task 280). Persisted per
+/// project so reopening the modal prefills aspects + channels + output folder
+/// instead of forcing the user to reselect each time. Written only on a
+/// successful queue completion (at least one `done` job); cancel-with-zero-
+/// successes does not clobber the previous value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportSelection {
+    pub aspects: Vec<AspectRatio>,
+    pub channels: Vec<ExportChannel>,
+    pub output_dir: Option<PathBuf>,
+}
+
 /// Current persisted-project schema version. Bump when a field's *shape*
 /// changes (not just additive). v3 adds the compiled-timeline authored
 /// fields (`start_camera`, `default_entry_transition`, per-clip
 /// `entry_transition`) — all optional, so the v2→v3 migration is purely
 /// additive. v4 drops the placeholder `exports` array (no UI ever wrote it)
 /// and adds the per-aspect `layouts` field per
-/// `docs/export/LAYOUT.md` and task 050.
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+/// `docs/export/LAYOUT.md` and task 050. v5 is purely additive: it adds
+/// `last_export_selection` (per-project memory of the last successful Export
+/// modal selection — aspects, channels, output folder) per task 280. The
+/// field is `Option` with `#[serde(default)]`, so older bundles load cleanly
+/// without a value-level migration step.
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -318,6 +347,13 @@ pub struct Project {
     /// clip's own `entry_transition` overrides individual fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_entry_transition: Option<ClipEntryTransition>,
+    /// Last user-confirmed Export modal selection (task 280, schema v5).
+    /// `None` until the user completes their first export; the modal
+    /// prefills from this on subsequent opens. Pre-v5 bundles lack the
+    /// field — `#[serde(default)]` supplies `None`, no migration step
+    /// required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_export_selection: Option<ExportSelection>,
 }
 
 impl Default for Project {
@@ -340,6 +376,7 @@ impl Default for Project {
             transition_feel: None,
             start_camera: None,
             default_entry_transition: None,
+            last_export_selection: None,
         }
     }
 }
@@ -372,4 +409,102 @@ pub struct RecentProject {
     pub thumbnail: Option<String>,
     #[serde(default)]
     pub first_clip_date: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_channel_serializes_as_snake_case() {
+        // The TS `ExportChannel` union is `'composite' | 'map_only' |
+        // 'video_only'`. The Rust enum's snake_case rename must match so
+        // round-tripping `last_export_selection` between TS and Rust is
+        // wire-stable.
+        let composite = serde_json::to_string(&ExportChannel::Composite).unwrap();
+        let map_only = serde_json::to_string(&ExportChannel::MapOnly).unwrap();
+        let video_only = serde_json::to_string(&ExportChannel::VideoOnly).unwrap();
+        assert_eq!(composite, "\"composite\"");
+        assert_eq!(map_only, "\"map_only\"");
+        assert_eq!(video_only, "\"video_only\"");
+    }
+
+    #[test]
+    fn export_selection_round_trips_through_serde() {
+        let selection = ExportSelection {
+            aspects: vec![AspectRatio::NineSixteen, AspectRatio::FourFive],
+            channels: vec![ExportChannel::Composite, ExportChannel::MapOnly],
+            output_dir: Some(PathBuf::from("/Users/u/Movies/Hike2026")),
+        };
+        let json = serde_json::to_string(&selection).unwrap();
+        let parsed: ExportSelection = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.aspects, selection.aspects);
+        assert_eq!(parsed.channels, selection.channels);
+        assert_eq!(parsed.output_dir, selection.output_dir);
+    }
+
+    #[test]
+    fn export_selection_round_trips_with_null_output_dir() {
+        // The user can confirm an export without a folder having been picked
+        // in some future flow — and the persisted record must preserve that.
+        // (In practice the modal blocks Render until a folder is chosen, but
+        // the persistence layer treats `None` as legal.)
+        let selection = ExportSelection {
+            aspects: vec![AspectRatio::SixteenNine],
+            channels: vec![ExportChannel::VideoOnly],
+            output_dir: None,
+        };
+        let json = serde_json::to_string(&selection).unwrap();
+        let parsed: ExportSelection = serde_json::from_str(&json).unwrap();
+        assert!(parsed.output_dir.is_none());
+        assert_eq!(parsed.channels, vec![ExportChannel::VideoOnly]);
+    }
+
+    #[test]
+    fn project_loads_without_last_export_selection_field() {
+        // Backward-compat for v4 (and earlier-migrated) bundles: the field
+        // didn't exist before task 280. `#[serde(default)]` must supply
+        // `None` on deserialize without erroring — no migration code path is
+        // needed for this additive bump.
+        let raw = r#"{
+            "schema_version": 4,
+            "version": 1,
+            "name": "Pre-280 Project",
+            "thumbnail": null,
+            "clips": [],
+            "map_settings": null
+        }"#;
+        let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
+        assert!(parsed.last_export_selection.is_none());
+    }
+
+    #[test]
+    fn project_round_trips_with_last_export_selection() {
+        // Full save/load round-trip exercise: write a Project with a
+        // populated `last_export_selection`, parse it back, confirm every
+        // field survives. This is the contract the Export modal relies on
+        // when prefilling on open.
+        let project = Project {
+            last_export_selection: Some(ExportSelection {
+                aspects: vec![AspectRatio::NineSixteen, AspectRatio::SixteenNine],
+                channels: vec![ExportChannel::Composite, ExportChannel::VideoOnly],
+                output_dir: Some(PathBuf::from("/tmp/exports")),
+            }),
+            ..Project::default()
+        };
+        let json = serde_json::to_string(&project).unwrap();
+        let parsed: Project = serde_json::from_str(&json).unwrap();
+        let sel = parsed
+            .last_export_selection
+            .expect("last_export_selection must round-trip");
+        assert_eq!(
+            sel.aspects,
+            vec![AspectRatio::NineSixteen, AspectRatio::SixteenNine]
+        );
+        assert_eq!(
+            sel.channels,
+            vec![ExportChannel::Composite, ExportChannel::VideoOnly]
+        );
+        assert_eq!(sel.output_dir, Some(PathBuf::from("/tmp/exports")));
+    }
 }

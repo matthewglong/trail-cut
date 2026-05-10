@@ -85,6 +85,12 @@ interface HarnessProps {
   mapSettings?: MapSettings;
   transitionFeel?: TransitionFeel;
   projectLayouts?: ProjectLayouts;
+  /** Task 280 prefill source. The modal initializes parent-managed
+   *  selection from this on its `false → true` open transition. */
+  lastExportSelection?: ExportSelection | null;
+  /** Task 280 persist sink. Called once per queue completion when ≥ 1
+   *  job finished successfully. */
+  onSelectionPersist?: (selection: ExportSelection) => void;
 }
 
 function defaultProjectLayouts(): ProjectLayouts {
@@ -125,10 +131,12 @@ function Harness({
   mapSettings,
   transitionFeel,
   projectLayouts,
+  lastExportSelection,
+  onSelectionPersist,
 }: HarnessProps) {
   const [open, setOpen] = useState(initialOpen);
   const [selection, setSelection] = useState<ExportSelection>(
-    initialSelection ?? { aspects: [], channels: [] },
+    initialSelection ?? { aspects: [], channels: [], output_dir: null },
   );
   return (
     <ExportModal
@@ -139,6 +147,8 @@ function Harness({
       }}
       selection={selection}
       onSelectionChange={setSelection}
+      lastExportSelection={lastExportSelection}
+      onSelectionPersist={onSelectionPersist}
       projectName={projectName ?? 'Hike2026'}
       clips={clips ?? []}
       route={route ?? null}
@@ -212,7 +222,7 @@ describe('ExportModal', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects, channels }}
+        initialSelection={{ aspects, channels, output_dir: null }}
       />,
     );
     expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
@@ -227,6 +237,7 @@ describe('ExportModal', () => {
         initialSelection={{
           aspects: ['9_16'],
           channels: ['composite', 'map_only'],
+          output_dir: null,
         }}
       />,
     );
@@ -274,7 +285,7 @@ describe('ExportModal', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16', '4_5'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16', '4_5'], channels: ['composite'], output_dir: null }}
       />,
     );
     expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
@@ -360,7 +371,7 @@ describe('ExportModal — Render-button enable transitions', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: [] }}
+        initialSelection={{ aspects: ['9_16'], channels: [], output_dir: null }}
       />,
     );
     expect(renderBtn().disabled).toBe(true);
@@ -370,7 +381,7 @@ describe('ExportModal — Render-button enable transitions', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: [], channels: ['composite'] }}
+        initialSelection={{ aspects: [], channels: ['composite'], output_dir: null }}
       />,
     );
     expect(renderBtn().disabled).toBe(true);
@@ -380,7 +391,7 @@ describe('ExportModal — Render-button enable transitions', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
       />,
     );
     expect(renderBtn().disabled).toBe(true);
@@ -391,7 +402,7 @@ describe('ExportModal — Render-button enable transitions', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: [], channels: [] }}
+        initialSelection={{ aspects: [], channels: [], output_dir: null }}
       />,
     );
     act(() => {
@@ -406,7 +417,7 @@ describe('ExportModal — Render-button enable transitions', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
       />,
     );
     expect(renderBtn().disabled).toBe(true);
@@ -429,7 +440,7 @@ describe('ExportModal — time estimate pipeline', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
         clips={clips}
       />,
     );
@@ -447,7 +458,7 @@ describe('ExportModal — time estimate pipeline', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
         clips={clips}
       />,
     );
@@ -460,7 +471,7 @@ describe('ExportModal — time estimate pipeline', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
         clips={[]}
       />,
     );
@@ -479,7 +490,7 @@ describe('ExportModal — render flow', () => {
     render(
       <Harness
         initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
         clips={clips}
       />,
     );
@@ -595,5 +606,216 @@ describe('ExportModal — render flow', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+  });
+});
+
+describe('ExportModal — task 280 last_export_selection', () => {
+  /** Re-render harness for the prefill tests: drives `open` from outside
+   *  the modal so we can exercise the `false → true` transition that the
+   *  prefill effect listens for. The existing `Harness` mounts with
+   *  `initialOpen=true`, which is "already open" — prefill runs only on a
+   *  *transition*, not on first mount-with-open. */
+  function ToggleHarness({
+    initialOpen,
+    lastExportSelection,
+    onSelectionPersist,
+    onSelectionExternal,
+    initialSelection,
+  }: {
+    initialOpen: boolean;
+    lastExportSelection?: ExportSelection | null;
+    onSelectionPersist?: (sel: ExportSelection) => void;
+    onSelectionExternal?: (sel: ExportSelection) => void;
+    initialSelection?: ExportSelection;
+  }) {
+    const [open, setOpen] = useState(initialOpen);
+    const [selection, setSelection] = useState<ExportSelection>(
+      initialSelection ?? { aspects: [], channels: [], output_dir: null },
+    );
+    return (
+      <>
+        <button data-testid="toggle-open" onClick={() => setOpen((v) => !v)}>
+          toggle
+        </button>
+        <ExportModal
+          open={open}
+          onClose={() => setOpen(false)}
+          selection={selection}
+          onSelectionChange={(next) => {
+            setSelection(next);
+            onSelectionExternal?.(next);
+          }}
+          lastExportSelection={lastExportSelection}
+          onSelectionPersist={onSelectionPersist}
+          projectName="Hike2026"
+          clips={[]}
+          route={null}
+          mapSettings={DEFAULT_MAP_SETTINGS}
+          projectLayouts={defaultProjectLayouts()}
+        />
+      </>
+    );
+  }
+
+  it('prefills selection from lastExportSelection on false → true transition', () => {
+    const last: ExportSelection = {
+      aspects: ['4_5', '16_9'],
+      channels: ['composite', 'video_only'],
+      output_dir: '/Users/u/PriorExports',
+    };
+    render(<ToggleHarness initialOpen={false} lastExportSelection={last} />);
+    expect(findByTestId('export-modal')).toBeNull();
+    act(() => {
+      fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
+    });
+    // Aspects + channels reflect the prior selection.
+    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(false);
+    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(true);
+    expect((findByTestId('export-aspect-16_9') as HTMLInputElement).checked).toBe(true);
+    expect((findByTestId('export-channel-composite') as HTMLInputElement).checked).toBe(true);
+    expect((findByTestId('export-channel-map_only') as HTMLInputElement).checked).toBe(false);
+    expect((findByTestId('export-channel-video_only') as HTMLInputElement).checked).toBe(true);
+    // Output folder also rehydrates.
+    expect(findByTestId('export-output-folder-path')?.textContent).toBe(
+      '/Users/u/PriorExports',
+    );
+  });
+
+  it('prefills clean state when lastExportSelection is null', () => {
+    render(<ToggleHarness initialOpen={false} lastExportSelection={null} />);
+    act(() => {
+      fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
+    });
+    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(false);
+    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(false);
+    expect((findByTestId('export-aspect-16_9') as HTMLInputElement).checked).toBe(false);
+    expect((findByTestId('export-channel-composite') as HTMLInputElement).checked).toBe(false);
+    expect(findByTestId('export-output-folder-path')).toBeNull();
+  });
+
+  it('reopen after close re-prefills from the prop, discarding mid-flow edits', () => {
+    const last: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+      output_dir: '/out',
+    };
+    render(<ToggleHarness initialOpen={false} lastExportSelection={last} />);
+    // Open #1 — prefill arrives.
+    act(() => {
+      fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
+    });
+    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(true);
+    // User toggles 4:5 mid-flow, then closes via Cancel.
+    act(() => {
+      fireEvent.click(findByTestId('export-aspect-4_5') as HTMLInputElement);
+    });
+    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(true);
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-cancel') as HTMLButtonElement);
+    });
+    expect(findByTestId('export-modal')).toBeNull();
+    // Open #2 — prefill resets to the stored prop, dropping the abandoned 4:5.
+    act(() => {
+      fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
+    });
+    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(true);
+    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(false);
+  });
+
+  /** Mount-with-open harness for the persist tests: open=true on first
+   *  render, no toggle needed. The persist effect fires on
+   *  `queueState === 'done'` regardless of whether the modal opened via a
+   *  transition or first-mount, so this simpler harness is enough. */
+  function PersistHarness({
+    onSelectionPersist,
+    initialSelection,
+    queueAlwaysFails,
+  }: {
+    onSelectionPersist: (sel: ExportSelection) => void;
+    initialSelection: ExportSelection;
+    queueAlwaysFails?: boolean;
+  }) {
+    const [selection, setSelection] = useState<ExportSelection>(initialSelection);
+    if (queueAlwaysFails) {
+      // Used in the zero-success case: every render_export call rejects so
+      // the queue completes with all-failed jobs.
+      invokeMock.mockReset();
+      invokeMock.mockRejectedValue('forced failure');
+    }
+    return (
+      <ExportModal
+        open={true}
+        onClose={() => {}}
+        selection={selection}
+        onSelectionChange={setSelection}
+        onSelectionPersist={onSelectionPersist}
+        projectName="Hike2026"
+        clips={[
+          {
+            id: 'c1',
+            path: '/tmp/c1.mov',
+            filename: 'c1.mov',
+            created_at: '2026-01-01T00:00:00Z',
+            duration_ms: 60_000,
+            gps: null,
+            resolution: '1920x1080',
+            frame_rate: 30,
+            trim: { in_ms: 0, out_ms: 60_000 },
+            focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+            effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
+            visible: true,
+            map_overrides: null,
+          },
+        ]}
+        route={null}
+        mapSettings={DEFAULT_MAP_SETTINGS}
+        projectLayouts={defaultProjectLayouts()}
+      />
+    );
+  }
+
+  it('fires onSelectionPersist once when queue completes with at least one done job', async () => {
+    const persist = vi.fn();
+    const initial: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+      output_dir: '/out',
+    };
+    render(
+      <PersistHarness onSelectionPersist={persist} initialSelection={initial} />,
+    );
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    await flush();
+    await flush();
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith(initial);
+  });
+
+  it('does NOT fire onSelectionPersist when queue completes with zero done jobs (all-failed)', async () => {
+    const persist = vi.fn();
+    const initial: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+      output_dir: '/out',
+    };
+    render(
+      <PersistHarness
+        onSelectionPersist={persist}
+        initialSelection={initial}
+        queueAlwaysFails={true}
+      />,
+    );
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    await flush();
+    await flush();
+    expect(persist).not.toHaveBeenCalled();
   });
 });

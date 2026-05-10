@@ -46,7 +46,7 @@ function estimateText(): string | null {
 
 describe('JobSummary — cartesian product math (no folder)', () => {
   it('renders 0 files with prompting copy when nothing selected', () => {
-    const selection: ExportSelection = { aspects: [], channels: [] };
+    const selection: ExportSelection = { aspects: [], channels: [], output_dir: null };
     render(
       <JobSummary
         selection={selection}
@@ -60,7 +60,7 @@ describe('JobSummary — cartesian product math (no folder)', () => {
   });
 
   it('renders 0 files when only aspects are selected', () => {
-    const selection: ExportSelection = { aspects: ['9_16'], channels: [] };
+    const selection: ExportSelection = { aspects: ['9_16'], channels: [], output_dir: null };
     render(
       <JobSummary
         selection={selection}
@@ -77,6 +77,7 @@ describe('JobSummary — cartesian product math (no folder)', () => {
     const selection: ExportSelection = {
       aspects: [],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -94,6 +95,7 @@ describe('JobSummary — cartesian product math (no folder)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -114,6 +116,7 @@ describe('JobSummary — cartesian product math (no folder)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16', '4_5', '16_9'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -131,6 +134,7 @@ describe('JobSummary — cartesian product math (no folder)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16', '4_5', '16_9'],
       channels: ['composite', 'map_only', 'video_only'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -154,6 +158,7 @@ describe('JobSummary — filename preview (folder set)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite', 'map_only'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -175,6 +180,7 @@ describe('JobSummary — filename preview (folder set)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16', '4_5'],
       channels: ['composite', 'map_only'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -193,6 +199,7 @@ describe('JobSummary — filename preview (folder set)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16', '4_5', '16_9'],
       channels: ['composite', 'map_only', 'video_only'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -216,6 +223,7 @@ describe('JobSummary — filename preview (folder set)', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -230,7 +238,7 @@ describe('JobSummary — filename preview (folder set)', () => {
   });
 
   it('renders no file list when n_jobs is 0 even with folder set', () => {
-    const selection: ExportSelection = { aspects: [], channels: [] };
+    const selection: ExportSelection = { aspects: [], channels: [], output_dir: null };
     render(
       <JobSummary
         selection={selection}
@@ -247,7 +255,7 @@ describe('JobSummary — filename preview (folder set)', () => {
 
 describe('JobSummary — time estimate', () => {
   it('hides estimate when n_jobs is 0', () => {
-    const selection: ExportSelection = { aspects: [], channels: [] };
+    const selection: ExportSelection = { aspects: [], channels: [], output_dir: null };
     render(
       <JobSummary
         selection={selection}
@@ -264,6 +272,7 @@ describe('JobSummary — time estimate', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -281,6 +290,7 @@ describe('JobSummary — time estimate', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -298,6 +308,7 @@ describe('JobSummary — time estimate', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -317,6 +328,7 @@ describe('JobSummary — time estimate', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -335,6 +347,7 @@ describe('JobSummary — time estimate', () => {
     const selection: ExportSelection = {
       aspects: ['9_16'],
       channels: ['composite'],
+      output_dir: null,
     };
     render(
       <JobSummary
@@ -355,6 +368,7 @@ describe('JobSummary — time estimate', () => {
     const selection: ExportSelection = {
       aspects: ['9_16', '4_5'],
       channels: ['video_only', 'composite'],
+      output_dir: null,
     };
     render(
       <JobSummary

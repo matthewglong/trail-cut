@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AspectRatio,
   Clip,
+  ExportSelection,
   Route,
   Project,
   ProjectLayouts,
@@ -27,6 +28,11 @@ interface AutoSaveParams {
    *  value; `undefined` here only triggers on a prop-drilling regression and
    *  the defensive backfill below maps it to `'9_16'`. */
   selectedExportAspect: AspectRatio | undefined;
+  /** Last user-confirmed Export modal selection (task 280). `null` until
+   *  the user completes a successful export; the Export modal writes a new
+   *  value via its `onSelectionPersist` callback, which flows up to App
+   *  state and lands here on the next auto-save cycle. */
+  lastExportSelection: ExportSelection | null;
 }
 
 /** Defensive backfill mirroring `useProject`'s + Rust's `seeded_layouts()`.
@@ -55,6 +61,7 @@ export function useAutoSave({
   transitionFeel,
   projectLayouts,
   selectedExportAspect,
+  lastExportSelection,
 }: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -73,6 +80,7 @@ export function useAutoSave({
         selected_export_aspect: selectedExportAspect ?? '9_16',
         map_settings: mapSettings,
         transition_feel: transitionFeel,
+        last_export_selection: lastExportSelection,
       };
       invoke('save_project', { project, projectDir }).catch(() => {});
       invoke('register_recent_project', { projectDir }).catch(() => {});
@@ -91,5 +99,6 @@ export function useAutoSave({
     transitionFeel,
     projectLayouts,
     selectedExportAspect,
+    lastExportSelection,
   ]);
 }

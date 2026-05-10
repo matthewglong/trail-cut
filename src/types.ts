@@ -138,13 +138,17 @@ import type { AspectRatio, ProjectLayouts } from './lib/layout';
  *  on `types.ts` without pulling in the request builder. */
 export type ExportChannel = 'composite' | 'map_only' | 'video_only';
 
-/** User's pending choice in the Export modal: which aspects × which channels.
- *  Cartesian product yields the render-queue jobs (one job per pair).
- *  Persistence to `project.json` (and the `output_dir` field) lands in task
- *  280; the v1 shape here carries only the multi-select selections. */
+/** User's pending (or last-confirmed) choice in the Export modal: which
+ *  aspects × which channels, plus the chosen output folder. Cartesian
+ *  product of `aspects` × `channels` yields the render-queue jobs (one job
+ *  per pair). Persisted per project as `Project.last_export_selection`
+ *  (task 280) so reopening the modal prefills the prior choice. Field name
+ *  `output_dir` is snake_case to match the Rust serde wire format — Tauri's
+ *  IPC bridge passes the struct through verbatim. */
 export interface ExportSelection {
   aspects: AspectRatio[];
   channels: ExportChannel[];
+  output_dir: string | null;
 }
 
 /** Project-level "transition feel" knob. Drives the duration multiplier for
@@ -222,6 +226,11 @@ export interface Project {
   /** Project-level defaults for every clip's entry transition. Each clip's
    *  own `entry_transition` overrides individual fields. */
   default_entry_transition?: ClipEntryTransition;
+  /** Last user-confirmed Export modal selection (task 280). `null` until
+   *  the user completes their first successful export; set on
+   *  `queueState === 'done'` with at least one done job. The Export modal
+   *  prefills aspects/channels/output folder from this on subsequent opens. */
+  last_export_selection: ExportSelection | null;
 }
 
 export interface RecentProject {

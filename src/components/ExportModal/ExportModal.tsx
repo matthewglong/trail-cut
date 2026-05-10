@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { open as openDialog, ask } from '@tauri-apps/plugin-dialog';
 import { exists } from '@tauri-apps/plugin-fs';
 import { AspectCheckboxes } from './AspectCheckboxes';
@@ -35,6 +35,18 @@ export interface ExportModalProps {
   onClose: () => void;
   selection: ExportSelection;
   onSelectionChange: (next: ExportSelection) => void;
+  /** Last-confirmed selection from a prior successful export (task 280).
+   *  When the modal transitions `false → true`, the parent-managed
+   *  `selection` is rehydrated from this value via `onSelectionChange`.
+   *  `null` means "no prior export — start clean (empty aspects/channels,
+   *  no folder)". */
+  lastExportSelection?: ExportSelection | null;
+  /** Called once per queue completion when at least one job finished
+   *  successfully. The parent persists the value to project state, where
+   *  `useAutoSave` writes it to disk on the next debounce tick. Cancelled
+   *  queues with zero done jobs do NOT trigger this — the previous
+   *  `lastExportSelection` survives. */
+  onSelectionPersist?: (selection: ExportSelection) => void;
   projectName: string;
   clips: Clip[];
   route: Route | null;
@@ -48,6 +60,8 @@ export function ExportModal({
   onClose,
   selection,
   onSelectionChange,
+  lastExportSelection,
+  onSelectionPersist,
   projectName,
   clips,
   route,
@@ -55,9 +69,21 @@ export function ExportModal({
   transitionFeel,
   projectLayouts,
 }: ExportModalProps) {
-  const [outputFolder, setOutputFolder] = useState<string | null>(null);
   const [view, setView] = useState<View>('select');
   const queue = useExportQueue();
+  const outputFolder = selection.output_dir;
+  // Latch so `onSelectionPersist` fires exactly once per queue completion.
+  // The done-transition effect below reads/writes this; `reset()` on modal
+  // close clears it for the next session.
+  const persistedThisRunRef = useRef(false);
+  // Hold the most recent selection on a ref so the done-transition effect's
+  // dependency list can stay narrow (queueState + jobs) — including
+  // `selection` would re-fire the persist guard logic on every keystroke
+  // even though the latch already protects against double-fire.
+  const selectionRef = useRef(selection);
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
 
   const { nClips, timelineDurationSec } = useMemo(() => {
     let total = 0;
@@ -95,11 +121,40 @@ export function ExportModal({
     }
   }, [view, queue.queueState]);
 
+  // Persist the user's selection on a successful queue completion (task 280).
+  // Fire-once per session: the latch guards against re-fires when the user
+  // edits selection on the done view (or when React re-renders for other
+  // reasons). Cancel-with-zero-successes does not persist — the previous
+  // `lastExportSelection` survives.
+  useEffect(() => {
+    if (queue.queueState !== 'done') return;
+    if (persistedThisRunRef.current) return;
+    if (!queue.jobs.some((j) => j.state === 'done')) return;
+    persistedThisRunRef.current = true;
+    onSelectionPersist?.(selectionRef.current);
+  }, [queue.queueState, queue.jobs, onSelectionPersist]);
+
+  // Prefill on open transition (task 280). Runs only on `false → true`, so a
+  // user who opens the modal, edits selection, closes mid-flow, then reopens
+  // gets the *prior persisted* value, not their abandoned mid-flow draft —
+  // matches the "reset modal state on close" contract below.
+  const prevOpenRef = useRef(open);
+  useEffect(() => {
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (!open || wasOpen) return;
+    onSelectionChange(
+      lastExportSelection ?? { aspects: [], channels: [], output_dir: null },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   // Reset modal state on close so the next open starts clean.
   useEffect(() => {
     if (open) return;
     setView('select');
     queue.reset();
+    persistedThisRunRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -109,6 +164,9 @@ export function ExportModal({
     onSelectionChange({ ...selection, aspects });
   const setChannels = (channels: ExportChannel[]) =>
     onSelectionChange({ ...selection, channels });
+
+  const setOutputFolder = (folder: string | null) =>
+    onSelectionChange({ ...selection, output_dir: folder });
 
   const handleChooseFolder = async () => {
     let result: string | string[] | null;

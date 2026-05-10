@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AspectRatio, Clip, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, ExportSelection, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 import { defaultPipLayout } from '../lib/layout';
 
@@ -23,6 +23,7 @@ interface UseProjectParams {
   setTransitionFeel: React.Dispatch<React.SetStateAction<TransitionFeel | undefined>>;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportSelection | null>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -57,6 +58,7 @@ export function useProject({
   setTransitionFeel,
   setProjectLayouts,
   setSelectedExportAspect,
+  setLastExportSelection,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -91,6 +93,10 @@ export function useProject({
       // pre-100 bundles; the `?? '9_16'` covers the same edge cases as the
       // layouts fallback above.
       setSelectedExportAspect(project.selected_export_aspect ?? '9_16');
+      // Pre-280 bundles lack `last_export_selection`; the Rust serde default
+      // surfaces `null`. Either way, hydrating App-level state here is the
+      // sole load-time entry point — the modal reads from this on open.
+      setLastExportSelection(project.last_export_selection ?? null);
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -125,6 +131,7 @@ export function useProject({
       // Mirror the Rust-side `Project::default()` seed — task 080 / 100.
       setProjectLayouts(seededLayouts());
       setSelectedExportAspect('9_16');
+      setLastExportSelection(null);
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -161,6 +168,7 @@ export function useProject({
     setTransitionFeel(undefined);
     setProjectLayouts(seededLayouts());
     setSelectedExportAspect('9_16');
+    setLastExportSelection(null);
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);

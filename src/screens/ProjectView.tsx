@@ -89,6 +89,12 @@ interface ProjectViewProps {
    *  `buildExportRequest` call. */
   selectedExportAspect: AspectRatio;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
+  /** Last user-confirmed Export modal selection (task 280). The Export
+   *  modal prefills aspects/channels/output folder from this on open;
+   *  `null` means "no prior export — start clean". App-level state owns the
+   *  value so it travels through `useAutoSave` to disk. */
+  lastExportSelection: ExportSelection | null;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportSelection | null>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -127,6 +133,8 @@ export default function ProjectView({
   setProjectLayouts,
   selectedExportAspect,
   setSelectedExportAspect,
+  lastExportSelection,
+  setLastExportSelection,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -153,6 +161,7 @@ export default function ProjectView({
   const [exportSelection, setExportSelection] = useState<ExportSelection>({
     aspects: [],
     channels: [],
+    output_dir: null,
   });
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
@@ -952,6 +961,8 @@ export default function ProjectView({
         onClose={() => setExportModalOpen(false)}
         selection={exportSelection}
         onSelectionChange={setExportSelection}
+        lastExportSelection={lastExportSelection}
+        onSelectionPersist={setLastExportSelection}
         projectName={projectName}
         clips={clips}
         route={route}
