@@ -1,7 +1,5 @@
-// Pure-builder tests for `exportRequest.ts` (task 060).
+// Pure-builder tests for `exportRequest.ts`.
 //
-// The builder is consumed by `ProjectView`'s "Export map-only (.mov)" button
-// and (later) by 070/090/110 when their channels and configurator UI land.
 // Invariants worth pinning here: layout fallback to `defaultLayout`, parity
 // of `resolved` with what Rust will recompute, opaque pass-through of
 // project state, and that the IPC envelope keys match the Rust shape.

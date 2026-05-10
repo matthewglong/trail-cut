@@ -1,6 +1,4 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
 import Timeline from '../components/Timeline';
 import MapView from '../components/MapView';
 import MapToolbar from '../components/MapToolbar/MapToolbar';
@@ -15,22 +13,9 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import { buildExportRequest, type ExportChannel } from '../lib/exportRequest';
 import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportSelection } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
-
-interface RenderExportSummary {
-  frames_written: number;
-  output_path: string;
-  wall_clock_ms: number;
-}
-
-interface RenderExportError {
-  stage: string;
-  message: string;
-  stderr_tail?: string;
-}
 
 // Resizer constraints — easy to tune
 const V_SPLIT_DEFAULT = 0.65; // video takes 65% of width
@@ -83,9 +68,7 @@ interface ProjectViewProps {
   transitionFeel: TransitionFeel | undefined;
   projectLayouts: ProjectLayouts;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
-  /** Aspect that the export pipeline targets (task 100). Drives both the
-   *  LayoutPreview overlay's `aspect` prop and the `aspect` field on every
-   *  `buildExportRequest` call. */
+  /** Aspect for the LayoutPreview overlay. Cycles via Cmd/Ctrl+1/2/3. */
   selectedExportAspect: AspectRatio;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   /** Last user-confirmed Export modal selection (task 280). The Export
@@ -153,9 +136,6 @@ export default function ProjectView({
 }: ProjectViewProps) {
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showGpxMenu, setShowGpxMenu] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<RenderExportError | null>(null);
-  const [exportDetailsOpen, setExportDetailsOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportSelection, setExportSelection] = useState<ExportSelection>({
     aspects: [],
@@ -419,94 +399,6 @@ export default function ProjectView({
     onSplitClip(playheadSecRef.current);
   }, [onSplitClip]);
 
-  // Shared dispatch for the developer-grade export buttons (Channel B
-  // task 060, Channel C task 070, Channel A task 090). Hard-coded to 9:16
-  // until the configurator UI (110) lands an aspect picker. All buttons
-  // share `exporting` so they can't fire in parallel. The `format` arg
-  // parameterizes the file-extension filter and forced suffix so the
-  // composite (.mp4) channel coexists with the .mov intermediates without
-  // a second copy of the dispatch logic.
-  const runExport = useCallback(
-    async (
-      channel: ExportChannel,
-      dialogTitle: string,
-      format: { extension: 'mov' | 'mp4'; filterName: string },
-    ) => {
-      if (exporting) return;
-      setExportError(null);
-      setExportDetailsOpen(false);
-      let outputPath: string | null = null;
-      try {
-        outputPath = await save({
-          title: dialogTitle,
-          filters: [{ name: format.filterName, extensions: [format.extension] }],
-        });
-      } catch {
-        return;
-      }
-      if (!outputPath) return;
-      const suffix = `.${format.extension}`;
-      if (!outputPath.toLowerCase().endsWith(suffix)) {
-        outputPath = `${outputPath}${suffix}`;
-      }
-      const req = buildExportRequest({
-        channel,
-        fps: 30,
-        outputPath,
-        // Task 100: read the project's selected aspect rather than
-        // hard-coding `'9_16'`. A user-facing aspect picker lands in a
-        // follow-up; today the temp `<select>` near the layout toggle
-        // mutates this value for the current session.
-        aspect: selectedExportAspect,
-        clips,
-        route,
-        mapSettings,
-        transitionFeel,
-        // Per-aspect seeded layouts (task 080 / 100). The export reads
-        // the stored value for `selectedExportAspect`; if the user has
-        // explicitly cleared that aspect (post-100, via 110), pickLayout's
-        // fallback synthesizes a default.
-        layouts: projectLayouts,
-      });
-      setExporting(true);
-      try {
-        await invoke<RenderExportSummary>('render_export', { req });
-      } catch (err) {
-        const e = err as RenderExportError | string;
-        if (typeof e === 'string') {
-          setExportError({ stage: 'unknown', message: e });
-        } else {
-          setExportError(e);
-        }
-      } finally {
-        setExporting(false);
-      }
-    },
-    [exporting, clips, route, mapSettings, transitionFeel, projectLayouts, selectedExportAspect],
-  );
-
-  const handleExportMapOnly = useCallback(
-    () => runExport('map_only', 'Export map-only (.mov)', { extension: 'mov', filterName: 'QuickTime' }),
-    [runExport],
-  );
-
-  // Channel C: per-clip filter chain → concat → ProRes 4444 + PCM s16le
-  // audio at the layout's video slot on a transparent canvas. Stack with
-  // B in any NLE to reconstruct A.
-  const handleExportVideoOnly = useCallback(
-    () => runExport('video_only', 'Export video-only (.mov)', { extension: 'mov', filterName: 'QuickTime' }),
-    [runExport],
-  );
-
-  // Channel A (task 090): the deliverable. Map render stream + per-clip
-  // video chain composited into a single H.265 .mp4 per the configured
-  // layout. AAC audio. Unlike B/C this is opaque (no alpha channel) and
-  // ships in MP4 rather than MOV.
-  const handleExportComposite = useCallback(
-    () => runExport('composite', 'Export composite (.mp4)', { extension: 'mp4', filterName: 'MP4' }),
-    [runExport],
-  );
-
   // Refs for the synchronous live-playhead callback below. The callback runs
   // inside the video preview's rAF tick (one frame ahead of any React commit),
   // so it must read the latest span without depending on render-time props.
@@ -667,30 +559,6 @@ export default function ProjectView({
           >
             Export
           </button>
-          <button
-            onClick={handleExportMapOnly}
-            disabled={exporting || clips.length === 0}
-            style={styles.button}
-            title="Exports at 9:16. Configure layout per aspect via the layout configurator (coming in a later release)."
-          >
-            {exporting ? 'Exporting…' : 'Export map-only (.mov)'}
-          </button>
-          <button
-            onClick={handleExportVideoOnly}
-            disabled={exporting || clips.length === 0}
-            style={styles.button}
-            title="Exports at 9:16. Configure layout per aspect via the layout configurator (coming in a later release)."
-          >
-            {exporting ? 'Exporting…' : 'Export video-only (.mov)'}
-          </button>
-          <button
-            onClick={handleExportComposite}
-            disabled={exporting || clips.length === 0}
-            style={styles.button}
-            title="Exports at 9:16. Configure layout per aspect via the layout configurator (coming in a later release)."
-          >
-            {exporting ? 'Exporting…' : 'Export composite (.mp4)'}
-          </button>
           <div style={styles.gpxChipWrapper}>
             <div
               style={route ? styles.gpxChipLoaded : styles.gpxChipEmpty}
@@ -730,31 +598,6 @@ export default function ProjectView({
         <div style={styles.error}>
           {error}
           <button onClick={onDismissError} style={styles.dismissBtn}>
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {exportError && (
-        <div style={styles.error}>
-          <div style={{ flex: 1 }}>
-            <span>Export failed ({exportError.stage}): {exportError.message}</span>
-            {exportError.stderr_tail && (
-              <>
-                {' '}
-                <button
-                  onClick={() => setExportDetailsOpen((o) => !o)}
-                  style={styles.dismissBtn}
-                >
-                  {exportDetailsOpen ? 'Hide details' : 'Show details'}
-                </button>
-                {exportDetailsOpen && (
-                  <pre style={styles.errorPre}>{exportError.stderr_tail}</pre>
-                )}
-              </>
-            )}
-          </div>
-          <button onClick={() => setExportError(null)} style={styles.dismissBtn}>
             Dismiss
           </button>
         </div>
@@ -1110,19 +953,6 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     textDecoration: 'underline',
     fontSize: '12px',
-  },
-  errorPre: {
-    marginTop: '6px',
-    padding: '6px 8px',
-    backgroundColor: '#2a0a0a',
-    color: '#ffb0b0',
-    fontSize: '11px',
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    whiteSpace: 'pre-wrap' as const,
-    wordBreak: 'break-word' as const,
-    maxHeight: '160px',
-    overflow: 'auto',
-    borderRadius: '4px',
   },
   loading: {
     padding: '8px 16px',
