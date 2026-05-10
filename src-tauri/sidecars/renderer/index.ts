@@ -39,6 +39,27 @@ import zlib from 'node:zlib';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { PNG } from 'pngjs';
 
+// ---- Verbose-mode flag ----------------------------------------------------
+//
+// Default OFF. Diagnostic breadcrumbs (per-frame eval/screenshot/decode
+// markers, page-side __init/__applyFrame chatter, idle-wait diagnostic,
+// heartbeat) are gated behind this. Always-on output is limited to one
+// summary timing line per frame (renderFrame) plus errors/protocol traffic.
+// Toggle with `TRAILCUT_RENDERER_VERBOSE=1`.
+const VERBOSE = process.env.TRAILCUT_RENDERER_VERBOSE === '1';
+function verbose(msg: string): void {
+  if (VERBOSE) process.stderr.write(msg);
+}
+
+// Pixel-readback transport. Default = `readpixels` (page-side gl.readPixels
+// → base64 → Node base64-decode). Set TRAILCUT_RENDERER_TRANSPORT=png to
+// fall back to the original Page.captureScreenshot + pngjs decode path
+// (kept as an escape hatch / for parity comparisons). The readpixels path
+// skips two encode/decode hops (Chrome PNG encode + pngjs decode) and is
+// the highest-leverage perf fix from the chromium-renderer perf review.
+const TRANSPORT: 'readpixels' | 'png' =
+  process.env.TRAILCUT_RENDERER_TRANSPORT === 'png' ? 'png' : 'readpixels';
+
 // `page.evaluate` callbacks run in the browser context, where `window` and
 // our injected globals (__init, __applyFrame, trailcutFetch) live. The
 // worker's tsconfig is Node-only; this minimal declaration tells tsc not
@@ -265,9 +286,13 @@ async function buildPage(b: Browser): Promise<Page> {
 
   // Forward page console + page errors to worker stderr so failures are
   // diagnosable. Orchestrator forwards worker stderr to its own stderr
-  // already.
+  // already. In quiet mode, drop console.log/info/debug (the page-side
+  // breadcrumbs that follow the same VERBOSE gate); always keep warn/
+  // error/assert so unexpected page-side output still surfaces.
   p.on('console', (msg) => {
-    process.stderr.write(`[console:${msg.type()}] ${msg.text()}\n`);
+    const t = msg.type();
+    if (!VERBOSE && (t === 'log' || t === 'info' || t === 'debug')) return;
+    process.stderr.write(`[console:${t}] ${msg.text()}\n`);
   });
   p.on('pageerror', (err: unknown) => {
     const msg = err instanceof Error ? err.message : String(err);
@@ -305,7 +330,7 @@ async function buildPage(b: Browser): Promise<Page> {
 async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
   const t0 = Date.now();
   const stamp = (msg: string): void => {
-    process.stderr.write(`[renderer applySetup +${Date.now() - t0}ms] ${msg}\n`);
+    verbose(`[renderer applySetup +${Date.now() - t0}ms] ${msg}\n`);
   };
 
   // Match the Page's viewport to the requested map slot dims. setViewport
@@ -372,6 +397,14 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     staticLayers,
     visibility,
     buildingsLayer: payload.mapSettings.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
+    // Page-side opts. `verbose` gates the page's __init/__applyFrame
+    // breadcrumbs and the in-flight idle-wait diagnostic. `transport`
+    // selects the readback path: 'readpixels' (default) returns raw RGBA
+    // via gl.readPixels + base64 over CDP; 'png' is the legacy escape
+    // hatch — page-side code in 'png' mode skips the readback entirely
+    // and the worker takes a screenshot.
+    verbose: VERBOSE,
+    transport: TRANSPORT,
   };
 
   // Surface initPayload size — `page.evaluate` ships the argument through
@@ -444,16 +477,18 @@ async function setup(payload: SetupCmd): Promise<void> {
   setupPayload = payload;
   if (!browser) {
     browser = await launchBrowser();
-    process.stderr.write(`[renderer] browser launched at ${Date.now() - t0}ms\n`);
+    verbose(`[renderer] browser launched at ${Date.now() - t0}ms\n`);
   }
   if (page) {
     try { await page.close(); } catch { /* ignore */ }
     page = null;
   }
   page = await buildPage(browser);
-  process.stderr.write(`[renderer] page ready at ${Date.now() - t0}ms\n`);
+  verbose(`[renderer] page ready at ${Date.now() - t0}ms\n`);
   await applySetup(page, payload);
-  process.stderr.write(`[renderer] applySetup done at ${Date.now() - t0}ms\n`);
+  // Always emit a single setup-summary line — useful for spotting cold-
+  // start cost in the orchestrator log without enabling verbose mode.
+  process.stderr.write(`[renderer] setup done in ${Date.now() - t0}ms (transport=${TRANSPORT}, verbose=${VERBOSE})\n`);
   indexedRoute = indexRoute(payload.route);
 }
 
@@ -491,7 +526,7 @@ async function recycle(): Promise<void> {
 async function renderFrame(cmd: RenderCmd): Promise<void> {
   const tStart = Date.now();
   const fstamp = (msg: string): void => {
-    process.stderr.write(
+    verbose(
       `[renderer renderFrame f=${cmd.frame_index} +${Date.now() - tStart}ms] ${msg}\n`,
     );
   };
@@ -543,26 +578,77 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
   };
 
   fstamp(`entry t=${t}ms activeClip=${activeClipId ?? 'none'}`);
-  await page.evaluate((payload: typeof framePayload) => window.__applyFrame(payload), framePayload);
-  fstamp('applyFrame returned');
 
-  // Capture the framebuffer as PNG (lossless), decode to RGBA, write
-  // length-prefixed bytes. captureBeyondViewport: false matches the
-  // viewport pixel size exactly. omitBackground: true preserves alpha if
-  // the style has any (today: opaque base, but defensive).
-  const pngBuf = (await page.screenshot({
-    type: 'png',
-    captureBeyondViewport: false,
-    omitBackground: true,
-    fullPage: false,
-    clip: { x: 0, y: 0, width: payload.viewport.w, height: payload.viewport.h },
-  })) as Buffer;
-  fstamp(`screenshot ${pngBuf.length}B`);
+  // ---- 1) page.evaluate(__applyFrame): apply deltas + camera + idle ----
+  // In readpixels mode, __applyFrame *also* performs the readback and
+  // returns a base64-encoded RGBA buffer. In png mode it returns null and
+  // the worker takes a Page.captureScreenshot below.
+  const evalStart = Date.now();
+  const applyResult = (await page.evaluate(
+    (p: typeof framePayload) => window.__applyFrame(p),
+    framePayload,
+  )) as { rgbaB64: string | null } | null;
+  const evalMs = Date.now() - evalStart;
+  fstamp(`applyFrame returned (${evalMs}ms, transport=${TRANSPORT})`);
 
-  const rgba = await decodePngToRgba(pngBuf, payload.viewport.w, payload.viewport.h);
-  fstamp(`decoded ${rgba.length}B`);
+  // ---- 2) Pixel readback ----
+  let rgba: Buffer;
+  let shotMs = 0;
+  let decodeMs = 0;
+  let pngBytes = 0;
+  if (TRANSPORT === 'readpixels') {
+    if (!applyResult || !applyResult.rgbaB64) {
+      throw new Error('readpixels mode: __applyFrame did not return rgbaB64');
+    }
+    // Buffer.from(b64, 'base64') is native C++; ~10 MB base64 → 8 MB RGBA
+    // in single-digit ms on M-series silicon. The cost we just shed: a
+    // PNG encode in Chrome's GPU process (libpng, single-threaded) plus
+    // a JS pngjs decode (zlib + filter pass on the Node thread). Both
+    // were dwarfing the actual map render.
+    const decodeStart = Date.now();
+    rgba = Buffer.from(applyResult.rgbaB64, 'base64');
+    decodeMs = Date.now() - decodeStart;
+    const expected = payload.viewport.w * payload.viewport.h * 4;
+    if (rgba.length !== expected) {
+      throw new Error(
+        `readpixels: got ${rgba.length}B, expected ${expected}B (${payload.viewport.w}x${payload.viewport.h}*4)`,
+      );
+    }
+    fstamp(`readpixels decode ${rgba.length}B in ${decodeMs}ms`);
+  } else {
+    // Legacy PNG transport — Page.captureScreenshot then pngjs.
+    const shotStart = Date.now();
+    const pngBuf = (await page.screenshot({
+      type: 'png',
+      captureBeyondViewport: false,
+      omitBackground: true,
+      fullPage: false,
+      clip: { x: 0, y: 0, width: payload.viewport.w, height: payload.viewport.h },
+    })) as Buffer;
+    shotMs = Date.now() - shotStart;
+    pngBytes = pngBuf.length;
+    fstamp(`screenshot ${pngBuf.length}B in ${shotMs}ms`);
+    const decodeStart = Date.now();
+    rgba = await decodePngToRgba(pngBuf, payload.viewport.w, payload.viewport.h);
+    decodeMs = Date.now() - decodeStart;
+    fstamp(`png decoded ${rgba.length}B in ${decodeMs}ms`);
+  }
+
+  // ---- 3) Write RGBA to stdout ----
+  const writeStart = Date.now();
   writeFrame(rgba);
+  const writeMs = Date.now() - writeStart;
   fstamp('writeFrame done');
+
+  // Always-on per-frame summary. Future perf work has data without
+  // re-instrumenting; deliberately concise (one line, named fields).
+  const totalMs = Date.now() - tStart;
+  const tx = TRANSPORT === 'png'
+    ? `shot=${shotMs}ms png=${pngBytes}B`
+    : `read=embedded`;
+  process.stderr.write(
+    `[renderer] frame ${cmd.frame_index} t=${t}ms total=${totalMs}ms eval=${evalMs}ms ${tx} decode=${decodeMs}ms write=${writeMs}ms rgba=${rgba.length}B\n`,
+  );
 }
 
 function decodePngToRgba(png: Buffer, expectedW: number, expectedH: number): Promise<Buffer> {
@@ -716,10 +802,16 @@ rl.on('close', () => {
 // out as a heartbeat ticking against a stuck activity ("render frame=42
 // t=… elapsed=120000ms" → frame 42's evaluate or screenshot is hung).
 // `unref` so the timer doesn't block shutdown.
-setInterval(() => {
-  const elapsed = Date.now() - activityStartedAt;
-  process.stderr.write(
-    `[renderer heartbeat] activity="${currentActivity}" elapsed=${elapsed}ms ` +
-    `busy=${busy} queueDepth=${queue.length}\n`,
-  );
-}, 15_000).unref();
+//
+// Gated behind TRAILCUT_RENDERER_VERBOSE=1: the per-frame summary line is
+// already a healthy-export liveness signal. The heartbeat earns its keep
+// during diagnosis of hangs, where verbose mode is appropriate.
+if (VERBOSE) {
+  setInterval(() => {
+    const elapsed = Date.now() - activityStartedAt;
+    process.stderr.write(
+      `[renderer heartbeat] activity="${currentActivity}" elapsed=${elapsed}ms ` +
+      `busy=${busy} queueDepth=${queue.length}\n`,
+    );
+  }, 15_000).unref();
+}

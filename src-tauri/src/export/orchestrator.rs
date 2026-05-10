@@ -70,7 +70,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         Self {
-            worker_count: 1,
+            worker_count: default_worker_count(),
             recycle_every: RECYCLE_EVERY_FRAMES,
             renderer_cjs_path: PathBuf::from(manifest_dir)
                 .join("sidecars")
@@ -81,6 +81,42 @@ impl Default for OrchestratorConfig {
             chrome_path: resolve_chrome(manifest_dir),
         }
     }
+}
+
+// Default worker count.
+//
+// Map-frame rendering is embarrassingly parallel — each worker owns a
+// disjoint frame range, the orchestrator already re-orders the (idx, bytes)
+// pairs from a bounded mpsc into the sink in strict frame order. The
+// per-frame cost is dominated by maplibre's render pipeline + GPU readback
+// inside Chrome (CPU+GPU bound, single-threaded JS event loop per worker),
+// so wall-clock scales close to linearly with worker count up to physical
+// CPU saturation.
+//
+// Default: 2 workers. Each worker spawns its own headless Chrome (~500 MB
+// RAM steady-state, ~150 MB more for the maplibre Map allocations). 2
+// workers ≈ 1.3 GB which is comfortable on the 16 GB M-series machines
+// we target. Override with TRAILCUT_RENDERER_WORKERS=N (clamped to
+// 1..=available_parallelism).
+fn default_worker_count() -> usize {
+    if let Ok(s) = std::env::var("TRAILCUT_RENDERER_WORKERS") {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            if n >= 1 {
+                return n.min(max_reasonable_workers());
+            }
+        }
+    }
+    2.min(max_reasonable_workers())
+}
+
+fn max_reasonable_workers() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        // Hard cap. Spawning more headless Chromes than physical perf
+        // cores produces context-switch thrash and saturates the GPU
+        // command queue without further wall-clock win. 8 is generous.
+        .min(8)
 }
 
 // Path components from the unpacked Chrome dir to the actual executable.
