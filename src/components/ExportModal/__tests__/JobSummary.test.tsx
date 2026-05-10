@@ -37,11 +37,24 @@ function fileLines(): string[] {
   return Array.from(items).map((el) => el.textContent ?? '');
 }
 
+function estimateText(): string | null {
+  const el = container.querySelector(
+    '[data-testid="export-job-summary-estimate"]',
+  );
+  return el ? el.textContent ?? '' : null;
+}
+
 describe('JobSummary — cartesian product math (no folder)', () => {
   it('renders 0 files with prompting copy when nothing selected', () => {
     const selection: ExportSelection = { aspects: [], channels: [] };
     render(
-      <JobSummary selection={selection} projectName="Hike" outputFolder={null} />,
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
     );
     expect(summaryText()).toContain('0 files');
   });
@@ -49,7 +62,13 @@ describe('JobSummary — cartesian product math (no folder)', () => {
   it('renders 0 files when only aspects are selected', () => {
     const selection: ExportSelection = { aspects: ['9_16'], channels: [] };
     render(
-      <JobSummary selection={selection} projectName="Hike" outputFolder={null} />,
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
     );
     expect(summaryText()).toContain('0 files');
   });
@@ -60,7 +79,13 @@ describe('JobSummary — cartesian product math (no folder)', () => {
       channels: ['composite'],
     };
     render(
-      <JobSummary selection={selection} projectName="Hike" outputFolder={null} />,
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
     );
     expect(summaryText()).toContain('0 files');
   });
@@ -71,7 +96,13 @@ describe('JobSummary — cartesian product math (no folder)', () => {
       channels: ['composite'],
     };
     render(
-      <JobSummary selection={selection} projectName="Hike" outputFolder={null} />,
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
     );
     const text = summaryText();
     expect(text).toContain('1 file:');
@@ -85,7 +116,13 @@ describe('JobSummary — cartesian product math (no folder)', () => {
       channels: ['composite'],
     };
     render(
-      <JobSummary selection={selection} projectName="Hike" outputFolder={null} />,
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
     );
     expect(summaryText()).toContain('3 files');
   });
@@ -96,7 +133,13 @@ describe('JobSummary — cartesian product math (no folder)', () => {
       channels: ['composite', 'map_only', 'video_only'],
     };
     render(
-      <JobSummary selection={selection} projectName="Hike" outputFolder={null} />,
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
     );
     const text = summaryText();
     expect(text).toContain('9 files');
@@ -117,6 +160,8 @@ describe('JobSummary — filename preview (folder set)', () => {
         selection={selection}
         projectName="Hike2026"
         outputFolder="/Users/u/out"
+        nClips={0}
+        timelineDurationSec={0}
       />,
     );
     expect(summaryText()).toContain('2 files');
@@ -136,6 +181,8 @@ describe('JobSummary — filename preview (folder set)', () => {
         selection={selection}
         projectName="Hike2026"
         outputFolder="/out"
+        nClips={0}
+        timelineDurationSec={0}
       />,
     );
     expect(fileLines()).toHaveLength(4);
@@ -152,6 +199,8 @@ describe('JobSummary — filename preview (folder set)', () => {
         selection={selection}
         projectName="Hike2026"
         outputFolder="/out"
+        nClips={0}
+        timelineDurationSec={0}
       />,
     );
     expect(summaryText()).toContain('9 files');
@@ -173,6 +222,8 @@ describe('JobSummary — filename preview (folder set)', () => {
         selection={selection}
         projectName="!!!"
         outputFolder="/out"
+        nClips={0}
+        timelineDurationSec={0}
       />,
     );
     expect(fileLines()).toEqual(['trailcut-export-9_16-composite.mp4']);
@@ -185,9 +236,136 @@ describe('JobSummary — filename preview (folder set)', () => {
         selection={selection}
         projectName="Hike"
         outputFolder="/out"
+        nClips={0}
+        timelineDurationSec={0}
       />,
     );
     expect(summaryText()).toContain('0 files');
     expect(fileLines()).toEqual([]);
+  });
+});
+
+describe('JobSummary — time estimate', () => {
+  it('hides estimate when n_jobs is 0', () => {
+    const selection: ExportSelection = { aspects: [], channels: [] };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={10}
+        timelineDurationSec={60}
+      />,
+    );
+    expect(estimateText()).toBeNull();
+  });
+
+  it('hides estimate when both nClips and timelineDurationSec are 0', () => {
+    const selection: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+    };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={0}
+        timelineDurationSec={0}
+      />,
+    );
+    expect(estimateText()).toBeNull();
+  });
+
+  it('shows estimate alongside cartesian breakdown (no folder)', () => {
+    const selection: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+    };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={10}
+        timelineDurationSec={60}
+      />,
+    );
+    expect(estimateText()).toContain('Estimated time:');
+  });
+
+  it('shows estimate alongside filename preview (folder set)', () => {
+    const selection: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+    };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder="/out"
+        nClips={10}
+        timelineDurationSec={60}
+      />,
+    );
+    expect(estimateText()).toContain('Estimated time:');
+    expect(fileLines().length).toBeGreaterThan(0);
+  });
+
+  it('formats below 60s as "<1 min"', () => {
+    // 1 clip × 0.5 + 60 × 0.4 = 24.5s (composite, single job).
+    const selection: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+    };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={1}
+        timelineDurationSec={60}
+      />,
+    );
+    expect(estimateText()).toContain('<1 min');
+  });
+
+  it('formats minute range as "~N min"', () => {
+    // 50 clips × 0.5 + 300 × 0.4 = 25 + 120 = 145s ≈ 2 min (rounded).
+    const selection: ExportSelection = {
+      aspects: ['9_16'],
+      channels: ['composite'],
+    };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={50}
+        timelineDurationSec={300}
+      />,
+    );
+    expect(estimateText()).toContain('~2 min');
+  });
+
+  it('formats above 60min as "~Hh Mm"', () => {
+    // Force ≥3600s: 3 jobs × (200 × 0.5 + 1800 × 0.6) = 3 × 1180 = 3540s
+    // — bump up to push over 60m. 200×0.5 + 1800×0.6 = 100 + 1080 = 1180.
+    // 4 jobs of that = 4720s = 78m → "~1h 18m".
+    const selection: ExportSelection = {
+      aspects: ['9_16', '4_5'],
+      channels: ['video_only', 'composite'],
+    };
+    render(
+      <JobSummary
+        selection={selection}
+        projectName="Hike"
+        outputFolder={null}
+        nClips={200}
+        timelineDurationSec={1800}
+      />,
+    );
+    const text = estimateText() ?? '';
+    expect(text).toMatch(/~\d+h \d+m/);
   });
 });

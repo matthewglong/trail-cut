@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { AspectCheckboxes } from './AspectCheckboxes';
 import { ChannelToggles } from './ChannelToggles';
@@ -6,6 +6,7 @@ import { ChannelSchematic } from './ChannelSchematic';
 import { JobSummary } from './JobSummary';
 import type {
   AspectRatio,
+  Clip,
   ExportChannel,
   ExportSelection,
 } from '../../types';
@@ -19,6 +20,7 @@ export interface ExportModalProps {
   selection: ExportSelection;
   onSelectionChange: (next: ExportSelection) => void;
   projectName: string;
+  clips: Clip[];
 }
 
 export function ExportModal({
@@ -27,8 +29,24 @@ export function ExportModal({
   selection,
   onSelectionChange,
   projectName,
+  clips,
 }: ExportModalProps) {
   const [outputFolder, setOutputFolder] = useState<string | null>(null);
+
+  const { nClips, timelineDurationSec } = useMemo(() => {
+    let total = 0;
+    let count = 0;
+    for (const clip of clips) {
+      if (clip.visible === false) continue;
+      const trim = clip.trim;
+      if (!trim) continue;
+      const speed = clip.effects?.speed ?? 1;
+      if (speed <= 0) continue;
+      total += (trim.out_ms - trim.in_ms) / 1000 / speed;
+      count += 1;
+    }
+    return { nClips: count, timelineDurationSec: total };
+  }, [clips]);
 
   useEffect(() => {
     if (!open) return;
@@ -123,6 +141,8 @@ export function ExportModal({
               selection={selection}
               projectName={projectName}
               outputFolder={outputFolder}
+              nClips={nClips}
+              timelineDurationSec={timelineDurationSec}
             />
           </section>
 

@@ -5,6 +5,7 @@ import { fireEvent } from '@testing-library/react';
 import { ExportModal } from '../ExportModal';
 import type {
   AspectRatio,
+  Clip,
   ExportChannel,
   ExportSelection,
 } from '../../../types';
@@ -45,6 +46,27 @@ interface HarnessProps {
   initialSelection?: ExportSelection;
   projectName?: string;
   onCloseExtra?: () => void;
+  clips?: Clip[];
+}
+
+function makeClip(overrides: Partial<Clip> = {}): Clip {
+  return {
+    id: overrides.id ?? 'c1',
+    path: overrides.path ?? '/tmp/c1.mov',
+    filename: overrides.filename ?? 'c1.mov',
+    created_at: overrides.created_at ?? '2026-01-01T00:00:00Z',
+    duration_ms: overrides.duration_ms ?? 60_000,
+    gps: overrides.gps ?? null,
+    resolution: overrides.resolution ?? '1920x1080',
+    frame_rate: overrides.frame_rate ?? 30,
+    trim: overrides.trim ?? { in_ms: 0, out_ms: 60_000 },
+    focal_point: overrides.focal_point ?? { x: 0.5, y: 0.5, zoom: 1 },
+    effects:
+      overrides.effects ??
+      ({ stabilize: { enabled: false, shakiness: 5 }, speed: 1 } satisfies Clip['effects']),
+    visible: overrides.visible ?? true,
+    map_overrides: overrides.map_overrides ?? null,
+  };
 }
 
 function Harness({
@@ -52,6 +74,7 @@ function Harness({
   initialSelection,
   projectName,
   onCloseExtra,
+  clips,
 }: HarnessProps) {
   const [open, setOpen] = useState(initialOpen);
   const [selection, setSelection] = useState<ExportSelection>(
@@ -67,6 +90,7 @@ function Harness({
       selection={selection}
       onSelectionChange={setSelection}
       projectName={projectName ?? 'Hike2026'}
+      clips={clips ?? []}
     />
   );
 }
@@ -339,5 +363,55 @@ describe('ExportModal — Render-button enable transitions', () => {
     const btn = renderBtn();
     expect(btn.disabled).toBe(false);
     expect(btn.getAttribute('title')).toBeNull();
+  });
+});
+
+describe('ExportModal — time estimate pipeline', () => {
+  it('feeds visible clips into JobSummary so the estimate appears', () => {
+    const clips: Clip[] = [
+      makeClip({ id: 'a', trim: { in_ms: 0, out_ms: 30_000 } }),
+      makeClip({ id: 'b', trim: { in_ms: 0, out_ms: 30_000 } }),
+    ];
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        clips={clips}
+      />,
+    );
+    const estimate = container.querySelector(
+      '[data-testid="export-job-summary-estimate"]',
+    );
+    expect(estimate).not.toBeNull();
+    expect(estimate?.textContent ?? '').toContain('Estimated time:');
+  });
+
+  it('skips invisible clips when computing the timeline duration', () => {
+    const clips: Clip[] = [
+      makeClip({ id: 'a', visible: false, trim: { in_ms: 0, out_ms: 60_000 } }),
+    ];
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        clips={clips}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="export-job-summary-estimate"]'),
+    ).toBeNull();
+  });
+
+  it('hides the estimate when no clips are visible', () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        clips={[]}
+      />,
+    );
+    expect(
+      container.querySelector('[data-testid="export-job-summary-estimate"]'),
+    ).toBeNull();
   });
 });

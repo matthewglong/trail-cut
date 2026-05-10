@@ -953,6 +953,7 @@ export default function ProjectView({
         selection={exportSelection}
         onSelectionChange={setExportSelection}
         projectName={projectName}
+        clips={clips}
       />
     </div>
   );
