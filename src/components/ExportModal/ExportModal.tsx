@@ -1,18 +1,34 @@
 import { useEffect, useMemo, useState } from 'react';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog, ask } from '@tauri-apps/plugin-dialog';
+import { exists } from '@tauri-apps/plugin-fs';
 import { AspectCheckboxes } from './AspectCheckboxes';
 import { ChannelToggles } from './ChannelToggles';
 import { ChannelSchematic } from './ChannelSchematic';
 import { JobSummary } from './JobSummary';
+import { QueueView } from './QueueView';
+import { QueueSummary } from './QueueSummary';
+import { deriveJobs, type ExportJob } from '../../lib/exportFilenames';
+import {
+  buildJobRequest,
+  type ExportRequestContext,
+  type RenderExportRequest,
+} from '../../lib/exportRequest';
+import { useExportQueue } from '../../hooks/useExportQueue';
 import type {
   AspectRatio,
   Clip,
   ExportChannel,
   ExportSelection,
+  MapSettings,
+  ProjectLayouts,
+  Route,
+  TransitionFeel,
 } from '../../types';
 
 const DISABLED_RENDER_TOOLTIP =
   'Select aspects, channels, and folder to enable Render';
+
+type View = 'select' | 'running' | 'done';
 
 export interface ExportModalProps {
   open: boolean;
@@ -21,6 +37,10 @@ export interface ExportModalProps {
   onSelectionChange: (next: ExportSelection) => void;
   projectName: string;
   clips: Clip[];
+  route: Route | null;
+  mapSettings: MapSettings;
+  transitionFeel?: TransitionFeel;
+  projectLayouts: ProjectLayouts;
 }
 
 export function ExportModal({
@@ -30,8 +50,14 @@ export function ExportModal({
   onSelectionChange,
   projectName,
   clips,
+  route,
+  mapSettings,
+  transitionFeel,
+  projectLayouts,
 }: ExportModalProps) {
   const [outputFolder, setOutputFolder] = useState<string | null>(null);
+  const [view, setView] = useState<View>('select');
+  const queue = useExportQueue();
 
   const { nClips, timelineDurationSec } = useMemo(() => {
     let total = 0;
@@ -48,17 +74,34 @@ export function ExportModal({
     return { nClips: count, timelineDurationSec: total };
   }, [clips]);
 
+  // Modal-close lifecycle: backdrop / Esc are gated by view.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
+      if (e.key !== 'Escape') return;
+      if (view === 'running') return;
+      e.stopPropagation();
+      handleClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view]);
+
+  // Watch the queue for completion to advance the view.
+  useEffect(() => {
+    if (view === 'running' && queue.queueState === 'done') {
+      setView('done');
+    }
+  }, [view, queue.queueState]);
+
+  // Reset modal state on close so the next open starts clean.
+  useEffect(() => {
+    if (open) return;
+    setView('select');
+    queue.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   if (!open) return null;
 
@@ -84,6 +127,62 @@ export function ExportModal({
     }
   };
 
+  const handleClose = () => {
+    if (view === 'running') return;
+    queue.reset();
+    setView('select');
+    onClose();
+  };
+
+  const handleBackdropClick = () => {
+    if (view === 'running') return;
+    handleClose();
+  };
+
+  const handleRender = async () => {
+    if (!outputFolder || selection.aspects.length === 0 || selection.channels.length === 0) {
+      return;
+    }
+    const jobs = deriveJobs(projectName, outputFolder, selection);
+
+    const collisions: string[] = [];
+    for (const job of jobs) {
+      try {
+        if (await exists(job.outputPath)) collisions.push(job.outputPath);
+      } catch {
+        // Treat probe failure as "doesn't exist" — the renderer will surface
+        // a real write error if the path is genuinely unwritable.
+      }
+    }
+
+    if (collisions.length > 0) {
+      let proceed = false;
+      try {
+        proceed = await ask(
+          `${collisions.length} file${collisions.length === 1 ? '' : 's'} already exist and will be overwritten. Continue?`,
+          { title: 'Overwrite existing files?', kind: 'warning' },
+        );
+      } catch {
+        return;
+      }
+      if (!proceed) return;
+    }
+
+    const context: ExportRequestContext = {
+      fps: 30,
+      clips,
+      route,
+      mapSettings,
+      transitionFeel,
+      layouts: projectLayouts,
+    };
+    const buildRequest = (job: ExportJob): RenderExportRequest =>
+      buildJobRequest(context, job);
+
+    setView('running');
+    queue.start(jobs, buildRequest);
+  };
+
   const previewAspect: AspectRatio = selection.aspects[0] ?? '9_16';
   const renderEnabled =
     selection.aspects.length > 0 &&
@@ -94,7 +193,7 @@ export function ExportModal({
   return (
     <div
       style={styles.backdrop}
-      onClick={onClose}
+      onClick={handleBackdropClick}
       data-testid="export-modal-backdrop"
     >
       <div
@@ -106,96 +205,128 @@ export function ExportModal({
         data-testid="export-modal"
       >
         <div style={styles.header}>
-          <h2 style={styles.title}>Export</h2>
+          <h2 style={styles.title}>{viewTitle(view)}</h2>
         </div>
 
         <div style={styles.body}>
-          <section style={styles.section}>
-            <div style={styles.label}>Aspect ratios</div>
-            <AspectCheckboxes value={selection.aspects} onChange={setAspects} />
-          </section>
+          {view === 'select' && (
+            <>
+              <section style={styles.section}>
+                <div style={styles.label}>Aspect ratios</div>
+                <AspectCheckboxes value={selection.aspects} onChange={setAspects} />
+              </section>
 
-          <section style={styles.section}>
-            <div style={styles.label}>Channels</div>
-            <ChannelToggles value={selection.channels} onChange={setChannels} />
-          </section>
+              <section style={styles.section}>
+                <div style={styles.label}>Channels</div>
+                <ChannelToggles value={selection.channels} onChange={setChannels} />
+              </section>
 
-          {selection.channels.length > 0 && (
-            <section style={styles.section}>
-              <div style={styles.label}>Preview</div>
-              <div style={styles.schematics}>
-                {selection.channels.map((c) => (
-                  <div key={c} style={styles.schematicCell}>
-                    <ChannelSchematic channel={c} aspect={previewAspect} />
-                    <div style={styles.schematicLabel}>
-                      {formatChannelLabel(c)}
-                    </div>
+              {selection.channels.length > 0 && (
+                <section style={styles.section}>
+                  <div style={styles.label}>Preview</div>
+                  <div style={styles.schematics}>
+                    {selection.channels.map((c) => (
+                      <div key={c} style={styles.schematicCell}>
+                        <ChannelSchematic channel={c} aspect={previewAspect} />
+                        <div style={styles.schematicLabel}>
+                          {formatChannelLabel(c)}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </section>
+                </section>
+              )}
+
+              <section style={styles.section}>
+                <JobSummary
+                  selection={selection}
+                  projectName={projectName}
+                  outputFolder={outputFolder}
+                  nClips={nClips}
+                  timelineDurationSec={timelineDurationSec}
+                />
+              </section>
+
+              <section style={styles.section}>
+                <div style={styles.label}>Output folder</div>
+                <div style={styles.folderRow} data-testid="export-output-folder">
+                  <button
+                    type="button"
+                    onClick={handleChooseFolder}
+                    style={styles.secondaryButton}
+                    data-testid="export-output-folder-choose"
+                  >
+                    Choose…
+                  </button>
+                  {outputFolder ? (
+                    <span
+                      style={styles.folderPath}
+                      data-testid="export-output-folder-path"
+                      title={outputFolder}
+                    >
+                      {outputFolder}
+                    </span>
+                  ) : (
+                    <span style={styles.folderPlaceholder}>No folder selected</span>
+                  )}
+                </div>
+              </section>
+            </>
           )}
 
-          <section style={styles.section}>
-            <JobSummary
-              selection={selection}
-              projectName={projectName}
-              outputFolder={outputFolder}
-              nClips={nClips}
-              timelineDurationSec={timelineDurationSec}
+          {view === 'running' && (
+            <QueueView
+              jobs={queue.jobs}
+              queueState={queue.queueState}
+              onCancel={queue.cancel}
             />
-          </section>
+          )}
 
-          <section style={styles.section}>
-            <div style={styles.label}>Output folder</div>
-            <div style={styles.folderRow} data-testid="export-output-folder">
-              <button
-                type="button"
-                onClick={handleChooseFolder}
-                style={styles.secondaryButton}
-                data-testid="export-output-folder-choose"
-              >
-                Choose…
-              </button>
-              {outputFolder ? (
-                <span
-                  style={styles.folderPath}
-                  data-testid="export-output-folder-path"
-                  title={outputFolder}
-                >
-                  {outputFolder}
-                </span>
-              ) : (
-                <span style={styles.folderPlaceholder}>
-                  No folder selected
-                </span>
-              )}
-            </div>
-          </section>
+          {view === 'done' && (
+            <QueueSummary
+              jobs={queue.jobs}
+              outputDir={outputFolder}
+              onClose={handleClose}
+            />
+          )}
         </div>
 
-        <div style={styles.footer}>
-          <button
-            type="button"
-            onClick={onClose}
-            style={styles.secondaryButton}
-            data-testid="export-modal-cancel"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={renderDisabled}
-            title={renderDisabled ? DISABLED_RENDER_TOOLTIP : undefined}
-            style={renderDisabled ? styles.primaryDisabled : styles.primary}
-            data-testid="export-modal-render"
-          >
-            Render
-          </button>
-        </div>
+        {view === 'select' && (
+          <div style={styles.footer}>
+            <button
+              type="button"
+              onClick={handleClose}
+              style={styles.secondaryButton}
+              data-testid="export-modal-cancel"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleRender}
+              disabled={renderDisabled}
+              title={renderDisabled ? DISABLED_RENDER_TOOLTIP : undefined}
+              style={renderDisabled ? styles.primaryDisabled : styles.primary}
+              data-testid="export-modal-render"
+            >
+              Render
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
+}
+
+function viewTitle(view: View): string {
+  switch (view) {
+    case 'select':
+      return 'Export';
+    case 'running':
+      return 'Rendering…';
+    case 'done':
+      return 'Export complete';
+  }
 }
 
 function formatChannelLabel(c: ExportChannel): string {

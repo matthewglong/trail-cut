@@ -8,12 +8,35 @@ import type {
   Clip,
   ExportChannel,
   ExportSelection,
+  MapSettings,
+  ProjectLayouts,
+  Route,
+  TransitionFeel,
 } from '../../../types';
+import { DEFAULT_MAP_SETTINGS } from '../../../types';
+import { defaultLayout } from '../../../lib/layout';
 
 const dialogOpenMock = vi.fn();
+const askMock = vi.fn();
+const existsMock = vi.fn();
+const invokeMock = vi.fn();
+const revealMock = vi.fn();
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: (...args: unknown[]) => dialogOpenMock(...args),
+  ask: (...args: unknown[]) => askMock(...args),
+}));
+
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  exists: (...args: unknown[]) => existsMock(...args),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  revealItemInDir: (...args: unknown[]) => revealMock(...args),
 }));
 
 let container: HTMLDivElement;
@@ -24,6 +47,17 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   dialogOpenMock.mockReset();
+  askMock.mockReset();
+  existsMock.mockReset();
+  invokeMock.mockReset();
+  revealMock.mockReset();
+  existsMock.mockResolvedValue(false);
+  invokeMock.mockResolvedValue({
+    frames_written: 1,
+    output_path: '/out/x',
+    wall_clock_ms: 1,
+  });
+  revealMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -47,6 +81,18 @@ interface HarnessProps {
   projectName?: string;
   onCloseExtra?: () => void;
   clips?: Clip[];
+  route?: Route | null;
+  mapSettings?: MapSettings;
+  transitionFeel?: TransitionFeel;
+  projectLayouts?: ProjectLayouts;
+}
+
+function defaultProjectLayouts(): ProjectLayouts {
+  return {
+    '9_16': defaultLayout('9_16'),
+    '4_5': defaultLayout('4_5'),
+    '16_9': defaultLayout('16_9'),
+  };
 }
 
 function makeClip(overrides: Partial<Clip> = {}): Clip {
@@ -75,6 +121,10 @@ function Harness({
   projectName,
   onCloseExtra,
   clips,
+  route,
+  mapSettings,
+  transitionFeel,
+  projectLayouts,
 }: HarnessProps) {
   const [open, setOpen] = useState(initialOpen);
   const [selection, setSelection] = useState<ExportSelection>(
@@ -91,6 +141,10 @@ function Harness({
       onSelectionChange={setSelection}
       projectName={projectName ?? 'Hike2026'}
       clips={clips ?? []}
+      route={route ?? null}
+      mapSettings={mapSettings ?? DEFAULT_MAP_SETTINGS}
+      transitionFeel={transitionFeel}
+      projectLayouts={projectLayouts ?? defaultProjectLayouts()}
     />
   );
 }
@@ -413,5 +467,133 @@ describe('ExportModal — time estimate pipeline', () => {
     expect(
       container.querySelector('[data-testid="export-job-summary-estimate"]'),
     ).toBeNull();
+  });
+});
+
+describe('ExportModal — render flow', () => {
+  async function setup(): Promise<void> {
+    dialogOpenMock.mockResolvedValue('/out');
+    const clips: Clip[] = [
+      makeClip({ id: 'c1', trim: { in_ms: 0, out_ms: 60_000 } }),
+    ];
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+        clips={clips}
+      />,
+    );
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+  }
+
+  async function clickRender(): Promise<void> {
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    await flush();
+  }
+
+  it('starts the queue immediately when no collisions exist', async () => {
+    await setup();
+    existsMock.mockResolvedValue(false);
+    await clickRender();
+    expect(askMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalled();
+    // Queue may have already finished given the resolved invoke mock — either
+    // queue-view (running) or queue-summary (done) is acceptable here.
+    expect(
+      findByTestId('export-queue-view') ?? findByTestId('export-queue-summary'),
+    ).not.toBeNull();
+  });
+
+  it('asks for confirmation on collision and proceeds when user confirms', async () => {
+    await setup();
+    existsMock.mockResolvedValue(true);
+    askMock.mockResolvedValue(true);
+    await clickRender();
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalled();
+    expect(
+      findByTestId('export-queue-view') ?? findByTestId('export-queue-summary'),
+    ).not.toBeNull();
+  });
+
+  it('aborts the queue when user declines the overwrite confirmation', async () => {
+    await setup();
+    existsMock.mockResolvedValue(true);
+    askMock.mockResolvedValue(false);
+    await clickRender();
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(findByTestId('export-queue-view')).toBeNull();
+    expect(findByTestId('export-modal-render')).not.toBeNull();
+  });
+
+  it('transitions select -> running -> done', async () => {
+    await setup();
+    await clickRender();
+    await flush();
+    await flush();
+    await flush();
+    expect(findByTestId('export-queue-summary')).not.toBeNull();
+  });
+
+  it('blocks Escape from closing while running', async () => {
+    await setup();
+    let resolveInvoke: (v: unknown) => void = () => {};
+    invokeMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvoke = resolve;
+        }),
+    );
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    expect(findByTestId('export-queue-view')).not.toBeNull();
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(findByTestId('export-modal')).not.toBeNull();
+
+    await act(async () => {
+      resolveInvoke({ frames_written: 1, output_path: '/x', wall_clock_ms: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
+  it('blocks backdrop clicks from closing while running', async () => {
+    await setup();
+    let resolveInvoke: (v: unknown) => void = () => {};
+    invokeMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvoke = resolve;
+        }),
+    );
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    expect(findByTestId('export-queue-view')).not.toBeNull();
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-backdrop') as HTMLElement);
+    });
+    expect(findByTestId('export-modal')).not.toBeNull();
+
+    await act(async () => {
+      resolveInvoke({ frames_written: 1, output_path: '/x', wall_clock_ms: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   });
 });

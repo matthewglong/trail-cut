@@ -954,6 +954,10 @@ export default function ProjectView({
         onSelectionChange={setExportSelection}
         projectName={projectName}
         clips={clips}
+        route={route}
+        mapSettings={mapSettings}
+        transitionFeel={transitionFeel}
+        projectLayouts={projectLayouts}
       />
     </div>
   );

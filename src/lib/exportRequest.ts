@@ -23,6 +23,7 @@ import type {
   Route,
   TransitionFeel,
 } from '../types';
+import type { ExportJob } from './exportFilenames';
 
 /** Channel selector. Mirrors the Rust enum-by-string in `RenderExportRequest.channel`.
  *  060 implements only `"map_only"`; 070/090 introduce the others. */
@@ -110,4 +111,36 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     clips: inputs.clips,
     mapSettings: inputs.mapSettings,
   };
+}
+
+/** Project context shared across every job in a render queue (task 270). */
+export interface ExportRequestContext {
+  fps: number;
+  clips: Clip[];
+  route: Route | null;
+  mapSettings: MapSettings;
+  transitionFeel?: TransitionFeel;
+  layouts?: Project['layouts'];
+}
+
+/** Build a per-job request closure. The compiled timeline doesn't depend on
+ *  the chosen aspect/channel, so callers that drive a multi-job queue (270's
+ *  `useExportQueue`) get one wrapper that produces a `RenderExportRequest`
+ *  per `ExportJob`. Call sites still go through `buildExportRequest` so the
+ *  Split-legality check and `pickLayout` fallback remain in one place. */
+export function buildJobRequest(
+  context: ExportRequestContext,
+  job: ExportJob,
+): RenderExportRequest {
+  return buildExportRequest({
+    channel: job.channel,
+    fps: context.fps,
+    outputPath: job.outputPath,
+    aspect: job.aspect,
+    clips: context.clips,
+    route: context.route,
+    mapSettings: context.mapSettings,
+    transitionFeel: context.transitionFeel,
+    layouts: context.layouts,
+  });
 }
