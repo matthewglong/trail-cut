@@ -1,12 +1,39 @@
-import { useEffect, type CSSProperties, type MouseEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from 'react';
 import { createPortal } from 'react-dom';
+import { LayoutConfigurator } from '../LayoutConfigurator';
+import {
+  defaultLayout,
+  type AspectRatio,
+  type LayoutConfig,
+  type ProjectLayouts,
+} from '../../lib/layout';
 
 export interface MapPositioningModalProps {
   open: boolean;
   onClose: () => void;
+  layouts: ProjectLayouts;
+  onLayoutChange: (aspect: AspectRatio, next: LayoutConfig) => void;
 }
 
-export function MapPositioningModal({ open, onClose }: MapPositioningModalProps) {
+const ASPECT_PANES: { aspect: AspectRatio; label: string }[] = [
+  { aspect: '16_9', label: '16:9' },
+  { aspect: '4_5', label: '4:5' },
+  { aspect: '9_16', label: '9:16' },
+];
+
+export function MapPositioningModal({
+  open,
+  onClose,
+  layouts,
+  onLayoutChange,
+}: MapPositioningModalProps) {
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
@@ -53,13 +80,86 @@ export function MapPositioningModal({ open, onClose }: MapPositioningModalProps)
           </button>
         </div>
         <div style={bodyStyle} data-testid="map-positioning-modal-body">
-          <p style={placeholderStyle}>Per-aspect positioning UI lands in task 210.</p>
+          {ASPECT_PANES.map(({ aspect, label }) => (
+            <AspectPane
+              key={aspect}
+              aspect={aspect}
+              label={label}
+              layout={layouts[aspect] ?? defaultLayout(aspect)}
+              onChange={(next) => onLayoutChange(aspect, next)}
+              onReset={() => onLayoutChange(aspect, defaultLayout(aspect))}
+            />
+          ))}
         </div>
       </div>
     </div>
   );
 
   return createPortal(content, document.body);
+}
+
+interface AspectPaneProps {
+  aspect: AspectRatio;
+  label: string;
+  layout: LayoutConfig;
+  onChange: (next: LayoutConfig) => void;
+  onReset: () => void;
+}
+
+function AspectPane({ aspect, label, layout, onChange, onReset }: AspectPaneProps) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  useLayoutEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setSize({ w: rect.width, h: rect.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return (
+    <div style={paneStyle} data-testid={`map-positioning-pane-${aspect}`}>
+      <div style={paneHeaderStyle}>
+        <span style={paneLabelStyle}>{label}</span>
+        <ResetButton onReset={onReset} aspect={aspect} />
+      </div>
+      <div style={paneSurfaceStyle} ref={surfaceRef}>
+        {size.w > 0 && size.h > 0 && (
+          <LayoutConfigurator
+            layout={layout}
+            aspect={aspect}
+            containerWidth={size.w}
+            containerHeight={size.h}
+            onChange={onChange}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface ResetButtonProps {
+  onReset: () => void;
+  aspect: AspectRatio;
+}
+
+function ResetButton({ onReset, aspect }: ResetButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onReset}
+      style={resetButtonStyle}
+      data-testid={`map-positioning-reset-${aspect}`}
+    >
+      Reset
+    </button>
+  );
 }
 
 const backdropStyle: CSSProperties = {
@@ -118,15 +218,58 @@ const bodyStyle: CSSProperties = {
   flex: '1 1 auto',
   minHeight: 0,
   display: 'flex',
-  alignItems: 'center',
+  flexWrap: 'wrap',
+  gap: 16,
+  padding: 16,
+  overflowY: 'auto',
+  alignContent: 'flex-start',
   justifyContent: 'center',
-  padding: 24,
 };
 
-const placeholderStyle: CSSProperties = {
-  margin: 0,
-  color: '#888',
-  fontSize: 13,
+const paneStyle: CSSProperties = {
+  flex: '1 1 280px',
+  minWidth: 280,
+  maxWidth: 480,
+  display: 'flex',
+  flexDirection: 'column',
+  border: '1px solid #2a2a2a',
+  borderRadius: 4,
+  backgroundColor: '#101010',
+  overflow: 'hidden',
+};
+
+const paneHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '8px 12px',
+  borderBottom: '1px solid #2a2a2a',
+  backgroundColor: 'rgba(7, 27, 38, 0.4)',
+};
+
+const paneLabelStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: '#ccc',
+  letterSpacing: '0.02em',
+};
+
+const paneSurfaceStyle: CSSProperties = {
+  position: 'relative',
+  flex: '1 1 auto',
+  minHeight: 240,
+  padding: 16,
+};
+
+const resetButtonStyle: CSSProperties = {
+  padding: '4px 10px',
+  backgroundColor: 'rgba(20, 20, 20, 0.78)',
+  color: '#ccc',
+  border: '1px solid #3a3a3a',
+  borderRadius: 4,
+  cursor: 'pointer',
+  fontSize: 12,
+  fontFamily: 'inherit',
 };
 
 export default MapPositioningModal;

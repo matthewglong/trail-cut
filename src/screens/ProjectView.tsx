@@ -939,6 +939,10 @@ export default function ProjectView({
       <MapPositioningModal
         open={positioningModalOpen}
         onClose={() => setPositioningModalOpen(false)}
+        layouts={projectLayouts}
+        onLayoutChange={(aspect, next) =>
+          setProjectLayouts((prev) => ({ ...prev, [aspect]: next }))
+        }
       />
     </div>
   );

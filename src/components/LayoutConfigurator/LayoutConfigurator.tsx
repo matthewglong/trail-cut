@@ -455,6 +455,7 @@ const overlaySvgStyle: CSSProperties = {
 const chromeRowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
+  flexWrap: 'wrap',
   gap: 8,
   padding: '8px 10px',
   backgroundColor: 'rgba(7, 27, 38, 0.78)',
