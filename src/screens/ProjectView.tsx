@@ -952,6 +952,7 @@ export default function ProjectView({
         onClose={() => setExportModalOpen(false)}
         selection={exportSelection}
         onSelectionChange={setExportSelection}
+        projectName={projectName}
       />
     </div>
   );

@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { AspectCheckboxes } from './AspectCheckboxes';
 import { ChannelToggles } from './ChannelToggles';
 import { ChannelSchematic } from './ChannelSchematic';
@@ -17,6 +18,7 @@ export interface ExportModalProps {
   onClose: () => void;
   selection: ExportSelection;
   onSelectionChange: (next: ExportSelection) => void;
+  projectName: string;
 }
 
 export function ExportModal({
@@ -24,7 +26,10 @@ export function ExportModal({
   onClose,
   selection,
   onSelectionChange,
+  projectName,
 }: ExportModalProps) {
+  const [outputFolder, setOutputFolder] = useState<string | null>(null);
+
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -44,8 +49,29 @@ export function ExportModal({
   const setChannels = (channels: ExportChannel[]) =>
     onSelectionChange({ ...selection, channels });
 
+  const handleChooseFolder = async () => {
+    let result: string | string[] | null;
+    try {
+      result = (await openDialog({ directory: true, multiple: false })) as
+        | string
+        | string[]
+        | null;
+    } catch {
+      return;
+    }
+    if (typeof result === 'string') {
+      setOutputFolder(result);
+    } else if (Array.isArray(result) && result.length > 0) {
+      setOutputFolder(result[0]);
+    }
+  };
+
   const previewAspect: AspectRatio = selection.aspects[0] ?? '9_16';
-  const renderDisabled = true;
+  const renderEnabled =
+    selection.aspects.length > 0 &&
+    selection.channels.length > 0 &&
+    outputFolder !== null;
+  const renderDisabled = !renderEnabled;
 
   return (
     <div
@@ -93,15 +119,37 @@ export function ExportModal({
           )}
 
           <section style={styles.section}>
-            <JobSummary selection={selection} />
+            <JobSummary
+              selection={selection}
+              projectName={projectName}
+              outputFolder={outputFolder}
+            />
           </section>
 
           <section style={styles.section}>
             <div style={styles.label}>Output folder</div>
             <div style={styles.folderRow} data-testid="export-output-folder">
-              <span style={styles.folderPlaceholder}>
-                Folder picker arrives in task 250.
-              </span>
+              <button
+                type="button"
+                onClick={handleChooseFolder}
+                style={styles.secondaryButton}
+                data-testid="export-output-folder-choose"
+              >
+                Choose…
+              </button>
+              {outputFolder ? (
+                <span
+                  style={styles.folderPath}
+                  data-testid="export-output-folder-path"
+                  title={outputFolder}
+                >
+                  {outputFolder}
+                </span>
+              ) : (
+                <span style={styles.folderPlaceholder}>
+                  No folder selected
+                </span>
+              )}
             </div>
           </section>
         </div>
@@ -118,7 +166,7 @@ export function ExportModal({
           <button
             type="button"
             disabled={renderDisabled}
-            title={DISABLED_RENDER_TOOLTIP}
+            title={renderDisabled ? DISABLED_RENDER_TOOLTIP : undefined}
             style={renderDisabled ? styles.primaryDisabled : styles.primary}
             data-testid="export-modal-render"
           >
@@ -222,6 +270,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     color: '#777',
     fontStyle: 'italic',
+  },
+  folderPath: {
+    fontSize: '12px',
+    color: '#bbb',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    direction: 'rtl',
+    textAlign: 'left',
   },
   footer: {
     padding: '12px 18px',

@@ -1,5 +1,5 @@
 import { act, useState } from 'react';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { fireEvent } from '@testing-library/react';
 import { ExportModal } from '../ExportModal';
@@ -9,6 +9,12 @@ import type {
   ExportSelection,
 } from '../../../types';
 
+const dialogOpenMock = vi.fn();
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  open: (...args: unknown[]) => dialogOpenMock(...args),
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -16,6 +22,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
+  dialogOpenMock.mockReset();
 });
 
 afterEach(() => {
@@ -36,10 +43,16 @@ function findByTestId(id: string): HTMLElement | null {
 interface HarnessProps {
   initialOpen: boolean;
   initialSelection?: ExportSelection;
+  projectName?: string;
   onCloseExtra?: () => void;
 }
 
-function Harness({ initialOpen, initialSelection, onCloseExtra }: HarnessProps) {
+function Harness({
+  initialOpen,
+  initialSelection,
+  projectName,
+  onCloseExtra,
+}: HarnessProps) {
   const [open, setOpen] = useState(initialOpen);
   const [selection, setSelection] = useState<ExportSelection>(
     initialSelection ?? { aspects: [], channels: [] },
@@ -53,8 +66,15 @@ function Harness({ initialOpen, initialSelection, onCloseExtra }: HarnessProps) 
       }}
       selection={selection}
       onSelectionChange={setSelection}
+      projectName={projectName ?? 'Hike2026'}
     />
   );
+}
+
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
 }
 
 describe('ExportModal', () => {
@@ -74,9 +94,10 @@ describe('ExportModal', () => {
     expect(findByTestId('export-channel-video_only')).not.toBeNull();
     expect(findByTestId('export-job-summary')).not.toBeNull();
     expect(findByTestId('export-output-folder')).not.toBeNull();
+    expect(findByTestId('export-output-folder-choose')).not.toBeNull();
   });
 
-  it('renders Render button disabled with the spec tooltip', () => {
+  it('renders Render disabled with the spec tooltip when nothing selected', () => {
     render(<Harness initialOpen={true} />);
     const btn = findByTestId('export-modal-render') as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
@@ -193,5 +214,130 @@ describe('ExportModal', () => {
     expect(
       (findByTestId('export-aspect-4_5') as HTMLInputElement).checked,
     ).toBe(true);
+  });
+});
+
+describe('ExportModal — folder picker', () => {
+  it('shows "No folder selected" placeholder until a folder is picked', () => {
+    render(<Harness initialOpen={true} />);
+    expect(findByTestId('export-output-folder-path')).toBeNull();
+    expect(findByTestId('export-output-folder')?.textContent ?? '').toContain(
+      'No folder selected',
+    );
+  });
+
+  it('chosen folder path appears after picker resolves with a string', async () => {
+    dialogOpenMock.mockResolvedValue('/Users/u/Movies');
+    render(<Harness initialOpen={true} />);
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+    expect(dialogOpenMock).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+    });
+    expect(findByTestId('export-output-folder-path')?.textContent).toBe(
+      '/Users/u/Movies',
+    );
+  });
+
+  it('uses first entry when picker resolves with an array', async () => {
+    dialogOpenMock.mockResolvedValue(['/A', '/B']);
+    render(<Harness initialOpen={true} />);
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+    expect(findByTestId('export-output-folder-path')?.textContent).toBe('/A');
+  });
+
+  it('leaves folder unset when picker resolves with null (user cancels)', async () => {
+    dialogOpenMock.mockResolvedValue(null);
+    render(<Harness initialOpen={true} />);
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+    expect(findByTestId('export-output-folder-path')).toBeNull();
+  });
+
+  it('leaves folder unset when picker rejects', async () => {
+    dialogOpenMock.mockRejectedValue(new Error('cancelled'));
+    render(<Harness initialOpen={true} />);
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+    expect(findByTestId('export-output-folder-path')).toBeNull();
+  });
+});
+
+describe('ExportModal — Render-button enable transitions', () => {
+  function renderBtn(): HTMLButtonElement {
+    return findByTestId('export-modal-render') as HTMLButtonElement;
+  }
+
+  it('disabled when only aspects are set', () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: [] }}
+      />,
+    );
+    expect(renderBtn().disabled).toBe(true);
+  });
+
+  it('disabled when only channels are set', () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: [], channels: ['composite'] }}
+      />,
+    );
+    expect(renderBtn().disabled).toBe(true);
+  });
+
+  it('disabled when aspects + channels are set but folder is not', () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+      />,
+    );
+    expect(renderBtn().disabled).toBe(true);
+  });
+
+  it('disabled when folder is set but aspects/channels are empty', async () => {
+    dialogOpenMock.mockResolvedValue('/out');
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: [], channels: [] }}
+      />,
+    );
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+    expect(renderBtn().disabled).toBe(true);
+  });
+
+  it('enabled once aspects + channels + folder are all set; tooltip clears', async () => {
+    dialogOpenMock.mockResolvedValue('/out');
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={{ aspects: ['9_16'], channels: ['composite'] }}
+      />,
+    );
+    expect(renderBtn().disabled).toBe(true);
+    act(() => {
+      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
+    });
+    await flush();
+    const btn = renderBtn();
+    expect(btn.disabled).toBe(false);
+    expect(btn.getAttribute('title')).toBeNull();
   });
 });
