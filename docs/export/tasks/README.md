@@ -34,8 +34,20 @@ These tasks replace the superseded 600-series under `docs/migration/tasks/_super
 | 119 | ✅     | [Remove maplibre-native renderer; rename chromium → renderer](./119-remove-native-renderer.md) | 118 |
 | 120 | ⬜     | Render parity verification (preview vs. export at sampled `t`)                  | 090, 119   |
 | 130 | ⬜     | Sidecar bundling + Windows distribution                                         | 020, 030, 040, 119 |
+| 200 | ⬜     | [Map Positioning modal shell](./200-map-positioning-modal-shell.md)             | —          |
+| 210 | ⬜     | [Map Positioning modal contents (3-pane preview + controls)](./210-map-positioning-modal-contents.md) | 200 |
+| 220 | ⬜     | [Snap tuning + visual feedback](./220-snap-tuning-visual-feedback.md)           | 210        |
+| 230 | ⬜     | [Replace LayoutConfigurator overlay; remove temp aspect select](./230-replace-overlay-remove-temp-aspect-select.md) | 210, 220 |
+| 240 | ⬜     | [Export modal scaffold (UI only)](./240-export-modal-scaffold.md)               | —          |
+| 250 | ⬜     | [Output filename derivation + folder picker](./250-output-filenames-folder-picker.md) | 240    |
+| 260 | ⬜     | [Time-estimate computation](./260-time-estimate.md)                             | 250        |
+| 270 | ⬜     | [Frontend render queue (sequential dispatch + progress UI)](./270-render-queue.md) | 240, 250 |
+| 280 | ⬜     | [Persist `last_export_selection` in `project.json`](./280-persist-last-export-selection.md) | 270 |
+| 290 | ⬜     | [Remove temp export buttons; final cutover](./290-remove-temp-export-buttons.md) | 270, 280  |
 
 Tasks 115–119 implement the renderer migration plan in [`../plans/chromium-renderer.md`](../plans/chromium-renderer.md): replace the wobble-prone `@maplibre/maplibre-gl-native` worker with a headless-Chromium + `maplibre-gl-js` worker. Each task is one PR-sized step and leaves the app working.
+
+Tasks 200–290 implement the layout & export UI plan in [`../plans/layout-ui.md`](../plans/layout-ui.md): a Map Positioning modal triggered from `MapToolbar` (200–230), and a single-button Export flow with a sequential render queue (240–290). Two tracks; 230 closes the positioning track; 290 is the final cutover that removes the dev-grade export buttons.
 
 Tasks 120–130 are not yet authored; they will be written as the preceding tasks land. 130 in particular slots in after 119 to handle Windows distribution against the now-Chromium-based renderer.
 
