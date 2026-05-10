@@ -41,12 +41,12 @@ function findByTestId(id: string): Element | null {
 
 function pointerEvent(
   type: string,
-  init: { clientX: number; clientY: number; altKey?: boolean },
+  init: { clientX: number; clientY: number; shiftKey?: boolean },
 ): PointerEvent {
   const evt = Object.assign(new Event(type, { bubbles: true }), {
     clientX: init.clientX,
     clientY: init.clientY,
-    altKey: init.altKey ?? false,
+    shiftKey: init.shiftKey ?? false,
     button: 0,
   });
   return evt as unknown as PointerEvent;

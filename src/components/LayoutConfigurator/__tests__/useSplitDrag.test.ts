@@ -5,12 +5,12 @@ import type { SplitLayout } from '../../../lib/layout';
 
 function pointerEvent(
   type: string,
-  init: { clientX: number; clientY: number; altKey?: boolean },
+  init: { clientX: number; clientY: number; shiftKey?: boolean },
 ): PointerEvent {
   const evt = Object.assign(new Event(type, { bubbles: true }), {
     clientX: init.clientX,
     clientY: init.clientY,
-    altKey: init.altKey ?? false,
+    shiftKey: init.shiftKey ?? false,
     button: 0,
   });
   return evt as unknown as PointerEvent;
@@ -106,7 +106,7 @@ describe('useSplitDrag — snap', () => {
     expect(next.divider).toBe(0.5);
   });
 
-  it('does not snap when altKey is held', () => {
+  it('does not snap when shiftKey is held', () => {
     const onChange = vi.fn();
     const layout: SplitLayout = { mode: 'split', video_side: 'top', divider: 0.49 };
     const { result } = renderHook(() =>
@@ -126,7 +126,7 @@ describe('useSplitDrag — snap', () => {
     });
     act(() => {
       window.dispatchEvent(
-        pointerEvent('pointermove', { clientX: 100, clientY: 105, altKey: true }),
+        pointerEvent('pointermove', { clientX: 100, clientY: 105, shiftKey: true }),
       );
     });
     const next = onChange.mock.calls.at(-1)![0] as SplitLayout;
@@ -246,5 +246,100 @@ describe('useSplitDrag — disabled', () => {
       );
     });
     expect(result.current.isDragging).toBe(false);
+  });
+});
+
+describe('useSplitDrag — activeSnap', () => {
+  it('starts as null', () => {
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout: portraitSplit,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    expect(result.current.activeSnap.divider).toBeNull();
+  });
+
+  it('populates active.divider when drag enters snap range', () => {
+    const layout: SplitLayout = { mode: 'split', video_side: 'top', divider: 0.49 };
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 100, clientY: 105 }),
+      );
+    });
+    expect(result.current.activeSnap.divider).toBe(0.5);
+  });
+
+  it('does not populate activeSnap when shiftKey is held', () => {
+    const layout: SplitLayout = { mode: 'split', video_side: 'top', divider: 0.49 };
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 100, clientY: 105, shiftKey: true }),
+      );
+    });
+    expect(result.current.activeSnap.divider).toBeNull();
+  });
+
+  it('resets to null on pointerup', () => {
+    const layout: SplitLayout = { mode: 'split', video_side: 'top', divider: 0.49 };
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 100, clientY: 105 }),
+      );
+    });
+    expect(result.current.activeSnap.divider).toBe(0.5);
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointerup', { clientX: 100, clientY: 105 }));
+    });
+    expect(result.current.activeSnap.divider).toBeNull();
   });
 });

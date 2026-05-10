@@ -5,7 +5,7 @@ import {
   type AspectRatio,
   type PipLayout,
 } from '../../lib/layout';
-import { pipSnapTargets, snap, SNAP_THRESHOLD } from './snap';
+import { findActiveSnapTarget, pipSnapTargets, SNAP_THRESHOLD } from './snap';
 
 export type PipDragHandle =
   | { kind: 'move' }
@@ -22,9 +22,17 @@ export interface UsePipDragArgs {
   disabled?: boolean;
 }
 
+export interface PipActiveSnap {
+  x: number | null;
+  y: number | null;
+  w: number | null;
+  h: number | null;
+}
+
 export interface UsePipDragHandlers {
   beginDrag: (handle: PipDragHandle, e: PointerEvent | React.PointerEvent) => void;
   isDragging: boolean;
+  activeSnap: PipActiveSnap;
 }
 
 interface DragSession {
@@ -33,6 +41,8 @@ interface DragSession {
   startClientY: number;
   startLayout: PipLayout;
 }
+
+const NO_ACTIVE_SNAP: PipActiveSnap = { x: null, y: null, w: null, h: null };
 
 
 function applyMove(start: PipLayout, ndx: number, ndy: number): PipLayout {
@@ -86,23 +96,36 @@ function applyResize(
   return { ...start, inset: { x, y, w, h } };
 }
 
+interface SnapResult {
+  layout: PipLayout;
+  active: PipActiveSnap;
+}
+
 function applySnap(
   next: PipLayout,
   handle: PipDragHandle,
-  altKey: boolean,
+  shiftKey: boolean,
   snapEnabled: boolean,
   aspect: AspectRatio,
-): PipLayout {
-  if (altKey || !snapEnabled) return next;
+): SnapResult {
+  if (shiftKey || !snapEnabled) {
+    return { layout: next, active: NO_ACTIVE_SNAP };
+  }
   const targets = pipSnapTargets(aspect, next);
+  const active: PipActiveSnap = { x: null, y: null, w: null, h: null };
   if (handle.kind === 'move') {
+    active.x = findActiveSnapTarget(next.inset.x, targets.x, SNAP_THRESHOLD);
+    active.y = findActiveSnapTarget(next.inset.y, targets.y, SNAP_THRESHOLD);
     return {
-      ...next,
-      inset: {
-        ...next.inset,
-        x: snap(next.inset.x, targets.x, SNAP_THRESHOLD),
-        y: snap(next.inset.y, targets.y, SNAP_THRESHOLD),
+      layout: {
+        ...next,
+        inset: {
+          ...next.inset,
+          x: active.x ?? next.inset.x,
+          y: active.y ?? next.inset.y,
+        },
       },
+      active,
     };
   }
   let { x, y, w, h } = next.inset;
@@ -122,30 +145,33 @@ function applySnap(
     touchRight = handle.edge === 'right';
   }
   if (touchRight) {
-    w = snap(w, targets.w, SNAP_THRESHOLD);
+    active.w = findActiveSnapTarget(w, targets.w, SNAP_THRESHOLD);
+    if (active.w !== null) w = active.w;
   }
   if (touchBottom) {
-    h = snap(h, targets.h, SNAP_THRESHOLD);
+    active.h = findActiveSnapTarget(h, targets.h, SNAP_THRESHOLD);
+    if (active.h !== null) h = active.h;
   }
   if (touchLeft) {
-    const newX = snap(x, targets.x, SNAP_THRESHOLD);
-    if (newX !== x) {
-      w = w + (x - newX);
-      x = newX;
+    active.x = findActiveSnapTarget(x, targets.x, SNAP_THRESHOLD);
+    if (active.x !== null) {
+      w = w + (x - active.x);
+      x = active.x;
     }
   }
   if (touchTop) {
-    const newY = snap(y, targets.y, SNAP_THRESHOLD);
-    if (newY !== y) {
-      h = h + (y - newY);
-      y = newY;
+    active.y = findActiveSnapTarget(y, targets.y, SNAP_THRESHOLD);
+    if (active.y !== null) {
+      h = h + (y - active.y);
+      y = active.y;
     }
   }
-  return { ...next, inset: { x, y, w, h } };
+  return { layout: { ...next, inset: { x, y, w, h } }, active };
 }
 
 export function usePipDrag(args: UsePipDragArgs): UsePipDragHandlers {
   const [isDragging, setIsDragging] = useState(false);
+  const [activeSnap, setActiveSnap] = useState<PipActiveSnap>(NO_ACTIVE_SNAP);
   const sessionRef = useRef<DragSession | null>(null);
 
   const latestRef = useRef(args);
@@ -184,7 +210,14 @@ export function usePipDrag(args: UsePipDragArgs): UsePipDragHandlers {
         session.handle.kind === 'move'
           ? applyMove(session.startLayout, ndx, ndy)
           : applyResize(session.startLayout, session.handle, ndx, ndy);
-      const snapped = applySnap(projected, session.handle, e.altKey, cur.snapEnabled, cur.aspect);
+      const { layout: snapped, active } = applySnap(
+        projected,
+        session.handle,
+        e.shiftKey,
+        cur.snapEnabled,
+        cur.aspect,
+      );
+      setActiveSnap(active);
       const clamped = clampLayout(snapped, cur.aspect);
       if (clamped.mode === 'pip') {
         cur.onChange(clamped);
@@ -193,6 +226,7 @@ export function usePipDrag(args: UsePipDragArgs): UsePipDragHandlers {
     function handleUp() {
       sessionRef.current = null;
       setIsDragging(false);
+      setActiveSnap(NO_ACTIVE_SNAP);
     }
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
@@ -202,5 +236,5 @@ export function usePipDrag(args: UsePipDragArgs): UsePipDragHandlers {
     };
   }, [isDragging]);
 
-  return { beginDrag, isDragging };
+  return { beginDrag, isDragging, activeSnap };
 }

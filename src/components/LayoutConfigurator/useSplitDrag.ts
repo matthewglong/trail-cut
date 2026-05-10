@@ -6,7 +6,7 @@ import {
   type AspectRatio,
   type SplitLayout,
 } from '../../lib/layout';
-import { snap, splitSnapTargets, SNAP_THRESHOLD } from './snap';
+import { findActiveSnapTarget, splitSnapTargets, SNAP_THRESHOLD } from './snap';
 
 export interface UseSplitDragArgs {
   layout: SplitLayout;
@@ -18,9 +18,14 @@ export interface UseSplitDragArgs {
   disabled?: boolean;
 }
 
+export interface SplitActiveSnap {
+  divider: number | null;
+}
+
 export interface UseSplitDragHandlers {
   beginDrag: (e: PointerEvent | React.PointerEvent) => void;
   isDragging: boolean;
+  activeSnap: SplitActiveSnap;
 }
 
 interface DragSession {
@@ -29,8 +34,11 @@ interface DragSession {
   startDivider: number;
 }
 
+const NO_ACTIVE_SNAP: SplitActiveSnap = { divider: null };
+
 export function useSplitDrag(args: UseSplitDragArgs): UseSplitDragHandlers {
   const [isDragging, setIsDragging] = useState(false);
+  const [activeSnap, setActiveSnap] = useState<SplitActiveSnap>(NO_ACTIVE_SNAP);
   const sessionRef = useRef<DragSession | null>(null);
 
   const latestRef = useRef(args);
@@ -63,10 +71,13 @@ export function useSplitDrag(args: UseSplitDragArgs): UseSplitDragHandlers {
         : e.clientY - session.startClientY;
       const denom = horizontalAxis ? drawn.width : drawn.height;
       const projected = session.startDivider + dPx / denom;
-      const snapped =
-        e.altKey || !cur.snapEnabled
-          ? projected
-          : snap(projected, splitSnapTargets(cur.aspect), SNAP_THRESHOLD);
+      let snapped = projected;
+      let active: number | null = null;
+      if (!e.shiftKey && cur.snapEnabled) {
+        active = findActiveSnapTarget(projected, splitSnapTargets(cur.aspect), SNAP_THRESHOLD);
+        if (active !== null) snapped = active;
+      }
+      setActiveSnap({ divider: active });
       const next: SplitLayout = { ...cur.layout, divider: snapped };
       const clamped = clampLayout(next, cur.aspect);
       if (clamped.mode === 'split') {
@@ -76,6 +87,7 @@ export function useSplitDrag(args: UseSplitDragArgs): UseSplitDragHandlers {
     function handleUp() {
       sessionRef.current = null;
       setIsDragging(false);
+      setActiveSnap(NO_ACTIVE_SNAP);
     }
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
@@ -85,5 +97,5 @@ export function useSplitDrag(args: UseSplitDragArgs): UseSplitDragHandlers {
     };
   }, [isDragging]);
 
-  return { beginDrag, isDragging };
+  return { beginDrag, isDragging, activeSnap };
 }

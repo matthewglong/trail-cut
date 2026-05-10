@@ -37,6 +37,8 @@ const HANDLE_FILL = '#52d6ff';
 const HANDLE_STROKE = '#0b1a23';
 const DIVIDER_HANDLE_LENGTH = 56;
 const DIVIDER_HANDLE_THICKNESS = 14;
+const SNAP_GUIDE_STROKE = 'rgba(120, 180, 255, 0.7)';
+const SNAP_EASE_TRANSITION = 'x 120ms ease-out, y 120ms ease-out, width 120ms ease-out, height 120ms ease-out, cx 120ms ease-out, cy 120ms ease-out';
 
 export function LayoutConfigurator({
   layout,
@@ -271,6 +273,28 @@ function PipOverlay({
 
   const edgeHitThicknessSvg = (HANDLE_HIT_RADIUS_PX * 1.5) / Math.max(scaleFactor, 1e-6);
 
+  const guideStroke = Math.max(1 / scaleFactor, 0.5);
+  const verticalGuideX =
+    drag.activeSnap.x !== null
+      ? drag.activeSnap.x * resolved.output.w
+      : drag.activeSnap.w !== null
+      ? (layout.inset.x + drag.activeSnap.w) * resolved.output.w
+      : null;
+  const horizontalGuideY =
+    drag.activeSnap.y !== null
+      ? drag.activeSnap.y * resolved.output.h
+      : drag.activeSnap.h !== null
+      ? (layout.inset.y + drag.activeSnap.h) * resolved.output.h
+      : null;
+  const snapEngaged =
+    drag.activeSnap.x !== null ||
+    drag.activeSnap.y !== null ||
+    drag.activeSnap.w !== null ||
+    drag.activeSnap.h !== null;
+  const settleTransition: CSSProperties = snapEngaged
+    ? { transition: SNAP_EASE_TRANSITION }
+    : {};
+
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -280,13 +304,37 @@ function PipOverlay({
       style={{ ...overlaySvgStyle, touchAction: 'none' }}
       data-testid="layout-configurator-svg"
     >
+      {verticalGuideX !== null && (
+        <line
+          x1={verticalGuideX}
+          y1={0}
+          x2={verticalGuideX}
+          y2={resolved.output.h}
+          stroke={SNAP_GUIDE_STROKE}
+          strokeWidth={guideStroke}
+          pointerEvents="none"
+          data-testid="layout-configurator-snap-guide-vertical"
+        />
+      )}
+      {horizontalGuideY !== null && (
+        <line
+          x1={0}
+          y1={horizontalGuideY}
+          x2={resolved.output.w}
+          y2={horizontalGuideY}
+          stroke={SNAP_GUIDE_STROKE}
+          strokeWidth={guideStroke}
+          pointerEvents="none"
+          data-testid="layout-configurator-snap-guide-horizontal"
+        />
+      )}
       <rect
         x={insetSlot.x}
         y={insetSlot.y}
         width={insetSlot.w}
         height={insetSlot.h}
         fill="rgba(82, 214, 255, 0.001)"
-        style={{ cursor: disabled ? 'default' : 'move' }}
+        style={{ cursor: disabled ? 'default' : 'move', ...settleTransition }}
         onPointerDown={(e) => startHandle({ kind: 'move' }, e)}
         data-testid="layout-configurator-pip-body"
       />
@@ -298,7 +346,7 @@ function PipOverlay({
           width={edge.w === 0 ? edgeHitThicknessSvg : edge.w}
           height={edge.h === 0 ? edgeHitThicknessSvg : edge.h}
           fill="transparent"
-          style={{ cursor: disabled ? 'default' : edge.cursor }}
+          style={{ cursor: disabled ? 'default' : edge.cursor, ...settleTransition }}
           onPointerDown={(e) => startHandle({ kind: 'resize-edge', edge: edge.kind }, e)}
           data-testid={`layout-configurator-pip-edge-${edge.kind}`}
         />
@@ -310,7 +358,7 @@ function PipOverlay({
             cy={corner.cy}
             r={handleHitR}
             fill="transparent"
-            style={{ cursor: disabled ? 'default' : corner.cursor }}
+            style={{ cursor: disabled ? 'default' : corner.cursor, ...settleTransition }}
             onPointerDown={(e) => startHandle({ kind: 'resize-corner', corner: corner.kind }, e)}
             data-testid={`layout-configurator-pip-corner-${corner.kind}-hit`}
           />
@@ -322,6 +370,7 @@ function PipOverlay({
             stroke={HANDLE_STROKE}
             strokeWidth={Math.max(1.5 / scaleFactor, 0.5)}
             pointerEvents="none"
+            style={settleTransition}
             data-testid={`layout-configurator-pip-corner-${corner.kind}`}
           />
         </g>
@@ -388,6 +437,18 @@ function SplitOverlay({
     drag.beginDrag(e);
   }
 
+  const snapEngaged = drag.activeSnap.divider !== null;
+  const settleTransition: CSSProperties = snapEngaged
+    ? { transition: SNAP_EASE_TRANSITION }
+    : {};
+  const guideStroke = Math.max(1 / scaleFactor, 0.5);
+  const guideX = horizontalAxis && drag.activeSnap.divider !== null
+    ? drag.activeSnap.divider * resolved.output.w
+    : null;
+  const guideY = !horizontalAxis && drag.activeSnap.divider !== null
+    ? drag.activeSnap.divider * resolved.output.h
+    : null;
+
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -397,6 +458,30 @@ function SplitOverlay({
       style={{ ...overlaySvgStyle, touchAction: 'none' }}
       data-testid="layout-configurator-svg"
     >
+      {guideX !== null && (
+        <line
+          x1={guideX}
+          y1={0}
+          x2={guideX}
+          y2={resolved.output.h}
+          stroke={SNAP_GUIDE_STROKE}
+          strokeWidth={guideStroke}
+          pointerEvents="none"
+          data-testid="layout-configurator-snap-guide-vertical"
+        />
+      )}
+      {guideY !== null && (
+        <line
+          x1={0}
+          y1={guideY}
+          x2={resolved.output.w}
+          y2={guideY}
+          stroke={SNAP_GUIDE_STROKE}
+          strokeWidth={guideStroke}
+          pointerEvents="none"
+          data-testid="layout-configurator-snap-guide-horizontal"
+        />
+      )}
       {horizontalAxis ? (
         <line
           x1={dividerPxX}
@@ -407,6 +492,7 @@ function SplitOverlay({
           strokeOpacity={0.6}
           strokeWidth={2 / Math.max(scaleFactor, 1e-6)}
           pointerEvents="none"
+          style={settleTransition}
         />
       ) : (
         <line
@@ -418,6 +504,7 @@ function SplitOverlay({
           strokeOpacity={0.6}
           strokeWidth={2 / Math.max(scaleFactor, 1e-6)}
           pointerEvents="none"
+          style={settleTransition}
         />
       )}
       <rect
@@ -430,7 +517,7 @@ function SplitOverlay({
         fill={HANDLE_FILL}
         stroke={HANDLE_STROKE}
         strokeWidth={Math.max(1.5 / scaleFactor, 0.5)}
-        style={{ cursor: disabled ? 'default' : horizontalAxis ? 'ew-resize' : 'ns-resize' }}
+        style={{ cursor: disabled ? 'default' : horizontalAxis ? 'ew-resize' : 'ns-resize', ...settleTransition }}
         onPointerDown={startHandle}
         data-testid="layout-configurator-split-handle"
       />

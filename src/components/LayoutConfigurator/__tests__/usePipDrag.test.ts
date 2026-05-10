@@ -5,12 +5,12 @@ import type { PipLayout } from '../../../lib/layout';
 
 function pointerEvent(
   type: string,
-  init: { clientX: number; clientY: number; altKey?: boolean },
+  init: { clientX: number; clientY: number; shiftKey?: boolean },
 ): PointerEvent {
   const evt = Object.assign(new Event(type, { bubbles: true }), {
     clientX: init.clientX,
     clientY: init.clientY,
-    altKey: init.altKey ?? false,
+    shiftKey: init.shiftKey ?? false,
     button: 0,
   });
   return evt as unknown as PointerEvent;
@@ -154,7 +154,7 @@ describe('usePipDrag — snap behavior', () => {
     expect(next.inset.x).toBe(0.5);
   });
 
-  it('does not snap when altKey is held', () => {
+  it('does not snap when shiftKey is held', () => {
     const onChange = vi.fn();
     const start: PipLayout = {
       ...baseLayout,
@@ -178,7 +178,7 @@ describe('usePipDrag — snap behavior', () => {
     });
     act(() => {
       window.dispatchEvent(
-        pointerEvent('pointermove', { clientX: 105, clientY: 100, altKey: true }),
+        pointerEvent('pointermove', { clientX: 105, clientY: 100, shiftKey: true }),
       );
     });
     const next = onChange.mock.calls.at(-1)![0] as PipLayout;
@@ -317,5 +317,149 @@ describe('usePipDrag — disabled', () => {
       );
     });
     expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('usePipDrag — activeSnap', () => {
+  it('starts as all-null', () => {
+    const { result } = renderHook(() =>
+      usePipDrag({
+        layout: baseLayout,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    expect(result.current.activeSnap).toEqual({ x: null, y: null, w: null, h: null });
+  });
+
+  it('populates active.x when a move drag enters x snap range', () => {
+    const start: PipLayout = {
+      ...baseLayout,
+      inset: { x: 0.49, y: 0.1, w: 0.3, h: 0.3 },
+    };
+    const { result } = renderHook(() =>
+      usePipDrag({
+        layout: start,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        { kind: 'move' },
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 105, clientY: 100 }),
+      );
+    });
+    expect(result.current.activeSnap.x).toBe(0.5);
+  });
+
+  it('clears active state when drag leaves snap range', () => {
+    const start: PipLayout = {
+      ...baseLayout,
+      inset: { x: 0.49, y: 0.1, w: 0.3, h: 0.3 },
+    };
+    const { result } = renderHook(() =>
+      usePipDrag({
+        layout: start,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        { kind: 'move' },
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 105, clientY: 100 }),
+      );
+    });
+    expect(result.current.activeSnap.x).toBe(0.5);
+    // Now move far enough that we're > 5% from any x target.
+    // Start was 0.49; +200/540 ≈ 0.86. Distance to 0.7 (= 1 - 0.3) = 0.16, > 0.05.
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 300, clientY: 100 }),
+      );
+    });
+    expect(result.current.activeSnap.x).toBeNull();
+  });
+
+  it('does not populate activeSnap when shiftKey is held', () => {
+    const start: PipLayout = {
+      ...baseLayout,
+      inset: { x: 0.49, y: 0.1, w: 0.3, h: 0.3 },
+    };
+    const { result } = renderHook(() =>
+      usePipDrag({
+        layout: start,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        { kind: 'move' },
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 105, clientY: 100, shiftKey: true }),
+      );
+    });
+    expect(result.current.activeSnap.x).toBeNull();
+  });
+
+  it('resets to all-null on pointerup', () => {
+    const start: PipLayout = {
+      ...baseLayout,
+      inset: { x: 0.49, y: 0.1, w: 0.3, h: 0.3 },
+    };
+    const { result } = renderHook(() =>
+      usePipDrag({
+        layout: start,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        { kind: 'move' },
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 105, clientY: 100 }),
+      );
+    });
+    expect(result.current.activeSnap.x).toBe(0.5);
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointerup', { clientX: 105, clientY: 100 }));
+    });
+    expect(result.current.activeSnap).toEqual({ x: null, y: null, w: null, h: null });
   });
 });

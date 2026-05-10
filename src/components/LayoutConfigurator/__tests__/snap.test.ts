@@ -2,10 +2,17 @@ import { describe, it, expect } from 'vitest';
 import {
   SNAP_THRESHOLD,
   snap,
+  findActiveSnapTarget,
   pipSnapTargets,
   splitSnapTargets,
 } from '../snap';
 import type { PipLayout } from '../../../lib/layout';
+
+describe('SNAP_THRESHOLD', () => {
+  it('is 0.05 (5%) for user-facing UX', () => {
+    expect(SNAP_THRESHOLD).toBe(0.05);
+  });
+});
 
 describe('snap helper', () => {
   it('snaps to a target within threshold', () => {
@@ -75,5 +82,31 @@ describe('splitSnapTargets', () => {
 
   it('includes the same set for 9_16', () => {
     expect(splitSnapTargets('9_16')).toEqual([0.25, 1 / 3, 0.5, 0.618, 2 / 3, 0.75]);
+  });
+});
+
+describe('findActiveSnapTarget', () => {
+  it('returns the target when value is just inside the threshold', () => {
+    expect(findActiveSnapTarget(0.5 - 0.04, [0.5], 0.05)).toBe(0.5);
+    expect(findActiveSnapTarget(0.5 + 0.04, [0.5], 0.05)).toBe(0.5);
+  });
+
+  it('returns null when value is just outside the threshold', () => {
+    expect(findActiveSnapTarget(0.5 - 0.06, [0.5], 0.05)).toBeNull();
+    expect(findActiveSnapTarget(0.5 + 0.06, [0.5], 0.05)).toBeNull();
+  });
+
+  it('returns the closest target when multiple are within threshold', () => {
+    expect(findActiveSnapTarget(0.5, [0.4, 0.5, 0.6], 0.05)).toBe(0.5);
+    expect(findActiveSnapTarget(0.49, [0.4, 0.5, 0.6], 0.1)).toBe(0.5);
+  });
+
+  it('uses SNAP_THRESHOLD by default', () => {
+    expect(findActiveSnapTarget(0.5 - SNAP_THRESHOLD / 2, [0.5])).toBe(0.5);
+    expect(findActiveSnapTarget(0.5 - SNAP_THRESHOLD * 2, [0.5])).toBeNull();
+  });
+
+  it('returns null on an empty target array', () => {
+    expect(findActiveSnapTarget(0.5, [], 0.05)).toBeNull();
   });
 });

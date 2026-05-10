@@ -1,6 +1,6 @@
 import type { AspectRatio, PipLayout } from '../../lib/layout';
 
-export const SNAP_THRESHOLD = 0.015;
+export const SNAP_THRESHOLD = 0.05;
 
 export interface PipSnapTargets {
   x: number[];
@@ -14,8 +14,15 @@ const ONE_MINUS_PHI_INV = 0.382;
 const THIRD = 1 / 3;
 const TWO_THIRDS = 2 / 3;
 
-export function snap(value: number, targets: number[], threshold = SNAP_THRESHOLD): number {
-  let best = value;
+/** Returns the closest target within `threshold` of `value`, or `null` when
+ *  no target is in range. Visual-feedback overlays read this to know which
+ *  guide line to highlight. */
+export function findActiveSnapTarget(
+  value: number,
+  targets: number[],
+  threshold = SNAP_THRESHOLD,
+): number | null {
+  let best: number | null = null;
   let bestDist = threshold;
   for (const t of targets) {
     const d = Math.abs(value - t);
@@ -25,6 +32,11 @@ export function snap(value: number, targets: number[], threshold = SNAP_THRESHOL
     }
   }
   return best;
+}
+
+export function snap(value: number, targets: number[], threshold = SNAP_THRESHOLD): number {
+  const active = findActiveSnapTarget(value, targets, threshold);
+  return active ?? value;
 }
 
 function positionTargetsFor(rectExtent: number): number[] {
