@@ -1,3 +1,4 @@
+use crate::export::layout::{default_pip_layout, AspectRatio};
 use crate::models::*;
 use crate::util::fs::ensure_dir;
 use std::path::Path;
@@ -53,6 +54,18 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
         .map(|v| v as u32)
         .unwrap_or(1);
 
+    // Pre-100 detection (task 100). The `selected_export_aspect` field was
+    // introduced by 100; bundles without it pre-date the configurator's
+    // ability to express "the user has explicitly cleared this aspect".
+    // Post-100, a missing aspect entry inside `layouts` is intentional user
+    // intent (set via a future 110 affordance) and must be preserved on
+    // reload. Pre-100, missing aspect entries are just unseeded — the
+    // backfill below brings them up to the new "all three aspects seeded"
+    // shape from `Project::default`. Captured before any migration consumes
+    // `raw` because the field can only appear on v4-shaped projects, but the
+    // detection rule applies uniformly across all versions.
+    let is_pre_100 = raw.get("selected_export_aspect").is_none();
+
     let mut project = match version {
         1 => {
             // Chain v1 → v2 → v3 → v4. Each step is value-level until the
@@ -77,18 +90,43 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
         }
     };
 
-    // Task 080 backfill. Projects created between 050 (which added the
-    // optional `layouts` field) and 080 carry `layouts: None` on disk; bring
-    // them up to the seeded "9:16 only" shape on read so the editor and
-    // export both have a real value to consume. Read-time only — disk is
-    // untouched until the next `save_project` (auto-save fires within ~1s of
-    // any mutation, so the gap is small in practice). Aspect-level nulls are
-    // preserved: a user who explicitly clears one aspect via a future
-    // configurator action keeps that null. The backfill only triggers when
-    // the outer `layouts` field itself is absent.
+    // Task 080 + 100 backfill. Read-time only — disk is untouched until the
+    // next `save_project` (auto-save fires within ~1s of any mutation). Two
+    // cases:
+    //
+    //   1. Outer `layouts` absent (pre-080 v4 bundles, all v1–v3 bundles
+    //      after migration): seed all three aspects from
+    //      `Project::default`'s shape. 080 only seeded 9:16; 100 expands
+    //      this because the matrix is fully exercised end-to-end and the
+    //      configurator (110) will mutate any aspect.
+    //
+    //   2. Outer `layouts` present but individual aspect entries are null
+    //      *and* this is a pre-100 bundle: seed 4_5 / 16_9 with the default
+    //      PiP starter. Pre-100 users had no UI to clear an aspect to null,
+    //      so a null entry on a pre-100 bundle is just unseeded state;
+    //      filling it brings the bundle up to the post-100 shape. 9_16 is
+    //      not auto-seeded here — pre-080 bundles get it via case (1), and a
+    //      pre-100 bundle with an explicit `9_16: null` is an edge-case
+    //      hand-edit we preserve for safety.
+    //
+    //   3. Post-100 bundles (`selected_export_aspect` field present): null
+    //      aspect entries are user intent — the configurator UI lets the
+    //      user clear an aspect, and re-seeding on every load would
+    //      override that. Skip the per-aspect backfill entirely.
     if project.layouts.is_none() {
         project.layouts = Some(seeded_layouts());
+    } else if is_pre_100 {
+        if let Some(layouts) = project.layouts.as_mut() {
+            if layouts.aspect_4_5.is_none() {
+                layouts.aspect_4_5 = Some(default_pip_layout(AspectRatio::FourFive));
+            }
+            if layouts.aspect_16_9.is_none() {
+                layouts.aspect_16_9 = Some(default_pip_layout(AspectRatio::SixteenNine));
+            }
+        }
     }
+    // `selected_export_aspect` itself is supplied by serde's `default`
+    // annotation when missing — no manual backfill needed for that field.
 
     // Route is not persisted in project.json. Re-parse from the bundle's
     // route.gpx as the canonical source. Missing file → None.
@@ -339,15 +377,22 @@ mod tests {
         );
         assert!(loaded.start_camera.is_none());
         assert!(loaded.default_entry_transition.is_none());
-        // 080 backfill: a v1 file pre-dates layouts entirely; load brings it
-        // to the seeded shape (9:16 populated, 4:5 / 16:9 still None).
+        // 100 backfill: a v1 file pre-dates layouts entirely; load brings it
+        // to the seeded shape (all three aspects populated). 080's "9:16
+        // only" behavior was retired now that the export matrix is paved.
         let layouts = loaded
             .layouts
             .as_ref()
             .expect("layouts must be backfilled on load");
         assert!(layouts.aspect_9_16.is_some());
-        assert!(layouts.aspect_4_5.is_none());
-        assert!(layouts.aspect_16_9.is_none());
+        assert!(layouts.aspect_4_5.is_some(), "100: 4:5 also seeded");
+        assert!(layouts.aspect_16_9.is_some(), "100: 16:9 also seeded");
+        // selected_export_aspect comes from serde's default annotation since
+        // a v1 bundle has no field for it.
+        assert!(matches!(
+            loaded.selected_export_aspect,
+            AspectRatio::NineSixteen
+        ));
 
         save_project(loaded, dir_str.clone()).expect("save must succeed");
 
@@ -370,14 +415,22 @@ mod tests {
         // Empty options stay omitted from the on-disk JSON.
         assert!(parsed.get("start_camera").is_none());
         assert!(parsed.get("default_entry_transition").is_none());
-        // 080: backfilled layouts are persisted on the next save, with
-        // unconfigured aspects still omitted via per-field skip_serializing_if.
+        // 100: backfilled layouts are persisted on the next save with all
+        // three aspects populated.
         let on_disk_layouts = parsed
             .get("layouts")
             .expect("save must persist backfilled layouts");
         assert!(on_disk_layouts.get("9_16").is_some());
-        assert!(on_disk_layouts.get("4_5").is_none());
-        assert!(on_disk_layouts.get("16_9").is_none());
+        assert!(on_disk_layouts.get("4_5").is_some(), "100: 4:5 persists");
+        assert!(on_disk_layouts.get("16_9").is_some(), "100: 16:9 persists");
+        // selected_export_aspect persists on save (always serialized; no
+        // skip_serializing_if).
+        assert_eq!(
+            parsed
+                .get("selected_export_aspect")
+                .and_then(|v| v.as_str()),
+            Some("9_16"),
+        );
 
         // Reload — the round-trip must keep the schema at v4.
         let reloaded = load_project(dir_str).expect("reload v4 must succeed");
@@ -434,6 +487,10 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
 
+        // Mirror 080's "user has cleared 4:5 / 16:9" shape, but as a post-100
+        // bundle (selected_export_aspect comes from `Project::default`). The
+        // post-100 backfill rule preserves the explicit nulls — that's the
+        // user-intent contract.
         let project = Project {
             schema_version: CURRENT_SCHEMA_VERSION,
             layouts: Some(ProjectLayouts {
@@ -450,10 +507,71 @@ mod tests {
         assert_eq!(reloaded.schema_version, 4);
         let layouts = reloaded.layouts.expect("layouts must round-trip");
         assert!(layouts.aspect_9_16.is_some());
-        assert!(layouts.aspect_4_5.is_none());
-        assert!(layouts.aspect_16_9.is_none());
+        // Post-100 user-intent contract: nulls survive when
+        // `selected_export_aspect` is present in the on-disk file.
+        assert!(
+            layouts.aspect_4_5.is_none(),
+            "post-100 explicit null must survive"
+        );
+        assert!(
+            layouts.aspect_16_9.is_none(),
+            "post-100 explicit null must survive"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn selected_export_aspect_round_trips() {
+        // 100: the project carries the user's choice of "this video targets
+        // 9:16 / 4:5 / 16:9" so opening a `.trailcut` preserves the authoring
+        // context. Mutate the field, save, reload — value persists.
+        use crate::export::layout::AspectRatio;
+
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-selectedaspect",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let project = Project {
+            selected_export_aspect: AspectRatio::FourFive,
+            ..Project::default()
+        };
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        save_project(project, dir_str.clone()).expect("save must succeed");
+        let reloaded = load_project(dir_str).expect("reload must succeed");
+        assert!(matches!(
+            reloaded.selected_export_aspect,
+            AspectRatio::FourFive
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn selected_export_aspect_defaults_when_absent_on_disk() {
+        // Pre-100 bundles lack `selected_export_aspect`; serde's
+        // `default = "default_selected_aspect"` annotation supplies 9_16 on
+        // deserialize without any explicit backfill code.
+        let raw = r#"{
+            "schema_version": 4,
+            "version": 1,
+            "name": "Pre-100 v4 Project",
+            "thumbnail": null,
+            "clips": [],
+            "map_settings": null
+        }"#;
+        let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
+        assert!(matches!(
+            parsed.selected_export_aspect,
+            AspectRatio::NineSixteen
+        ));
     }
 
     #[test]
@@ -516,38 +634,47 @@ mod tests {
     }
 
     #[test]
-    fn project_default_seeds_9_16_layout() {
-        // 080 turns Project::default() into the source of truth for "what
-        // does a fresh project carry on disk." Aspect 9:16 must be populated;
-        // 4:5 / 16:9 stay None until the user picks them in the configurator.
+    fn project_default_seeds_all_three_aspects() {
+        // 100: Project::default() now seeds every aspect (080's "9:16 only"
+        // rule retired). The configurator (110) can mutate any aspect freely;
+        // shipping a starter for each is "the value the configurator opens
+        // with," not "an aesthetic imposition." selected_export_aspect
+        // defaults to 9:16.
         use crate::export::layout::{resolve_slots, AspectRatio};
 
         let project = Project::default();
         let layouts = project
             .layouts
-            .expect("Project::default must seed layouts (080)");
-        let nine_sixteen = layouts
-            .aspect_9_16
-            .as_ref()
-            .expect("9:16 must be seeded by default");
-        assert!(layouts.aspect_4_5.is_none(), "4:5 stays None by default");
-        assert!(layouts.aspect_16_9.is_none(), "16:9 stays None by default");
+            .expect("Project::default must seed layouts");
+        assert!(matches!(
+            project.selected_export_aspect,
+            AspectRatio::NineSixteen
+        ));
 
-        // Non-degenerate slot rect — guards against a future refactor that
-        // accidentally seeds the wrong shape (e.g., a zero-size inset).
-        let slots = resolve_slots(nine_sixteen, AspectRatio::NineSixteen);
-        assert_eq!(slots.output.w, 1080);
-        assert_eq!(slots.output.h, 1920);
-        assert!(slots.map_slot.w > 0 && slots.map_slot.h > 0);
-        assert!(slots.video_slot.w > 0 && slots.video_slot.h > 0);
-        assert!(slots.corner_radius_px > 0);
+        let aspects = [
+            (AspectRatio::NineSixteen, &layouts.aspect_9_16),
+            (AspectRatio::FourFive, &layouts.aspect_4_5),
+            (AspectRatio::SixteenNine, &layouts.aspect_16_9),
+        ];
+        for (aspect, slot) in aspects {
+            let layout = slot.as_ref().unwrap_or_else(|| {
+                panic!("{:?} must be seeded by Project::default", aspect)
+            });
+            // Non-degenerate slot rect — guards against a future refactor
+            // that accidentally seeds the wrong shape.
+            let slots = resolve_slots(layout, aspect);
+            assert!(slots.map_slot.w > 0 && slots.map_slot.h > 0);
+            assert!(slots.video_slot.w > 0 && slots.video_slot.h > 0);
+            assert!(slots.corner_radius_px > 0);
+        }
     }
 
     #[test]
     fn load_backfills_layouts_for_v4_with_null_layouts_field() {
         // A v4 project on disk that pre-dates 080: the field exists in the
         // schema (since 050) but the producer didn't seed it. Load must
-        // surface it as Some(seeded). This is the core 080 backfill case.
+        // surface it as Some(seeded). 100 expands the seeded shape from
+        // "9:16 only" to "all three aspects".
         let dir = std::env::temp_dir().join(format!(
             "trailcut-test-{}-{}-v4backfill",
             std::process::id(),
@@ -578,8 +705,113 @@ mod tests {
             .layouts
             .expect("backfill must populate layouts on load");
         assert!(layouts.aspect_9_16.is_some(), "9:16 must be seeded");
-        assert!(layouts.aspect_4_5.is_none());
-        assert!(layouts.aspect_16_9.is_none());
+        assert!(layouts.aspect_4_5.is_some(), "100: 4:5 also seeded");
+        assert!(layouts.aspect_16_9.is_some(), "100: 16:9 also seeded");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_seeds_missing_aspects_on_pre_100_bundle() {
+        // 100 pre-100 detection: a bundle with `layouts` present but 4_5 /
+        // 16_9 entries null *and* no `selected_export_aspect` field is a
+        // pre-100 / post-080 bundle. The backfill seeds the missing aspect
+        // entries (so editors and the configurator UI open with usable
+        // starters) while preserving the existing 9_16.
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-pre100seed",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let pre_100 = r#"{
+            "schema_version": 4,
+            "version": 1,
+            "name": "Pre-100 / Post-080 Project",
+            "thumbnail": null,
+            "clips": [],
+            "layouts": {
+                "9_16": {
+                    "mode": "pip",
+                    "inset_source": "map",
+                    "inset": { "x": 0.65, "y": 0.78, "w": 0.32, "h": 0.18 },
+                    "corner_radius": 0.012
+                }
+            },
+            "map_settings": null
+        }"#;
+        std::fs::write(dir.join("project.json"), pre_100).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("load must succeed");
+        let layouts = loaded.layouts.expect("layouts must be present");
+        assert!(layouts.aspect_9_16.is_some());
+        assert!(
+            layouts.aspect_4_5.is_some(),
+            "pre-100 bundle: 4:5 backfilled"
+        );
+        assert!(
+            layouts.aspect_16_9.is_some(),
+            "pre-100 bundle: 16:9 backfilled"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_preserves_post_100_user_cleared_aspects() {
+        // 100 post-100 contract: a bundle with `selected_export_aspect`
+        // present is post-100. Null aspect entries inside `layouts` are user
+        // intent (set via a future configurator affordance). The backfill
+        // must NOT re-seed them — that would override the user's choice
+        // every time they reopen the project.
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-post100keep",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let post_100_user_cleared = r#"{
+            "schema_version": 4,
+            "version": 1,
+            "name": "Post-100 user-cleared",
+            "thumbnail": null,
+            "clips": [],
+            "layouts": {
+                "9_16": {
+                    "mode": "pip",
+                    "inset_source": "map",
+                    "inset": { "x": 0.65, "y": 0.78, "w": 0.32, "h": 0.18 },
+                    "corner_radius": 0.012
+                },
+                "4_5": null,
+                "16_9": null
+            },
+            "selected_export_aspect": "9_16",
+            "map_settings": null
+        }"#;
+        std::fs::write(dir.join("project.json"), post_100_user_cleared).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("load must succeed");
+        let layouts = loaded.layouts.expect("layouts must be present");
+        assert!(layouts.aspect_9_16.is_some());
+        assert!(
+            layouts.aspect_4_5.is_none(),
+            "post-100 explicit null must survive"
+        );
+        assert!(
+            layouts.aspect_16_9.is_none(),
+            "post-100 explicit null must survive"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -627,12 +859,13 @@ mod tests {
     }
 
     #[test]
-    fn load_preserves_explicit_aspect_nulls_inside_layouts() {
-        // The backfill triggers when the outer `layouts` is None. If the
-        // user has explicitly cleared individual aspects (or just hasn't
-        // configured them yet) the inner nulls survive untouched. This guards
-        // against a future "reset on every load" behavior — that's a
-        // configurator UI feature, not load-side normalization.
+    fn load_pre_100_inner_nulls_seeds_4_5_and_16_9_only() {
+        // Edge case: a pre-100 bundle (no `selected_export_aspect`) with all
+        // three aspects null. Pre-100 had no UI to clear 9_16 to null, so an
+        // explicit `9_16: null` is treated as a hand-edit — the conservative
+        // rule preserves it (don't second-guess hand edits). The pre-100
+        // backfill seeds 4_5 / 16_9 only, which were always-null on pre-080
+        // bundles.
         let dir = std::env::temp_dir().join(format!(
             "trailcut-test-{}-{}-v4innernull",
             std::process::id(),
@@ -643,12 +876,10 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
 
-        // All three aspects null but the field itself is present — backfill
-        // must NOT seed 9:16 in this case (different from `"layouts": null`).
         let v4_inner_nulls = r#"{
             "schema_version": 4,
             "version": 1,
-            "name": "User-cleared layouts",
+            "name": "Pre-100 hand-edited",
             "thumbnail": null,
             "clips": [],
             "layouts": { "9_16": null, "4_5": null, "16_9": null },
@@ -659,9 +890,18 @@ mod tests {
         let dir_str = dir.to_string_lossy().into_owned();
         let loaded = load_project(dir_str).expect("load must succeed");
         let layouts = loaded.layouts.expect("layouts must be present");
-        assert!(layouts.aspect_9_16.is_none(), "explicit null must survive");
-        assert!(layouts.aspect_4_5.is_none());
-        assert!(layouts.aspect_16_9.is_none());
+        assert!(
+            layouts.aspect_9_16.is_none(),
+            "explicit 9_16 null preserved (hand-edit / pre-080 conservative rule)"
+        );
+        assert!(
+            layouts.aspect_4_5.is_some(),
+            "pre-100 backfill seeds 4_5"
+        );
+        assert!(
+            layouts.aspect_16_9.is_some(),
+            "pre-100 backfill seeds 16_9"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

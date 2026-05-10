@@ -31,3 +31,13 @@ tempfile = "3"
 # Gates the heavy end-to-end export integration test (real FFmpeg + Node + maplibre-native).
 # See src-tauri/tests/render_export_map_only.rs.
 integration_export = []
+# Task 100: gates the full (mode × aspect × channel) export matrix — 18 cells
+# total (PiP, Split) × (9:16, 4:5, 16:9) × (A, B, C). Implies
+# `integration_export`. Each cell spawns FFmpeg + the renderer worker, so the
+# matrix runs in 60–120s; gated separately so routine `cargo test` and the
+# baseline 9:16 PiP smoke tests stay fast. Used in nightly CI / pre-release.
+integration_export_matrix = ["integration_export"]
+# Task 100: gates the cross-channel compositing-parity sub-test at one
+# non-9:16 aspect (B+C externally vs A directly). Catches aspect-specific
+# drift in `overlay` coordinate math. Implies `integration_export`.
+integration_export_parity = ["integration_export"]

@@ -78,11 +78,15 @@ fn build_setup_payload() -> SetupPayload {
 }
 
 fn config_with(worker_count: usize, recycle_every: u32) -> OrchestratorConfig {
+    // Inherit chrome_path from Default so the same dev/env resolution lookup
+    // applies to integration tests; we only override the worker_count +
+    // recycle cadence + renderer.cjs path.
     OrchestratorConfig {
         worker_count,
         recycle_every,
         renderer_cjs_path: renderer_cjs(),
         node_path: PathBuf::from("node"),
+        ..OrchestratorConfig::default()
     }
 }
 

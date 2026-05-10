@@ -130,7 +130,7 @@ export type {
   NormalizedRect,
 } from './lib/layout';
 
-import type { ProjectLayouts } from './lib/layout';
+import type { AspectRatio, ProjectLayouts } from './lib/layout';
 
 /** Project-level "transition feel" knob. Drives the duration multiplier for
  *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
@@ -181,12 +181,20 @@ export interface Project {
   thumbnail: string | null;
   clips: Clip[];
   route: Route | null;
-  /** Per-aspect layout configuration (v4+). Always populated post-080:
-   *  fresh projects ship with `9_16` seeded by `defaultLayout('9_16')` and
-   *  `4_5` / `16_9` left null until the user picks those aspects in the
-   *  configurator (task 110). The Rust `load_project` backfills pre-080
-   *  bundles where the field was absent or null. */
+  /** Per-aspect layout configuration (v4+). Always populated post-100:
+   *  fresh projects ship with all three aspects seeded by
+   *  `defaultPipLayout(aspect)`. Each entry stays nullable so the
+   *  configurator (110) can express "the user has explicitly cleared this
+   *  aspect" — the Rust `load_project` backfill respects post-100 nulls but
+   *  re-seeds them for pre-100 bundles. */
   layouts: ProjectLayouts;
+  /** Aspect that the export pipeline targets (task 100). Creative-content
+   *  state — travels with the project bundle. The Rust side guarantees this
+   *  field is populated on every load (serde default for pre-100 bundles
+   *  fills `'9_16'`); the TS type is non-optional. The export handlers in
+   *  ProjectView and the LayoutPreview overlay both read this value to
+   *  decide which aspect to render. */
+  selected_export_aspect: AspectRatio;
   map_settings?: MapSettings;
   /** Optional: defaults to 'natural' at the consumer. Pre-task-350 projects
    *  on disk lack this field; Rust serde fills in `None` and the frontend

@@ -74,8 +74,11 @@ pub enum LayoutConfig {
     },
 }
 
-/// Per-aspect layout storage. `None` means "user has not configured this
-/// aspect yet"; the configurator UI (110) seeds with `default_layout(aspect)`.
+/// Per-aspect layout storage. `None` means "user has explicitly cleared this
+/// aspect" (post-100); fresh projects ship with all three aspects seeded by
+/// `default_pip_layout(aspect)`. The configurator UI (110) lets the user
+/// mutate freely; the export pipeline falls back to `default_layout(aspect)`
+/// when an entry is null.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ProjectLayouts {
     #[serde(rename = "9_16", default, skip_serializing_if = "Option::is_none")]
@@ -227,10 +230,10 @@ pub fn resolve_slots(layout: &LayoutConfig, aspect: AspectRatio) -> SlotResoluti
     }
 }
 
-/// Reasonable starting layout per aspect: PiP, video as background, map as
+/// Reasonable starting PiP layout per aspect: video as background, map as
 /// bottom-right inset. Starter values, not normative — the configurator UI
 /// (110) lets the user freely move the inset.
-pub fn default_layout(aspect: AspectRatio) -> LayoutConfig {
+pub fn default_pip_layout(aspect: AspectRatio) -> LayoutConfig {
     match aspect {
         AspectRatio::NineSixteen => LayoutConfig::Pip {
             inset_source: PipInsetSource::Map,
@@ -247,5 +250,85 @@ pub fn default_layout(aspect: AspectRatio) -> LayoutConfig {
             inset: NormalizedRect { x: 0.65, y: 0.74, w: 0.32, h: 0.22 },
             corner_radius: 0.012,
         },
+    }
+}
+
+/// Reasonable starting Split layout per aspect, with the orientation locked
+/// per LAYOUT.md §3 (16:9 → vertical divider; 9:16 / 4:5 → horizontal). The
+/// user can flip `video_side` to the other legal side via the configurator's
+/// swap toggle (110); inverse-orientation splits are forbidden and rejected
+/// by `validate_request`.
+pub fn default_split_layout(aspect: AspectRatio) -> LayoutConfig {
+    match aspect {
+        AspectRatio::NineSixteen | AspectRatio::FourFive => LayoutConfig::Split {
+            video_side: SplitSide::Top,
+            divider: 0.5,
+        },
+        AspectRatio::SixteenNine => LayoutConfig::Split {
+            video_side: SplitSide::Left,
+            divider: 0.5,
+        },
+    }
+}
+
+/// Back-compat alias. Pre-100 callers imported `default_layout`; that name now
+/// delegates to `default_pip_layout`. New code should prefer the explicit
+/// name (`default_layout` reads ambiguously once Split exists).
+pub fn default_layout(aspect: AspectRatio) -> LayoutConfig {
+    default_pip_layout(aspect)
+}
+
+/// The two `video_side` values legal for a given aspect's Split orientation.
+/// Per LAYOUT.md §3, inverse-orientation splits (e.g. `'left'` at 9:16) are
+/// forbidden. The configurator's swap toggle (110) constrains its choices to
+/// this subset; `validate_request` rejects out-of-set values at the IPC
+/// boundary so bad project files surface instead of producing nonsense
+/// layouts the UX disallows.
+pub fn legal_split_sides(aspect: AspectRatio) -> &'static [SplitSide] {
+    match aspect {
+        AspectRatio::SixteenNine => &[SplitSide::Left, SplitSide::Right],
+        AspectRatio::NineSixteen | AspectRatio::FourFive => &[SplitSide::Top, SplitSide::Bottom],
+    }
+}
+
+/// Defensive clamp for live-edited layouts. Mirrors `clampLayout` in
+/// `src/lib/layout.ts`; landed here so the helper lives next to the types it
+/// operates on. The export-time validator does *not* call this — bad
+/// descriptors are rejected, not silently clamped. Pure; always returns a
+/// fresh value.
+pub fn clamp_layout(layout: &LayoutConfig, aspect: AspectRatio) -> LayoutConfig {
+    match layout {
+        LayoutConfig::Split { video_side, divider } => LayoutConfig::Split {
+            video_side: *video_side,
+            divider: clamp_f64(*divider, 0.05, 0.95),
+        },
+        LayoutConfig::Pip {
+            inset_source,
+            inset,
+            corner_radius,
+        } => {
+            let out = output_dims(aspect);
+            let min_w = 1.0 / out.w as f64;
+            let min_h = 1.0 / out.h as f64;
+            let w = clamp_f64(inset.w, min_w, 1.0);
+            let h = clamp_f64(inset.h, min_h, 1.0);
+            let x = clamp_f64(inset.x, 0.0, 1.0 - w);
+            let y = clamp_f64(inset.y, 0.0, 1.0 - h);
+            LayoutConfig::Pip {
+                inset_source: *inset_source,
+                inset: NormalizedRect { x, y, w, h },
+                corner_radius: clamp_f64(*corner_radius, 0.0, 0.5),
+            }
+        }
+    }
+}
+
+fn clamp_f64(n: f64, lo: f64, hi: f64) -> f64 {
+    if n.is_nan() || n < lo {
+        lo
+    } else if n > hi {
+        hi
+    } else {
+        n
     }
 }

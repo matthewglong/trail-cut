@@ -25,8 +25,8 @@ use std::process::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 use trail_cut_lib::export::{
-    default_layout, render_export, resolve_slots, AspectRatio, LayoutDescriptor,
-    RenderExportRequest,
+    default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
+    resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor, RenderExportRequest,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -210,7 +210,21 @@ async fn map_only_export_produces_valid_mov() {
     assert_eq!(audio_count, 0, "Channel B is silent: -an should yield 0 audio streams");
 
     assert_eq!(video["codec_name"], "prores");
-    assert_eq!(video["pix_fmt"], "yuva444p10le");
+    // ProRes 4444 (with alpha) is identified by `codec_tag_string="ap4h"` and
+    // `profile="4444"` — both encoded into the file's container metadata and
+    // stable across FFmpeg versions. The probed `pix_fmt` is *not* stable:
+    // FFmpeg's prores decoder upcasts samples to 12-bit on read, so
+    // FFmpeg ≥ 8.0 reports `yuva444p12le` even for streams encoded as
+    // `yuva444p10le` (which is what `prores_ks -profile:v 4444` writes — see
+    // `encoder.rs::candidates_for(ProResAlpha)`). The codec_tag is what
+    // actually distinguishes 4444 from 4444 XQ (`ap4x`).
+    assert_eq!(video["codec_tag_string"], "ap4h", "expected ProRes 4444 (ap4h)");
+    assert_eq!(video["profile"], "4444");
+    assert!(
+        video["pix_fmt"] == "yuva444p10le" || video["pix_fmt"] == "yuva444p12le",
+        "unexpected pix_fmt {} — ProRes 4444 reads as 10le on FFmpeg < 8 and 12le on >= 8",
+        video["pix_fmt"],
+    );
     assert_eq!(video["width"].as_u64().unwrap(), 1080);
     assert_eq!(video["height"].as_u64().unwrap(), 1920);
 
@@ -260,4 +274,129 @@ async fn map_only_export_produces_valid_mov() {
         g,
         b,
     );
+}
+
+/// Build a Channel B request at an arbitrary `(aspect, layout)` cell. The
+/// fixture's project state (clips, route, mapSettings) is aspect-agnostic;
+/// only the layout descriptor varies. Used by the task 100 matrix tests.
+#[cfg(feature = "integration_export_matrix")]
+fn build_request_with_layout(
+    output_path: &str,
+    aspect: AspectRatio,
+    layout: LayoutConfig,
+) -> RenderExportRequest {
+    assert_bundle_present();
+    let fixture = setup_fixture_cjs();
+    let output = Command::new("node")
+        .arg(&fixture)
+        .output()
+        .expect("spawn node fixture");
+    if !output.status.success() {
+        panic!(
+            "fixture builder failed: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let mut setup_value: Value =
+        serde_json::from_slice(&output.stdout).expect("fixture stdout → JSON");
+    if let Some(obj) = setup_value.as_object_mut() {
+        obj.remove("cmd");
+        obj.remove("viewport");
+        obj.remove("fps");
+    }
+
+    let resolved = resolve_slots(&layout, aspect);
+    let layout_descriptor = LayoutDescriptor {
+        aspect,
+        layout,
+        resolved,
+    };
+    RenderExportRequest {
+        channel: "map_only".to_string(),
+        fps: 30,
+        output_path: output_path.to_string(),
+        layout: layout_descriptor,
+        project_state: setup_value,
+    }
+}
+
+/// Task 100 matrix: render Channel B at every (PiP, Split) × (9:16, 4:5,
+/// 16:9) cell and verify FFprobe sees the correct dims, codec, and pixel
+/// format. Existing 9:16-PiP smoke test stays as the unconditional baseline;
+/// this matrix runs only under `--features integration_export_matrix`.
+#[cfg(feature = "integration_export_matrix")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn channel_b_full_matrix() {
+    assert_ffmpeg_on_path();
+    assert_bundle_present();
+
+    let aspects = [
+        AspectRatio::NineSixteen,
+        AspectRatio::FourFive,
+        AspectRatio::SixteenNine,
+    ];
+    for aspect in aspects {
+        for (mode, layout) in [
+            ("pip", default_pip_layout(aspect)),
+            ("split", default_split_layout(aspect)),
+        ] {
+            let tmp = TempDir::new().expect("tempdir");
+            let output_path = tmp
+                .path()
+                .join(format!("map_only_{:?}_{}.mov", aspect, mode));
+            let req = build_request_with_layout(
+                output_path.to_string_lossy().as_ref(),
+                aspect,
+                layout,
+            );
+
+            render_export(req).await.unwrap_or_else(|e| {
+                panic!("render_export failed for ({:?}, {}): {:?}", aspect, mode, e)
+            });
+
+            let probe = ffprobe_streams(&output_path);
+            let streams = probe["streams"].as_array().expect("streams array");
+            let video = streams
+                .iter()
+                .find(|s| s["codec_type"] == "video")
+                .unwrap_or_else(|| panic!("no video stream for ({:?}, {})", aspect, mode));
+            assert_eq!(video["codec_name"], "prores", "{:?} {}", aspect, mode);
+            // See the unconditional smoke test for the FFmpeg-version pix_fmt
+            // caveat — assert on codec_tag_string + profile, accept either bit
+            // depth in pix_fmt.
+            assert_eq!(
+                video["codec_tag_string"], "ap4h",
+                "{:?} {} codec_tag mismatch",
+                aspect,
+                mode,
+            );
+            assert_eq!(video["profile"], "4444", "{:?} {} profile", aspect, mode);
+            assert!(
+                video["pix_fmt"] == "yuva444p10le" || video["pix_fmt"] == "yuva444p12le",
+                "{:?} {}: unexpected pix_fmt {}",
+                aspect,
+                mode,
+                video["pix_fmt"],
+            );
+
+            let dims = output_dims(aspect);
+            assert_eq!(
+                video["width"].as_u64().unwrap() as u32,
+                dims.w,
+                "{:?} {} width",
+                aspect,
+                mode,
+            );
+            assert_eq!(
+                video["height"].as_u64().unwrap() as u32,
+                dims.h,
+                "{:?} {} height",
+                aspect,
+                mode,
+            );
+            // Audio stream: Channel B is silent end-to-end.
+            let audio_count = streams.iter().filter(|s| s["codec_type"] == "audio").count();
+            assert_eq!(audio_count, 0, "{:?} {} should be silent", aspect, mode);
+        }
+    }
 }

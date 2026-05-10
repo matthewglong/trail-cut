@@ -8,8 +8,13 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildExportRequest, pickLayout } from '../exportRequest';
-import { defaultLayout, resolveSlots } from '../layout';
-import type { Clip, MapSettings, Route, ProjectLayouts } from '../../types';
+import {
+  defaultLayout,
+  defaultPipLayout,
+  defaultSplitLayout,
+  resolveSlots,
+} from '../layout';
+import type { AspectRatio, Clip, MapSettings, Route, ProjectLayouts } from '../../types';
 import { DEFAULT_MAP_SETTINGS } from '../../types';
 
 function makeClip(): Clip {
@@ -186,5 +191,70 @@ describe('buildExportRequest', () => {
     expect(req.clips.length).toBeGreaterThan(0);
     // Timeline is still required (validate_request reads totalDurationMs).
     expect(req.timeline).toHaveProperty('totalDurationMs');
+  });
+});
+
+describe('pickLayout — fully-seeded projects (task 100)', () => {
+  // Acceptance: `pickLayout`'s fallback is cold for fully-seeded projects.
+  // Post-100 fresh projects ship with all three aspects populated, so an
+  // export against any aspect must read the seeded value, not synthesize
+  // via `defaultLayout`.
+  const seeded: ProjectLayouts = {
+    '9_16': defaultPipLayout('9_16'),
+    '4_5': defaultPipLayout('4_5'),
+    '16_9': defaultPipLayout('16_9'),
+  };
+  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+  for (const aspect of aspects) {
+    it(`${aspect}: returns the seeded value, not the fallback`, () => {
+      const layout = pickLayout(seeded, aspect);
+      expect(layout).toBe(seeded[aspect]);
+    });
+  }
+});
+
+describe('buildExportRequest — Split-legality enforcement (task 100)', () => {
+  // The validator at the IPC boundary rejects inverse-orientation Split
+  // layouts. The configurator (110) constrains its swap toggle so the UI
+  // can't produce these; this throw backstops file-level edits and IPC
+  // tampering. Mirrors `validate_request` in `src-tauri/src/export/mod.rs`.
+  it('throws on left-side video at 9:16', () => {
+    const inputs = {
+      ...baseInputs(),
+      layouts: {
+        '9_16': { mode: 'split', video_side: 'left', divider: 0.5 },
+        '4_5': null,
+        '16_9': null,
+      } as ProjectLayouts,
+    };
+    expect(() => buildExportRequest(inputs)).toThrow(/inverse-orientation/);
+  });
+
+  it('throws on top-side video at 16:9', () => {
+    const inputs = {
+      ...baseInputs(),
+      aspect: '16_9' as const,
+      layouts: {
+        '9_16': null,
+        '4_5': null,
+        '16_9': { mode: 'split', video_side: 'top', divider: 0.5 },
+      } as ProjectLayouts,
+    };
+    expect(() => buildExportRequest(inputs)).toThrow(/inverse-orientation/);
+  });
+
+  it('accepts a legal split orientation per aspect', () => {
+    for (const aspect of ['9_16', '4_5', '16_9'] as const) {
+      const inputs = {
+        ...baseInputs(),
+        aspect,
+        layouts: {
+          '9_16': aspect === '9_16' ? defaultSplitLayout(aspect) : null,
+          '4_5': aspect === '4_5' ? defaultSplitLayout(aspect) : null,
+          '16_9': aspect === '16_9' ? defaultSplitLayout(aspect) : null,
+        } as ProjectLayouts,
+      };
+      expect(() => buildExportRequest(inputs)).not.toThrow();
+    }
   });
 });

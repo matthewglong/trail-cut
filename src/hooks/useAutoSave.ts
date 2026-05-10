@@ -1,7 +1,15 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { Clip, Route, Project, ProjectLayouts, MapSettings, TransitionFeel } from '../types';
-import { defaultLayout } from '../lib/layout';
+import type {
+  AspectRatio,
+  Clip,
+  Route,
+  Project,
+  ProjectLayouts,
+  MapSettings,
+  TransitionFeel,
+} from '../types';
+import { defaultPipLayout } from '../lib/layout';
 
 interface AutoSaveParams {
   projectDir: string | null;
@@ -11,23 +19,29 @@ interface AutoSaveParams {
   projectThumbnail: string | null;
   mapSettings: MapSettings;
   transitionFeel: TransitionFeel | undefined;
-  /** Per-aspect layouts (task 080). Always populated post-080 — App-level
-   *  state initializes to the seeded shape and the load path backfills any
-   *  missing field from disk. */
+  /** Per-aspect layouts (task 080 / 100). Always populated — App-level
+   *  state initializes to the seeded shape (all three aspects via 100) and
+   *  the load path backfills missing entries on read. */
   projectLayouts: ProjectLayouts;
+  /** Selected export aspect (task 100). App-level state always supplies a
+   *  value; `undefined` here only triggers on a prop-drilling regression and
+   *  the defensive backfill below maps it to `'9_16'`. */
+  selectedExportAspect: AspectRatio | undefined;
 }
 
 /** Defensive backfill mirroring `useProject`'s + Rust's `seeded_layouts()`.
  *  In normal operation this branch is cold — App-level state always supplies
  *  a populated `ProjectLayouts`. Kept as a safety net so a future regression
  *  (someone passes `undefined` through prop-drilling) doesn't write a
- *  `layouts: undefined` row to disk. */
+ *  `layouts: undefined` row to disk. 100 expanded the seeded shape from
+ *  "9:16 only" to "all three aspects", matching `seeded_layouts()` in
+ *  `src-tauri/src/models.rs`. */
 function ensureLayouts(layouts: ProjectLayouts | undefined): ProjectLayouts {
   if (layouts) return layouts;
   return {
-    '9_16': defaultLayout('9_16'),
-    '4_5': null,
-    '16_9': null,
+    '9_16': defaultPipLayout('9_16'),
+    '4_5': defaultPipLayout('4_5'),
+    '16_9': defaultPipLayout('16_9'),
   };
 }
 
@@ -40,6 +54,7 @@ export function useAutoSave({
   mapSettings,
   transitionFeel,
   projectLayouts,
+  selectedExportAspect,
 }: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -55,6 +70,7 @@ export function useAutoSave({
         clips,
         route,
         layouts: ensureLayouts(projectLayouts),
+        selected_export_aspect: selectedExportAspect ?? '9_16',
         map_settings: mapSettings,
         transition_feel: transitionFeel,
       };
@@ -65,5 +81,15 @@ export function useAutoSave({
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [clips, route, projectDir, projectName, projectThumbnail, mapSettings, transitionFeel, projectLayouts]);
+  }, [
+    clips,
+    route,
+    projectDir,
+    projectName,
+    projectThumbnail,
+    mapSettings,
+    transitionFeel,
+    projectLayouts,
+    selectedExportAspect,
+  ]);
 }

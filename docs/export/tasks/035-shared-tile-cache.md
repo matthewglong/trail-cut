@@ -130,3 +130,11 @@ request: (req, callback) => {
 - 020 §"Tile cache deferral" — explicitly says the cache is task 030's concern or a follow-up; 030 §"Open questions" then spins it out as 035. This task closes the loop.
 - LAYOUT.md is unaffected — the cache is an orthogonal infrastructure layer beneath the layout/channel system.
 - After 035 lands, the worker has full local determinism. Tasks 040 (encoder probing) and 050 (layout descriptors) are independent of the cache and proceed in parallel.
+
+## Post-chromium-renderer-migration call path (tasks 115–119)
+
+After tasks 115–119, the cache module sits at `src-tauri/sidecars/renderer/tileCache.ts` and is reached through the headless-Chromium page rather than maplibre-native's C++ `request()` callback. The new path: page-side `addProtocol('trailcut', loader)` (registered in `page/init.ts`) intercepts every URL maplibre would fetch — `transformRequest` rewrites each `http(s)://...` URL into `trailcut://r?u=<base64url(originalUrl)>` so the loader sees a trailcut:// URL → the loader calls `window.trailcutFetch(trailcutUrl)`, a function `page.exposeFunction` bridges to Node → `bridgeFetchFactory` in `src-tauri/sidecars/renderer/trailcutFetch.ts` recovers the original URL via `unwrapTrailcutUrl` (decodes the `?u=` parameter) → calls `tileCache.get(originalUrl, fetcher, ...)`.
+
+**The hash-key is the original OpenFreeMap URL, not the rewritten `trailcut://` URL.** This was the load-bearing audit point of task 119: a regression that hashes on the rewritten URL silently invalidates every fresh export's cache. `__tests__/trailcutFetch.test.ts` covers the unit-level invariant (`bridgeFetchFactory` calls `cache.get` with the unwrapped URL); `__tests__/tileCacheKeyParity.test.ts` (added in 119) covers the end-to-end invariant by inspecting the on-disk artifact a real worker run produces and asserting filenames match `sha256(originalUrl)` for known OpenFreeMap URLs the style spec references.
+
+The cache's on-disk layout — `{key[0..2]}/{key[2..4]}/{key}` shards under `TRAILCUT_TILE_CACHE_DIR` (default `~/.trailcut/tile-cache/`) — is unchanged from the v1 maplibre-native implementation. Existing user caches keep working across the renderer migration without re-warming.

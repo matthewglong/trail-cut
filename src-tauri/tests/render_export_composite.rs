@@ -38,14 +38,16 @@
 
 #![cfg(feature = "integration_export")]
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
-    default_layout, render_export, resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor,
-    NormalizedRect, PipInsetSource, RenderExportRequest, SplitSide,
+    default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
+    resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor, NormalizedRect, PipInsetSource,
+    RenderExportRequest, SplitSide,
 };
 
 // --- env / fixture helpers --------------------------------------------------
@@ -211,11 +213,17 @@ fn clip_json(
     out_ms: u64,
     speed: f64,
     zoom: f64,
+    created_at: &str,
 ) -> Value {
+    // `created_at` is load-bearing for `compileTimeline`: clips without a
+    // parseable timestamp are filtered out by `filterCompilableClips`, which
+    // produces an empty `clipSpans` array — and the renderer's
+    // `activeClipIdAt` then refuses to do anything sensible with the timeline.
     json!({
         "id": id,
         "path": source.to_string_lossy(),
         "filename": source.file_name().unwrap().to_string_lossy(),
+        "created_at": created_at,
         "duration_ms": out_ms,
         "resolution": "1280x720",
         "trim": {"in_ms": in_ms, "out_ms": out_ms},
@@ -224,11 +232,78 @@ fn clip_json(
             "stabilize": {"enabled": false, "shakiness": 5},
             "speed": speed
         },
-        "visible": true
+        "visible": true,
+        "map_overrides": null
     })
 }
 
+/// Run `node setup_fixture.cjs` with the given clips piped in as JSON, and
+/// return the fully-compiled SetupPayload (with `timeline.clipSpans` etc.)
+/// suitable to flatten into `RenderExportRequest.project_state`.
+///
+/// The composite tests build their own ad-hoc clip fixtures (synthetic mp4
+/// files at tmpdir paths), so they can't reuse the default fixture's
+/// `/dev/null/clip-a.mov`. Piping the per-test clip array through stdin
+/// keeps the timeline-compile logic in one place (the TS port) — without it,
+/// the renderer worker's `activeClipIdAt` crashes on a stub
+/// `{ totalDurationMs }` timeline that is missing `clipSpans`.
+fn build_setup_payload_via_fixture(clips: &[Value]) -> Value {
+    assert_bundle_present();
+    let fixture = setup_fixture_cjs();
+    let overrides = json!({
+        "clips": clips,
+        // Composite tests don't have real GPS data on the synthetic
+        // testsrc clips, so skip route indexing entirely.
+        "route": null,
+    });
+
+    let mut child = Command::new("node")
+        .arg(&fixture)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn node setup_fixture.cjs");
+    {
+        let stdin = child.stdin.as_mut().expect("child stdin");
+        stdin
+            .write_all(overrides.to_string().as_bytes())
+            .expect("write overrides to fixture stdin");
+    }
+    let output = child
+        .wait_with_output()
+        .expect("wait for setup_fixture.cjs");
+    if !output.status.success() {
+        panic!(
+            "setup_fixture.cjs failed: stderr={}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    let mut payload: Value =
+        serde_json::from_slice(&output.stdout).expect("fixture stdout → JSON");
+    // The fixture emits the wire-shape SetupCmd (`cmd`, `viewport`, `fps`);
+    // `RenderExportRequest` re-injects those itself, so strip them so the
+    // flattened project_state has no leftover envelope fields.
+    if let Some(obj) = payload.as_object_mut() {
+        obj.remove("cmd");
+        obj.remove("viewport");
+        obj.remove("fps");
+    }
+    payload
+}
+
 /// Build a 2-clip 9:16 composite request with the given layout config.
+///
+/// Two 1.0-second clips at speed=1.5 → 1/1.5 + 1/1.5 = ~1.333s total. The
+/// actual `frames_written` reported by render_export is computed from the
+/// timeline's totalDurationMs; the integration test verifies the produced
+/// media's duration via FFprobe matches the per-clip atempo'd spans
+/// (Σ trimmed_span / speed).
+///
+/// We can't stub `timeline` here because the renderer worker's
+/// `activeClipIdAt` reads `timeline.clipSpans.length`. Instead we drive the
+/// real `compileTimeline` via the bundled fixture builder, which produces a
+/// fully-shaped CompiledTimeline (clipSpans, transitionSpans, totalDurationMs).
 fn build_request(
     output_path: &str,
     clip_a_path: &Path,
@@ -243,20 +318,27 @@ fn build_request(
         resolved,
     };
 
-    // Two 1.0-second clips at speed=1.5 → 1/1.5 + 1/1.5 = ~1.333s total.
-    // The actual `frames_written` reported by render_export is computed from
-    // the timeline's totalDurationMs; the integration test verifies the
-    // produced media's duration via FFprobe matches the per-clip atempo'd
-    // spans (Σ trimmed_span / speed).
-    let project_state = json!({
-        "timeline": { "totalDurationMs": 1334 },
-        "route": null,
-        "clips": [
-            clip_json("clip-a", clip_a_path, 0, 1000, 1.5, 1.2),
-            clip_json("clip-b", clip_b_path, 0, 1000, 1.5, 1.2),
-        ],
-        "mapSettings": {}
-    });
+    let clips = vec![
+        clip_json(
+            "clip-a",
+            clip_a_path,
+            0,
+            1000,
+            1.5,
+            1.2,
+            "2024-06-01T12:00:00.000-07:00",
+        ),
+        clip_json(
+            "clip-b",
+            clip_b_path,
+            0,
+            1000,
+            1.5,
+            1.2,
+            "2024-06-01T12:00:01.000-07:00",
+        ),
+    ];
+    let project_state = build_setup_payload_via_fixture(&clips);
 
     RenderExportRequest {
         channel: "composite".to_string(),
@@ -481,10 +563,12 @@ async fn composite_pip_video_inset() {
     );
 }
 
-/// Split layout: video on the left half, map on the right half. No inset, no
-/// corner mask. Frame 30 sample at the center of each half asserts that the
-/// two pixels are visibly different (cross-half diff > 30 in some channel)
-/// and that both halves are opaque (alpha=255).
+/// Split layout (9:16 aspect): video on the top half, map on the bottom half.
+/// `legal_split_sides(NineSixteen)` permits only Top/Bottom — `Left`/`Right`
+/// are inverse-orientation for portrait and rejected by `validate_request`.
+/// No inset, no corner mask. Frame 30 sample at the center of each half
+/// asserts that the two pixels are visibly different (cross-half diff > 30 in
+/// some channel) and that both halves are opaque (alpha=255).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn composite_split() {
     assert_ffmpeg_on_path();
@@ -497,7 +581,7 @@ async fn composite_split() {
     let output_path = tmp.path().join("composite_split.mp4");
 
     let layout = LayoutConfig::Split {
-        video_side: SplitSide::Left,
+        video_side: SplitSide::Top,
         divider: 0.5,
     };
     let resolved = resolve_slots(&layout, AspectRatio::NineSixteen);
@@ -517,7 +601,7 @@ async fn composite_split() {
     // ---- frame-30 sampling ----
     let frame = extract_rgba_frame(&output_path, 30, 1080, 1920);
 
-    // Center of the video slot (left half).
+    // Center of the video slot (top half for 9:16 split).
     let vx = resolved.video_slot.x + resolved.video_slot.w / 2;
     let vy = resolved.video_slot.y + resolved.video_slot.h / 2;
     let video_a = alpha_at(&frame, 1080, vx, vy);
@@ -531,7 +615,7 @@ async fn composite_split() {
         video_rgb.2,
     );
 
-    // Center of the map slot (right half).
+    // Center of the map slot (bottom half for 9:16 split).
     let mx = resolved.map_slot.x + resolved.map_slot.w / 2;
     let my = resolved.map_slot.y + resolved.map_slot.h / 2;
     let map_a = alpha_at(&frame, 1080, mx, my);
@@ -557,4 +641,158 @@ async fn composite_split() {
         map_rgb.1,
         map_rgb.2,
     );
+}
+
+/// Build a Channel A request at an arbitrary `(aspect, layout)` cell. The
+/// 2-clip fixture is reused; only the layout descriptor varies. Used by the
+/// task 100 matrix tests.
+#[cfg(feature = "integration_export_matrix")]
+fn build_request_with_aspect(
+    output_path: &str,
+    clip_a_path: &Path,
+    clip_b_path: &Path,
+    aspect: AspectRatio,
+    layout: LayoutConfig,
+) -> RenderExportRequest {
+    let resolved = resolve_slots(&layout, aspect);
+    let layout_descriptor = LayoutDescriptor {
+        aspect,
+        layout,
+        resolved,
+    };
+    let clips = vec![
+        clip_json(
+            "clip-a",
+            clip_a_path,
+            0,
+            1000,
+            1.5,
+            1.2,
+            "2024-06-01T12:00:00.000-07:00",
+        ),
+        clip_json(
+            "clip-b",
+            clip_b_path,
+            0,
+            1000,
+            1.5,
+            1.2,
+            "2024-06-01T12:00:01.000-07:00",
+        ),
+    ];
+    let project_state = build_setup_payload_via_fixture(&clips);
+    RenderExportRequest {
+        channel: "composite".to_string(),
+        fps: 30,
+        output_path: output_path.to_string(),
+        layout: layout_descriptor,
+        project_state,
+    }
+}
+
+/// Container-shape assertions parametrized over aspect. Mirrors
+/// `assert_composite_container_shape` but with dims keyed off `aspect`
+/// rather than hard-coded 1080×1920.
+#[cfg(feature = "integration_export_matrix")]
+fn assert_composite_container_shape_for_aspect(output_path: &Path, aspect: AspectRatio) {
+    let probe = ffprobe_streams_and_format(output_path);
+    let streams = probe["streams"].as_array().expect("streams array");
+    let video = streams
+        .iter()
+        .find(|s| s["codec_type"] == "video")
+        .expect("video stream");
+    assert_eq!(video["codec_name"], "hevc", "{:?}", aspect);
+    assert_eq!(video["pix_fmt"], "yuv420p", "{:?}", aspect);
+    let dims = output_dims(aspect);
+    assert_eq!(
+        video["width"].as_u64().unwrap() as u32,
+        dims.w,
+        "{:?} width",
+        aspect,
+    );
+    assert_eq!(
+        video["height"].as_u64().unwrap() as u32,
+        dims.h,
+        "{:?} height",
+        aspect,
+    );
+
+    let audio_streams: Vec<&Value> = streams
+        .iter()
+        .filter(|s| s["codec_type"] == "audio")
+        .collect();
+    assert_eq!(audio_streams.len(), 1, "{:?} audio count", aspect);
+    assert_eq!(audio_streams[0]["codec_name"], "aac", "{:?} audio codec", aspect);
+
+    let duration = probe["format"]["duration"]
+        .as_str()
+        .and_then(|s| s.parse::<f64>().ok())
+        .expect("format.duration present");
+    assert!(
+        (1.30..=1.40).contains(&duration),
+        "{:?}: duration {} not in [1.30, 1.40]",
+        aspect,
+        duration,
+    );
+}
+
+/// Task 100 matrix: render Channel A at every (PiP, Split) × (9:16, 4:5,
+/// 16:9) cell. Each export's container is verified for codec, pix_fmt,
+/// dims, and audio. Frame-5 alpha sample asserts opaque output (LAYOUT.md
+/// §6: composite is end-to-end opaque, no transparent regions). Existing
+/// 9:16-PiP tests stay; this is additive coverage.
+#[cfg(feature = "integration_export_matrix")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn channel_a_full_matrix() {
+    assert_ffmpeg_on_path();
+    assert_bundle_present();
+    let tmp = TempDir::new().expect("tempdir");
+    let clip_a = tmp.path().join("clip-a.mp4");
+    let clip_b = tmp.path().join("clip-b.mp4");
+    make_test_clip(&clip_a, 1.0, "a");
+    make_test_clip(&clip_b, 1.0, "b");
+
+    let aspects = [
+        AspectRatio::NineSixteen,
+        AspectRatio::FourFive,
+        AspectRatio::SixteenNine,
+    ];
+    for aspect in aspects {
+        for (mode, layout) in [
+            ("pip", default_pip_layout(aspect)),
+            ("split", default_split_layout(aspect)),
+        ] {
+            let output_path = tmp
+                .path()
+                .join(format!("composite_{:?}_{}.mp4", aspect, mode));
+            let req = build_request_with_aspect(
+                output_path.to_string_lossy().as_ref(),
+                &clip_a,
+                &clip_b,
+                aspect,
+                layout,
+            );
+
+            render_export(req).await.unwrap_or_else(|e| {
+                panic!("render_export failed for ({:?}, {}): {:?}", aspect, mode, e)
+            });
+
+            assert_composite_container_shape_for_aspect(&output_path, aspect);
+
+            // Opaque output (LAYOUT.md §6 invariant). yuv420p has no alpha
+            // channel, but extracting as rgba sets alpha=255 unless the
+            // source had transparency — we verify a center pixel is opaque.
+            let dims = output_dims(aspect);
+            let frame = extract_rgba_frame(&output_path, 5, dims.w, dims.h);
+            let cx = dims.w / 2;
+            let cy = dims.h / 2;
+            assert_eq!(
+                alpha_at(&frame, dims.w, cx, cy),
+                255,
+                "{:?} {}: composite center should be opaque",
+                aspect,
+                mode,
+            );
+        }
+    }
 }

@@ -1,15 +1,16 @@
-// Process-level protocol test for the renderer worker. Spawns the bundled
-// worker as a child process, walks setup → render → recycle → render →
-// shutdown, asserts the wire format on each step.
+// Process-level protocol test for the chromium renderer worker. Spawns
+// the bundled worker as a child process, walks setup → render → recycle →
+// render → shutdown, asserts the wire format on each step. Mirrors the
+// native renderer's __tests__/protocol.test.ts; same assertions, longer
+// timeouts to absorb cold Chromium launch.
 //
-// Gated behind `npm run test:renderer` (not `test:run`) because the test:
-//   - requires the bundle at dist/renderer.cjs to exist (run build:renderer
-//     first; this test refuses to run without it),
-//   - is structurally heavy: cold maplibre-native first frame is ~1–2s,
-//   - requires internet access for OpenFreeMap tile fetches.
-//
-// Test scope is "the wire format works and produces a non-empty frame."
-// Visual correctness of map rendering is task 120's concern, not this one.
+// Gated behind `npm run test:renderer` (separate vitest config)
+// because the test:
+//   - requires dist/renderer.cjs + dist/page-init.bundle.js (run
+//     build:renderer first; fails up front if missing),
+//   - requires TRAILCUT_CHROME_BIN pointing at a Chrome binary,
+//   - requires internet access for OpenFreeMap tile fetches on first run,
+//   - is structurally heavy: cold Chromium first frame is 5+ s.
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -20,15 +21,15 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { buildSetupPayload } from './setupFixture';
 
 const RENDERER_CJS = resolve(__dirname, '../dist/renderer.cjs');
+const PAGE_BUNDLE = resolve(__dirname, '../dist/page-init.bundle.js');
 
-// First-frame budget: maplibre-native cold render + OpenFreeMap tile fetch
-// for a fresh viewport. Generous because CI network latency varies.
-const FIRST_FRAME_TIMEOUT_MS = 30_000;
-const SHUTDOWN_TIMEOUT_MS = 5_000;
+// First-frame budget: cold Chromium launch + first tile prefetch. Very
+// generous on CI; the spike measured ~5s warm. 60s gives margin for slow
+// CI hosts.
+const FIRST_FRAME_TIMEOUT_MS = 60_000;
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 const VIEWPORT_W = 540;
 const VIEWPORT_H = 960;
-
-// ---- Reader: extract length-prefixed frames + JSON ready lines from stdout
 
 class StdoutReader {
   private buf = Buffer.alloc(0);
@@ -47,7 +48,6 @@ class StdoutReader {
     });
   }
 
-  /** Wait until either at least N bytes are buffered or the stream closes. */
   private async waitForBytes(n: number, signal?: AbortSignal): Promise<void> {
     while (this.buf.length < n && !this.closed) {
       await new Promise<void>((resolveWait, rejectWait) => {
@@ -61,8 +61,6 @@ class StdoutReader {
     }
   }
 
-  /** Read up to and including the next '\n', returning the line without the
-   *  trailing newline. Throws if the stream closes before a newline arrives. */
   async readLine(signal?: AbortSignal): Promise<string> {
     while (true) {
       const idx = this.buf.indexOf(0x0a); // '\n'
@@ -76,7 +74,6 @@ class StdoutReader {
     }
   }
 
-  /** Read a frame as `[4-byte BE length prefix][N bytes RGBA]`. */
   async readFrame(signal?: AbortSignal): Promise<Buffer> {
     await this.waitForBytes(4, signal);
     if (this.buf.length < 4) throw new Error('stream closed before length prefix');
@@ -88,8 +85,6 @@ class StdoutReader {
     return frame;
   }
 }
-
-// ---- Spawn helpers ----
 
 function spawnWorker(env: NodeJS.ProcessEnv = {}): {
   child: ChildProcessWithoutNullStreams;
@@ -137,13 +132,22 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-// ---- Tests ----
-
 describe('renderer worker protocol', () => {
   beforeAll(() => {
     if (!existsSync(RENDERER_CJS)) {
       throw new Error(
         `${RENDERER_CJS} not found. Run \`npm run build:renderer\` first.`,
+      );
+    }
+    if (!existsSync(PAGE_BUNDLE)) {
+      throw new Error(
+        `${PAGE_BUNDLE} not found. Run \`npm run build:renderer\` first.`,
+      );
+    }
+    if (!process.env.TRAILCUT_CHROME_BIN) {
+      throw new Error(
+        'TRAILCUT_CHROME_BIN env var not set. Set it to a Chrome binary path ' +
+        'before running this test (task 118 resolves this from a bundled binary).',
       );
     }
   });
@@ -165,14 +169,10 @@ describe('renderer worker protocol', () => {
   it(
     'walks setup → render → recycle → render → shutdown',
     async () => {
-      // Use a tempdir cache so we don't pollute (or depend on) the user's
-      // real ~/.trailcut/tile-cache. Cleanup happens in afterEach.
       const cacheDir = mkdtempSync(join(tmpdir(), 'trailcut-tile-cache-test-'));
       activeCacheDir = cacheDir;
       const { child, reader, stderr } = spawnWorker({ TRAILCUT_TILE_CACHE_DIR: cacheDir });
       active = child;
-      // Surface child stderr in any test failure — diagnosing maplibre-native
-      // errors blind is rough.
       const stderrOnFail = () => `\nchild stderr:\n${stderr.join('') || '<empty>'}`;
 
       // ---- setup ----
@@ -190,11 +190,9 @@ describe('renderer worker protocol', () => {
         reader.readFrame(),
         FIRST_FRAME_TIMEOUT_MS,
         'first frame',
-      );
+      ).catch((e) => { throw new Error(e.message + stderrOnFail()); });
       const expectedBytes = VIEWPORT_W * VIEWPORT_H * 4;
       expect(frame1.length).toBe(expectedBytes);
-      // Buffer not all zero — at minimum the base style background paints
-      // something (default style is far from #00000000).
       const allZero = frame1.every((b) => b === 0);
       expect(allZero, 'rendered frame is all-zero RGBA').toBe(false);
 
@@ -204,7 +202,7 @@ describe('renderer worker protocol', () => {
         reader.readLine(),
         FIRST_FRAME_TIMEOUT_MS,
         'recycle ready',
-      );
+      ).catch((e) => { throw new Error(e.message + stderrOnFail()); });
       expect(ready2).toBe('{"ready":true}');
 
       // ---- render frame 1 (post-recycle) ----
@@ -213,7 +211,7 @@ describe('renderer worker protocol', () => {
         reader.readFrame(),
         FIRST_FRAME_TIMEOUT_MS,
         'post-recycle frame',
-      );
+      ).catch((e) => { throw new Error(e.message + stderrOnFail()); });
       expect(frame2.length).toBe(expectedBytes);
 
       // ---- shutdown ----
@@ -231,10 +229,43 @@ describe('renderer worker protocol', () => {
   );
 
   it(
+    'two consecutive renders at the same project_time_ms produce byte-identical RGBA',
+    async () => {
+      // The determinism contract — same (timeline, t) must produce same
+      // bytes across boots. Catches non-determinism from setNow regressions,
+      // missing rAFs, or random tile-load races.
+      const cacheDir = mkdtempSync(join(tmpdir(), 'trailcut-tile-cache-test-'));
+      activeCacheDir = cacheDir;
+      const { child, reader, stderr } = spawnWorker({ TRAILCUT_TILE_CACHE_DIR: cacheDir });
+      active = child;
+      const stderrOnFail = () => `\nchild stderr:\n${stderr.join('') || '<empty>'}`;
+
+      send(child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
+      const ready = await withTimeout(reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'ready');
+      expect(ready, stderrOnFail()).toBe('{"ready":true}');
+
+      send(child, { cmd: 'render', frame_index: 0, project_time_ms: 500 });
+      const frameA = await withTimeout(reader.readFrame(), FIRST_FRAME_TIMEOUT_MS, 'frame A');
+      send(child, { cmd: 'render', frame_index: 1, project_time_ms: 500 });
+      const frameB = await withTimeout(reader.readFrame(), FIRST_FRAME_TIMEOUT_MS, 'frame B');
+
+      expect(frameA.length).toBe(frameB.length);
+      const equal = frameA.equals(frameB);
+      expect(equal, `byte mismatch between two renders at same t.${stderrOnFail()}`).toBe(true);
+
+      send(child, { cmd: 'shutdown' });
+      await withTimeout(
+        new Promise<number>((resolveExit) => child.on('exit', (code) => resolveExit(code ?? -1))),
+        SHUTDOWN_TIMEOUT_MS,
+        'shutdown',
+      );
+    },
+    FIRST_FRAME_TIMEOUT_MS * 5,
+  );
+
+  it(
     'second worker renders from cache with TRAILCUT_TILE_CACHE_OFFLINE=1',
     async () => {
-      // Pointed at a tempdir so we don't conflate with the user's real
-      // ~/.trailcut/tile-cache or with the previous test's network fetches.
       const cacheDir = mkdtempSync(join(tmpdir(), 'trailcut-tile-cache-test-'));
       activeCacheDir = cacheDir;
 
@@ -245,43 +276,37 @@ describe('renderer worker protocol', () => {
 
       send(a.child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
       const readyA = await withTimeout(
-        a.reader.readLine(),
-        FIRST_FRAME_TIMEOUT_MS,
-        'worker A ready',
+        a.reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'A ready',
       ).catch((e) => { throw new Error(e.message + stderrA()); });
       expect(readyA, stderrA()).toBe('{"ready":true}');
 
       send(a.child, { cmd: 'render', frame_index: 0, project_time_ms: 0 });
       const frameA = await withTimeout(
-        a.reader.readFrame(),
-        FIRST_FRAME_TIMEOUT_MS,
-        'worker A frame',
+        a.reader.readFrame(), FIRST_FRAME_TIMEOUT_MS, 'A frame',
       ).catch((e) => { throw new Error(e.message + stderrA()); });
       expect(frameA.length).toBe(VIEWPORT_W * VIEWPORT_H * 4);
 
       send(a.child, { cmd: 'shutdown' });
       const exitA = await withTimeout(
-        new Promise<number>((resolveExit) => {
-          a.child.on('exit', (code) => resolveExit(code ?? -1));
-        }),
+        new Promise<number>((resolveExit) => a.child.on('exit', (code) => resolveExit(code ?? -1))),
         SHUTDOWN_TIMEOUT_MS,
-        'worker A shutdown',
+        'A shutdown',
       );
       expect(exitA, stderrA()).toBe(0);
       active = null;
 
-      // Cache shape on disk: every file under {cacheDir}/{2-char}/{2-char}/
-      // is a 64-char-hex file name (sha256 hex). No leftover .tmp.* files.
+      // Cache shape on disk: {2-char}/{2-char}/{64-char-hex}, no .tmp.* leftovers.
+      // Same as the native renderer's protocol test — the cache module is
+      // unchanged, so the disk layout is unchanged.
       const files = listAllFiles(cacheDir);
       expect(files.length).toBeGreaterThan(0);
       for (const f of files) {
         expect(f).not.toMatch(/\.tmp\./);
         const rel = f.slice(cacheDir.length + 1);
-        // {2-char}/{2-char}/{64-char-hex}
         expect(rel).toMatch(/^[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}$/);
       }
 
-      // ---- worker B: offline, must succeed reading from the populated cache ----
+      // ---- worker B: offline, reads from the populated cache ----
       const b = spawnWorker({
         TRAILCUT_TILE_CACHE_DIR: cacheDir,
         TRAILCUT_TILE_CACHE_OFFLINE: '1',
@@ -291,29 +316,21 @@ describe('renderer worker protocol', () => {
 
       send(b.child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
       const readyB = await withTimeout(
-        b.reader.readLine(),
-        FIRST_FRAME_TIMEOUT_MS,
-        'worker B ready (offline)',
+        b.reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'B ready',
       ).catch((e) => { throw new Error(e.message + stderrB()); });
       expect(readyB, stderrB()).toBe('{"ready":true}');
 
       send(b.child, { cmd: 'render', frame_index: 0, project_time_ms: 0 });
       const frameB = await withTimeout(
-        b.reader.readFrame(),
-        FIRST_FRAME_TIMEOUT_MS,
-        'worker B frame (offline)',
+        b.reader.readFrame(), FIRST_FRAME_TIMEOUT_MS, 'B frame',
       ).catch((e) => { throw new Error(e.message + stderrB()); });
       expect(frameB.length).toBe(VIEWPORT_W * VIEWPORT_H * 4);
-      // The cache miss + offline path crashes the worker via callback error;
-      // if we got a frame back, every URL was served from disk.
 
       send(b.child, { cmd: 'shutdown' });
       const exitB = await withTimeout(
-        new Promise<number>((resolveExit) => {
-          b.child.on('exit', (code) => resolveExit(code ?? -1));
-        }),
+        new Promise<number>((resolveExit) => b.child.on('exit', (code) => resolveExit(code ?? -1))),
         SHUTDOWN_TIMEOUT_MS,
-        'worker B shutdown',
+        'B shutdown',
       );
       expect(exitB, stderrB()).toBe(0);
       active = null;

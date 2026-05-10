@@ -40,9 +40,10 @@ pub use filtergraph::{
     CompositeMode, FiltergraphPlan, VisibleClipInput,
 };
 pub use layout::{
-    default_layout, output_dims, resolve_slots, AspectRatio, CornerRadiusSlot, LayoutConfig,
-    LayoutDescriptor, NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts,
-    SlotResolution, SplitSide,
+    clamp_layout, default_layout, default_pip_layout, default_split_layout, legal_split_sides,
+    output_dims, resolve_slots, AspectRatio, CornerRadiusSlot, LayoutConfig, LayoutDescriptor,
+    NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts, SlotResolution,
+    SplitSide,
 };
 pub use orchestrator::{render_map_frames, OrchestratorConfig, RECYCLE_EVERY_FRAMES};
 pub use protocol::{SetupPayload, Viewport};
@@ -130,6 +131,24 @@ fn validate_request(req: &RenderExportRequest) -> Result<ValidatedRequest, Rende
             "layout descriptor parity check failed: frontend resolved={:?}, rust resolved={:?}",
             req.layout.resolved, recomputed,
         )));
+    }
+
+    // Split-orientation legality (task 100). LAYOUT.md §3 forbids
+    // inverse-orientation splits — a vertical divider in 9:16 (or 4:5)
+    // produces two narrow, near-unusable slots; a horizontal divider in 16:9
+    // does the same. The renderer's math handles any pair correctly, but
+    // the UX rule belongs at the IPC boundary so bad project files surface
+    // here rather than producing nonsense exports. The configurator (110)
+    // constrains its swap toggle via `legal_split_sides`; this validator
+    // backstops file-level edits and IPC tampering.
+    if let LayoutConfig::Split { video_side, .. } = &req.layout.layout {
+        let legal = legal_split_sides(req.layout.aspect);
+        if !legal.contains(video_side) {
+            return Err(RenderExportError::validation(format!(
+                "split layout uses inverse-orientation video_side={:?} for aspect {:?}; legal sides are {:?}",
+                video_side, req.layout.aspect, legal,
+            )));
+        }
     }
 
     let total_duration_ms = extract_total_duration_ms(&req.project_state).map_err(|e| {

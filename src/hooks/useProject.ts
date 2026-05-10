@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { Clip, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
-import { defaultLayout } from '../lib/layout';
+import { defaultPipLayout } from '../lib/layout';
 
 /** Minimum gap (ms) required between the playhead and either trim edge for a
  *  split to be accepted. Below this the split is a no-op, so we never create
@@ -22,6 +22,7 @@ interface UseProjectParams {
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   setTransitionFeel: React.Dispatch<React.SetStateAction<TransitionFeel | undefined>>;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
+  setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -29,16 +30,17 @@ interface UseProjectParams {
   loadRecentProjects: () => Promise<void>;
 }
 
-/** Defensive backfill mirroring the Rust `seeded_layouts()` (task 080).
+/** Defensive backfill mirroring the Rust `seeded_layouts()` (task 080 / 100).
  *  The Rust load path already populates `layouts` for every project; this
  *  TS-side guard handles the (theoretical) case where Rust hands us a missing
  *  field — hand-edited bundles, IPC bugs, future Rust regressions — so the
- *  editor always has a real value to render and persist. */
+ *  editor always has a real value to render and persist. 100 expanded the
+ *  seeded shape to all three aspects. */
 function seededLayouts(): ProjectLayouts {
   return {
-    '9_16': defaultLayout('9_16'),
-    '4_5': null,
-    '16_9': null,
+    '9_16': defaultPipLayout('9_16'),
+    '4_5': defaultPipLayout('4_5'),
+    '16_9': defaultPipLayout('16_9'),
   };
 }
 
@@ -54,6 +56,7 @@ export function useProject({
   setMapSettings,
   setTransitionFeel,
   setProjectLayouts,
+  setSelectedExportAspect,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -84,6 +87,10 @@ export function useProject({
       // unset; this guard covers the edge case where the IPC payload still
       // arrives without it (older Rust binaries, hand-edited bundles).
       setProjectLayouts(project.layouts ?? seededLayouts());
+      // selected_export_aspect is supplied by serde's default annotation on
+      // pre-100 bundles; the `?? '9_16'` covers the same edge cases as the
+      // layouts fallback above.
+      setSelectedExportAspect(project.selected_export_aspect ?? '9_16');
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -115,8 +122,9 @@ export function useProject({
       setRoute(null);
       setMapSettings(DEFAULT_MAP_SETTINGS);
       setTransitionFeel(undefined);
-      // Mirror the Rust-side `Project::default()` seed — task 080.
+      // Mirror the Rust-side `Project::default()` seed — task 080 / 100.
       setProjectLayouts(seededLayouts());
+      setSelectedExportAspect('9_16');
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -152,6 +160,7 @@ export function useProject({
     setMapSettings(DEFAULT_MAP_SETTINGS);
     setTransitionFeel(undefined);
     setProjectLayouts(seededLayouts());
+    setSelectedExportAspect('9_16');
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);

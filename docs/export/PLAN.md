@@ -24,7 +24,7 @@ A few hard constraints and guiding principles that shaped the decisions below:
 - **Cross-platform from day one.** The app must run on macOS (current) and Windows (planned). Architecture choices that were viable on Mac alone but fragile on Windows — e.g. the Rust binding to maplibre-native, which lacks Windows CI — were rejected. This is a fixed product requirement, not a stretch goal.
 - **Headless, parallel, deterministic.** Map rendering for export must be a pure function — `(timeline, t, viewport) → pixels` — called from a library, not screen-captured from an interactive renderer. Real video editors render this way: parallelism, determinism, no playback-clock dependency, no fences between frames. We do too.
 - **Single source of camera truth.** `cameraAt(timeline, t)` (TS) drives both preview and export. The renderer worker imports the same compiled `cameraAt` as preview (via the shared-module mechanism in the next bullet), so per-frame camera evaluation in the worker is the literal same function call as in preview — no Rust/Node port, no parallel implementation, no drift. This is the central invariant of the 500-series migration; the *end* (identical camera at any `t`) survives, and the *means* strengthens — earlier drafts had the frontend pre-resolve cameras to prevent a Rust/Node port from drifting, but the shared-module mechanism makes pre-resolution unnecessary because preview and worker run identical TS code.
-- **Single source of visual truth.** Every visual decision — base style, layer specs, paint expressions, source-data computation (route, trail, waypoints, marker), and animation curves — lives in a shared TypeScript module (`src/lib/mapVisuals/`) consumed by **both** the preview renderer (browser MapLibre GL JS) and the export renderer worker (Node `@maplibre/maplibre-gl-native`, built from the same TS source). A change to marker color, slime-trail paint, waypoint styling, or any animation curve is a one-PR change in that module; both surfaces pick it up automatically. There is no "preview-side" or "export-side" version of any visual decision. Animations are **project-time-driven** (pure functions of `t`), not wall-clock-driven, so the export renderer reproduces them frame-for-frame at any sampled `t` — and preview behavior under scrub/pause becomes correct as a side effect (today's CSS-keyframe pulse, for example, drifts under scrub). This is the same principle as the camera invariant, generalized to all visuals.
+- **Single source of visual truth.** Every visual decision — base style, layer specs, paint expressions, source-data computation (route, trail, waypoints, marker), and animation curves — lives in a shared TypeScript module (`src/lib/mapVisuals/`) consumed by **both** the preview renderer (browser MapLibre GL JS) and the export renderer worker (Node + headless-Chromium running the same MapLibre GL JS, built from the same TS source). A change to marker color, slime-trail paint, waypoint styling, or any animation curve is a one-PR change in that module; both surfaces pick it up automatically. There is no "preview-side" or "export-side" version of any visual decision. Animations are **project-time-driven** (pure functions of `t`), not wall-clock-driven, so the export renderer reproduces them frame-for-frame at any sampled `t` — and preview behavior under scrub/pause becomes correct as a side effect (today's CSS-keyframe pulse, for example, drifts under scrub). This is the same principle as the camera invariant, generalized to all visuals.
 
 ## Channels
 
@@ -44,18 +44,22 @@ User experience implication: each channel is a separate export action. v1 may sh
 
 ## Renderer architecture
 
-**Decision**: Node sidecar running `@maplibre/maplibre-gl-native`, spawned from Rust, communicating over stdio.
+**Decision (v2, post-task-118)**: Node sidecar running `puppeteer-core` driving `chrome-headless-shell` with `maplibre-gl-js` inside the page, spawned from Rust, communicating over stdio.
+
+The original v1 plan selected `@maplibre/maplibre-gl-native` (Node binding to the C++ engine) and shipped through tasks 010–110. During task 110 the native renderer was found to produce visible 1-pixel wobble on slow camera pans — sub-pixel deltas snap to the integer pixel grid because the painter's `options.moving` flag is forced false on long-running animations. Tasks 115–119 migrated to the chromium renderer, which exposes the same painter object; a 4-line monkey-patch in `src-tauri/sidecars/renderer/page/painterPatch.ts` forces `moving: true` and produces wobble-free output. Detailed rationale and rejected alternatives in [`./plans/chromium-renderer.md`](./plans/chromium-renderer.md).
+
+The chromium renderer adds ~120 MB per macOS arch (chrome-headless-shell + .pak resources + .dylibs) on top of the existing Node runtime — accepted trade-off for visual quality. Tasks 118 (cutover + bundle) and 119 (delete native) realize the migration.
 
 ### Why this and not the alternatives
 
-Three renderer venues were evaluated:
+Three renderer venues were evaluated for v1:
 
 1. **Tauri hidden webview + MapLibre GL JS + `gl.readPixels`** — what the superseded 600-series proposed. An interactive renderer with a fence in front of it. Tile-load determinism requires waiting for `map.once('idle')` between frames; serializes badly; not how real editors work. Rejected.
 2. **`maplibre-native-rs` (Rust binding to C++ library)** — active and synchronous-API-friendly, but Windows support is marked "theoretical, no CI" by the maintainers. Cross-platform requirement disqualifies. Reconsider if/when Windows CI lands.
 3. **`maplibre-rs` (pure Rust)** — pre-1.0, missing symbol layer (markers) and raster sources, no Windows support listed. Disqualifying feature gaps.
-4. **`@maplibre/maplibre-gl-native` (Node binding to the same C++ engine as #2)** — prebuilt binaries for macOS amd64+arm64 / Windows amd64+arm64 / Linux, npm install with no native build, used in production by TileServer GL and `mapgl-tile-renderer`. Hands-on test on this machine: 2.0s cold first frame at 1080×1920, 0.7–1.4s warm frames, full OpenFreeMap "liberty" style rendered correctly. **Selected.**
+4. **`@maplibre/maplibre-gl-native` (Node binding to the same C++ engine as #2)** — prebuilt binaries for macOS amd64+arm64 / Windows amd64+arm64 / Linux, npm install with no native build, used in production by TileServer GL and `mapgl-tile-renderer`. **Selected for v1, retired in v2 because of the wobble bug — see above.**
 
-The Node binding adds ~50–80 MB of bundle size (Node runtime + the prebuilt module) but is the only path that's both production-grade *and* cross-platform today.
+The v2 decision (chromium) was forced by the wobble finding. v1's bundle-size argument was the right call given the information at the time; v2 trades 120 MB for a fix to a user-visible visual defect that has no other resolution path on the C++ engine.
 
 ### Process model
 
@@ -78,17 +82,18 @@ The Node binding adds ~50–80 MB of bundle size (Node runtime + the prebuilt mo
         ▼                              ▼
   ┌─────────────────────┐         ┌─────────────────────────┐
   │ Renderer worker(s)  │  RGBA   │ FFmpeg sidecar          │
-  │ (Node + maplibre-   │ ──────▶ │  -f rawvideo            │
-  │  native)            │  bytes  │  -pix_fmt rgba          │
-  │ stdin: JSON cmds    │         │  -i pipe:0              │
-  │ stdout: RGBA frames │         │  + filtergraph          │
-  └─────────────────────┘         │  → output.mp4           │
-                                  └─────────────────────────┘
+  │ (Node + puppeteer-  │ ──────▶ │  -f rawvideo            │
+  │  core + headless-   │  bytes  │  -pix_fmt rgba          │
+  │  Chromium)          │         │  -i pipe:0              │
+  │ stdin: JSON cmds    │         │  + filtergraph          │
+  │ stdout: RGBA frames │         │  → output.mp4           │
+  └─────────────────────┘         └─────────────────────────┘
 ```
 
-Three sidecar binaries, all bundled per-platform via Tauri 2's `bundle.externalBin`:
+Sidecar binaries, all bundled per-platform via Tauri 2's `bundle.externalBin` (single-file binaries) and `bundle.resources` (directory trees):
 
-- `node` (the runtime) + `renderer.cjs` (our worker script — built from TypeScript via esbuild from `src-tauri/sidecars/renderer/index.ts`, importing from `src/lib/mapVisuals/`, `src/lib/cameraIntent.ts`, `src/lib/routeLocation.ts`; `@maplibre/maplibre-gl-native` is externalized) + the maplibre-native `.node` module
+- `node` (the runtime) + `renderer.cjs` (our worker script — built from TypeScript via esbuild from `src-tauri/sidecars/renderer/index.ts`, importing from `src/lib/mapVisuals/`, `src/lib/cameraIntent.ts`, `src/lib/routeLocation.ts`; `puppeteer-core` and `pngjs` are externalized)
+- `chrome-headless-shell-<target-triple>/` (directory tree: binary + .dylibs + .pak + resources, ~120 MB; downloaded by `src-tauri/sidecars/renderer/build.mjs` via `@puppeteer/browsers`, shipped via `bundle.resources` — not `externalBin` because Tauri's `externalBin` mechanism is single-file)
 - `ffmpeg` (static build)
 - `exiftool` (already there — unrelated to export)
 
@@ -98,7 +103,7 @@ Each worker is a long-running Node process. Its source lives in TypeScript and i
 
 1. **Boot**: receives the setup payload on stdin (project state — see IPC contract). Builds the style spec via `mapVisuals.buildStyleSpec(map_settings)`, attaches the static source data via `mapVisuals.buildStaticSourceData(...)`. Caches an indexed-route via `indexRoute(route)` for per-frame lookups. Reports `{ready: true}` on stdout once `style.load` fires.
 2. **Render loop**: receives one render command per stdin line (`{frame_index, project_time_ms}`). Calls `mapVisuals.buildPerFrameState(timeline, t, indexedRoute, clips, map_settings)`, applies per-frame source/paint updates to the `Map`, then `map.render(opts, callback)`. On callback, writes a 4-byte big-endian length prefix + the raw RGBA buffer to stdout. Continues to next message.
-3. **Recycle**: every K frames (initial K=60, ~2s of video), the worker tears down its `Map` instance and rebuilds it from the cached setup payload. Empirical finding: the native renderer retains ~130 MB per frame with no internal eviction, so a 60-frame chunk holds ~7.8 GB without recycling. Recycling is effectively free in wall-clock terms (style is cached on disk; warm tiles are cached too).
+3. **Recycle**: every K frames (initial K=60, ~2s of video), the worker closes and reopens the headless-Chromium `Page` and rebuilds the `Map` from the cached setup payload. Browser-level allocations accumulate per render; recycling caps growth without re-paying browser-launch cost (the underlying `Browser` is reused; only the `Page` recycles). Recycling is effectively free in wall-clock terms (style is cached on disk; warm tiles are cached too). Every 10 page-recycles the worker also relaunches the `Browser` as a layered defense — see `src-tauri/sidecars/renderer/index.ts` for the BROWSER_RESTART_EVERY_RECYCLES knob.
 4. **Shutdown**: on EOF or explicit `{cmd: "shutdown"}`, releases the `Map` and exits.
 
 Memory budget per worker after recycling: ~200 MB steady state. With N workers in parallel, total resident set ≈ N × 200 MB — workable up to N=8 on a 16 GB machine.
@@ -112,9 +117,10 @@ For v1, ship with N=1 (sequential, single worker). The orchestrator is structure
 ### Determinism
 
 - The same `cameraAt(timeline, t)` evaluator drives both preview and export, so camera state is identical.
-- The renderer is the C++ engine that powers Mapbox/MapLibre static-map services; same engine + same style + same camera = same pixels (within float precision).
-- Tile fetches go through the worker's `request()` callback, which we route through a shared on-disk tile cache so repeat exports are deterministic and fast.
-- No timing dependence: each `render()` call blocks (via callback) until the frame is done. There is no "wait for idle" — the renderer owns its IO loop and returns when the frame is ready.
+- The renderer is `maplibre-gl-js` running inside `chrome-headless-shell` — the same engine the in-app preview uses. Same engine + same style + same camera = same pixels (within float precision).
+- The page-side bootstrap freezes maplibre's clock with `setNow(t)` and overwrites `style.stylesheet.transition` to `{duration:0,delay:0}`, so paint transitions complete instantly and `idle` fires deterministically per frame.
+- Tile fetches go through the page's `addProtocol('trailcut', ...)` loader → `page.exposeFunction` bridge → Node's `tileCache.get(originalUrl, ...)`, hashed on the **original** OpenFreeMap URL (never the rewritten `trailcut://` URL). Repeat exports are deterministic and fast.
+- No timing dependence: each frame waits for `map.once('idle')` plus two rAFs after `setNow`+source/paint updates, then captures via `page.screenshot`. The page render loop is fully driven by the frozen clock and explicit `triggerRepaint`.
 
 ### Frame-pipeline ordering
 
@@ -128,15 +134,15 @@ A small bounded buffer (~64 frames = ~500 MB at 1080×1920) is enough to absorb 
 
 ## Cross-platform strategy
 
-### Sidecar binaries (per-target-triple, via Tauri's `bundle.externalBin`)
+### Sidecar binaries (per-target-triple, via Tauri's `bundle.externalBin` + `bundle.resources`)
 
 | Binary | macOS arm64 source | Windows x86_64 source | Notes |
 |---|---|---|---|
-| `node` | https://nodejs.org/dist/ (LTS, signed) | https://nodejs.org/dist/ (LTS, signed) | Bundle the runtime; static-build path is not viable for the maplibre-native ABI tag |
-| `@maplibre/maplibre-gl-native` prebuild | npm-pre-gyp via `npm install` at app build time | same | The `.node` ABI is pinned to the bundled Node version |
+| `node` | https://nodejs.org/dist/ (LTS, signed) | https://nodejs.org/dist/ (LTS, signed) | Bundle the runtime |
+| `chrome-headless-shell` directory tree | `@puppeteer/browsers install --platform mac_arm` at build time (~120 MB, downloaded into `src-tauri/binaries/chrome-headless-shell-<triple>/`) | `--platform win` (task 130) | Directory tree, not single binary — shipped via `bundle.resources` glob; binary + .pak + .dylibs all required at runtime |
 | `ffmpeg` | evermeet.cx static build (Mach-O) | BtbN GPL static build (PE) | GPL flavor needed for libx264/libx265; license OK because we exec as separate process |
 
-Tauri sidecar paths follow `binaries/<name>-<target-triple>{.exe}` — same config entry, per-platform files at build time.
+Tauri sidecar paths follow `binaries/<name>-<target-triple>{.exe}` for single-file binaries; directory-tree resources land at `<bundle>/Contents/Resources/<original-relative-path>` on macOS via `bundle.resources` globbing.
 
 ### Hardware-accelerated encoding
 

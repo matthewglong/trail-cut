@@ -1,5 +1,5 @@
 {
-  "// purpose": "Type-check-only config for the renderer worker. esbuild does the actual emit; this just proves the worker (and the shared TS sources it pulls from src/lib/) compiles in a Node CJS context. Distinct from tsconfig.app.json (DOM/JSX, browser) and tsconfig.node.json (vite.config only).",
+  "// purpose": "Type-check-only config for the renderer worker. Node CJS context. The page-side script (page/init.ts) is type-checked separately via page/tsconfig.json (DOM lib, no Node types).",
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
@@ -19,6 +19,8 @@
   },
   "include": [
     "index.ts",
+    "bootstrap.html.ts",
+    "trailcutFetch.ts",
     "tileCache.ts",
     "__tests__/setupFixture.ts",
     "../../../src/lib/mapVisuals/**/*.ts",
@@ -29,6 +31,7 @@
   ],
   "exclude": [
     "**/*.test.ts",
+    "page/**",
     "dist/**",
     "node_modules/**"
   ]

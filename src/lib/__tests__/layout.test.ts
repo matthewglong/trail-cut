@@ -11,9 +11,15 @@ import {
   OUTPUT_DIMS,
   resolveSlots,
   defaultLayout,
+  defaultPipLayout,
+  defaultSplitLayout,
+  legalSplitSides,
+  clampLayout,
+  synthesizeLayoutForMode,
   type AspectRatio,
   type LayoutConfig,
   type SlotResolution,
+  type SplitSide,
 } from '../layout';
 import rawFixture from '../../../src-tauri/tests/fixtures/layout_parity.json';
 
@@ -92,4 +98,188 @@ describe('defaultLayout — sanity', () => {
       expect(inset.y + inset.h).toBeLessThanOrEqual(resolved.output.h);
     });
   }
+});
+
+describe('defaultPipLayout — agreement with defaultLayout', () => {
+  const aspects: AspectRatio[] = ['9_16', '16_9', '4_5'];
+  for (const aspect of aspects) {
+    it(`${aspect}: defaultPipLayout and defaultLayout return identical layouts`, () => {
+      // Back-compat contract: every call site that uses `defaultLayout` today
+      // gets the same PiP starter when 110's mode toggle synthesizes via
+      // `defaultPipLayout`.
+      expect(defaultPipLayout(aspect)).toEqual(defaultLayout(aspect));
+    });
+  }
+});
+
+describe('defaultSplitLayout — aspect-locked orientation', () => {
+  it('9:16 starts with video on top, divider 0.5', () => {
+    expect(defaultSplitLayout('9_16')).toEqual({
+      mode: 'split',
+      video_side: 'top',
+      divider: 0.5,
+    });
+  });
+
+  it('4:5 starts with video on top, divider 0.5', () => {
+    expect(defaultSplitLayout('4_5')).toEqual({
+      mode: 'split',
+      video_side: 'top',
+      divider: 0.5,
+    });
+  });
+
+  it('16:9 starts with video on left, divider 0.5', () => {
+    expect(defaultSplitLayout('16_9')).toEqual({
+      mode: 'split',
+      video_side: 'left',
+      divider: 0.5,
+    });
+  });
+
+  const aspects: AspectRatio[] = ['9_16', '16_9', '4_5'];
+  for (const aspect of aspects) {
+    it(`${aspect}: produces non-degenerate slot rects`, () => {
+      const resolved = resolveSlots(defaultSplitLayout(aspect), aspect);
+      expect(resolved.map_slot.w * resolved.map_slot.h).toBeGreaterThan(0);
+      expect(resolved.video_slot.w * resolved.video_slot.h).toBeGreaterThan(0);
+      expect(resolved.corner_radius_px).toBe(0);
+      expect(resolved.corner_radius_slot).toBe('none');
+    });
+  }
+});
+
+describe('legalSplitSides — aspect orientation lock', () => {
+  it('9:16 returns [top, bottom]', () => {
+    expect(legalSplitSides('9_16')).toEqual(['top', 'bottom']);
+  });
+
+  it('4:5 returns [top, bottom]', () => {
+    expect(legalSplitSides('4_5')).toEqual(['top', 'bottom']);
+  });
+
+  it('16:9 returns [left, right]', () => {
+    expect(legalSplitSides('16_9')).toEqual(['left', 'right']);
+  });
+
+  it("defaultSplitLayout's video_side is in legalSplitSides for every aspect", () => {
+    const aspects: AspectRatio[] = ['9_16', '16_9', '4_5'];
+    for (const aspect of aspects) {
+      const layout = defaultSplitLayout(aspect);
+      const legal = legalSplitSides(aspect);
+      expect(legal.includes(layout.video_side as SplitSide)).toBe(true);
+    }
+  });
+});
+
+describe('clampLayout', () => {
+  it('passes through a valid PiP layout unchanged', () => {
+    const layout: LayoutConfig = {
+      mode: 'pip',
+      inset_source: 'map',
+      inset: { x: 0.65, y: 0.78, w: 0.32, h: 0.18 },
+      corner_radius: 0.012,
+    };
+    expect(clampLayout(layout, '9_16')).toEqual(layout);
+  });
+
+  it('clamps PiP coordinates so the inset stays inside the frame', () => {
+    const out = clampLayout(
+      {
+        mode: 'pip',
+        inset_source: 'map',
+        inset: { x: 0.9, y: 0.95, w: 0.4, h: 0.3 },
+        corner_radius: 0.01,
+      },
+      '9_16',
+    );
+    if (out.mode !== 'pip') throw new Error('expected PiP');
+    expect(out.inset.x + out.inset.w).toBeLessThanOrEqual(1);
+    expect(out.inset.y + out.inset.h).toBeLessThanOrEqual(1);
+    expect(out.inset.w).toBeGreaterThan(0);
+    expect(out.inset.h).toBeGreaterThan(0);
+  });
+
+  it('clamps PiP coordinates that go negative back to zero', () => {
+    const out = clampLayout(
+      {
+        mode: 'pip',
+        inset_source: 'video',
+        inset: { x: -0.2, y: -0.3, w: 0.3, h: 0.3 },
+        corner_radius: 0.01,
+      },
+      '4_5',
+    );
+    if (out.mode !== 'pip') throw new Error('expected PiP');
+    expect(out.inset.x).toBe(0);
+    expect(out.inset.y).toBe(0);
+  });
+
+  it('clamps a PiP corner_radius outside [0, 0.5] back to range', () => {
+    const a = clampLayout(
+      {
+        mode: 'pip',
+        inset_source: 'map',
+        inset: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        corner_radius: -0.5,
+      },
+      '9_16',
+    );
+    if (a.mode !== 'pip') throw new Error('expected PiP');
+    expect(a.corner_radius).toBe(0);
+
+    const b = clampLayout(
+      {
+        mode: 'pip',
+        inset_source: 'map',
+        inset: { x: 0.1, y: 0.1, w: 0.2, h: 0.2 },
+        corner_radius: 99,
+      },
+      '9_16',
+    );
+    if (b.mode !== 'pip') throw new Error('expected PiP');
+    expect(b.corner_radius).toBe(0.5);
+  });
+
+  it('clamps Split divider outside [0.05, 0.95] back to the boundary', () => {
+    expect(
+      clampLayout({ mode: 'split', video_side: 'top', divider: 0.0 }, '9_16'),
+    ).toEqual({ mode: 'split', video_side: 'top', divider: 0.05 });
+    expect(
+      clampLayout({ mode: 'split', video_side: 'left', divider: 1.5 }, '16_9'),
+    ).toEqual({ mode: 'split', video_side: 'left', divider: 0.95 });
+  });
+
+  it('passes through a valid Split layout unchanged', () => {
+    const layout: LayoutConfig = {
+      mode: 'split',
+      video_side: 'top',
+      divider: 0.5,
+    };
+    expect(clampLayout(layout, '4_5')).toEqual(layout);
+  });
+});
+
+describe('synthesizeLayoutForMode', () => {
+  const aspects: AspectRatio[] = ['9_16', '16_9', '4_5'];
+  for (const aspect of aspects) {
+    it(`${aspect}: pip mode delegates to defaultPipLayout`, () => {
+      expect(synthesizeLayoutForMode('pip', aspect)).toEqual(defaultPipLayout(aspect));
+    });
+    it(`${aspect}: split mode delegates to defaultSplitLayout`, () => {
+      expect(synthesizeLayoutForMode('split', aspect)).toEqual(defaultSplitLayout(aspect));
+    });
+  }
+
+  it('ignores the hint parameter in v1', () => {
+    const hint: LayoutConfig = {
+      mode: 'pip',
+      inset_source: 'video',
+      inset: { x: 0.5, y: 0.5, w: 0.4, h: 0.4 },
+      corner_radius: 0.04,
+    };
+    expect(synthesizeLayoutForMode('split', '9_16', hint)).toEqual(
+      defaultSplitLayout('9_16'),
+    );
+  });
 });

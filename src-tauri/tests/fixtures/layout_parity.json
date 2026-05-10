@@ -162,6 +162,42 @@
         "corner_radius_px": 13,
         "corner_radius_slot": "map"
       }
+    },
+    {
+      "name": "default_split_layout_9_16",
+      "aspect": "9_16",
+      "layout": { "mode": "split", "video_side": "top", "divider": 0.5 },
+      "expected": {
+        "output": { "w": 1080, "h": 1920 },
+        "map_slot": { "x": 0, "y": 960, "w": 1080, "h": 960 },
+        "video_slot": { "x": 0, "y": 0, "w": 1080, "h": 960 },
+        "corner_radius_px": 0,
+        "corner_radius_slot": "none"
+      }
+    },
+    {
+      "name": "default_split_layout_4_5",
+      "aspect": "4_5",
+      "layout": { "mode": "split", "video_side": "top", "divider": 0.5 },
+      "expected": {
+        "output": { "w": 1080, "h": 1350 },
+        "map_slot": { "x": 0, "y": 675, "w": 1080, "h": 675 },
+        "video_slot": { "x": 0, "y": 0, "w": 1080, "h": 675 },
+        "corner_radius_px": 0,
+        "corner_radius_slot": "none"
+      }
+    },
+    {
+      "name": "default_split_layout_16_9",
+      "aspect": "16_9",
+      "layout": { "mode": "split", "video_side": "left", "divider": 0.5 },
+      "expected": {
+        "output": { "w": 1920, "h": 1080 },
+        "map_slot": { "x": 960, "y": 0, "w": 960, "h": 1080 },
+        "video_slot": { "x": 0, "y": 0, "w": 960, "h": 1080 },
+        "corner_radius_px": 0,
+        "corner_radius_slot": "none"
+      }
     }
   ]
 }

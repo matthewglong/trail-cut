@@ -20,15 +20,27 @@ export interface LayoutPreviewProps {
    *  the container's aspect doesn't match the layout's. */
   containerWidth: number;
   containerHeight: number;
+  /** Visual mode. `'preview'` (default) shows the labeled, dashed-stroke
+   *  read-only overlay used by 080. `'configurator'` suppresses labels and
+   *  the dashed background-slot stroke so the configurator (110) can layer
+   *  its own interactive handles without visual fight. */
+  mode?: 'preview' | 'configurator';
 }
 
 const STROKE_COLOR = '#52d6ff';
 const STROKE_OPACITY = 0.9;
 const LABEL_BG = 'rgba(7, 27, 38, 0.55)';
 
-export function LayoutPreview({ layout, aspect, containerWidth, containerHeight }: LayoutPreviewProps) {
+export function LayoutPreview({
+  layout,
+  aspect,
+  containerWidth,
+  containerHeight,
+  mode = 'preview',
+}: LayoutPreviewProps) {
   const resolved = resolveSlots(layout, aspect);
   const { output, map_slot, video_slot, corner_radius_px, corner_radius_slot } = resolved;
+  const isConfigurator = mode === 'configurator';
 
   // Aspect-fit: shrink the output frame into the container, preserving
   // ratio. Whichever axis hits the container limit first determines the
@@ -79,32 +91,36 @@ export function LayoutPreview({ layout, aspect, containerWidth, containerHeight 
         <SlotRect
           rect={map_slot}
           rx={insetIsMap ? corner_radius_px : 0}
-          dashed={isPip && !insetIsMap}
+          dashed={!isConfigurator && isPip && !insetIsMap}
           strokeWidth={strokeViewBoxUnits}
           testId="layout-preview-map-slot"
         />
         <SlotRect
           rect={video_slot}
           rx={insetIsVideo ? corner_radius_px : 0}
-          dashed={isPip && !insetIsVideo}
+          dashed={!isConfigurator && isPip && !insetIsVideo}
           strokeWidth={strokeViewBoxUnits}
           testId="layout-preview-video-slot"
         />
 
-        <SlotLabel
-          rect={map_slot}
-          text="Map"
-          fontSize={labelFontPx}
-          padding={labelPaddingPx}
-          testId="layout-preview-map-label"
-        />
-        <SlotLabel
-          rect={video_slot}
-          text="Video"
-          fontSize={labelFontPx}
-          padding={labelPaddingPx}
-          testId="layout-preview-video-label"
-        />
+        {!isConfigurator && (
+          <>
+            <SlotLabel
+              rect={map_slot}
+              text="Map"
+              fontSize={labelFontPx}
+              padding={labelPaddingPx}
+              testId="layout-preview-map-label"
+            />
+            <SlotLabel
+              rect={video_slot}
+              text="Video"
+              fontSize={labelFontPx}
+              padding={labelPaddingPx}
+              testId="layout-preview-video-label"
+            />
+          </>
+        )}
       </svg>
     </div>
   );

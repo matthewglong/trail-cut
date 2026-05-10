@@ -10,6 +10,7 @@ import { compileTimeline, type CompiledTimeline } from './cameraIntent';
 import { indexRoute } from './routeLocation';
 import {
   defaultLayout,
+  legalSplitSides,
   resolveSlots,
   type AspectRatio,
   type LayoutConfig,
@@ -68,9 +69,23 @@ export function pickLayout(
   return layouts?.[aspect] ?? defaultLayout(aspect);
 }
 
-/** Build the payload for the `render_export` Tauri command. Pure. */
+/** Build the payload for the `render_export` Tauri command. Pure.
+ *  Throws on Split-legality violations (task 100): an inverse-orientation
+ *  split (`video_side: 'left'` at 9:16 / 4:5; `video_side: 'top'` at 16:9)
+ *  is rejected before the IPC call, mirroring the Rust-side
+ *  `validate_request` check. The configurator (110) constrains its swap
+ *  toggle via `legalSplitSides` so this throw is normally unreachable from
+ *  the UI; it backstops hand-edited project files. */
 export function buildExportRequest(inputs: ExportRequestInputs): RenderExportRequest {
   const layoutCfg = pickLayout(inputs.layouts, inputs.aspect);
+  if (layoutCfg.mode === 'split') {
+    const legal = legalSplitSides(inputs.aspect);
+    if (!legal.includes(layoutCfg.video_side)) {
+      throw new Error(
+        `split layout uses inverse-orientation video_side=${layoutCfg.video_side} for aspect ${inputs.aspect}; legal sides are ${legal.join('/')}`,
+      );
+    }
+  }
   const resolved = resolveSlots(layoutCfg, inputs.aspect);
   const layout: LayoutDescriptor = {
     aspect: inputs.aspect,

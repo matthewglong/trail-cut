@@ -52,13 +52,21 @@ export interface SplitLayout {
 
 export type LayoutConfig = PipLayout | SplitLayout;
 
-/** Per-aspect layout storage. `null` means "user has not configured this
- *  aspect yet"; the configurator UI (110) seeds with `defaultLayout(aspect)`. */
+/** Per-aspect layout storage. `null` means "user has explicitly cleared this
+ *  aspect" (post-100); fresh projects ship with all three aspects seeded by
+ *  `defaultPipLayout(aspect)`. The configurator UI (110) lets the user mutate
+ *  freely; the export pipeline falls back to `defaultLayout(aspect)` when an
+ *  entry is null. */
 export interface ProjectLayouts {
   '9_16': LayoutConfig | null;
   '4_5': LayoutConfig | null;
   '16_9': LayoutConfig | null;
 }
+
+/** Convenience alias — task 100's helpers and the configurator UI (110) read
+ *  from `SplitLayout['video_side']`. Re-exported by name so consumer code
+ *  doesn't need to index into the union type. */
+export type SplitSide = SplitLayout['video_side'];
 
 export interface PixelRect {
   x: number;
@@ -177,11 +185,11 @@ export function resolveSlots(
   };
 }
 
-/** Reasonable starting layout per aspect: PiP, video as background, map as
+/** Reasonable starting PiP layout per aspect: video as background, map as
  *  bottom-right inset, ~28% width, ~12px-equivalent corner radius. These are
  *  starter values, not normative — the configurator UI (110) lets the user
  *  freely move the inset. */
-export function defaultLayout(aspect: AspectRatio): LayoutConfig {
+export function defaultPipLayout(aspect: AspectRatio): PipLayout {
   switch (aspect) {
     case '9_16':
       return {
@@ -205,4 +213,105 @@ export function defaultLayout(aspect: AspectRatio): LayoutConfig {
         corner_radius: 0.012,
       };
   }
+}
+
+/** Reasonable starting Split layout per aspect, with the orientation locked
+ *  per LAYOUT.md §3 (16:9 → vertical divider; 9:16 / 4:5 → horizontal). The
+ *  user can flip `video_side` to the other legal side via the swap toggle in
+ *  the configurator (110); inverse-orientation splits are forbidden and
+ *  rejected by `validate_request` / `buildExportRequest`. */
+export function defaultSplitLayout(aspect: AspectRatio): SplitLayout {
+  switch (aspect) {
+    case '9_16':
+    case '4_5':
+      return { mode: 'split', video_side: 'top', divider: 0.5 };
+    case '16_9':
+      return { mode: 'split', video_side: 'left', divider: 0.5 };
+  }
+}
+
+/** Back-compat alias. Pre-100 callers imported `defaultLayout`; that name now
+ *  delegates to `defaultPipLayout`. New code should use `defaultPipLayout`
+ *  for clarity (`defaultLayout` reads ambiguously once Split exists). */
+export function defaultLayout(aspect: AspectRatio): LayoutConfig {
+  return defaultPipLayout(aspect);
+}
+
+/** The two `video_side` values legal for a given aspect's Split orientation.
+ *  Per LAYOUT.md §3, inverse-orientation splits (e.g. `'left'` at 9:16) are
+ *  forbidden. The configurator's swap toggle (110) constrains its choices to
+ *  this subset; the validator (`buildExportRequest` / `validate_request`)
+ *  rejects out-of-set values at the IPC boundary. */
+export function legalSplitSides(aspect: AspectRatio): readonly SplitSide[] {
+  return aspect === '16_9'
+    ? (['left', 'right'] as const)
+    : (['top', 'bottom'] as const);
+}
+
+/** Defensive clamp for live-edited layouts. Used by 110's drag hooks to keep
+ *  intermediate values valid while the user drags; landed here so the helper
+ *  lives next to the types it operates on. The export-time validator does
+ *  *not* call this — bad descriptors are rejected, not silently clamped, so
+ *  configurator bugs surface instead of producing degenerate output. Pure;
+ *  returns a fresh object even when the input is already valid. */
+export function clampLayout(
+  layout: LayoutConfig,
+  aspect: AspectRatio,
+): LayoutConfig {
+  if (layout.mode === 'split') {
+    const divider = clamp(layout.divider, 0.05, 0.95);
+    return { mode: 'split', video_side: layout.video_side, divider };
+  }
+  const out = OUTPUT_DIMS[aspect];
+  // Clamp the rect into the frame: bound w/h to (0, 1], clamp x/y so x+w<=1
+  // and y+h<=1. The minimum width/height (1px-equivalent in the output frame)
+  // keeps `resolveSlots` from producing zero-area inset rects.
+  const minW = 1 / out.w;
+  const minH = 1 / out.h;
+  const w = clamp(layout.inset.w, minW, 1);
+  const h = clamp(layout.inset.h, minH, 1);
+  const x = clamp(layout.inset.x, 0, 1 - w);
+  const y = clamp(layout.inset.y, 0, 1 - h);
+  const corner_radius = clamp(layout.corner_radius, 0, 0.5);
+  return {
+    mode: 'pip',
+    inset_source: layout.inset_source,
+    inset: { x, y, w, h },
+    corner_radius,
+  };
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  if (Number.isNaN(n)) return lo;
+  if (n < lo) return lo;
+  if (n > hi) return hi;
+  return n;
+}
+
+/** Aspect-fit projection of `OUTPUT_DIMS[aspect]` into a CSS-pixel container.
+ *  Mirrors the math in `LayoutPreview` so drag hooks can convert pointer-pixel
+ *  deltas into normalized-coordinate deltas without re-deriving scale factors
+ *  inside the configurator. Returns `(0, 0)` for non-positive containers. */
+export function drawnAreaSize(
+  aspect: AspectRatio,
+  containerWidth: number,
+  containerHeight: number,
+): { width: number; height: number } {
+  const out = OUTPUT_DIMS[aspect];
+  if (containerWidth <= 0 || containerHeight <= 0) {
+    return { width: 0, height: 0 };
+  }
+  const scaleFactor = Math.min(containerWidth / out.w, containerHeight / out.h);
+  return { width: out.w * scaleFactor, height: out.h * scaleFactor };
+}
+
+/** Mode-flip dispatch consumed by the configurator (110). The `_hint` is
+ *  reserved for a future "preserve approximate position across mode flips"
+ *  feature and ignored in v1. */
+export function synthesizeLayoutForMode(
+  mode: 'pip' | 'split',
+  aspect: AspectRatio,
+  _hint?: LayoutConfig,
+): LayoutConfig {
+  return mode === 'pip' ? defaultPipLayout(aspect) : defaultSplitLayout(aspect);
 }

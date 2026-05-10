@@ -5,20 +5,20 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { Clip, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
+import type { AspectRatio, Clip, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
-import { defaultLayout } from './lib/layout';
+import { defaultPipLayout } from './lib/layout';
 
-/** First-contact `ProjectLayouts` shape: 9:16 seeded with the baseline
- *  PiP-bottom-right layout, other aspects left null. Used as the initial
- *  state and as the defensive fallback for projects whose Rust backfill
- *  didn't populate the field (hand-edited bundles, races). Mirrors the
- *  Rust `seeded_layouts()` in `src-tauri/src/models.rs`. */
+/** First-contact `ProjectLayouts` shape (task 100): all three aspects seeded
+ *  with the baseline PiP-bottom-right layout. Used as the initial state and
+ *  as the defensive fallback for projects whose Rust backfill didn't
+ *  populate the field (hand-edited bundles, races). Mirrors the Rust
+ *  `seeded_layouts()` in `src-tauri/src/models.rs`. */
 function makeSeededLayouts(): ProjectLayouts {
   return {
-    '9_16': defaultLayout('9_16'),
-    '4_5': null,
-    '16_9': null,
+    '9_16': defaultPipLayout('9_16'),
+    '4_5': defaultPipLayout('4_5'),
+    '16_9': defaultPipLayout('16_9'),
   };
 }
 
@@ -32,6 +32,7 @@ export default function App() {
   const [mapSettings, setMapSettings] = useState<MapSettings>(DEFAULT_MAP_SETTINGS);
   const [transitionFeel, setTransitionFeel] = useState<TransitionFeel | undefined>(undefined);
   const [projectLayouts, setProjectLayouts] = useState<ProjectLayouts>(makeSeededLayouts);
+  const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
@@ -55,6 +56,7 @@ export default function App() {
     setMapSettings,
     setTransitionFeel,
     setProjectLayouts,
+    setSelectedExportAspect,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -71,6 +73,7 @@ export default function App() {
     mapSettings,
     transitionFeel,
     projectLayouts,
+    selectedExportAspect,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
@@ -136,6 +139,9 @@ export default function App() {
       setMapSettings={setMapSettings}
       transitionFeel={transitionFeel}
       projectLayouts={projectLayouts}
+      setProjectLayouts={setProjectLayouts}
+      selectedExportAspect={selectedExportAspect}
+      setSelectedExportAspect={setSelectedExportAspect}
       playheadMs={playheadMs}
       setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}

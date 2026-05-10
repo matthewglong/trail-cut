@@ -8,13 +8,15 @@ import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
+import { LayoutConfigurator } from '../components/LayoutConfigurator';
+import type { LayoutConfig } from '../lib/layout';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
 import { buildExportRequest, type ExportChannel } from '../lib/exportRequest';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -80,6 +82,12 @@ interface ProjectViewProps {
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   transitionFeel: TransitionFeel | undefined;
   projectLayouts: ProjectLayouts;
+  setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
+  /** Aspect that the export pipeline targets (task 100). Drives both the
+   *  LayoutPreview overlay's `aspect` prop and the `aspect` field on every
+   *  `buildExportRequest` call. */
+  selectedExportAspect: AspectRatio;
+  setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -115,6 +123,9 @@ export default function ProjectView({
   setMapSettings,
   transitionFeel,
   projectLayouts,
+  setProjectLayouts,
+  selectedExportAspect,
+  setSelectedExportAspect,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -152,6 +163,9 @@ export default function ProjectView({
   const [layoutPreviewVisible, setLayoutPreviewVisible] = useState(() =>
     readLayoutPreviewPref(projectDir),
   );
+  // Configurator open/closed (task 110 wiring — scaffolding; the real placement
+  // is a downstream UI design decision per spec line 58).
+  const [configuratorOpen, setConfiguratorOpen] = useState(false);
   useEffect(() => {
     setLayoutPreviewVisible(readLayoutPreviewPref(projectDir));
   }, [projectDir]);
@@ -409,16 +423,19 @@ export default function ProjectView({
         channel,
         fps: 30,
         outputPath,
-        aspect: '9_16',
+        // Task 100: read the project's selected aspect rather than
+        // hard-coding `'9_16'`. A user-facing aspect picker lands in a
+        // follow-up; today the temp `<select>` near the layout toggle
+        // mutates this value for the current session.
+        aspect: selectedExportAspect,
         clips,
         route,
         mapSettings,
         transitionFeel,
-        // Task 080: pass the project's seeded layout so the export reads
-        // the stored value rather than rebuilding it via `pickLayout`'s
-        // fallback. The configurator UI (110) will let the user mutate
-        // this; today the value matches `defaultLayout('9_16')` for fresh
-        // projects.
+        // Per-aspect seeded layouts (task 080 / 100). The export reads
+        // the stored value for `selectedExportAspect`; if the user has
+        // explicitly cleared that aspect (post-100, via 110), pickLayout's
+        // fallback synthesizes a default.
         layouts: projectLayouts,
       });
       setExporting(true);
@@ -435,7 +452,7 @@ export default function ProjectView({
         setExporting(false);
       }
     },
-    [exporting, clips, route, mapSettings, transitionFeel, projectLayouts],
+    [exporting, clips, route, mapSettings, transitionFeel, projectLayouts, selectedExportAspect],
   );
 
   const handleExportMapOnly = useCallback(
@@ -773,21 +790,70 @@ export default function ProjectView({
                   setPlayheadMs(projectMs);
                 }}
               />
-              {/* Layout-preview overlay (task 080). Read-only visualization
-                  of the project's stored 9:16 layout — pointer-events: none,
-                  so it never blocks clicks on the underlying video. */}
-              {layoutPreviewVisible && projectLayouts['9_16'] && videoPaneSize.w > 0 && (
-                <LayoutPreview
-                  layout={projectLayouts['9_16']}
-                  aspect="9_16"
-                  containerWidth={videoPaneSize.w}
-                  containerHeight={videoPaneSize.h}
-                />
-              )}
+              {/* Layout overlay (tasks 080 / 100 / 110). Read-only preview
+                  by default; when the user clicks "Edit" on the toggle, the
+                  configurator (110) takes over the same surface. Both share
+                  the videoPane sizing and the selectedExportAspect picker.
+                  Treat the configurator wiring as scaffolding — the
+                  permanent placement is a downstream UI design call. */}
+              {layoutPreviewVisible &&
+                projectLayouts[selectedExportAspect] &&
+                videoPaneSize.w > 0 && (
+                  configuratorOpen ? (
+                    <LayoutConfigurator
+                      layout={projectLayouts[selectedExportAspect]!}
+                      aspect={selectedExportAspect}
+                      containerWidth={videoPaneSize.w}
+                      containerHeight={videoPaneSize.h}
+                      onChange={(next: LayoutConfig) =>
+                        setProjectLayouts((prev) => ({
+                          ...prev,
+                          [selectedExportAspect]: next,
+                        }))
+                      }
+                      onDone={() => setConfiguratorOpen(false)}
+                    />
+                  ) : (
+                    <LayoutPreview
+                      layout={projectLayouts[selectedExportAspect]!}
+                      aspect={selectedExportAspect}
+                      containerWidth={videoPaneSize.w}
+                      containerHeight={videoPaneSize.h}
+                    />
+                  )
+                )}
               <div style={styles.layoutToggleAnchor}>
+                {/* TEMP scaffold (task 100). Surfaces `selected_export_aspect`
+                    as an inline picker so 100's plumbing is testable end-to-end
+                    without an aspect-picker UI. The picker lives wherever the
+                    broader export-settings UI lands (110 or its successor);
+                    until then this `<select>` is the developer-facing surface.
+                    Treat as scaffolding, not a deliverable. */}
+                <select
+                  value={selectedExportAspect}
+                  onChange={(e) => setSelectedExportAspect(e.target.value as AspectRatio)}
+                  title="Export aspect (temp control — task 100)"
+                  style={{
+                    fontSize: 11,
+                    padding: '2px 4px',
+                    background: 'rgba(0,0,0,0.4)',
+                    color: 'white',
+                    border: '1px solid rgba(255,255,255,0.2)',
+                    borderRadius: 3,
+                  }}
+                >
+                  <option value="9_16">9:16</option>
+                  <option value="4_5">4:5</option>
+                  <option value="16_9">16:9</option>
+                </select>
                 <LayoutPreviewToggle
                   visible={layoutPreviewVisible}
                   onToggle={handleToggleLayoutPreview}
+                  onEdit={
+                    layoutPreviewVisible
+                      ? () => setConfiguratorOpen((o) => !o)
+                      : undefined
+                  }
                 />
               </div>
             </div>

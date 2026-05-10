@@ -1,38 +1,50 @@
 // Renderer worker. Long-running Node sidecar that produces map frames
-// headlessly via @maplibre/maplibre-gl-native, driven by a line-delimited
-// JSON protocol on stdin and writing length-prefixed raw RGBA buffers to
-// stdout. Spawned by the Rust orchestrator (task 030); spec at
-// docs/export/tasks/020-renderer-worker.md.
+// headlessly via puppeteer-core driving a full Chrome (new headless mode)
+// instance running maplibre-gl-js. Communicates with the Rust orchestrator
+// over a line-delimited-JSON-on-stdin / length-prefixed-RGBA-on-stdout
+// protocol.
 //
-// Load-bearing invariant — visual parity by import. Every visual decision
-// (layer specs, paint expressions, source-data computation, animation
-// curves, camera math) lives in src/lib/mapVisuals/, src/lib/cameraIntent.ts,
-// and src/lib/routeLocation.ts. This file MUST NOT redefine any of them; it
-// only applies what those modules return. A change to marker color, slime-
-// trail paint, pulse curve, or active-clip highlighting is a one-PR change
-// in the shared module — both preview and worker pick it up via build graph.
+// Why full Chrome and not chrome-headless-shell: shell has no GPU path on
+// macOS, so WebGL falls back to SwiftShader (software). Maplibre's first
+// paint stalls badly on software WebGL — readPixels takes seconds, the GPU
+// process can crash, the page tears down mid-evaluate. New headless mode
+// (`headless: true` in puppeteer ≥22) routes WebGL through ANGLE→Metal on
+// Apple Silicon and avoids the entire failure mode.
 //
-// Camera: cameraAt(timeline, t) is the single evaluator; preview applies via
-// jumpTo, this worker via map.render({...camera}). Neither side eases.
+// Why headless-Chromium and not maplibre-native: the C++ engine (used
+// through tasks 010–117) produces visible wobble on slow camera pans
+// (sub-pixel deltas snap to the integer pixel grid). The browser painter,
+// with `options.moving = true` forced via a 4-line monkey-patch in
+// page/init.ts, does not. See docs/export/plans/chromium-renderer.md for
+// the full migration history; tasks 115–119 ran the cutover.
 //
-// API note — maplibre-native vs maplibre-gl: the native binding's surface is
-// noticeably narrower than the JS browser package. Two divergences shape the
-// shape of this file:
-//   1. No `style.load` event, no event emitter on Map. `map.load(style)` is
-//      synchronous; tile fetches happen lazily during render. The setup-
-//      ready handshake is therefore immediate after addSource/addLayer.
-//   2. No `getSource(id)`, no per-source `setData`. The documented mechanism
-//      for changing GeoJSON source data is removeLayer+removeSource+addSource
-//      +addLayer. We do that for the per-frame dynamic sources (route-trail,
-//      live-marker, visited-mode waypoints).
-//   3. setPaintProperty exists at runtime, even though the published .d.ts
-//      omits it. We use it for waypoint highlight + pulse paint.
+// Visual parity by import — the load-bearing invariant. Every visual
+// decision (style spec, layer specs, source data, animation curves,
+// camera math) lives in src/lib/mapVisuals/, src/lib/cameraIntent.ts,
+// src/lib/routeLocation.ts. This worker imports the same modules the
+// preview's MapView.tsx uses; it never redefines them.
+//
+// Process model: one Browser per worker, one Page per browser. Recycle
+// closes and reopens the Page (cheap: clears per-page allocations,
+// preserves browser state). Every M=10 page-recycles, also relaunch the
+// Browser (layered defense against accumulated allocator fragmentation).
+// Orchestrator never sees the inner browser-restart — same wire format
+// either way.
 
 import readline from 'node:readline';
 import https from 'node:https';
 import http from 'node:http';
 import zlib from 'node:zlib';
-import * as mbgl from '@maplibre/maplibre-gl-native';
+
+import puppeteer, { type Browser, type Page } from 'puppeteer-core';
+import { PNG } from 'pngjs';
+
+// `page.evaluate` callbacks run in the browser context, where `window` and
+// our injected globals (__init, __applyFrame, trailcutFetch) live. The
+// worker's tsconfig is Node-only; this minimal declaration tells tsc not
+// to error on cross-context references inside evaluate callbacks.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+declare const window: any;
 
 import {
   buildStyleSpec,
@@ -52,16 +64,16 @@ import {
 } from '../../../src/lib/cameraIntent';
 import { indexRoute, type IndexedRoute } from '../../../src/lib/routeLocation';
 import type { Clip, Route, MapSettings } from '../../../src/types';
-import { createTileCache, defaultCacheDir } from './tileCache';
+
+import { createTileCache, defaultCacheDir, type TileCache } from './tileCache';
+import { bridgeFetchFactory } from './trailcutFetch';
+import { buildBootstrapHtml } from './bootstrap.html';
 
 // ---- Protocol types -------------------------------------------------------
 
 interface SetupCmd {
   cmd: 'setup';
-  /** Map-slot pixel dims (PLAN.md §"Performance considerations" #1 — render
-   *  at slot size, not output size; orchestrator scales later). */
   viewport: { w: number; h: number };
-  /** Echoed for diagnostics; the worker doesn't act on fps directly. */
   fps: number;
   timeline: CompiledTimeline;
   route: Route | null;
@@ -77,32 +89,61 @@ interface RecycleCmd { cmd: 'recycle' }
 interface ShutdownCmd { cmd: 'shutdown' }
 type Cmd = SetupCmd | RenderCmd | RecycleCmd | ShutdownCmd;
 
+// ---- Config knobs ---------------------------------------------------------
+
+/** Recycle the Browser entirely after this many Page recycles. Layered
+ *  defense per docs/export/plans/chromium-renderer.md §2.2; the
+ *  orchestrator already issues `recycle` on its own cadence (default 60
+ *  frames per task 030), so this counts orchestrator-driven recycles.
+ *  10 page recycles ≈ 600 frames between browser restarts at default
+ *  cadence — plenty for any single export, near-zero overhead. */
+const BROWSER_RESTART_EVERY_RECYCLES = 10;
+
 // ---- State ----------------------------------------------------------------
 
-// Cached at boot; doubles as the recycle blueprint per spec §"Recycle".
+let browser: Browser | null = null;
+let page: Page | null = null;
 let setupPayload: SetupCmd | null = null;
-// `mbgl.Map`. Typed as `any` because the published .d.ts is missing
-// setPaintProperty (and a few others) that exist at runtime.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let map: any = null;
 let indexedRoute: IndexedRoute | null = null;
+let recycleCountThisBrowser = 0;
 
-// ---- Tile fetch + cache ---------------------------------------------------
+// Signal-based completion handshake for __init. We can't `await` the
+// Promise returned by `page.evaluate((p) => window.__init(p))` directly
+// because puppeteer's evaluate sets `awaitPromise: true` on the CDP
+// `Runtime.callFunctionOn` call, and V8's Inspector can GC the awaited
+// Promise before it observes resolution under heap pressure (the page is
+// allocating freely while maplibre boots its tile cache, decodes glyphs
+// and sprites through trailcutFetch, builds source/layer state). The
+// failure surfaces as `ProtocolError: Promise was collected` *after*
+// __init has logged its final `done` breadcrumb — proof the page-side
+// function ran fine; only the protocol-level Promise tracking lost it.
 //
-// All URLs maplibre-native asks for via request() (style JSON, sprites,
-// glyphs, vector/raster tiles) flow through a hash-keyed on-disk cache; the
-// network fetcher below is the cache's miss path. See tileCache.ts and
-// docs/export/tasks/035-shared-tile-cache.md for the design.
-//
-// Cache instance is constructed once at module load. Tests override location
-// and offline behavior via TRAILCUT_TILE_CACHE_DIR / TRAILCUT_TILE_CACHE_OFFLINE
-// env knobs; production uses the default ~/.trailcut/tile-cache and online
-// behavior.
+// Workaround: have the page kick off __init fire-and-forget (the outer
+// evaluate returns `undefined` synchronously, no awaitPromise needed),
+// then call this exposed function on completion. The worker awaits a
+// local Node-side Promise, which has no V8-GC vulnerability.
+let pendingInitSignal:
+  | ((status: { ok: boolean; error?: string }) => void)
+  | null = null;
 
-const tileCache = createTileCache({
+// Liveness telemetry. The orchestrator and the worker talk over pipes;
+// from the operator's seat, a stalled export looks identical to a busy
+// one — both are silent. `currentActivity` describes what the worker
+// thinks it is doing, `activityStartedAt` is the wall-clock when that
+// activity began. The heartbeat interval (set up at module bottom)
+// prints both every N seconds, so a hang has visible elapsed-in-state.
+let currentActivity = 'starting';
+let activityStartedAt = Date.now();
+function setActivity(label: string): void {
+  currentActivity = label;
+  activityStartedAt = Date.now();
+}
+const tileCache: TileCache = createTileCache({
   dir: process.env.TRAILCUT_TILE_CACHE_DIR ?? defaultCacheDir(),
   offline: process.env.TRAILCUT_TILE_CACHE_OFFLINE === '1',
 });
+
+// ---- Tile fetcher (cache miss path) ---------------------------------------
 
 function fetchUrl(
   url: string,
@@ -149,100 +190,142 @@ function fetchUrl(
     .on('error', (e) => cb(e));
 }
 
-// ---- GeoJSON quirk adapter ------------------------------------------------
-//
-// maplibre-native rejects `Feature<LineString>` with fewer than two
-// coordinates ("A line string must have two or more coordinate points") at
-// addSource validation time. The browser maplibre-gl-js silently accepts
-// the same payload. Since the shared mapVisuals module's contract is
-// "browser-compatible GeoJSON" — and changing it would break parity — the
-// worker translates degenerate LineStrings into empty FeatureCollections at
-// the addSource boundary. Same data semantically (nothing to draw); only
-// the GeoJSON shape changes.
-function adaptForNative(
-  data: GeoJSON.GeoJsonObject,
-): GeoJSON.GeoJsonObject {
-  if (data.type === 'Feature') {
-    const f = data as GeoJSON.Feature;
-    if (
-      f.geometry?.type === 'LineString' &&
-      ((f.geometry as GeoJSON.LineString).coordinates?.length ?? 0) < 2
-    ) {
-      const empty: GeoJSON.FeatureCollection = {
-        type: 'FeatureCollection',
-        features: [],
-      };
-      return empty;
-    }
+// ---- Browser / Page lifecycle --------------------------------------------
+
+function chromeBinaryPath(): string {
+  const p = process.env.TRAILCUT_CHROME_BIN;
+  if (!p) {
+    throw new Error(
+      'TRAILCUT_CHROME_BIN env var not set. The orchestrator is responsible ' +
+      'for resolving the bundled Chrome binary and passing it to the worker; ' +
+      'in dev, set it manually to a Chrome executable path (e.g. ' +
+      '<repo>/src-tauri/binaries/chrome-<triple>/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing).',
+    );
   }
-  return data;
+  return p;
 }
 
-// ---- Map setup / teardown -------------------------------------------------
+async function launchBrowser(): Promise<Browser> {
+  // ANGLE backend per platform. On macOS (the only supported host today),
+  // Metal is the hardware path; ANGLE routes WebGL through it. On other
+  // platforms we let Chrome pick the default — task 130 will revisit when
+  // Windows/Linux land.
+  const angleArg = process.platform === 'darwin' ? '--use-angle=metal' : '--use-angle=default';
 
-function fetchStyleJson(url: string): Promise<object> {
-  // Style JSON is the largest single boot-phase response (~400 KB) and a
-  // perfect cache citizen — it's URL-versioned by upstream just like tiles.
-  // Route it through the same cache as the per-Map request() callback so
-  // repeat exports skip the boot fetch entirely.
-  return new Promise((resolveStyle, rejectStyle) => {
-    tileCache.get(url, fetchUrl, (err, data) => {
-      if (err || !data) {
-        rejectStyle(err ?? new Error('no data'));
-        return;
-      }
-      try {
-        resolveStyle(JSON.parse(data.toString('utf8')));
-      } catch (e) {
-        rejectStyle(e as Error);
-      }
-    });
+  const browser = await puppeteer.launch({
+    executablePath: chromeBinaryPath(),
+    // New headless mode (puppeteer ≥22). Unlike `headless: 'shell'`, this
+    // runs full Chrome with GPU access available — exactly the property
+    // the chrome-headless-shell path lacked, which is why software WebGL
+    // was the only option there and why first-paint kept tearing the
+    // page down on slow ReadPixels.
+    headless: true,
+    args: [
+      // Determinism / off-screen rendering.
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu-vsync',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      // Hardware GPU via ANGLE. On Apple Silicon this lights up Metal.
+      angleArg,
+      // Force enable WebGL for headless. Default in new headless mode is
+      // already enabled, but explicit costs nothing.
+      '--enable-webgl',
+    ],
+    // Forward Chrome's own stderr (renderer crash logs, GPU process
+    // failures, OOM signals from the OS) into the worker's stderr so the
+    // orchestrator's stderr ring captures it. Without this, a renderer-
+    // process death surfaces only as the opaque "Promise was collected"
+    // ProtocolError that puppeteer raises when its CDP target detaches.
+    dumpio: true,
+    // Don't time out on launch — slow CI hosts can take a while.
+    timeout: 60_000,
+    // Per-CDP-command timeout. Cold-start first paint can still take
+    // double-digit seconds on the GPU path; default 180s is enough but
+    // 300s gives headroom on cold caches.
+    protocolTimeout: 300_000,
   });
+
+  // Surface tear-down diagnostics. Without these, a renderer-subprocess
+  // crash lands as a generic "Promise was collected" with no clue why.
+  browser.on('disconnected', () => {
+    process.stderr.write('[renderer] browser disconnected\n');
+  });
+  browser.on('targetdestroyed', (target) => {
+    process.stderr.write(`[renderer] target destroyed: ${target.type()} ${target.url()}\n`);
+  });
+
+  return browser;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function buildMap(payload: SetupCmd): Promise<any> {
-  const { style } = buildStyleSpec(payload.mapSettings);
+async function buildPage(b: Browser): Promise<Page> {
+  const p = await b.newPage();
 
-  // maplibre-native's `load(style)` only accepts a parsed style object, not
-  // a URL (a URL string fails JSON parsing at offset 0). For URL-based modes
-  // ('default' / '3d' → OpenFreeMap liberty) we fetch the style JSON here
-  // and pass the parsed object. Subsequent sprite/glyph/source/tile requests
-  // still flow through the per-Map `request` callback below.
-  const styleSpec: object =
-    typeof style === 'string' ? await fetchStyleJson(style) : style;
+  // Forward page console + page errors to worker stderr so failures are
+  // diagnosable. Orchestrator forwards worker stderr to its own stderr
+  // already.
+  p.on('console', (msg) => {
+    process.stderr.write(`[console:${msg.type()}] ${msg.text()}\n`);
+  });
+  p.on('pageerror', (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error && err.stack ? `\n${err.stack}` : '';
+    process.stderr.write(`[pageerror] ${msg}${stack}\n`);
+  });
+  p.on('error', (err: unknown) => {
+    // 'error' fires on page crash (Chrome process killed, OOM). Without
+    // this listener, page crashes surface only as "Promise was collected".
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[page-crash] ${msg}\n`);
+  });
 
-  const newMap = new mbgl.Map({
-    request: (req: { url: string }, callback: (err?: Error, response?: { data: Buffer }) => void) => {
-      tileCache.get(req.url, fetchUrl, (err, data) => {
-        if (err || !data) {
-          callback(err ?? new Error('no data'));
-          return;
-        }
-        callback(undefined, { data });
-      });
+  // Expose the cache bridge before setting content so the page-side
+  // addProtocol loader can call window.trailcutFetch synchronously after
+  // page-script execution.
+  await p.exposeFunction('trailcutFetch', bridgeFetchFactory(tileCache, fetchUrl));
+
+  // Completion signal for __init — see `pendingInitSignal` comment above.
+  // Registered once per page; applySetup wires up the resolver per call.
+  await p.exposeFunction(
+    '__signalInitDone',
+    (status: { ok: boolean; error?: string }) => {
+      const cb = pendingInitSignal;
+      pendingInitSignal = null;
+      if (cb) cb(status);
+      else process.stderr.write('[renderer] __signalInitDone fired with no pending listener\n');
     },
-    ratio: 1,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any);
+  );
 
-  // Synchronous; tile fetches happen lazily during render. (No `style.load`
-  // event the way maplibre-gl-js has — see file header note.)
-  newMap.load(styleSpec);
+  await p.setContent(buildBootstrapHtml(), { waitUntil: 'load' });
+  return p;
+}
 
-  // 3D buildings, when applicable. The base style URL populates the
-  // `openmaptiles` source at first render; addLayer just enqueues the layer
-  // spec referencing that source by name. Try/catch in case the source isn't
-  // available in this style (mirrors MapView.tsx).
-  if (payload.mapSettings.map_style === '3d') {
-    try { newMap.addLayer(BUILDINGS_LAYER_SPEC); } catch { /* not in style */ }
-  }
+async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
+  const t0 = Date.now();
+  const stamp = (msg: string): void => {
+    process.stderr.write(`[renderer applySetup +${Date.now() - t0}ms] ${msg}\n`);
+  };
+
+  // Match the Page's viewport to the requested map slot dims. setViewport
+  // controls the framebuffer maplibre's WebGL context will produce.
+  stamp(`before setViewport ${payload.viewport.w}x${payload.viewport.h}`);
+  await p.setViewport({
+    width: payload.viewport.w,
+    height: payload.viewport.h,
+    deviceScaleFactor: 1,
+  });
+  stamp('after setViewport');
+
+  const { style } = buildStyleSpec(payload.mapSettings);
 
   const staticData = buildStaticSourceData({
     route: payload.route,
     clips: payload.clips,
     mapSettings: payload.mapSettings,
   });
+  stamp('static source data built');
 
   const emptyLine: GeoJSON.Feature<GeoJSON.LineString> = {
     type: 'Feature',
@@ -254,43 +337,123 @@ async function buildMap(payload: SetupCmd): Promise<any> {
     features: [],
   };
 
-  // Static (route-full) — added once; per-frame doesn't touch. Adapted in
-  // case the route is null/empty (degenerate LineString → empty FC).
-  newMap.addSource('route-full', { type: 'geojson', data: adaptForNative(staticData['route-full']) });
-  newMap.addLayer(ROUTE_FULL_LAYER);
+  // Static sources/layers — order matches renderer/index.ts buildMap so
+  // stacking is identical.
+  const staticSources: Array<[string, unknown]> = [
+    ['route-full', { type: 'geojson', data: staticData['route-full'] }],
+    ['route-trail', { type: 'geojson', data: emptyLine }],
+    ['waypoints', { type: 'geojson', data: staticData.waypoints }],
+    ['live-marker', { type: 'geojson', data: emptyFc }],
+  ];
+  const staticLayers: unknown[] = [
+    ROUTE_FULL_LAYER,
+    ROUTE_TRAIL_LAYER,
+    WAYPOINTS_CIRCLE_LAYER,
+    WAYPOINTS_LABEL_LAYER,
+    LIVE_MARKER_PULSE_LAYER,
+    LIVE_MARKER_DOT_LAYER,
+  ];
 
-  // Dynamic (route-trail, live-marker, optionally waypoints in 'visited' mode)
-  // — seeded with empty placeholders. Per-frame replaces via remove/re-add.
-  newMap.addSource('route-trail', { type: 'geojson', data: adaptForNative(emptyLine) });
-  newMap.addLayer(ROUTE_TRAIL_LAYER);
+  // Visibility — mirrors MapView.tsx's route-mode effect. Only route-full
+  // sets explicitly here; route-trail's visibility is implicit in whether
+  // we feed it data (visited mode) or empty (every other mode), but maplibre
+  // would still attempt to render an empty LineString — so we set its
+  // visibility too. Other layers stay 'visible'.
+  const visibility: Array<[string, 'visible' | 'none']> = [
+    ['route-full-line', payload.mapSettings.route_mode === 'full' ? 'visible' : 'none'],
+    ['route-trail-line', payload.mapSettings.route_mode === 'visited' ? 'visible' : 'none'],
+  ];
 
-  // waypoints — seeded with the static collection (full features in 'all'
-  // mode, empty in 'none' mode). In 'visited' mode the per-frame loop
-  // overrides with the visited subset.
-  newMap.addSource('waypoints', { type: 'geojson', data: staticData.waypoints });
-  newMap.addLayer(WAYPOINTS_CIRCLE_LAYER);
-  newMap.addLayer(WAYPOINTS_LABEL_LAYER);
+  const initPayload = {
+    style,
+    viewport: payload.viewport,
+    add3dBuildings: payload.mapSettings.map_style === '3d',
+    staticSources,
+    staticLayers,
+    visibility,
+    buildingsLayer: payload.mapSettings.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
+  };
 
-  newMap.addSource('live-marker', { type: 'geojson', data: emptyFc });
-  newMap.addLayer(LIVE_MARKER_PULSE_LAYER);
-  newMap.addLayer(LIVE_MARKER_DOT_LAYER);
-
-  // Visibility — mirrors MapView.tsx's route-mode effect. `route-full-line`
-  // is added once and stays put, so its visibility settles here. `route-
-  // trail-line` is re-added every frame in applyDynamicSource (no setData on
-  // the native binding), so its visibility is re-applied there via
-  // visibilityFor — setting it here would be overwritten on frame 0.
-  newMap.setLayoutProperty(
-    'route-full-line', 'visibility',
-    visibilityFor('route-full-line', payload.mapSettings),
+  // Surface initPayload size — `page.evaluate` ships the argument through
+  // CDP's Runtime.callFunctionOn as serialized JSON. Big LineStrings (a
+  // 6000-point GPX route is ~12000 numbers ≈ 200 KB serialized) plus an
+  // inlined style spec can push past CDP's argument-size threshold; if
+  // this is large, the very next evaluate is the prime suspect for
+  // "Promise was collected".
+  const initPayloadJson = JSON.stringify(initPayload);
+  const routeFullBytes = JSON.stringify(staticData['route-full']).length;
+  const styleBytes = JSON.stringify(style).length;
+  // Count route coordinates if shape matches.
+  let routeCoordCount = 0;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const g: any = (staticData['route-full'] as any).geometry;
+    if (g && Array.isArray(g.coordinates)) routeCoordCount = g.coordinates.length;
+  } catch { /* ignore */ }
+  stamp(
+    `initPayload built: total=${initPayloadJson.length}B ` +
+    `style=${styleBytes}B route-full=${routeFullBytes}B routeCoords=${routeCoordCount} ` +
+    `staticLayers=${staticLayers.length} visibility=${visibility.length}`,
   );
 
-  return newMap;
+  // Set up the signal-based handshake BEFORE kicking off __init so we
+  // can't miss a fast resolution. See `pendingInitSignal` comment.
+  if (pendingInitSignal) {
+    // Defensive — applySetup is awaited sequentially per worker, so this
+    // should never fire. Drop the stale resolver if it does.
+    process.stderr.write('[renderer] applySetup: dropping stale pendingInitSignal\n');
+    pendingInitSignal = null;
+  }
+  const initSignal = new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    pendingInitSignal = resolve;
+  });
+
+  stamp('before page.evaluate(__init kickoff)');
+  // Fire-and-forget. The outer arrow function returns `undefined`
+  // synchronously, so CDP's awaitPromise has nothing to track — no
+  // long-running Promise for V8 to GC. The page-side __init runs to
+  // completion in the background and signals via window.__signalInitDone,
+  // which resolves `initSignal` on the Node side.
+  await p.evaluate((payload: typeof initPayload) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    void w.__init(payload).then(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      () => w.__signalInitDone({ ok: true }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (e: any) => w.__signalInitDone({
+        ok: false,
+        error: String((e && e.message) ?? e),
+      }),
+    );
+  }, initPayload);
+  stamp('kickoff evaluate returned, awaiting __signalInitDone');
+
+  const status = await initSignal;
+  stamp(`__init signal received: ${status.ok ? 'ok' : `error=${status.error}`}`);
+  if (!status.ok) {
+    throw new Error(`__init failed in page: ${status.error ?? 'unknown'}`);
+  }
+  stamp('after page.evaluate(__init) resolved');
 }
 
+// ---- Setup / recycle ------------------------------------------------------
+
 async function setup(payload: SetupCmd): Promise<void> {
+  const t0 = Date.now();
   setupPayload = payload;
-  map = await buildMap(payload);
+  if (!browser) {
+    browser = await launchBrowser();
+    process.stderr.write(`[renderer] browser launched at ${Date.now() - t0}ms\n`);
+  }
+  if (page) {
+    try { await page.close(); } catch { /* ignore */ }
+    page = null;
+  }
+  page = await buildPage(browser);
+  process.stderr.write(`[renderer] page ready at ${Date.now() - t0}ms\n`);
+  await applySetup(page, payload);
+  process.stderr.write(`[renderer] applySetup done at ${Date.now() - t0}ms\n`);
   indexedRoute = indexRoute(payload.route);
 }
 
@@ -299,93 +462,40 @@ async function recycle(): Promise<void> {
     process.stderr.write('[renderer] recycle without prior setup, ignoring\n');
     return;
   }
-  if (map) {
-    try { map.release(); } catch { /* ignore */ }
-    map = null;
+  recycleCountThisBrowser += 1;
+
+  // Layered defense — every Nth recycle, also relaunch the browser. The
+  // orchestrator never sees the difference; same wire bytes either way.
+  const shouldRestartBrowser =
+    recycleCountThisBrowser >= BROWSER_RESTART_EVERY_RECYCLES;
+
+  if (page) {
+    try { await page.close(); } catch { /* ignore */ }
+    page = null;
   }
-  map = await buildMap(setupPayload);
+  if (shouldRestartBrowser && browser) {
+    try { await browser.close(); } catch { /* ignore */ }
+    browser = null;
+    recycleCountThisBrowser = 0;
+  }
+  if (!browser) {
+    browser = await launchBrowser();
+  }
+  page = await buildPage(browser);
+  await applySetup(page, setupPayload);
   indexedRoute = indexRoute(setupPayload.route);
 }
 
-// ---- Per-frame source/paint application -----------------------------------
+// ---- Per-frame render -----------------------------------------------------
 
-// For each dynamic GeoJSON source, the layers that depend on it. Per-frame
-// updates do removeLayer (reverse) + removeSource + addSource + addLayer
-// (forward) — that's the only way to push new data without getSource(id).
-// Layer ids and stacking order match MapView.tsx setup.
-const DYNAMIC_LAYERS_BY_SOURCE: Record<string, string[]> = {
-  'route-trail': ['route-trail-line'],
-  'waypoints': ['waypoints-circle', 'waypoints-label'],
-  'live-marker': ['live-marker-pulse', 'live-marker-dot'],
-};
-const LAYER_SPEC_BY_ID: Record<string, object> = {
-  'route-trail-line': ROUTE_TRAIL_LAYER,
-  'waypoints-circle': WAYPOINTS_CIRCLE_LAYER,
-  'waypoints-label': WAYPOINTS_LABEL_LAYER,
-  'live-marker-pulse': LIVE_MARKER_PULSE_LAYER,
-  'live-marker-dot': LIVE_MARKER_DOT_LAYER,
-};
-
-// Visibility rules — mirrors MapView.tsx's route-mode effect. The shared
-// layer specs in src/lib/mapVisuals/styleSpec.ts intentionally don't carry
-// `layout.visibility` (preview toggles via setLayoutProperty as a render-
-// mode decision, not a layer-spec decision). Since the worker re-adds
-// dynamic layers on every frame, addLayer's default-visible behavior would
-// override any one-shot setLayoutProperty call from setup. Re-apply here.
-function visibilityFor(
-  layerId: string,
-  settings: MapSettings,
-): 'visible' | 'none' {
-  if (layerId === 'route-full-line') {
-    return settings.route_mode === 'full' ? 'visible' : 'none';
-  }
-  if (layerId === 'route-trail-line') {
-    return settings.route_mode === 'visited' ? 'visible' : 'none';
-  }
-  return 'visible';
-}
-
-function applyDynamicSource(
-  sourceId: string,
-  data: GeoJSON.GeoJsonObject,
-): void {
-  const layerIds = DYNAMIC_LAYERS_BY_SOURCE[sourceId];
-  if (!layerIds) {
-    process.stderr.write(`[renderer] unknown dynamic source: ${sourceId}\n`);
-    return;
-  }
-  for (let i = layerIds.length - 1; i >= 0; i--) {
-    try { map.removeLayer(layerIds[i]); } catch { /* not present */ }
-  }
-  try { map.removeSource(sourceId); } catch { /* not present */ }
-  map.addSource(sourceId, { type: 'geojson', data: adaptForNative(data) });
-  for (const id of layerIds) {
-    map.addLayer(LAYER_SPEC_BY_ID[id]);
-    map.setLayoutProperty(
-      id, 'visibility', visibilityFor(id, setupPayload!.mapSettings),
+async function renderFrame(cmd: RenderCmd): Promise<void> {
+  const tStart = Date.now();
+  const fstamp = (msg: string): void => {
+    process.stderr.write(
+      `[renderer renderFrame f=${cmd.frame_index} +${Date.now() - tStart}ms] ${msg}\n`,
     );
-  }
-}
-
-// ---- Stdout writes --------------------------------------------------------
-
-function writeReady(): void {
-  process.stdout.write('{"ready":true}\n');
-}
-
-function writeFrame(buf: Uint8Array): void {
-  const prefix = Buffer.alloc(4);
-  prefix.writeUInt32BE(buf.byteLength, 0);
-  // Two sequential writes on the same stream are concatenated in order on
-  // the receiving end. The orchestrator reads `[4-byte BE length][N bytes]`.
-  process.stdout.write(prefix);
-  process.stdout.write(buf);
-}
-
-// ---- Render dispatch ------------------------------------------------------
-
-function renderFrame(cmd: RenderCmd, done: () => void): void {
-  if (!setupPayload || !map) {
+  };
+  if (!setupPayload || !page) {
     process.stderr.write('[renderer] render before setup, exiting\n');
     process.exit(1);
   }
@@ -408,49 +518,87 @@ function renderFrame(cmd: RenderCmd, done: () => void): void {
     viewport,
   );
 
-  // Per-frame source data — entries vary by mapSettings (always route-trail
-  // + live-marker; waypoints only in 'visited' mode, per buildPerFrameState).
-  for (const [sourceId, data] of Object.entries(state.sources)) {
-    applyDynamicSource(sourceId, data);
-  }
+  // Translate state.sources (Record) and state.paints (named fields) into
+  // serializable arrays for the page-side __applyFrame. The wire format
+  // here is JSON; tuples beat objects for compactness across page.evaluate.
+  const sources: Array<[string, unknown]> = Object.entries(state.sources);
+  const paints: Array<[string, string, unknown]> = [
+    ['waypoints-circle', 'circle-radius', state.paints.waypointCircleRadius],
+    ['waypoints-circle', 'circle-color', state.paints.waypointCircleColor],
+    ['waypoints-circle', 'circle-stroke-color', state.paints.waypointCircleStrokeColor],
+    ['live-marker-pulse', 'circle-radius', state.paints.pulseRadius],
+    ['live-marker-pulse', 'circle-opacity', state.paints.pulseOpacity],
+  ];
 
-  // Per-frame paint deltas.
-  map.setPaintProperty('waypoints-circle', 'circle-radius', state.paints.waypointCircleRadius);
-  map.setPaintProperty('waypoints-circle', 'circle-color', state.paints.waypointCircleColor);
-  map.setPaintProperty('waypoints-circle', 'circle-stroke-color', state.paints.waypointCircleStrokeColor);
-  map.setPaintProperty('live-marker-pulse', 'circle-radius', state.paints.pulseRadius);
-  map.setPaintProperty('live-marker-pulse', 'circle-opacity', state.paints.pulseOpacity);
-
-  map.render(
-    {
+  const framePayload = {
+    t,
+    sources,
+    paints,
+    camera: {
+      center: { lng: state.camera.center.lng, lat: state.camera.center.lat },
       zoom: state.camera.zoom,
       bearing: state.camera.bearing,
       pitch: state.camera.pitch,
-      center: [state.camera.center.lng, state.camera.center.lat],
-      width: viewport.width,
-      height: viewport.height,
     },
-    (err: Error | undefined, buf: Uint8Array | undefined) => {
-      if (err || !buf) {
-        process.stderr.write(
-          `[renderer] render error at frame ${cmd.frame_index} t=${t}: ${err?.message ?? 'no buffer'}\n`,
-        );
-        process.exit(1);
+  };
+
+  fstamp(`entry t=${t}ms activeClip=${activeClipId ?? 'none'}`);
+  await page.evaluate((payload: typeof framePayload) => window.__applyFrame(payload), framePayload);
+  fstamp('applyFrame returned');
+
+  // Capture the framebuffer as PNG (lossless), decode to RGBA, write
+  // length-prefixed bytes. captureBeyondViewport: false matches the
+  // viewport pixel size exactly. omitBackground: true preserves alpha if
+  // the style has any (today: opaque base, but defensive).
+  const pngBuf = (await page.screenshot({
+    type: 'png',
+    captureBeyondViewport: false,
+    omitBackground: true,
+    fullPage: false,
+    clip: { x: 0, y: 0, width: payload.viewport.w, height: payload.viewport.h },
+  })) as Buffer;
+  fstamp(`screenshot ${pngBuf.length}B`);
+
+  const rgba = await decodePngToRgba(pngBuf, payload.viewport.w, payload.viewport.h);
+  fstamp(`decoded ${rgba.length}B`);
+  writeFrame(rgba);
+  fstamp('writeFrame done');
+}
+
+function decodePngToRgba(png: Buffer, expectedW: number, expectedH: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    new PNG().parse(png, (err, parsed) => {
+      if (err) return reject(err);
+      if (parsed.width !== expectedW || parsed.height !== expectedH) {
+        return reject(new Error(
+          `PNG decoded size mismatch: got ${parsed.width}x${parsed.height}, expected ${expectedW}x${expectedH}`,
+        ));
       }
-      writeFrame(buf);
-      done();
-    },
-  );
+      // pngjs always normalizes to RGBA8 internally. parsed.data is a
+      // Buffer of length width*height*4 in RGBA byte order — exactly the
+      // wire format.
+      resolve(parsed.data);
+    });
+  });
+}
+
+// ---- Stdout writes --------------------------------------------------------
+
+function writeReady(): void {
+  process.stdout.write('{"ready":true}\n');
+}
+
+function writeFrame(buf: Uint8Array): void {
+  const prefix = Buffer.alloc(4);
+  prefix.writeUInt32BE(buf.byteLength, 0);
+  process.stdout.write(prefix);
+  process.stdout.write(buf);
 }
 
 // ---- Stdin loop -----------------------------------------------------------
 
 const rl = readline.createInterface({ input: process.stdin });
 
-// Render commands have async completion (the maplibre-native render callback
-// fires after tile fetches resolve). We serialize commands by buffering
-// stdin lines and processing one at a time. setup/recycle/shutdown are
-// synchronous from our POV; render is async-with-callback.
 const queue: string[] = [];
 let busy = false;
 let stdinClosed = false;
@@ -460,8 +608,7 @@ function processNext(): void {
   const line = queue.shift();
   if (line === undefined) {
     if (stdinClosed) {
-      if (map) { try { map.release(); } catch { /* ignore */ } }
-      process.exit(0);
+      void shutdownAndExit(0);
     }
     return;
   }
@@ -470,47 +617,64 @@ function processNext(): void {
   try {
     cmd = JSON.parse(line) as Cmd;
   } catch (e) {
-    // Malformed JSON is a fail-fast contract violation per spec
-    // §"Implementation notes" → discriminator behavior.
     process.stderr.write(`[renderer] malformed JSON: ${(e as Error).message}\n`);
     process.exit(1);
   }
   switch (cmd.cmd) {
     case 'setup':
+      setActivity('setup');
       setup(cmd).then(
         () => {
+          setActivity('idle (post-setup)');
           writeReady();
           busy = false;
           processNext();
         },
         (e: Error) => {
-          process.stderr.write(`[renderer] setup failed: ${e.message}\n`);
-          process.exit(1);
+          process.stderr.write(`[renderer] setup failed: ${e.message}\n${e.stack ?? ''}\n`);
+          // Defer exit so Chrome's pipe-forwarded stderr (which carries
+          // GPU-process death / OOM / target-destroyed lines) has a chance
+          // to flush before we tear down. Without this delay, the stderr
+          // ring only captures the puppeteer ProtocolError, not the
+          // root cause.
+          setTimeout(() => process.exit(1), 500);
         },
       );
       break;
     case 'render':
-      renderFrame(cmd, () => {
-        busy = false;
-        processNext();
-      });
+      setActivity(`render frame=${cmd.frame_index} t=${cmd.project_time_ms}ms`);
+      renderFrame(cmd).then(
+        () => {
+          setActivity(`idle (post-frame ${cmd.frame_index})`);
+          busy = false;
+          processNext();
+        },
+        (e: Error) => {
+          process.stderr.write(
+            `[renderer] render error at frame ${cmd.frame_index} t=${cmd.project_time_ms}: ${e.message}\n${e.stack ?? ''}\n`,
+          );
+          setTimeout(() => process.exit(1), 500);
+        },
+      );
       break;
     case 'recycle':
+      setActivity('recycle');
       recycle().then(
         () => {
+          setActivity('idle (post-recycle)');
           writeReady();
           busy = false;
           processNext();
         },
         (e: Error) => {
-          process.stderr.write(`[renderer] recycle failed: ${e.message}\n`);
-          process.exit(1);
+          process.stderr.write(`[renderer] recycle failed: ${e.message}\n${e.stack ?? ''}\n`);
+          setTimeout(() => process.exit(1), 500);
         },
       );
       break;
     case 'shutdown':
-      if (map) { try { map.release(); } catch { /* ignore */ } }
-      process.exit(0);
+      setActivity('shutdown');
+      void shutdownAndExit(0);
       break;
     default: {
       const c: { cmd?: string } = cmd as { cmd?: string };
@@ -521,20 +685,41 @@ function processNext(): void {
   }
 }
 
+async function shutdownAndExit(code: number): Promise<void> {
+  if (page) {
+    try { await page.close(); } catch { /* ignore */ }
+    page = null;
+  }
+  if (browser) {
+    try { await browser.close(); } catch { /* ignore */ }
+    browser = null;
+  }
+  process.exit(code);
+}
+
 rl.on('line', (line) => {
   if (!line.trim()) return;
   queue.push(line);
   processNext();
 });
 
-// EOF handling: drain queued commands first, then exit cleanly. If we
-// process.exit immediately on rl close, in-flight async work (setup's style
-// fetch, render's tile fetches) gets cancelled silently. Setting a flag
-// causes processNext to exit once the queue empties and no command is busy.
 rl.on('close', () => {
   stdinClosed = true;
   if (!busy && queue.length === 0) {
-    if (map) { try { map.release(); } catch { /* ignore */ } }
-    process.exit(0);
+    void shutdownAndExit(0);
   }
 });
+
+// Heartbeat — prints current activity + how long we've been in it. Tuned
+// to 15 s so a healthy export (frames flow every ~hundreds of ms) buries
+// the heartbeat in real frame breadcrumbs, while a stalled worker stands
+// out as a heartbeat ticking against a stuck activity ("render frame=42
+// t=… elapsed=120000ms" → frame 42's evaluate or screenshot is hung).
+// `unref` so the timer doesn't block shutdown.
+setInterval(() => {
+  const elapsed = Date.now() - activityStartedAt;
+  process.stderr.write(
+    `[renderer heartbeat] activity="${currentActivity}" elapsed=${elapsed}ms ` +
+    `busy=${busy} queueDepth=${queue.length}\n`,
+  );
+}, 15_000).unref();

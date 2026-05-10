@@ -9,7 +9,15 @@ import { act } from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { LayoutPreview } from '../LayoutPreview';
-import { defaultLayout, resolveSlots, type LayoutConfig } from '../../../lib/layout';
+import {
+  OUTPUT_DIMS,
+  defaultLayout,
+  defaultPipLayout,
+  defaultSplitLayout,
+  resolveSlots,
+  type AspectRatio,
+  type LayoutConfig,
+} from '../../../lib/layout';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -163,6 +171,26 @@ describe('LayoutPreview', () => {
     expect((svg as unknown as HTMLElement).style.pointerEvents).toBe('none');
   });
 
+  it("mode='configurator' suppresses labels and dashed background stroke", () => {
+    const layout = defaultLayout('9_16');
+    render(
+      <LayoutPreview
+        layout={layout}
+        aspect="9_16"
+        containerWidth={540}
+        containerHeight={960}
+        mode="configurator"
+      />,
+    );
+    expect(container.querySelector('[data-testid="layout-preview-map-label"]')).toBeNull();
+    expect(container.querySelector('[data-testid="layout-preview-video-label"]')).toBeNull();
+    // The full-bleed background slot in PiP mode normally has a dashed stroke
+    // (the inset is solid). Configurator mode drops the dash so the
+    // interactive overlay doesn't fight visually.
+    const videoSlot = getByTestId('layout-preview-video-slot');
+    expect(videoSlot.getAttribute('stroke-dasharray')).toBeNull();
+  });
+
   it('renders Map and Video labels centered in their respective slots', () => {
     const layout = defaultLayout('9_16');
     const resolved = resolveSlots(layout, '9_16');
@@ -191,4 +219,76 @@ describe('LayoutPreview', () => {
     expect(mapText!.textContent).toBe('Map');
     expect(videoText!.textContent).toBe('Video');
   });
+});
+
+describe('LayoutPreview — full (mode × aspect) matrix (task 100)', () => {
+  // Verification, not new behavior: the component's aspect-fit math is
+  // already aspect-agnostic. Per acceptance, every cell of LAYOUT.md §3
+  // renders correctly: viewBox matches OUTPUT_DIMS, both rects render at
+  // the slot rects from `resolveSlots`, and (for PiP) the corner radius
+  // applies to the right slot per `corner_radius_slot`.
+  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+
+  for (const aspect of aspects) {
+    it(`PiP × ${aspect}: viewBox + slot rects + corner radius`, () => {
+      const layout = defaultPipLayout(aspect);
+      const resolved = resolveSlots(layout, aspect);
+      render(
+        <LayoutPreview
+          layout={layout}
+          aspect={aspect}
+          containerWidth={540}
+          containerHeight={960}
+        />,
+      );
+
+      const svg = getByTestId('layout-preview-svg');
+      expect(svg.getAttribute('viewBox')).toBe(
+        `0 0 ${OUTPUT_DIMS[aspect].w} ${OUTPUT_DIMS[aspect].h}`,
+      );
+
+      const mapSlot = getByTestId('layout-preview-map-slot');
+      const videoSlot = getByTestId('layout-preview-video-slot');
+      expect(Number(mapSlot.getAttribute('x'))).toBe(resolved.map_slot.x);
+      expect(Number(mapSlot.getAttribute('y'))).toBe(resolved.map_slot.y);
+      expect(Number(mapSlot.getAttribute('width'))).toBe(resolved.map_slot.w);
+      expect(Number(mapSlot.getAttribute('height'))).toBe(resolved.map_slot.h);
+      expect(Number(videoSlot.getAttribute('x'))).toBe(resolved.video_slot.x);
+      expect(Number(videoSlot.getAttribute('width'))).toBe(resolved.video_slot.w);
+
+      // PiP defaults inset the map; the inset slot gets the corner radius,
+      // the background slot does not.
+      expect(Number(mapSlot.getAttribute('rx'))).toBe(resolved.corner_radius_px);
+      expect(videoSlot.getAttribute('rx')).toBeNull();
+    });
+
+    it(`Split × ${aspect}: viewBox + adjacent slot rects + zero corner radius`, () => {
+      const layout = defaultSplitLayout(aspect);
+      const resolved = resolveSlots(layout, aspect);
+      render(
+        <LayoutPreview
+          layout={layout}
+          aspect={aspect}
+          containerWidth={540}
+          containerHeight={960}
+        />,
+      );
+
+      const svg = getByTestId('layout-preview-svg');
+      expect(svg.getAttribute('viewBox')).toBe(
+        `0 0 ${OUTPUT_DIMS[aspect].w} ${OUTPUT_DIMS[aspect].h}`,
+      );
+
+      const mapSlot = getByTestId('layout-preview-map-slot');
+      const videoSlot = getByTestId('layout-preview-video-slot');
+      expect(Number(mapSlot.getAttribute('width'))).toBe(resolved.map_slot.w);
+      expect(Number(mapSlot.getAttribute('height'))).toBe(resolved.map_slot.h);
+      expect(Number(videoSlot.getAttribute('width'))).toBe(resolved.video_slot.w);
+      expect(Number(videoSlot.getAttribute('height'))).toBe(resolved.video_slot.h);
+
+      // Split: no corner radius, ever.
+      expect(mapSlot.getAttribute('rx')).toBeNull();
+      expect(videoSlot.getAttribute('rx')).toBeNull();
+    });
+  }
 });

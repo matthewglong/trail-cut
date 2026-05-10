@@ -26,8 +26,9 @@ use std::process::Command;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
-    default_layout, render_export, resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor,
-    NormalizedRect, PipInsetSource, RenderExportRequest,
+    default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
+    resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor, NormalizedRect, PipInsetSource,
+    RenderExportRequest,
 };
 
 fn assert_ffmpeg_on_path() {
@@ -432,4 +433,125 @@ async fn video_only_inset_with_corner_radius_antialiased() {
 #[allow(dead_code)]
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Build a Channel C request at an arbitrary `(aspect, layout)` cell. The
+/// 2-clip fixture stays the same; only the layout descriptor varies. Used
+/// by the task 100 matrix tests.
+#[cfg(feature = "integration_export_matrix")]
+fn build_request_with_layout(
+    output_path: &str,
+    clip_a_path: &Path,
+    clip_b_path: &Path,
+    aspect: AspectRatio,
+    layout: LayoutConfig,
+) -> RenderExportRequest {
+    let resolved = resolve_slots(&layout, aspect);
+    let layout_descriptor = LayoutDescriptor {
+        aspect,
+        layout,
+        resolved,
+    };
+    let project_state = json!({
+        "timeline": { "totalDurationMs": 1334 },
+        "route": null,
+        "clips": [
+            clip_json("clip-a", clip_a_path, 0, 1000, 1.5, 1.2),
+            clip_json("clip-b", clip_b_path, 0, 1000, 1.5, 1.2),
+        ],
+        "mapSettings": {}
+    });
+    RenderExportRequest {
+        channel: "video_only".to_string(),
+        fps: 30,
+        output_path: output_path.to_string(),
+        layout: layout_descriptor,
+        project_state,
+    }
+}
+
+/// Task 100 matrix: render Channel C at every (PiP, Split) × (9:16, 4:5,
+/// 16:9) cell and verify FFprobe reports correct dims, codec, pix_fmt, and
+/// audio stream. Existing baseline 9:16-PiP tests stay; this is additive.
+#[cfg(feature = "integration_export_matrix")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn channel_c_full_matrix() {
+    assert_ffmpeg_on_path();
+    let tmp = TempDir::new().expect("tempdir");
+    let clip_a = tmp.path().join("clip-a.mp4");
+    let clip_b = tmp.path().join("clip-b.mp4");
+    make_test_clip(&clip_a, 1.0, "a");
+    make_test_clip(&clip_b, 1.0, "b");
+
+    let aspects = [
+        AspectRatio::NineSixteen,
+        AspectRatio::FourFive,
+        AspectRatio::SixteenNine,
+    ];
+    for aspect in aspects {
+        for (mode, layout) in [
+            ("pip", default_pip_layout(aspect)),
+            ("split", default_split_layout(aspect)),
+        ] {
+            let output_path = tmp
+                .path()
+                .join(format!("video_only_{:?}_{}.mov", aspect, mode));
+            let req = build_request_with_layout(
+                output_path.to_string_lossy().as_ref(),
+                &clip_a,
+                &clip_b,
+                aspect,
+                layout,
+            );
+
+            render_export(req).await.unwrap_or_else(|e| {
+                panic!("render_export failed for ({:?}, {}): {:?}", aspect, mode, e)
+            });
+
+            let probe = ffprobe_streams(&output_path);
+            let streams = probe["streams"].as_array().expect("streams array");
+            let video = streams
+                .iter()
+                .find(|s| s["codec_type"] == "video")
+                .unwrap_or_else(|| panic!("no video stream for ({:?}, {})", aspect, mode));
+            assert_eq!(video["codec_name"], "prores", "{:?} {}", aspect, mode);
+            let pix_fmt = video["pix_fmt"].as_str().expect("pix_fmt present");
+            assert!(
+                matches!(pix_fmt, "yuva444p10le" | "yuva444p12le"),
+                "{:?} {}: pix_fmt={}",
+                aspect,
+                mode,
+                pix_fmt,
+            );
+
+            let dims = output_dims(aspect);
+            assert_eq!(
+                video["width"].as_u64().unwrap() as u32,
+                dims.w,
+                "{:?} {} width",
+                aspect,
+                mode,
+            );
+            assert_eq!(
+                video["height"].as_u64().unwrap() as u32,
+                dims.h,
+                "{:?} {} height",
+                aspect,
+                mode,
+            );
+
+            // Channel C carries audio: pcm_s16le, exactly one stream.
+            let audio_streams: Vec<&Value> = streams
+                .iter()
+                .filter(|s| s["codec_type"] == "audio")
+                .collect();
+            assert_eq!(audio_streams.len(), 1, "{:?} {} audio count", aspect, mode);
+            assert_eq!(
+                audio_streams[0]["codec_name"], "pcm_s16le",
+                "{:?} {} audio codec",
+                aspect,
+                mode,
+            );
+        }
+    }
 }

@@ -37,9 +37,9 @@ use crate::export::protocol::{
 use crate::export::sink::FrameSink;
 
 /// Default per-worker recycle cadence. PLAN.md §"Renderer worker lifecycle"
-/// — the native renderer retains ~130 MB per frame with no internal eviction,
-/// so a 60-frame chunk holds ~7.8 GB without recycling. Tunable via
-/// `OrchestratorConfig::recycle_every`.
+/// — recycling caps per-Page memory growth (Chrome holds allocations
+/// across renders) so a 60-frame chunk doesn't spiral.
+/// Tunable via `OrchestratorConfig::recycle_every`.
 pub const RECYCLE_EVERY_FRAMES: u32 = 60;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -56,12 +56,18 @@ pub struct OrchestratorConfig {
     pub recycle_every: u32,
     pub renderer_cjs_path: PathBuf,
     pub node_path: PathBuf,
+    /// Path to the Chrome executable that the chromium renderer worker
+    /// spawns via puppeteer-core. Always set; the orchestrator passes it
+    /// to every worker via `TRAILCUT_CHROME_BIN`. Resolution lives here
+    /// (not in the Node worker) because production must look at the Tauri
+    /// bundle's `Resources/` directory and dev must look at
+    /// `src-tauri/binaries/`, both filesystem concerns the worker shouldn't
+    /// know about.
+    pub chrome_path: PathBuf,
 }
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
-        // Dev-mode resolution. Production sidecar lookup (per-platform binaries
-        // bundled via Tauri's `bundle.externalBin`) is task 130's concern.
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         Self {
             worker_count: 1,
@@ -72,7 +78,102 @@ impl Default for OrchestratorConfig {
                 .join("dist")
                 .join("renderer.cjs"),
             node_path: PathBuf::from("node"),
+            chrome_path: resolve_chrome(manifest_dir),
         }
+    }
+}
+
+// Path components from the unpacked Chrome dir to the actual executable.
+// macOS ships browsers as .app bundles with the binary buried at
+// `<App>.app/Contents/MacOS/<App>`. Task 130 will add Windows/Linux.
+fn chrome_binary_relative() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "Google Chrome for Testing.app",
+            "Contents",
+            "MacOS",
+            "Google Chrome for Testing",
+        ]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        &["chrome"]
+    }
+}
+
+// Resolve the bundled Chrome binary. Three-tier lookup:
+//
+//   1. `TRAILCUT_CHROME_BIN` env var — explicit override, used by tests and
+//      for ad-hoc dev with a non-default install.
+//   2. Production layout — when the executable lives next to a Tauri bundle
+//      Resources dir (`<exe>/../Resources/binaries/chrome-<triple>/...` on
+//      macOS). Computed from `current_exe()`.
+//   3. Dev layout — `<manifest>/binaries/chrome-<triple>/<inner>`, populated
+//      by `npm run build:renderer` via @puppeteer/browsers.
+//
+// Returns the first candidate that exists. If none exist, returns the dev
+// path (so the eventual `puppeteer.launch` error message points the developer
+// at the location they need to populate).
+//
+// Chrome ships as a directory tree (.app bundle on macOS containing the
+// binary plus frameworks, helper apps, and resources). We expose the path of
+// the inner executable; the surrounding tree must travel with it. That's why
+// this ships via `bundle.resources` (directory copy) rather than
+// `bundle.externalBin` (single-file copy).
+fn resolve_chrome(manifest_dir: &str) -> PathBuf {
+    if let Ok(p) = std::env::var("TRAILCUT_CHROME_BIN") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+
+    let triple = host_target_triple();
+    let dirname = format!("chrome-{}", triple);
+    let inner: Vec<&str> = chrome_binary_relative().to_vec();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(macos_dir) = exe.parent() {
+            // <bundle>/Contents/MacOS/<exe> → <bundle>/Contents/Resources/binaries/...
+            let mut resources_candidate = macos_dir
+                .join("..")
+                .join("Resources")
+                .join("binaries")
+                .join(&dirname);
+            for seg in &inner {
+                resources_candidate = resources_candidate.join(seg);
+            }
+            if resources_candidate.exists() {
+                return resources_candidate;
+            }
+        }
+    }
+
+    let mut dev = PathBuf::from(manifest_dir).join("binaries").join(&dirname);
+    for seg in &inner {
+        dev = dev.join(seg);
+    }
+    dev
+}
+
+// Target triple of the current build, in the form Tauri uses for sidecar
+// naming. Restricted to the platforms this app supports today (macOS arm64 +
+// x86_64). Task 130 will add Windows triples.
+fn host_target_triple() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "aarch64-apple-darwin"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "x86_64-apple-darwin"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Fallback: keep compiling on unsupported hosts (CI or future Windows
+        // dev) but use a sentinel path component so the missing-binary error
+        // is recognizable. Task 130 supersedes this branch.
+        "unsupported-host"
     }
 }
 
@@ -112,6 +213,7 @@ pub async fn render_map_frames(
         let setup_line_bytes = setup_line_bytes.clone();
         let node_path = config.node_path.clone();
         let renderer_cjs = config.renderer_cjs_path.clone();
+        let chrome_path = config.chrome_path.clone();
         set.spawn(async move {
             run_worker(
                 worker_id,
@@ -121,6 +223,7 @@ pub async fn render_map_frames(
                 setup_line_bytes,
                 node_path,
                 renderer_cjs,
+                chrome_path,
                 tx_clone,
             )
             .await
@@ -247,10 +350,12 @@ async fn run_worker(
     setup_line_bytes: String,
     node_path: PathBuf,
     renderer_cjs: PathBuf,
+    chrome_path: PathBuf,
     frame_tx: mpsc::Sender<(u32, Vec<u8>)>,
 ) -> Result<(), OrchestratorError> {
     let mut child = Command::new(&node_path)
         .arg(&renderer_cjs)
+        .env("TRAILCUT_CHROME_BIN", &chrome_path)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -521,5 +626,65 @@ mod tests {
         let tail = ring.tail();
         assert!(!tail.contains("aaaa"));
         assert!(tail.contains("cccc"));
+    }
+
+    // Env-touching tests share process state, so serialize them to avoid
+    // racing each other (cargo runs tests in parallel by default).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env<F: FnOnce()>(key: &str, value: Option<&str>, body: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prior = std::env::var(key).ok();
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+        body();
+        match prior {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn default_renderer_path_points_at_renderer_sidecar() {
+        let cfg = OrchestratorConfig::default();
+        let s = cfg.renderer_cjs_path.to_string_lossy();
+        assert!(
+            s.ends_with("sidecars/renderer/dist/renderer.cjs"),
+            "expected renderer path, got {s}"
+        );
+    }
+
+    #[test]
+    fn chrome_env_override_takes_priority() {
+        with_env("TRAILCUT_CHROME_BIN", Some("/tmp/explicit-override/chrome"), || {
+            let cfg = OrchestratorConfig::default();
+            assert_eq!(
+                cfg.chrome_path,
+                PathBuf::from("/tmp/explicit-override/chrome"),
+            );
+        });
+    }
+
+    #[test]
+    fn chrome_dev_path_when_no_env() {
+        with_env("TRAILCUT_CHROME_BIN", None, || {
+            let cfg = OrchestratorConfig::default();
+            let s = cfg.chrome_path.to_string_lossy();
+            // Dev layout: <manifest>/binaries/chrome-<triple>/<inner>.
+            // Inner path is platform-specific; on macOS the binary lives
+            // inside `Google Chrome for Testing.app/Contents/MacOS/...`.
+            // Production resolution only fires inside a real Tauri bundle.
+            assert!(
+                s.contains("binaries/chrome-"),
+                "expected dev path under binaries/chrome-<triple>/, got {s}",
+            );
+            #[cfg(target_os = "macos")]
+            assert!(
+                s.ends_with("/Google Chrome for Testing"),
+                "expected macOS binary path, got {s}",
+            );
+        });
     }
 }

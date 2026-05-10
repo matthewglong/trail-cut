@@ -1,4 +1,4 @@
-use crate::export::layout::{default_layout, AspectRatio, ProjectLayouts};
+use crate::export::layout::{default_pip_layout, AspectRatio, ProjectLayouts};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,12 +285,22 @@ pub struct Project {
     /// distinguishes `null` from `undefined` at the call site.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<Route>,
-    /// Per-aspect layout configuration (v4+). `None` until the user
-    /// configures any aspect via the configurator UI (task 110); each aspect
-    /// inside is also `Option` so a user can configure 9:16 without touching
-    /// 4:5 / 16:9. See `docs/export/LAYOUT.md` §4.
+    /// Per-aspect layout configuration (v4+). Always populated post-100 —
+    /// fresh projects ship with all three aspects seeded; the load path
+    /// backfills pre-080 bundles where the field was absent or null. Each
+    /// aspect entry stays `Option` so a user can explicitly clear an aspect
+    /// via the configurator (110) — that null is preserved on subsequent
+    /// loads. See `docs/export/LAYOUT.md` §4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layouts: Option<ProjectLayouts>,
+    /// Aspect that the export pipeline targets (v4 + 100). Creative-content
+    /// state — travels with the project bundle so opening a `.trailcut`
+    /// preserves "this video is for Reels (9:16)" vs "for IG feed (4:5)". The
+    /// serde default handles pre-100 bundles (field absent → 9:16); a future
+    /// aspect-picker UI mutates this; the export handlers in `ProjectView`
+    /// read it.
+    #[serde(default = "default_selected_aspect")]
+    pub selected_export_aspect: AspectRatio,
     #[serde(default)]
     pub map_settings: Option<MapSettings>,
     /// `None` on disk for v1 projects pre-dating the camera migration. The
@@ -319,11 +329,13 @@ impl Default for Project {
             thumbnail: None,
             clips: Vec::new(),
             route: None,
-            // Seed 9:16 with the baseline PiP-bottom-right layout (task 080).
-            // 4:5 / 16:9 stay None — the configurator UI seeds them when the
-            // user picks those aspects, so we don't impose aesthetic
-            // decisions on aspects the user may not use.
+            // Seed all three aspects (task 100). 080's "9:16 only on creation"
+            // rule retired now that the export matrix is paved end-to-end and
+            // the configurator (110) lets users mutate any aspect — the
+            // starter is no longer "aesthetic imposition" but "the value the
+            // configurator opens with."
             layouts: Some(seeded_layouts()),
+            selected_export_aspect: default_selected_aspect(),
             map_settings: None,
             transition_feel: None,
             start_camera: None,
@@ -332,15 +344,22 @@ impl Default for Project {
     }
 }
 
-/// First-contact `ProjectLayouts` shape: 9:16 seeded with `default_layout`,
-/// other aspects left `None`. Used by `Project::default` (new projects) and
-/// `load_project`'s backfill (pre-080 v4 projects with `layouts: None`).
+/// First-contact `ProjectLayouts` shape (task 100): all three aspects seeded
+/// with `default_pip_layout`. Used by `Project::default` (new projects) and
+/// `load_project`'s backfill paths.
 pub fn seeded_layouts() -> ProjectLayouts {
     ProjectLayouts {
-        aspect_9_16: Some(default_layout(AspectRatio::NineSixteen)),
-        aspect_4_5: None,
-        aspect_16_9: None,
+        aspect_9_16: Some(default_pip_layout(AspectRatio::NineSixteen)),
+        aspect_4_5: Some(default_pip_layout(AspectRatio::FourFive)),
+        aspect_16_9: Some(default_pip_layout(AspectRatio::SixteenNine)),
     }
+}
+
+/// Default for `selected_export_aspect` (task 100). Pre-100 projects lack
+/// the field; serde supplies this on deserialize. New projects also pick
+/// `9_16` via `Project::default`.
+pub fn default_selected_aspect() -> AspectRatio {
+    AspectRatio::NineSixteen
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
