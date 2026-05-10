@@ -9,13 +9,14 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
 import { MapPositioningModal } from '../components/MapPositioningModal';
+import { ExportModal } from '../components/ExportModal';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
 import { buildExportRequest, type ExportChannel } from '../lib/exportRequest';
-import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportSelection } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -87,6 +88,12 @@ interface ProjectViewProps {
    *  `buildExportRequest` call. */
   selectedExportAspect: AspectRatio;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
+  /** Last user-confirmed Export modal selection (task 280). The Export
+   *  modal prefills aspects/channels/output folder from this on open;
+   *  `null` means "no prior export — start clean". App-level state owns the
+   *  value so it travels through `useAutoSave` to disk. */
+  lastExportSelection: ExportSelection | null;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportSelection | null>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -125,6 +132,8 @@ export default function ProjectView({
   setProjectLayouts,
   selectedExportAspect,
   setSelectedExportAspect,
+  lastExportSelection,
+  setLastExportSelection,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -147,6 +156,12 @@ export default function ProjectView({
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<RenderExportError | null>(null);
   const [exportDetailsOpen, setExportDetailsOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSelection, setExportSelection] = useState<ExportSelection>({
+    aspects: [],
+    channels: [],
+    output_dir: null,
+  });
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
   const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
@@ -645,6 +660,14 @@ export default function ProjectView({
             )}
           </div>
           <button
+            onClick={() => setExportModalOpen(true)}
+            disabled={clips.length === 0}
+            style={styles.button}
+            data-testid="open-export-modal"
+          >
+            Export
+          </button>
+          <button
             onClick={handleExportMapOnly}
             disabled={exporting || clips.length === 0}
             style={styles.button}
@@ -906,6 +929,20 @@ export default function ProjectView({
         onLayoutChange={(aspect, next) =>
           setProjectLayouts((prev) => ({ ...prev, [aspect]: next }))
         }
+      />
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        selection={exportSelection}
+        onSelectionChange={setExportSelection}
+        lastExportSelection={lastExportSelection}
+        onSelectionPersist={setLastExportSelection}
+        projectName={projectName}
+        clips={clips}
+        route={route}
+        mapSettings={mapSettings}
+        transitionFeel={transitionFeel}
+        projectLayouts={projectLayouts}
       />
     </div>
   );

@@ -5,7 +5,7 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { AspectRatio, Clip, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
+import type { AspectRatio, Clip, ExportSelection, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
 import { defaultPipLayout } from './lib/layout';
 
@@ -33,6 +33,7 @@ export default function App() {
   const [transitionFeel, setTransitionFeel] = useState<TransitionFeel | undefined>(undefined);
   const [projectLayouts, setProjectLayouts] = useState<ProjectLayouts>(makeSeededLayouts);
   const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
+  const [lastExportSelection, setLastExportSelection] = useState<ExportSelection | null>(null);
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
@@ -57,6 +58,7 @@ export default function App() {
     setTransitionFeel,
     setProjectLayouts,
     setSelectedExportAspect,
+    setLastExportSelection,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -74,6 +76,7 @@ export default function App() {
     transitionFeel,
     projectLayouts,
     selectedExportAspect,
+    lastExportSelection,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
@@ -142,6 +145,8 @@ export default function App() {
       setProjectLayouts={setProjectLayouts}
       selectedExportAspect={selectedExportAspect}
       setSelectedExportAspect={setSelectedExportAspect}
+      lastExportSelection={lastExportSelection}
+      setLastExportSelection={setLastExportSelection}
       playheadMs={playheadMs}
       setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}

@@ -68,23 +68,29 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 
     let mut project = match version {
         1 => {
-            // Chain v1 → v2 → v3 → v4. Each step is value-level until the
-            // final `from_value` so a partially-migrated bundle (e.g. an
+            // Chain v1 → v2 → v3 → v4 → v5. Each step is value-level until
+            // the final `from_value` so a partially-migrated bundle (e.g. an
             // interrupted save) reads through cleanly.
             let v2 = migrate_v1_to_v2_value(raw)?;
             let v3 = migrate_v2_to_v3_value(v2)?;
-            migrate_v3_to_v4(v3)?
+            let v4 = migrate_v3_to_v4_value(v3)?;
+            migrate_v4_to_v5(v4)?
         }
         2 => {
             let v3 = migrate_v2_to_v3_value(raw)?;
-            migrate_v3_to_v4(v3)?
+            let v4 = migrate_v3_to_v4_value(v3)?;
+            migrate_v4_to_v5(v4)?
         }
-        3 => migrate_v3_to_v4(raw)?,
-        4 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v4 project: {}", e))?,
+        3 => {
+            let v4 = migrate_v3_to_v4_value(raw)?;
+            migrate_v4_to_v5(v4)?
+        }
+        4 => migrate_v4_to_v5(raw)?,
+        5 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v5 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1–v4)",
+                "Unknown project schema version {} (this app supports v1–v5)",
                 version
             ));
         }
@@ -192,20 +198,52 @@ fn migrate_v2_to_v3(raw: serde_json::Value) -> Result<Project, String> {
     Ok(project)
 }
 
-/// v3 → v4 migration. Drops the placeholder `exports` array (the field has
-/// always been a placeholder; no UI ever wrote it). Adds an absent `layouts`
-/// field — existing v3 projects post-migration carry `layouts: None` and the
-/// user reconfigures via the configurator UI in task 110. Stamps
-/// `schema_version: 4`. See `docs/export/tasks/050-layout-descriptor-types.md`.
-fn migrate_v3_to_v4(mut raw: serde_json::Value) -> Result<Project, String> {
+/// v3 → v4 migration (value-form). Drops the placeholder `exports` array
+/// (the field has always been a placeholder; no UI ever wrote it). Adds an
+/// absent `layouts` field — existing v3 projects post-migration carry
+/// `layouts: None` and the user reconfigures via the configurator UI in task
+/// 110. Stamps `schema_version: 4`. Returns a Value so callers can chain
+/// v4 → v5 without an intermediate deserialize / reserialize round-trip.
+/// See `docs/export/tasks/050-layout-descriptor-types.md`.
+fn migrate_v3_to_v4_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Some(obj) = raw.as_object_mut() {
         obj.remove("exports");
         obj.insert("schema_version".into(), serde_json::Value::from(4u32));
     } else {
         return Err("v3 project root is not a JSON object".into());
     }
-    let mut project: Project = serde_json::from_value(raw)
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v3 → v4 migration that returns a parsed Project.
+/// Wraps `migrate_v3_to_v4_value` and finalizes via serde, stamping the
+/// in-memory `schema_version` at v4 (NOT `CURRENT_SCHEMA_VERSION`) so
+/// existing tests still observe the per-step bump.
+#[cfg(test)]
+fn migrate_v3_to_v4(raw: serde_json::Value) -> Result<Project, String> {
+    let v4 = migrate_v3_to_v4_value(raw)?;
+    let mut project: Project = serde_json::from_value(v4)
         .map_err(|e| format!("Failed to parse v3 project during v4 migration: {}", e))?;
+    project.schema_version = 4;
+    Ok(project)
+}
+
+/// v4 → v5 migration. Purely additive: v5 introduces
+/// `last_export_selection: Option<ExportSelection>` per task 280. The field
+/// has `#[serde(default)]` so absence deserializes as `None`; this migration
+/// only stamps the version. Stamps `schema_version: CURRENT_SCHEMA_VERSION`
+/// so the in-memory project reflects the latest schema after load.
+fn migrate_v4_to_v5(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert(
+            "schema_version".into(),
+            serde_json::Value::from(CURRENT_SCHEMA_VERSION),
+        );
+    } else {
+        return Err("v4 project root is not a JSON object".into());
+    }
+    let mut project: Project = serde_json::from_value(raw)
+        .map_err(|e| format!("Failed to parse v4 project during v5 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
@@ -317,7 +355,9 @@ mod tests {
     fn migrate_v3_to_v4_drops_exports_and_stamps_schema() {
         let raw: serde_json::Value = serde_json::from_str(V3_PROJECT_JSON).unwrap();
         let project = migrate_v3_to_v4(raw).expect("v3 project must migrate cleanly");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        // Per-step migration helper stamps v4 specifically, not
+        // `CURRENT_SCHEMA_VERSION` — the chained `load_project` path is what
+        // walks all the way up to the latest schema.
         assert_eq!(project.schema_version, 4);
         // Original fields preserved.
         assert_eq!(project.name, "V3 Project");
@@ -354,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_round_trip_writes_v4() {
+    fn save_then_load_round_trip_writes_current_schema() {
         let dir = std::env::temp_dir().join(format!(
             "trailcut-test-{}-{}",
             std::process::id(),
@@ -366,14 +406,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // Seed the bundle with a v1-shaped project.json (exercises the
-        // chained v1 → v2 → v3 → v4 path).
+        // full chained v1 → … → CURRENT path).
         std::fs::write(dir.join("project.json"), V1_PROJECT_JSON).unwrap();
 
         let dir_str = dir.to_string_lossy().into_owned();
         let loaded = load_project(dir_str.clone()).expect("load v1 must succeed");
         assert_eq!(
             loaded.schema_version, CURRENT_SCHEMA_VERSION,
-            "load must surface migrated v4 in memory"
+            "load must surface migrated CURRENT schema in memory"
         );
         assert!(loaded.start_camera.is_none());
         assert!(loaded.default_entry_transition.is_none());
@@ -396,13 +436,14 @@ mod tests {
 
         save_project(loaded, dir_str.clone()).expect("save must succeed");
 
-        // After save, the on-disk file is v4 and has no top-level `route` or `exports`.
+        // After save, the on-disk file is at CURRENT schema and has no top-level
+        // `route` or `exports`.
         let on_disk = std::fs::read_to_string(dir.join("project.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&on_disk).unwrap();
         assert_eq!(
             parsed.get("schema_version").and_then(|v| v.as_u64()),
-            Some(4),
-            "save must write schema_version: 4"
+            Some(CURRENT_SCHEMA_VERSION as u64),
+            "save must write schema_version: CURRENT_SCHEMA_VERSION"
         );
         assert!(
             parsed.get("route").is_none(),
@@ -432,9 +473,9 @@ mod tests {
             Some("9_16"),
         );
 
-        // Reload — the round-trip must keep the schema at v4.
-        let reloaded = load_project(dir_str).expect("reload v4 must succeed");
-        assert_eq!(reloaded.schema_version, 4);
+        // Reload — the round-trip must keep the schema at CURRENT.
+        let reloaded = load_project(dir_str).expect("reload at CURRENT must succeed");
+        assert_eq!(reloaded.schema_version, CURRENT_SCHEMA_VERSION);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -455,7 +496,6 @@ mod tests {
         let dir_str = dir.to_string_lossy().into_owned();
         let loaded = load_project(dir_str.clone()).expect("load v3 must succeed");
         assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(loaded.schema_version, 4);
         assert_eq!(loaded.name, "V3 Project");
         // 080 backfill applies to v3-migrated bundles too — the v3→v4
         // migration leaves `layouts: None`, then the post-load backfill seeds.
@@ -502,9 +542,9 @@ mod tests {
         };
 
         let dir_str = dir.to_string_lossy().into_owned();
-        save_project(project.clone(), dir_str.clone()).expect("save v4 must succeed");
-        let reloaded = load_project(dir_str).expect("reload v4 must succeed");
-        assert_eq!(reloaded.schema_version, 4);
+        save_project(project.clone(), dir_str.clone()).expect("save must succeed");
+        let reloaded = load_project(dir_str).expect("reload must succeed");
+        assert_eq!(reloaded.schema_version, CURRENT_SCHEMA_VERSION);
         let layouts = reloaded.layouts.expect("layouts must round-trip");
         assert!(layouts.aspect_9_16.is_some());
         // Post-100 user-intent contract: nulls survive when
@@ -589,7 +629,7 @@ mod tests {
 
         let dir_str = dir.to_string_lossy().into_owned();
         let loaded = load_project(dir_str).expect("load v2 must succeed");
-        assert_eq!(loaded.schema_version, 4);
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(matches!(loaded.transition_feel, Some(TransitionFeel::Snappy)));
         assert_eq!(loaded.name, "Mid Project");
         // 080 backfill: v2 bundles also surface in memory with seeded layouts.
@@ -700,7 +740,7 @@ mod tests {
 
         let dir_str = dir.to_string_lossy().into_owned();
         let loaded = load_project(dir_str).expect("load v4 with null layouts must succeed");
-        assert_eq!(loaded.schema_version, 4);
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
         let layouts = loaded
             .layouts
             .expect("backfill must populate layouts on load");
@@ -901,6 +941,44 @@ mod tests {
         assert!(
             layouts.aspect_16_9.is_some(),
             "pre-100 backfill seeds 16_9"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_v4_bundle_loads_with_none_last_export_selection() {
+        // Task 280 backward-compat: a v4 bundle on disk lacks the
+        // `last_export_selection` field. The v4 → v5 migration is purely
+        // additive — load must succeed and surface `None` for the field
+        // without any user-facing error.
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-v4nolastexport",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let v4_no_export_selection = r#"{
+            "schema_version": 4,
+            "version": 1,
+            "name": "Pre-280 v4 Project",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": null
+        }"#;
+        std::fs::write(dir.join("project.json"), v4_no_export_selection).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("v4 → v5 load must succeed");
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            loaded.last_export_selection.is_none(),
+            "pre-280 bundle must surface None for last_export_selection"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -132,6 +132,25 @@ export type {
 
 import type { AspectRatio, ProjectLayouts } from './lib/layout';
 
+/** Channel selector for the export pipeline. Mirrors the Rust enum-by-string
+ *  in `RenderExportRequest.channel` and the union already exported from
+ *  `lib/exportRequest.ts`; redeclared here so the export-modal UI can depend
+ *  on `types.ts` without pulling in the request builder. */
+export type ExportChannel = 'composite' | 'map_only' | 'video_only';
+
+/** User's pending (or last-confirmed) choice in the Export modal: which
+ *  aspects × which channels, plus the chosen output folder. Cartesian
+ *  product of `aspects` × `channels` yields the render-queue jobs (one job
+ *  per pair). Persisted per project as `Project.last_export_selection`
+ *  (task 280) so reopening the modal prefills the prior choice. Field name
+ *  `output_dir` is snake_case to match the Rust serde wire format — Tauri's
+ *  IPC bridge passes the struct through verbatim. */
+export interface ExportSelection {
+  aspects: AspectRatio[];
+  channels: ExportChannel[];
+  output_dir: string | null;
+}
+
 /** Project-level "transition feel" knob. Drives the duration multiplier for
  *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
  *  duplicated here so types.ts stays free of cameraIntent imports
@@ -207,6 +226,11 @@ export interface Project {
   /** Project-level defaults for every clip's entry transition. Each clip's
    *  own `entry_transition` overrides individual fields. */
   default_entry_transition?: ClipEntryTransition;
+  /** Last user-confirmed Export modal selection (task 280). `null` until
+   *  the user completes their first successful export; set on
+   *  `queueState === 'done'` with at least one done job. The Export modal
+   *  prefills aspects/channels/output folder from this on subsequent opens. */
+  last_export_selection: ExportSelection | null;
 }
 
 export interface RecentProject {
