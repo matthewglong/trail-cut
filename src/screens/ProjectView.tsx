@@ -9,6 +9,7 @@ import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
 import { LayoutConfigurator } from '../components/LayoutConfigurator';
+import { MapPositioningModal } from '../components/MapPositioningModal';
 import type { LayoutConfig } from '../lib/layout';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
@@ -166,6 +167,7 @@ export default function ProjectView({
   // Configurator open/closed (task 110 wiring — scaffolding; the real placement
   // is a downstream UI design decision per spec line 58).
   const [configuratorOpen, setConfiguratorOpen] = useState(false);
+  const [positioningModalOpen, setPositioningModalOpen] = useState(false);
   useEffect(() => {
     setLayoutPreviewVisible(readLayoutPreviewPref(projectDir));
   }, [projectDir]);
@@ -874,6 +876,7 @@ export default function ProjectView({
               scope={mapScope}
               onScopeChange={setMapScope}
               overriddenKeys={overriddenKeys}
+              onOpenPositioning={() => setPositioningModalOpen(true)}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
@@ -933,6 +936,10 @@ export default function ProjectView({
           />
         </div>
       </div>
+      <MapPositioningModal
+        open={positioningModalOpen}
+        onClose={() => setPositioningModalOpen(false)}
+      />
     </div>
   );
 }

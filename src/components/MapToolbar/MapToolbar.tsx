@@ -1,4 +1,4 @@
-import { Route as RouteIcon, MapPin, LocateFixed, Layers, ZoomIn, Compass } from 'lucide-react';
+import { Route as RouteIcon, MapPin, LocateFixed, Layers, ZoomIn, Compass, LayoutPanelTop } from 'lucide-react';
 import CollapsibleToolbar from '../CollapsibleToolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
@@ -18,6 +18,8 @@ interface MapToolbarProps {
   onScopeChange: (scope: MapToolbarScope) => void;
   /** Which fields the current clip overrides (non-null keys). Null when scope is 'project'. */
   overriddenKeys: Set<keyof MapSettings> | null;
+  /** Opens the Map Positioning modal. When omitted, the entry-point button is hidden. */
+  onOpenPositioning?: () => void;
 }
 
 const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
@@ -45,6 +47,7 @@ export default function MapToolbar({
   scope,
   onScopeChange,
   overriddenKeys,
+  onOpenPositioning,
 }: MapToolbarProps) {
   const followOn = settings.follow_playhead;
   const bearingAuto = settings.bearing_mode === 'auto';
@@ -250,9 +253,41 @@ export default function MapToolbar({
           iconColor={overrideColor('map_style')}
         />
       </div>
+
+      {onOpenPositioning && (
+        <>
+          <div style={styles.separator} />
+          <div style={styles.group}>
+            <button
+              type="button"
+              onClick={onOpenPositioning}
+              title="Map positioning"
+              aria-label="Map positioning"
+              style={positioningButtonStyle}
+              data-testid="map-toolbar-positioning"
+            >
+              <LayoutPanelTop size={15} strokeWidth={2} />
+            </button>
+          </div>
+        </>
+      )}
     </CollapsibleToolbar>
   );
 }
+
+const positioningButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 24,
+  height: 24,
+  background: 'transparent',
+  border: 'none',
+  color: '#c8c8c8',
+  cursor: 'pointer',
+  borderRadius: 4,
+  padding: 0,
+};
 
 /** Complete perspective frame — wider on left (facing), tapering right (receding).
  *  Closed path with rounded corners. ~7×12 local units. */
