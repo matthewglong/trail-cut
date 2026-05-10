@@ -8,9 +8,7 @@ import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
-import { LayoutConfigurator } from '../components/LayoutConfigurator';
 import { MapPositioningModal } from '../components/MapPositioningModal';
-import type { LayoutConfig } from '../lib/layout';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
@@ -164,9 +162,6 @@ export default function ProjectView({
   const [layoutPreviewVisible, setLayoutPreviewVisible] = useState(() =>
     readLayoutPreviewPref(projectDir),
   );
-  // Configurator open/closed (task 110 wiring — scaffolding; the real placement
-  // is a downstream UI design decision per spec line 58).
-  const [configuratorOpen, setConfiguratorOpen] = useState(false);
   const [positioningModalOpen, setPositioningModalOpen] = useState(false);
   useEffect(() => {
     setLayoutPreviewVisible(readLayoutPreviewPref(projectDir));
@@ -196,6 +191,24 @@ export default function ProjectView({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if ((e.target as HTMLElement | null)?.isContentEditable) return;
+      let next: AspectRatio | null = null;
+      if (e.key === '1') next = '16_9';
+      else if (e.key === '2') next = '4_5';
+      else if (e.key === '3') next = '9_16';
+      if (next === null) return;
+      e.preventDefault();
+      setSelectedExportAspect(next);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [setSelectedExportAspect]);
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -792,70 +805,20 @@ export default function ProjectView({
                   setPlayheadMs(projectMs);
                 }}
               />
-              {/* Layout overlay (tasks 080 / 100 / 110). Read-only preview
-                  by default; when the user clicks "Edit" on the toggle, the
-                  configurator (110) takes over the same surface. Both share
-                  the videoPane sizing and the selectedExportAspect picker.
-                  Treat the configurator wiring as scaffolding — the
-                  permanent placement is a downstream UI design call. */}
               {layoutPreviewVisible &&
                 projectLayouts[selectedExportAspect] &&
                 videoPaneSize.w > 0 && (
-                  configuratorOpen ? (
-                    <LayoutConfigurator
-                      layout={projectLayouts[selectedExportAspect]!}
-                      aspect={selectedExportAspect}
-                      containerWidth={videoPaneSize.w}
-                      containerHeight={videoPaneSize.h}
-                      onChange={(next: LayoutConfig) =>
-                        setProjectLayouts((prev) => ({
-                          ...prev,
-                          [selectedExportAspect]: next,
-                        }))
-                      }
-                      onDone={() => setConfiguratorOpen(false)}
-                    />
-                  ) : (
-                    <LayoutPreview
-                      layout={projectLayouts[selectedExportAspect]!}
-                      aspect={selectedExportAspect}
-                      containerWidth={videoPaneSize.w}
-                      containerHeight={videoPaneSize.h}
-                    />
-                  )
+                  <LayoutPreview
+                    layout={projectLayouts[selectedExportAspect]!}
+                    aspect={selectedExportAspect}
+                    containerWidth={videoPaneSize.w}
+                    containerHeight={videoPaneSize.h}
+                  />
                 )}
               <div style={styles.layoutToggleAnchor}>
-                {/* TEMP scaffold (task 100). Surfaces `selected_export_aspect`
-                    as an inline picker so 100's plumbing is testable end-to-end
-                    without an aspect-picker UI. The picker lives wherever the
-                    broader export-settings UI lands (110 or its successor);
-                    until then this `<select>` is the developer-facing surface.
-                    Treat as scaffolding, not a deliverable. */}
-                <select
-                  value={selectedExportAspect}
-                  onChange={(e) => setSelectedExportAspect(e.target.value as AspectRatio)}
-                  title="Export aspect (temp control — task 100)"
-                  style={{
-                    fontSize: 11,
-                    padding: '2px 4px',
-                    background: 'rgba(0,0,0,0.4)',
-                    color: 'white',
-                    border: '1px solid rgba(255,255,255,0.2)',
-                    borderRadius: 3,
-                  }}
-                >
-                  <option value="9_16">9:16</option>
-                  <option value="4_5">4:5</option>
-                  <option value="16_9">16:9</option>
-                </select>
                 <LayoutPreviewToggle
                   visible={layoutPreviewVisible}
                   onToggle={handleToggleLayoutPreview}
-                  onEdit={
-                    layoutPreviewVisible
-                      ? () => setConfiguratorOpen((o) => !o)
-                      : undefined
-                  }
                 />
               </div>
             </div>
