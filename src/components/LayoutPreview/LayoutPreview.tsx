@@ -11,6 +11,7 @@
 // See `docs/export/LAYOUT.md` and `docs/export/tasks/080-first-concrete-layout.md`.
 
 import { resolveSlots, type AspectRatio, type LayoutConfig } from '../../lib/layout';
+import { semantic } from '../../theme/tokens';
 
 export interface LayoutPreviewProps {
   layout: LayoutConfig;
@@ -23,13 +24,18 @@ export interface LayoutPreviewProps {
   /** Visual mode. `'preview'` (default) shows the labeled, dashed-stroke
    *  read-only overlay used by 080. `'configurator'` suppresses labels and
    *  the dashed background-slot stroke so the configurator (110) can layer
-   *  its own interactive handles without visual fight. */
-  mode?: 'preview' | 'configurator';
+   *  its own interactive handles without visual fight. `'triptych'` fills
+   *  each slot with a distinctive composited treatment (topo hatch for
+   *  map, warm gradient for video) so the read-only Map Positioning tiles
+   *  read as previews rather than wireframes. */
+  mode?: 'preview' | 'configurator' | 'triptych';
 }
 
 const STROKE_COLOR = '#52d6ff';
 const STROKE_OPACITY = 0.9;
 const LABEL_BG = 'rgba(7, 27, 38, 0.55)';
+const TRIPTYCH_STROKE = semantic.borderStrong;
+const TRIPTYCH_LABEL_COLOR = semantic.fgDim;
 
 export function LayoutPreview({
   layout,
@@ -41,6 +47,7 @@ export function LayoutPreview({
   const resolved = resolveSlots(layout, aspect);
   const { output, map_slot, video_slot, corner_radius_px, corner_radius_slot } = resolved;
   const isConfigurator = mode === 'configurator';
+  const isTriptych = mode === 'triptych';
 
   // Aspect-fit: shrink the output frame into the container, preserving
   // ratio. Whichever axis hits the container limit first determines the
@@ -88,28 +95,74 @@ export function LayoutPreview({
       >
         <title>{`layout=${layout.mode} aspect=${aspect}`}</title>
 
-        <SlotRect
-          rect={map_slot}
-          rx={insetIsMap ? corner_radius_px : 0}
-          dashed={!isConfigurator && isPip && !insetIsMap}
-          strokeWidth={strokeViewBoxUnits}
-          testId="layout-preview-map-slot"
-        />
-        <SlotRect
-          rect={video_slot}
-          rx={insetIsVideo ? corner_radius_px : 0}
-          dashed={!isConfigurator && isPip && !insetIsVideo}
-          strokeWidth={strokeViewBoxUnits}
-          testId="layout-preview-video-slot"
-        />
+        {isTriptych && <TriptychDefs aspect={aspect} />}
 
-        {!isConfigurator && (
+        {isTriptych ? (
+          isPip ? (
+            // Background slot underneath, inset slot on top with corner
+            // radius. `corner_radius_slot` names which slot IS the inset.
+            <>
+              <SlotFill
+                rect={corner_radius_slot === 'map' ? video_slot : map_slot}
+                fill={corner_radius_slot === 'map'
+                  ? `url(#triptych-video-${aspect})`
+                  : `url(#triptych-map-${aspect})`}
+                rx={0}
+                testId="layout-preview-bg-fill"
+              />
+              <SlotFill
+                rect={corner_radius_slot === 'map' ? map_slot : video_slot}
+                fill={corner_radius_slot === 'map'
+                  ? `url(#triptych-map-${aspect})`
+                  : `url(#triptych-video-${aspect})`}
+                rx={corner_radius_px}
+                testId="layout-preview-inset-fill"
+              />
+            </>
+          ) : (
+            <>
+              <SlotFill
+                rect={map_slot}
+                fill={`url(#triptych-map-${aspect})`}
+                rx={0}
+                testId="layout-preview-map-fill"
+              />
+              <SlotFill
+                rect={video_slot}
+                fill={`url(#triptych-video-${aspect})`}
+                rx={0}
+                testId="layout-preview-video-fill"
+              />
+            </>
+          )
+        ) : (
+          <>
+            <SlotRect
+              rect={map_slot}
+              rx={insetIsMap ? corner_radius_px : 0}
+              dashed={!isConfigurator && isPip && !insetIsMap}
+              strokeWidth={strokeViewBoxUnits}
+              testId="layout-preview-map-slot"
+            />
+            <SlotRect
+              rect={video_slot}
+              rx={insetIsVideo ? corner_radius_px : 0}
+              dashed={!isConfigurator && isPip && !insetIsVideo}
+              strokeWidth={strokeViewBoxUnits}
+              testId="layout-preview-video-slot"
+            />
+          </>
+        )}
+
+        {!isConfigurator && !isTriptych && (
           <>
             <SlotLabel
               rect={map_slot}
               text="Map"
               fontSize={labelFontPx}
               padding={labelPaddingPx}
+              color={STROKE_COLOR}
+              bg={LABEL_BG}
               testId="layout-preview-map-label"
             />
             <SlotLabel
@@ -117,7 +170,64 @@ export function LayoutPreview({
               text="Video"
               fontSize={labelFontPx}
               padding={labelPaddingPx}
+              color={STROKE_COLOR}
+              bg={LABEL_BG}
               testId="layout-preview-video-label"
+            />
+          </>
+        )}
+
+        {isTriptych && (
+          <>
+            <SlotLabel
+              rect={map_slot}
+              text="MAP"
+              fontSize={Math.max(28, Math.min(map_slot.w, map_slot.h) * 0.07)}
+              padding={12}
+              color={TRIPTYCH_LABEL_COLOR}
+              bg="transparent"
+              tracking={true}
+              testId="layout-preview-map-label"
+            />
+            <SlotLabel
+              rect={video_slot}
+              text="VIDEO"
+              fontSize={Math.max(28, Math.min(video_slot.w, video_slot.h) * 0.07)}
+              padding={12}
+              color={TRIPTYCH_LABEL_COLOR}
+              bg="transparent"
+              tracking={true}
+              testId="layout-preview-video-label"
+            />
+          </>
+        )}
+
+        {/* Slot outlines on top so the divider/inset reads clearly */}
+        {isTriptych && (
+          <>
+            <rect
+              x={map_slot.x}
+              y={map_slot.y}
+              width={map_slot.w}
+              height={map_slot.h}
+              rx={insetIsMap ? corner_radius_px : 0}
+              ry={insetIsMap ? corner_radius_px : 0}
+              fill="none"
+              stroke={TRIPTYCH_STROKE}
+              strokeWidth={strokeViewBoxUnits}
+              pointerEvents="none"
+            />
+            <rect
+              x={video_slot.x}
+              y={video_slot.y}
+              width={video_slot.w}
+              height={video_slot.h}
+              rx={insetIsVideo ? corner_radius_px : 0}
+              ry={insetIsVideo ? corner_radius_px : 0}
+              fill="none"
+              stroke={TRIPTYCH_STROKE}
+              strokeWidth={strokeViewBoxUnits}
+              pointerEvents="none"
             />
           </>
         )}
@@ -158,14 +268,15 @@ interface SlotLabelProps {
   text: string;
   fontSize: number;
   padding: number;
+  color: string;
+  bg: string;
+  tracking?: boolean;
   testId: string;
 }
 
-function SlotLabel({ rect, text, fontSize, padding, testId }: SlotLabelProps) {
-  // Approximate label width: glyph_width ≈ 0.6 * fontSize for the
-  // system-ui stack we render with. Better than a fixed constant for the
-  // wide range of slot sizes the layout system supports.
-  const approxTextWidth = text.length * fontSize * 0.6;
+function SlotLabel({ rect, text, fontSize, padding, color, bg, tracking, testId }: SlotLabelProps) {
+  const trackingPx = tracking ? fontSize * 0.22 : 0;
+  const approxTextWidth = text.length * fontSize * 0.6 + Math.max(0, text.length - 1) * trackingPx;
   const bgWidth = approxTextWidth + padding * 2;
   const bgHeight = fontSize + padding;
   const cx = rect.x + rect.w / 2;
@@ -173,28 +284,83 @@ function SlotLabel({ rect, text, fontSize, padding, testId }: SlotLabelProps) {
 
   return (
     <g data-testid={testId}>
-      <rect
-        x={cx - bgWidth / 2}
-        y={cy - bgHeight / 2}
-        width={bgWidth}
-        height={bgHeight}
-        rx={padding / 2}
-        ry={padding / 2}
-        fill={LABEL_BG}
-      />
+      {bg !== 'transparent' && (
+        <rect
+          x={cx - bgWidth / 2}
+          y={cy - bgHeight / 2}
+          width={bgWidth}
+          height={bgHeight}
+          rx={padding / 2}
+          ry={padding / 2}
+          fill={bg}
+        />
+      )}
       <text
         x={cx}
         y={cy}
         fontSize={fontSize}
-        fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
-        fontWeight={600}
-        fill={STROKE_COLOR}
+        fontFamily={tracking ? "'JetBrains Mono', 'SF Mono', ui-monospace, monospace" : "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"}
+        fontWeight={tracking ? 700 : 600}
+        letterSpacing={tracking ? trackingPx : undefined}
+        fill={color}
         textAnchor="middle"
         dominantBaseline="middle"
       >
         {text}
       </text>
     </g>
+  );
+}
+
+interface SlotFillProps {
+  rect: { x: number; y: number; w: number; h: number };
+  fill: string;
+  rx: number;
+  testId: string;
+}
+
+function SlotFill({ rect, fill, rx, testId }: SlotFillProps) {
+  return (
+    <rect
+      x={rect.x}
+      y={rect.y}
+      width={rect.w}
+      height={rect.h}
+      rx={rx > 0 ? rx : undefined}
+      ry={rx > 0 ? rx : undefined}
+      fill={fill}
+      data-testid={testId}
+    />
+  );
+}
+
+// Distinctive composited fills for triptych tiles. Map slot reads as topo
+// hatch in azure; video slot reads as a warm coral wash. Both stay subtle
+// enough that the slot geometry (the actual point of these tiles) still
+// dominates visually. Patterns are namespaced by aspect because each tile
+// renders its own <svg> root and SVG <pattern> ids must be unique inside
+// the document.
+function TriptychDefs({ aspect }: { aspect: AspectRatio }) {
+  const mapId = `triptych-map-${aspect}`;
+  const videoId = `triptych-video-${aspect}`;
+  const hatchId = `triptych-hatch-${aspect}`;
+  return (
+    <defs>
+      <pattern id={hatchId} patternUnits="userSpaceOnUse" width={80} height={80} patternTransform="rotate(-12)">
+        <rect width={80} height={80} fill="rgba(47, 82, 224, 0.10)" />
+        <path d="M0 60 Q40 30 80 50" stroke="rgba(47, 82, 224, 0.45)" strokeWidth={1.8} fill="none" />
+        <path d="M0 30 Q40 0 80 24" stroke="rgba(47, 82, 224, 0.32)" strokeWidth={1.6} fill="none" />
+        <path d="M0 90 Q40 56 80 80" stroke="rgba(47, 82, 224, 0.22)" strokeWidth={1.4} fill="none" />
+      </pattern>
+      <pattern id={mapId} patternUnits="userSpaceOnUse" width={80} height={80}>
+        <rect width={80} height={80} fill={`url(#${hatchId})`} />
+      </pattern>
+      <linearGradient id={videoId} x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stopColor="rgba(255, 113, 91, 0.18)" />
+        <stop offset="0.6" stopColor="rgba(249, 203, 64, 0.08)" />
+        <stop offset="1" stopColor="rgba(35, 44, 45, 0.20)" />
+      </linearGradient>
+    </defs>
   );
 }
 

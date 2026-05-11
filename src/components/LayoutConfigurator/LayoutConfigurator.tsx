@@ -29,6 +29,10 @@ export interface LayoutConfiguratorProps {
   snapEnabledByDefault?: boolean;
   style?: CSSProperties;
   onDone?: () => void;
+  /** When true, suppress the bottom chrome row (ModeToggle/Swap/etc.) so
+   *  the caller's own control surface (the triptych modal's unified rail)
+   *  isn't duplicated. The interactive SVG overlay still mounts. */
+  chromeless?: boolean;
 }
 
 const HANDLE_RADIUS_PX = 7;
@@ -50,6 +54,7 @@ export function LayoutConfigurator({
   snapEnabledByDefault = true,
   style,
   onDone,
+  chromeless = false,
 }: LayoutConfiguratorProps) {
   // Derived directly from prop — the parent owns snap mode. Past iterations
   // froze this in useState, which silently ignored prop changes mid-session.
@@ -101,29 +106,31 @@ export function LayoutConfigurator({
           />
         )}
       </div>
-      <div style={chromeRowStyle} data-testid="layout-configurator-chrome">
-        <ModeToggle
-          mode={layout.mode}
-          onModeChange={handleModeChange}
-          disabled={disabled}
-        />
-        {layout.mode === 'pip' ? (
-          <PipChrome layout={layout} aspect={aspect} disabled={disabled} onChange={onChange} />
-        ) : (
-          <SplitChrome layout={layout} aspect={aspect} disabled={disabled} onChange={onChange} />
-        )}
-        <div style={{ flex: '1 1 auto' }} />
-        {onDone && (
-          <button
-            type="button"
-            onClick={onDone}
-            style={doneButtonStyle}
-            data-testid="layout-configurator-done"
-          >
-            Done
-          </button>
-        )}
-      </div>
+      {!chromeless && (
+        <div style={chromeRowStyle} data-testid="layout-configurator-chrome">
+          <ModeToggle
+            mode={layout.mode}
+            onModeChange={handleModeChange}
+            disabled={disabled}
+          />
+          {layout.mode === 'pip' ? (
+            <PipChrome layout={layout} aspect={aspect} disabled={disabled} onChange={onChange} />
+          ) : (
+            <SplitChrome layout={layout} aspect={aspect} disabled={disabled} onChange={onChange} />
+          )}
+          <div style={{ flex: '1 1 auto' }} />
+          {onDone && (
+            <button
+              type="button"
+              onClick={onDone}
+              style={doneButtonStyle}
+              data-testid="layout-configurator-done"
+            >
+              Done
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
