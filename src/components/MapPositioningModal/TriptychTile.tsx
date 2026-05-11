@@ -147,7 +147,10 @@ function Bracket({ position, active }: BracketProps) {
   const color = active ? semantic.accent : semantic.fgFaint;
   const length = 14;
   const thickness = 1.5;
-  const offset = -1;
+  // Brackets sit flush to the corner (offset: 0). The viewport clips
+  // overflow so the configurator's drag handles can't bleed into adjacent
+  // tiles, which forces the brackets to live inside the frame too.
+  const offset = 0;
   const base: CSSProperties = {
     position: 'absolute',
     width: length,
@@ -249,6 +252,12 @@ const viewportStyle: CSSProperties = {
   position: 'relative',
   background: semantic.surface,
   border: `1px solid ${semantic.border}`,
+  // Critical: the active tile mounts a chromeless LayoutConfigurator whose
+  // SVG has `overflow: visible` so drag handles render past slot edges.
+  // Without `overflow: hidden` here, the handles bleed into adjacent tiles
+  // when the user parks the PiP inset near a viewport edge — particularly
+  // visible at the 9:16 column's narrow width at minWidth: 960px.
+  overflow: 'hidden',
 };
 
 export default TriptychTile;

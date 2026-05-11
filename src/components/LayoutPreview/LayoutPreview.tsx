@@ -347,18 +347,18 @@ function TriptychDefs({ aspect }: { aspect: AspectRatio }) {
   return (
     <defs>
       <pattern id={hatchId} patternUnits="userSpaceOnUse" width={80} height={80} patternTransform="rotate(-12)">
-        <rect width={80} height={80} fill="rgba(47, 82, 224, 0.10)" />
-        <path d="M0 60 Q40 30 80 50" stroke="rgba(47, 82, 224, 0.45)" strokeWidth={1.8} fill="none" />
-        <path d="M0 30 Q40 0 80 24" stroke="rgba(47, 82, 224, 0.32)" strokeWidth={1.6} fill="none" />
-        <path d="M0 90 Q40 56 80 80" stroke="rgba(47, 82, 224, 0.22)" strokeWidth={1.4} fill="none" />
+        <rect width={80} height={80} fill={semantic.coldTint} />
+        <path d="M0 60 Q40 30 80 50" stroke={semantic.coldStroke} strokeWidth={1.8} fill="none" />
+        <path d="M0 30 Q40 0 80 24" stroke={semantic.coldStrokeMid} strokeWidth={1.6} fill="none" />
+        <path d="M0 90 Q40 56 80 80" stroke={semantic.coldStrokeFaint} strokeWidth={1.4} fill="none" />
       </pattern>
       <pattern id={mapId} patternUnits="userSpaceOnUse" width={80} height={80}>
         <rect width={80} height={80} fill={`url(#${hatchId})`} />
       </pattern>
       <linearGradient id={videoId} x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor="rgba(255, 113, 91, 0.18)" />
-        <stop offset="0.6" stopColor="rgba(249, 203, 64, 0.08)" />
-        <stop offset="1" stopColor="rgba(35, 44, 45, 0.20)" />
+        <stop offset="0" stopColor={semantic.warmTintStrong} />
+        <stop offset="0.6" stopColor={semantic.pollenTint} />
+        <stop offset="1" stopColor={semantic.surfaceTint} />
       </linearGradient>
     </defs>
   );

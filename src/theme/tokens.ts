@@ -46,7 +46,13 @@ export const semantic = {
   accentTint:      'rgba(188, 237, 9, 0.10)',
   accentGlow:      'rgba(188, 237, 9, 0.18)',
   coldTint:        'rgba(47, 82, 224, 0.10)',
+  coldStroke:      'rgba(47, 82, 224, 0.45)',
+  coldStrokeMid:   'rgba(47, 82, 224, 0.32)',
+  coldStrokeFaint: 'rgba(47, 82, 224, 0.22)',
   warmTint:        'rgba(255, 113, 91, 0.08)',
+  warmTintStrong:  'rgba(255, 113, 91, 0.18)',
+  pollenTint:      'rgba(249, 203, 64, 0.08)',
+  surfaceTint:     'rgba(35, 44, 45, 0.20)',
 
   overlay:         'rgba(8, 12, 13, 0.78)',
 } as const;
