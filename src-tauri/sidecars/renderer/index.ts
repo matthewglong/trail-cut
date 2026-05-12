@@ -138,6 +138,9 @@ let recycleCountThisBrowser = 0;
 // failure surfaces as `ProtocolError: Promise was collected` *after*
 // __init has logged its final `done` breadcrumb — proof the page-side
 // function ran fine; only the protocol-level Promise tracking lost it.
+// (When Chrome doesn't notice the GC at all, no response is sent and the
+// symptom is `Runtime.callFunctionOn timed out` after protocolTimeout —
+// same root cause, different observation.)
 //
 // Workaround: have the page kick off __init fire-and-forget (the outer
 // evaluate returns `undefined` synchronously, no awaitPromise needed),
@@ -145,6 +148,25 @@ let recycleCountThisBrowser = 0;
 // local Node-side Promise, which has no V8-GC vulnerability.
 let pendingInitSignal:
   | ((status: { ok: boolean; error?: string }) => void)
+  | null = null;
+
+// Same handshake, applied to __applyFrame. The first __applyFrame call
+// after setup/recycle hits the same heap-pressure window as __init: cold
+// tile cache fills as the actual viewport's tiles flow through
+// trailcutFetch, raster + glyph decodes pile up, the awaited Promise is
+// vulnerable to V8 Inspector GC. Steady-state __applyFrame doesn't
+// allocate as much, but using the same handshake unconditionally costs
+// only one extra CDP round-trip per frame (~1 ms; dwarfed by the ~100 ms
+// render cost) and removes the failure mode entirely. The result —
+// `{ rgbaB64: string | null } | null` — flows through the exposed
+// function arg, which goes through the same CDP serialization the
+// evaluate return value would have used.
+let pendingApplyFrameSignal:
+  | ((status: {
+      ok: boolean;
+      result?: { rgbaB64: string | null } | null;
+      error?: string;
+    }) => void)
   | null = null;
 
 // Liveness telemetry. The orchestrator and the worker talk over pipes;
@@ -265,8 +287,13 @@ async function launchBrowser(): Promise<Browser> {
     timeout: 60_000,
     // Per-CDP-command timeout. Cold-start first paint can still take
     // double-digit seconds on the GPU path; default 180s is enough but
-    // 300s gives headroom on cold caches.
-    protocolTimeout: 300_000,
+    // 600s gives headroom for cold caches on large multi-clip projects
+    // where the first __applyFrame fans out tens of concurrent tile
+    // fetches through trailcutFetch. The signal-handshake workaround in
+    // renderFrame (and applySetup) is the actual fix for V8-Inspector
+    // GC of awaited Promises; this timeout is now defense in depth for
+    // genuine slow paths (network-bound tile cold-fetches).
+    protocolTimeout: 600_000,
   });
 
   // Surface tear-down diagnostics. Without these, a renderer-subprocess
@@ -320,6 +347,24 @@ async function buildPage(b: Browser): Promise<Page> {
       pendingInitSignal = null;
       if (cb) cb(status);
       else process.stderr.write('[renderer] __signalInitDone fired with no pending listener\n');
+    },
+  );
+
+  // Completion signal for __applyFrame — same shape as the __init handshake,
+  // sidestepping the V8-Inspector-GC vulnerability that the protocolTimeout
+  // surfaced as `Runtime.callFunctionOn timed out` on cold-start frame 0 of
+  // a 71-clip export. renderFrame wires up the resolver per call.
+  await p.exposeFunction(
+    '__signalApplyFrameDone',
+    (status: {
+      ok: boolean;
+      result?: { rgbaB64: string | null } | null;
+      error?: string;
+    }) => {
+      const cb = pendingApplyFrameSignal;
+      pendingApplyFrameSignal = null;
+      if (cb) cb(status);
+      else process.stderr.write('[renderer] __signalApplyFrameDone fired with no pending listener\n');
     },
   );
 
@@ -583,11 +628,43 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
   // In readpixels mode, __applyFrame *also* performs the readback and
   // returns a base64-encoded RGBA buffer. In png mode it returns null and
   // the worker takes a Page.captureScreenshot below.
+  //
+  // Fire-and-forget + signal handshake (mirrors applySetup's __init
+  // pattern) — the outer evaluate returns synchronously so puppeteer's
+  // CDP `Runtime.callFunctionOn` sets `awaitPromise: false` and is not
+  // exposed to V8-Inspector GC of the awaited Promise. Page-side
+  // __applyFrame's actual completion is signaled via __signalApplyFrameDone
+  // (an exposeFunction registered in buildPage), which resolves a Node-
+  // local Promise this `await` is on. See `pendingApplyFrameSignal` and
+  // the matching __init plumbing for the failure mode this protects
+  // against.
+  if (pendingApplyFrameSignal) {
+    process.stderr.write('[renderer] renderFrame: dropping stale pendingApplyFrameSignal\n');
+    pendingApplyFrameSignal = null;
+  }
   const evalStart = Date.now();
-  const applyResult = (await page.evaluate(
-    (p: typeof framePayload) => window.__applyFrame(p),
-    framePayload,
-  )) as { rgbaB64: string | null } | null;
+  const applySignal = new Promise<{ rgbaB64: string | null } | null>(
+    (resolve, reject) => {
+      pendingApplyFrameSignal = (status) => {
+        if (status.ok) resolve(status.result ?? null);
+        else reject(new Error(status.error ?? 'unknown __applyFrame error'));
+      };
+    },
+  );
+  await page.evaluate((p: typeof framePayload) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    void w.__applyFrame(p).then(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (r: any) => w.__signalApplyFrameDone({ ok: true, result: r ?? null }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (e: any) => w.__signalApplyFrameDone({
+        ok: false,
+        error: String((e && e.message) ?? e),
+      }),
+    );
+  }, framePayload);
+  const applyResult = await applySignal;
   const evalMs = Date.now() - evalStart;
   fstamp(`applyFrame returned (${evalMs}ms, transport=${TRANSPORT})`);
 
