@@ -47,7 +47,7 @@ function getByTestId(id: string): Element {
 
 describe('LayoutPreview', () => {
   it('renders both slot rects for a 9:16 PiP-with-map-inset layout', () => {
-    const layout = defaultLayout('9_16');
+    const layout = defaultPipLayout('9_16');
     const resolved = resolveSlots(layout, '9_16');
 
     render(

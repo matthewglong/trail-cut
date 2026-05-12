@@ -1,4 +1,4 @@
-use crate::export::layout::{default_pip_layout, AspectRatio, ProjectLayouts};
+use crate::export::layout::{default_split_layout, AspectRatio, ProjectLayouts};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -381,14 +381,14 @@ impl Default for Project {
     }
 }
 
-/// First-contact `ProjectLayouts` shape (task 100): all three aspects seeded
-/// with `default_pip_layout`. Used by `Project::default` (new projects) and
+/// First-contact `ProjectLayouts` shape: all three aspects seeded with
+/// `default_split_layout`. Used by `Project::default` (new projects) and
 /// `load_project`'s backfill paths.
 pub fn seeded_layouts() -> ProjectLayouts {
     ProjectLayouts {
-        aspect_9_16: Some(default_pip_layout(AspectRatio::NineSixteen)),
-        aspect_4_5: Some(default_pip_layout(AspectRatio::FourFive)),
-        aspect_16_9: Some(default_pip_layout(AspectRatio::SixteenNine)),
+        aspect_9_16: Some(default_split_layout(AspectRatio::NineSixteen)),
+        aspect_4_5: Some(default_split_layout(AspectRatio::FourFive)),
+        aspect_16_9: Some(default_split_layout(AspectRatio::SixteenNine)),
     }
 }
 

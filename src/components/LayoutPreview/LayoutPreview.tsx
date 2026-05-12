@@ -29,13 +29,16 @@ export interface LayoutPreviewProps {
    *  map, warm gradient for video) so the read-only Map Positioning tiles
    *  read as previews rather than wireframes. */
   mode?: 'preview' | 'configurator' | 'triptych';
+  /** Suppress slot text labels (MAP / VIDEO). Only meaningful in 'preview'
+   *  and 'triptych' modes — 'configurator' never shows labels regardless.
+   *  Defaults to true. */
+  showLabels?: boolean;
 }
 
 const STROKE_COLOR = '#52d6ff';
 const STROKE_OPACITY = 0.9;
 const LABEL_BG = 'rgba(7, 27, 38, 0.55)';
 const TRIPTYCH_STROKE = semantic.borderStrong;
-const TRIPTYCH_LABEL_COLOR = semantic.fgDim;
 
 export function LayoutPreview({
   layout,
@@ -43,6 +46,7 @@ export function LayoutPreview({
   containerWidth,
   containerHeight,
   mode = 'preview',
+  showLabels = true,
 }: LayoutPreviewProps) {
   const resolved = resolveSlots(layout, aspect);
   const { output, map_slot, video_slot, corner_radius_px, corner_radius_slot } = resolved;
@@ -102,37 +106,22 @@ export function LayoutPreview({
             // Background slot underneath, inset slot on top with corner
             // radius. `corner_radius_slot` names which slot IS the inset.
             <>
-              <SlotFill
-                rect={corner_radius_slot === 'map' ? video_slot : map_slot}
-                fill={corner_radius_slot === 'map'
-                  ? `url(#triptych-video-${aspect})`
-                  : `url(#triptych-map-${aspect})`}
-                rx={0}
-                testId="layout-preview-bg-fill"
-              />
-              <SlotFill
-                rect={corner_radius_slot === 'map' ? map_slot : video_slot}
-                fill={corner_radius_slot === 'map'
-                  ? `url(#triptych-map-${aspect})`
-                  : `url(#triptych-video-${aspect})`}
-                rx={corner_radius_px}
-                testId="layout-preview-inset-fill"
-              />
+              {corner_radius_slot === 'map' ? (
+                <>
+                  <VideoSlotPaint rect={video_slot} aspect={aspect} rx={0} testId="layout-preview-bg-fill" />
+                  <MapSlotPaint rect={map_slot} aspect={aspect} rx={corner_radius_px} testId="layout-preview-inset-fill" />
+                </>
+              ) : (
+                <>
+                  <MapSlotPaint rect={map_slot} aspect={aspect} rx={0} testId="layout-preview-bg-fill" />
+                  <VideoSlotPaint rect={video_slot} aspect={aspect} rx={corner_radius_px} testId="layout-preview-inset-fill" />
+                </>
+              )}
             </>
           ) : (
             <>
-              <SlotFill
-                rect={map_slot}
-                fill={`url(#triptych-map-${aspect})`}
-                rx={0}
-                testId="layout-preview-map-fill"
-              />
-              <SlotFill
-                rect={video_slot}
-                fill={`url(#triptych-video-${aspect})`}
-                rx={0}
-                testId="layout-preview-video-fill"
-              />
+              <MapSlotPaint rect={map_slot} aspect={aspect} rx={0} testId="layout-preview-map-fill" />
+              <VideoSlotPaint rect={video_slot} aspect={aspect} rx={0} testId="layout-preview-video-fill" />
             </>
           )
         ) : (
@@ -154,7 +143,7 @@ export function LayoutPreview({
           </>
         )}
 
-        {!isConfigurator && !isTriptych && (
+        {!isConfigurator && !isTriptych && showLabels && (
           <>
             <SlotLabel
               rect={map_slot}
@@ -177,26 +166,16 @@ export function LayoutPreview({
           </>
         )}
 
-        {isTriptych && (
+        {isTriptych && showLabels && (
           <>
-            <SlotLabel
+            <SlotChip
               rect={map_slot}
               text="MAP"
-              fontSize={Math.max(28, Math.min(map_slot.w, map_slot.h) * 0.07)}
-              padding={12}
-              color={TRIPTYCH_LABEL_COLOR}
-              bg="transparent"
-              tracking={true}
               testId="layout-preview-map-label"
             />
-            <SlotLabel
+            <SlotChip
               rect={video_slot}
               text="VIDEO"
-              fontSize={Math.max(28, Math.min(video_slot.w, video_slot.h) * 0.07)}
-              padding={12}
-              color={TRIPTYCH_LABEL_COLOR}
-              bg="transparent"
-              tracking={true}
               testId="layout-preview-video-label"
             />
           </>
@@ -312,55 +291,233 @@ function SlotLabel({ rect, text, fontSize, padding, color, bg, tracking, testId 
   );
 }
 
-interface SlotFillProps {
+// Top-left chartreuse-bordered chip used to label the MAP / VIDEO slots in
+// the Map Positioning triptych. Sized in slot-relative units so it stays
+// legible at any slot scale without going Brobdingnagian in the full-bleed
+// background slot.
+interface SlotChipProps {
   rect: { x: number; y: number; w: number; h: number };
-  fill: string;
+  text: string;
+  testId: string;
+}
+
+function SlotChip({ rect, text, testId }: SlotChipProps) {
+  const fontSize = Math.max(18, Math.min(rect.w, rect.h) * 0.045);
+  const padX = fontSize * 0.7;
+  const padY = fontSize * 0.45;
+  const tracking = fontSize * 0.22;
+  const approxTextWidth = text.length * fontSize * 0.6 + Math.max(0, text.length - 1) * tracking;
+  const chipW = approxTextWidth + padX * 2;
+  const chipH = fontSize + padY * 2;
+  const margin = fontSize * 0.6;
+  const x = rect.x + margin;
+  const y = rect.y + margin;
+  const stroke = Math.max(1, fontSize * 0.06);
+  return (
+    <g data-testid={testId} style={{ pointerEvents: 'none' }}>
+      <rect
+        x={x}
+        y={y}
+        width={chipW}
+        height={chipH}
+        fill="rgba(14, 20, 22, 0.78)"
+        stroke="#bced09"
+        strokeWidth={stroke}
+      />
+      <text
+        x={x + chipW / 2}
+        y={y + chipH / 2}
+        fontSize={fontSize}
+        fontFamily="'JetBrains Mono', 'SF Mono', ui-monospace, monospace"
+        fontWeight={700}
+        letterSpacing={tracking}
+        fill="#bced09"
+        textAnchor="middle"
+        dominantBaseline="central"
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
+// Illustrative scene fills for triptych tiles. Map reads as a topo map
+// (faint coordinate grid + contour lines around two peaks + dashed
+// chartreuse route with start/current/end waypoints). Video reads as a
+// mountain landscape (sky gradient sunset + three ridge silhouettes + a
+// tiny figure for scale). Lifted from the concept sketches in
+// `map-positioning-concepts.html` (#topo-lines, #mtn-scene). Each scene is
+// rendered into a nested <svg> so the 400×300 source viewBox slices into
+// whatever slot rect we hand it. Defs are namespaced by aspect because
+// each tile mounts its own <svg> root.
+function TriptychDefs({ aspect }: { aspect: AspectRatio }) {
+  const skyId = `triptych-video-sky-${aspect}`;
+  const mapVignetteId = `triptych-map-vignette-${aspect}`;
+  return (
+    <defs>
+      <linearGradient id={skyId} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="#1c2e44" />
+        <stop offset="35%" stopColor="#3a4a5a" />
+        <stop offset="55%" stopColor="#a08a5a" />
+        <stop offset="75%" stopColor="#7a4a30" />
+        <stop offset="100%" stopColor="#221008" />
+      </linearGradient>
+      {/* Map base vignette — warm-cool darkening from one quadrant. */}
+      <radialGradient id={mapVignetteId} cx="0.3" cy="0.7" r="0.9">
+        <stop offset="0%" stopColor="#1c2a25" />
+        <stop offset="100%" stopColor="#0e1416" stopOpacity="0" />
+      </radialGradient>
+    </defs>
+  );
+}
+
+interface PaintProps {
+  rect: { x: number; y: number; w: number; h: number };
+  aspect: AspectRatio;
   rx: number;
   testId: string;
 }
 
-function SlotFill({ rect, fill, rx, testId }: SlotFillProps) {
+// Render a nested SVG into the slot rect, clipped to its (possibly
+// rounded) bounds. The nested SVG uses a 400×300 viewBox with `slice`
+// preservation so scenes fill any aspect by center-cropping.
+function SceneFrame({
+  rect,
+  rx,
+  clipId,
+  children,
+  testId,
+}: {
+  rect: PaintProps['rect'];
+  rx: number;
+  clipId: string;
+  children: React.ReactNode;
+  testId: string;
+}) {
+  const r = rx > 0 ? rx : 0;
   return (
-    <rect
-      x={rect.x}
-      y={rect.y}
-      width={rect.w}
-      height={rect.h}
-      rx={rx > 0 ? rx : undefined}
-      ry={rx > 0 ? rx : undefined}
-      fill={fill}
-      data-testid={testId}
-    />
+    <g data-testid={testId}>
+      <defs>
+        <clipPath id={clipId}>
+          <rect x={rect.x} y={rect.y} width={rect.w} height={rect.h} rx={r} ry={r} />
+        </clipPath>
+      </defs>
+      <g clipPath={`url(#${clipId})`}>
+        <svg
+          x={rect.x}
+          y={rect.y}
+          width={rect.w}
+          height={rect.h}
+          viewBox="0 0 400 300"
+          preserveAspectRatio="xMidYMid slice"
+        >
+          {children}
+        </svg>
+      </g>
+    </g>
   );
 }
 
-// Distinctive composited fills for triptych tiles. Map slot reads as topo
-// hatch in azure; video slot reads as a warm coral wash. Both stay subtle
-// enough that the slot geometry (the actual point of these tiles) still
-// dominates visually. Patterns are namespaced by aspect because each tile
-// renders its own <svg> root and SVG <pattern> ids must be unique inside
-// the document.
-function TriptychDefs({ aspect }: { aspect: AspectRatio }) {
-  const mapId = `triptych-map-${aspect}`;
-  const videoId = `triptych-video-${aspect}`;
-  const hatchId = `triptych-hatch-${aspect}`;
+function MapSlotPaint({ rect, aspect, rx, testId }: PaintProps) {
+  const clipId = `triptych-map-clip-${aspect}`;
+  const vignetteId = `triptych-map-vignette-${aspect}`;
   return (
-    <defs>
-      <pattern id={hatchId} patternUnits="userSpaceOnUse" width={80} height={80} patternTransform="rotate(-12)">
-        <rect width={80} height={80} fill={semantic.coldTint} />
-        <path d="M0 60 Q40 30 80 50" stroke={semantic.coldStroke} strokeWidth={1.8} fill="none" />
-        <path d="M0 30 Q40 0 80 24" stroke={semantic.coldStrokeMid} strokeWidth={1.6} fill="none" />
-        <path d="M0 90 Q40 56 80 80" stroke={semantic.coldStrokeFaint} strokeWidth={1.4} fill="none" />
-      </pattern>
-      <pattern id={mapId} patternUnits="userSpaceOnUse" width={80} height={80}>
-        <rect width={80} height={80} fill={`url(#${hatchId})`} />
-      </pattern>
-      <linearGradient id={videoId} x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stopColor={semantic.warmTintStrong} />
-        <stop offset="0.6" stopColor={semantic.pollenTint} />
-        <stop offset="1" stopColor={semantic.surfaceTint} />
-      </linearGradient>
-    </defs>
+    <SceneFrame rect={rect} rx={rx} clipId={clipId} testId={testId}>
+      {/* base canvas + vignette + faint coordinate grid */}
+      <rect width="400" height="300" fill="#0e1416" />
+      <rect width="400" height="300" fill={`url(#${vignetteId})`} />
+      <g stroke="rgba(76, 91, 92, 0.20)" strokeWidth="0.5" fill="none">
+        <line x1="133.33" y1="0" x2="133.33" y2="300" />
+        <line x1="266.66" y1="0" x2="266.66" y2="300" />
+        <line x1="0" y1="100" x2="400" y2="100" />
+        <line x1="0" y1="200" x2="400" y2="200" />
+      </g>
+      {/* sweeping contour lines */}
+      <g stroke="#4c5b5c" fill="none" strokeWidth="0.6" opacity="0.55">
+        <path d="M-20,180 Q60,150 140,165 Q220,180 300,150 Q380,120 420,140" />
+        <path d="M-20,200 Q60,170 140,185 Q220,200 300,170 Q380,140 420,160" />
+        <path d="M-20,160 Q60,130 140,145 Q220,160 300,130 Q380,100 420,120" />
+        <path d="M-20,140 Q60,110 140,125 Q220,140 300,110 Q380,80 420,100" />
+        <path d="M-20,120 Q60,90 140,105 Q220,120 300,90 Q380,60 420,80" />
+        <path d="M-20,220 Q60,195 140,210 Q220,220 300,195 Q380,170 420,190" />
+        <path d="M-20,250 Q60,225 140,240 Q220,250 300,225 Q380,200 420,220" />
+      </g>
+      {/* tighter contours around the main peak */}
+      <g stroke="#4c5b5c" fill="none" strokeWidth="0.5" opacity="0.7">
+        <ellipse cx="280" cy="100" rx="55" ry="22" />
+        <ellipse cx="280" cy="100" rx="38" ry="14" />
+        <ellipse cx="280" cy="100" rx="22" ry="8" />
+        <ellipse cx="280" cy="100" rx="10" ry="3" />
+      </g>
+      {/* secondary peak */}
+      <g stroke="#4c5b5c" fill="none" strokeWidth="0.5" opacity="0.55">
+        <ellipse cx="100" cy="60" rx="35" ry="14" />
+        <ellipse cx="100" cy="60" rx="22" ry="8" />
+        <ellipse cx="100" cy="60" rx="10" ry="3" />
+      </g>
+      {/* route — dashed beadline + faint solid trace beneath */}
+      <path
+        d="M40,260 C100,240 130,210 160,200 S210,170 240,160 280,140 290,120 285,98 280,100"
+        stroke="#bced09"
+        strokeWidth="1.6"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.35"
+      />
+      <path
+        d="M40,260 C100,240 130,210 160,200 S210,170 240,160 280,140 290,120 285,98 280,100"
+        stroke="#bced09"
+        strokeWidth="1.6"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeDasharray="0.1 4"
+      />
+      {/* start waypoint */}
+      <circle cx="40" cy="260" r="3" fill="#ff715b" />
+      <circle cx="40" cy="260" r="6" fill="none" stroke="#ff715b" opacity="0.45" />
+      {/* current position */}
+      <circle cx="200" cy="180" r="4" fill="#bced09" />
+      <circle cx="200" cy="180" r="9" fill="none" stroke="#bced09" opacity="0.45" />
+      {/* end waypoint */}
+      <circle cx="280" cy="100" r="3" fill="#2f52e0" />
+      <circle cx="280" cy="100" r="6" fill="none" stroke="#2f52e0" opacity="0.45" />
+    </SceneFrame>
+  );
+}
+
+function VideoSlotPaint({ rect, aspect, rx, testId }: PaintProps) {
+  const clipId = `triptych-video-clip-${aspect}`;
+  const skyId = `triptych-video-sky-${aspect}`;
+  return (
+    <SceneFrame rect={rect} rx={rx} clipId={clipId} testId={testId}>
+      <rect width="400" height="300" fill={`url(#${skyId})`} />
+      {/* haze */}
+      <rect width="400" height="300" fill="#000" opacity="0.05" />
+      {/* sun glare — drawn before ridges so they occlude the lower half */}
+      <circle cx="320" cy="120" r="32" fill="#f9cb40" opacity="0.10" />
+      <circle cx="320" cy="120" r="14" fill="#f9cb40" opacity="0.20" />
+      {/* distant ridge */}
+      <path
+        d="M0,170 L40,150 L90,158 L140,135 L195,150 L240,128 L290,145 L340,118 L400,138 L400,300 L0,300 Z"
+        fill="#293a4a"
+        opacity="0.85"
+      />
+      {/* middle ridge */}
+      <path
+        d="M0,210 L60,180 L120,205 L180,170 L240,200 L290,175 L350,195 L400,175 L400,300 L0,300 Z"
+        fill="#1c2838"
+      />
+      {/* foreground ridge */}
+      <path
+        d="M0,255 L70,235 L140,250 L210,232 L280,248 L350,238 L400,255 L400,300 L0,300 Z"
+        fill="#0a1418"
+      />
+      {/* tiny figure for scale */}
+      <rect x="195" y="230" width="2" height="6" fill="#0a0808" />
+      <circle cx="196" cy="228" r="1.2" fill="#0a0808" />
+    </SceneFrame>
   );
 }
 

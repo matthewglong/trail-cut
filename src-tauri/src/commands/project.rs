@@ -705,7 +705,6 @@ mod tests {
             let slots = resolve_slots(layout, aspect);
             assert!(slots.map_slot.w > 0 && slots.map_slot.h > 0);
             assert!(slots.video_slot.w > 0 && slots.video_slot.h > 0);
-            assert!(slots.corner_radius_px > 0);
         }
     }
 

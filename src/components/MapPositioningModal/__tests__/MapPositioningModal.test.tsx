@@ -166,7 +166,7 @@ describe('MapPositioningModal — chrome', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('calls onClose when Escape is pressed while open (cancel)', () => {
+  it('calls onClose when Escape is pressed while open', () => {
     const onClose = vi.fn();
     const onLayoutChange = vi.fn();
     render(
@@ -179,7 +179,7 @@ describe('MapPositioningModal — chrome', () => {
     );
     pressKey('Escape');
     expect(onClose).toHaveBeenCalledTimes(1);
-    // Cancel does NOT flush the draft to the parent.
+    // Closing the modal is not itself a layout edit.
     expect(onLayoutChange).not.toHaveBeenCalled();
   });
 
@@ -244,35 +244,19 @@ describe('MapPositioningModal — triptych contents', () => {
     }
   });
 
-  it('mounts a configurator only in the active tile (16:9 by default)', () => {
-    // In the triptych design, the interactive configurator overlay lives in
-    // the active tile only. Inactive tiles show the read-only LayoutPreview.
-    // 16:9 is the default active ratio on open.
+  it('mounts a configurator in every tile (each pane is independently editable)', () => {
     render(<MapPositioningModal {...noopProps(true)} />);
     const configurators = document.body.querySelectorAll(
       '[data-testid="layout-configurator"]',
     );
-    expect(configurators.length).toBe(1);
-    const activeTile = findByTestId('map-positioning-pane-16_9');
-    expect(activeTile?.contains(configurators[0])).toBe(true);
-  });
-
-  it('activates a different tile when clicked', () => {
-    render(<MapPositioningModal {...noopProps(true)} />);
-    const otherTile = findByTestId('map-positioning-pane-4_5') as HTMLElement;
-    click(otherTile);
-    expect(otherTile.getAttribute('data-active')).toBe('true');
-    expect(
-      findByTestId('map-positioning-pane-16_9')?.getAttribute('data-active'),
-    ).toBe('false');
-    // Configurator follows the active tile.
-    const configurator = otherTile.querySelector('[data-testid="layout-configurator"]');
-    expect(configurator).not.toBeNull();
+    expect(configurators.length).toBe(3);
+    for (const aspect of aspects) {
+      const pane = findByTestId(`map-positioning-pane-${aspect}`);
+      expect(pane?.querySelector('[data-testid="layout-configurator"]')).not.toBeNull();
+    }
   });
 
   it('falls back to defaultLayout when an aspect entry is null (tile still renders)', () => {
-    // The pane mounts whether or not its layout is null. The fallback (default
-    // layout) drives the LayoutPreview shown in that tile.
     const layouts: ProjectLayouts = {
       '9_16': null,
       '4_5': defaultPipLayout('4_5'),
@@ -288,99 +272,12 @@ describe('MapPositioningModal — triptych contents', () => {
     );
     const pane = findByTestId('map-positioning-pane-9_16');
     expect(pane).not.toBeNull();
-    // LayoutPreview is what inactive tiles render; presence of its svg root
-    // proves the fallback path resolved a default layout.
     expect(pane?.querySelector('[data-testid="layout-preview-svg"]')).not.toBeNull();
   });
 });
 
-describe('MapPositioningModal — apply / cancel', () => {
-  it('Apply button flushes draft and calls onClose', () => {
-    const onClose = vi.fn();
-    const onLayoutChange = vi.fn();
-    const layouts = makeLayouts();
-    render(
-      <MapPositioningModal
-        open={true}
-        onClose={onClose}
-        layouts={layouts}
-        onLayoutChange={onLayoutChange}
-      />,
-    );
-    click(findByTestId('map-positioning-apply')!);
-    // Three non-null aspects flush one call each.
-    expect(onLayoutChange).toHaveBeenCalledTimes(3);
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('Cancel button discards the draft (no onLayoutChange)', () => {
-    const onClose = vi.fn();
-    const onLayoutChange = vi.fn();
-    render(
-      <MapPositioningModal
-        open={true}
-        onClose={onClose}
-        layouts={makeLayouts()}
-        onLayoutChange={onLayoutChange}
-      />,
-    );
-    // Make an edit via the rail's split mode card, then cancel.
-    click(findByTestId('rail-mode-split')!);
-    click(findByTestId('map-positioning-cancel')!);
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(onLayoutChange).not.toHaveBeenCalled();
-  });
-
-  it('Enter applies; Escape cancels', () => {
-    const onClose = vi.fn();
-    const onLayoutChange = vi.fn();
-    render(
-      <MapPositioningModal
-        open={true}
-        onClose={onClose}
-        layouts={makeLayouts()}
-        onLayoutChange={onLayoutChange}
-      />,
-    );
-    pressKey('Enter');
-    expect(onLayoutChange).toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalledTimes(1);
-
-    // Reset for second phase.
-    onLayoutChange.mockClear();
-    onClose.mockClear();
-    render(
-      <MapPositioningModal
-        open={true}
-        onClose={onClose}
-        layouts={makeLayouts()}
-        onLayoutChange={onLayoutChange}
-      />,
-    );
-    pressKey('Escape');
-    expect(onLayoutChange).not.toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('MapPositioningModal — keyboard & rail', () => {
-  it('1, 2, 3 keys switch the active ratio', () => {
-    render(<MapPositioningModal {...noopProps(true)} />);
-    pressKey('2');
-    expect(
-      findByTestId('map-positioning-pane-4_5')?.getAttribute('data-active'),
-    ).toBe('true');
-    pressKey('3');
-    expect(
-      findByTestId('map-positioning-pane-9_16')?.getAttribute('data-active'),
-    ).toBe('true');
-    pressKey('1');
-    expect(
-      findByTestId('map-positioning-pane-16_9')?.getAttribute('data-active'),
-    ).toBe('true');
-  });
-
-  it('rail mode card changes the active ratio on Apply', () => {
+describe('MapPositioningModal — live edits', () => {
+  it('tile mode pill propagates that tile\'s change immediately, without touching others', () => {
     const onLayoutChange = vi.fn();
     render(
       <MapPositioningModal
@@ -390,44 +287,15 @@ describe('MapPositioningModal — keyboard & rail', () => {
         onLayoutChange={onLayoutChange}
       />,
     );
-    // Activate 4:5 and switch to Split.
-    pressKey('2');
-    click(findByTestId('rail-mode-split')!);
-    click(findByTestId('map-positioning-apply')!);
-    // Apply flushes all three aspects. The 4:5 entry should now be split.
+    click(findByTestId('tile-4_5-mode-split')!);
     const calls = onLayoutChange.mock.calls as [AspectRatio, LayoutConfig][];
-    const splitCall = calls.find(([, next]) => next.mode === 'split');
-    expect(splitCall).toBeDefined();
-    expect(splitCall![0]).toBe('4_5');
-    expect(splitCall![1]).toEqual(defaultSplitLayout('4_5'));
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe('4_5');
+    expect(calls[0][1].mode).toBe('split');
+    expect(calls[0][1]).toEqual(defaultSplitLayout('4_5'));
   });
 
-  it('rail reset for the active ratio restores the seeded default on Apply', () => {
-    const onLayoutChange = vi.fn();
-    const layouts = makeLayouts();
-    const mutated: LayoutConfig = {
-      ...defaultPipLayout('16_9'),
-      inset: { x: 0.05, y: 0.05, w: 0.5, h: 0.5 },
-    };
-    layouts['16_9'] = mutated;
-    render(
-      <MapPositioningModal
-        open={true}
-        onClose={() => {}}
-        layouts={layouts}
-        onLayoutChange={onLayoutChange}
-      />,
-    );
-    // 16:9 is the default active ratio, so the rail's Reset is bound to it.
-    click(findByTestId('map-positioning-reset-16_9')!);
-    click(findByTestId('map-positioning-apply')!);
-    const calls = onLayoutChange.mock.calls as [AspectRatio, LayoutConfig][];
-    const reset16 = calls.find(([aspect]) => aspect === '16_9');
-    expect(reset16).toBeDefined();
-    expect(reset16![1]).toEqual(defaultLayout('16_9'));
-  });
-
-  it('Reset all replaces draft for every ratio on Apply', () => {
+  it('tile reset immediately propagates the default for that ratio', () => {
     const onLayoutChange = vi.fn();
     const layouts = makeLayouts();
     layouts['16_9'] = {
@@ -442,79 +310,56 @@ describe('MapPositioningModal — keyboard & rail', () => {
         onLayoutChange={onLayoutChange}
       />,
     );
-    click(findByTestId('map-positioning-reset-all')!);
-    click(findByTestId('map-positioning-apply')!);
+    click(findByTestId('map-positioning-reset-16_9')!);
     const calls = onLayoutChange.mock.calls as [AspectRatio, LayoutConfig][];
-    for (const aspect of ['16_9', '4_5', '9_16'] as const) {
-      const call = calls.find(([a]) => a === aspect);
-      expect(call).toBeDefined();
-      expect(call![1]).toEqual(defaultLayout(aspect));
-    }
+    expect(calls.length).toBe(1);
+    expect(calls[0][0]).toBe('16_9');
+    expect(calls[0][1]).toEqual(defaultLayout('16_9'));
   });
 
-  it('Copy-from action seeds the active ratio with another ratio\'s layout', () => {
-    const onLayoutChange = vi.fn();
-    const layouts = makeLayouts();
-    // Distinct layouts on 4:5 so we can verify the copy.
-    layouts['4_5'] = defaultSplitLayout('4_5');
+  it('parks each tile\'s chrome at the corner picked by assignChromeCorners', () => {
+    // Two contrasting layouts: top-left inset (pushes ratio off tl) and the
+    // default 9:16 bottom-right inset (pushes reset off br). The mocked
+    // getBoundingClientRect in beforeEach returns 320×320 for every node, so
+    // the corner-placement math runs with that container size for every tile.
+    const layouts: ProjectLayouts = {
+      '16_9': { ...defaultPipLayout('16_9'), inset: { x: 0.04, y: 0.04, w: 0.35, h: 0.30 } },
+      '4_5': defaultPipLayout('4_5'),
+      '9_16': defaultPipLayout('9_16'),
+    };
     render(
       <MapPositioningModal
         open={true}
         onClose={() => {}}
         layouts={layouts}
-        onLayoutChange={onLayoutChange}
+        onLayoutChange={() => {}}
       />,
     );
-    // 16:9 is active by default. Copy from 4:5 → 16:9 should swap 16:9 into
-    // split mode.
-    click(findByTestId('rail-copy-from-4_5')!);
-    click(findByTestId('map-positioning-apply')!);
-    const calls = onLayoutChange.mock.calls as [AspectRatio, LayoutConfig][];
-    const c16 = calls.find(([a]) => a === '16_9');
-    expect(c16).toBeDefined();
-    expect(c16![1].mode).toBe('split');
-  });
-});
 
-describe('MapPositioningModal — sync toggles', () => {
-  it('sync mode propagates a mode change to all ratios on Apply', () => {
-    const onLayoutChange = vi.fn();
+    // 16:9 has a top-left inset → ratio's default tl is dangerous; it falls
+    // to bl. modePill stays at tr, reset stays at br.
+    expect(findByTestId('tile-16_9-ratio')?.getAttribute('data-corner')).toBe('bl');
+    expect(findByTestId('tile-16_9-modepill')?.getAttribute('data-corner')).toBe('tr');
+    expect(findByTestId('tile-16_9-reset')?.getAttribute('data-corner')).toBe('br');
+
+    // 9:16 has the default bottom-right inset → reset's default br is
+    // dangerous; it falls to bl. ratio at tl, modePill at tr.
+    expect(findByTestId('tile-9_16-ratio')?.getAttribute('data-corner')).toBe('tl');
+    expect(findByTestId('tile-9_16-modepill')?.getAttribute('data-corner')).toBe('tr');
+    expect(findByTestId('tile-9_16-reset')?.getAttribute('data-corner')).toBe('bl');
+  });
+
+  it('clicking a tile control does not call onClose', () => {
+    const onClose = vi.fn();
     render(
       <MapPositioningModal
         open={true}
-        onClose={() => {}}
+        onClose={onClose}
         layouts={makeLayouts()}
-        onLayoutChange={onLayoutChange}
+        onLayoutChange={() => {}}
       />,
     );
-    // Turn Sync mode on, then switch the active (16:9) to Split.
-    click(findByTestId('map-positioning-sync-mode')!);
-    click(findByTestId('rail-mode-split')!);
-    click(findByTestId('map-positioning-apply')!);
-    const calls = onLayoutChange.mock.calls as [AspectRatio, LayoutConfig][];
-    // All three aspects flush with mode='split'.
-    for (const aspect of ['16_9', '4_5', '9_16'] as const) {
-      const call = calls.find(([a]) => a === aspect);
-      expect(call?.[1].mode).toBe('split');
-    }
-  });
-
-  it('without sync, mode change only affects the active ratio', () => {
-    const onLayoutChange = vi.fn();
-    render(
-      <MapPositioningModal
-        open={true}
-        onClose={() => {}}
-        layouts={makeLayouts()}
-        onLayoutChange={onLayoutChange}
-      />,
-    );
-    click(findByTestId('rail-mode-split')!);
-    click(findByTestId('map-positioning-apply')!);
-    const calls = onLayoutChange.mock.calls as [AspectRatio, LayoutConfig][];
-    const c16 = calls.find(([a]) => a === '16_9');
-    const c45 = calls.find(([a]) => a === '4_5');
-    expect(c16?.[1].mode).toBe('split');
-    expect(c45?.[1].mode).toBe('pip'); // untouched
+    click(findByTestId('tile-16_9-mode-split')!);
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

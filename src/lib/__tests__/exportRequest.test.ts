@@ -107,27 +107,23 @@ describe('buildExportRequest', () => {
     const inputs = {
       ...baseInputs(),
       layouts: {
-        '9_16': defaultLayout('16_9'), // intentionally swapped
+        '9_16': defaultPipLayout('16_9'), // intentionally swapped
         '16_9': null,
         '4_5': null,
       } satisfies ProjectLayouts,
     };
     const req = buildExportRequest(inputs);
-    expect(req.layout.layout).toEqual(defaultLayout('16_9'));
+    expect(req.layout.layout).toEqual(defaultPipLayout('16_9'));
   });
 
   it('reads the stored layout, not a regenerated default (task 080)', () => {
-    // Mutate the stored 9:16 layout to a value `defaultLayout('9_16')` would
+    // Mutate a stored PiP 9:16 layout to a value the default factory would
     // never produce (`inset.x = 0.5` vs the default's 0.65). The export
     // request must round-trip *that* mutated value, proving the export reads
     // the project-bundle source of truth rather than rebuilding via
-    // `pickLayout`'s `defaultLayout` fallback. This is the load-bearing
-    // assertion of 080: if it's in the project on disk, it's what the
-    // export uses.
-    const baseline = defaultLayout('9_16');
-    if (baseline.mode !== 'pip') {
-      throw new Error('test fixture invariant: defaultLayout(9_16) must be PiP');
-    }
+    // `pickLayout`'s fallback. This is the load-bearing assertion of 080:
+    // if it's in the project on disk, it's what the export uses.
+    const baseline = defaultPipLayout('9_16');
     const stored = {
       ...baseline,
       inset: { ...baseline.inset, x: 0.5 },

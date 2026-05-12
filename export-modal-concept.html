@@ -1,0 +1,933 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>TrailCut · Export modal redesign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0e1416;
+    --surface: #141b1d;
+    --surface-raised: #1a2122;
+    --surface-deep: #232c2d;
+    --surface-pressed: #2c3738;
+    --border: #2c3738;
+    --border-strong: #4c5b5c;
+    --border-soft: rgba(76, 91, 92, 0.22);
+    --fg: #e6ecec;
+    --fg-muted: #8a9697;
+    --fg-dim: #5a6868;
+    --fg-faint: #34403f;
+    --accent: #bced09;
+    --accent-cold: #2f52e0;
+    --accent-warm: #ff715b;
+    --accent-tint: rgba(188, 237, 9, 0.10);
+    --accent-glow: rgba(188, 237, 9, 0.18);
+    --overlay: rgba(8, 12, 13, 0.78);
+
+    --r-sm: 2px; --r-base: 3px; --r-lg: 6px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #07090a; color: var(--fg); font-family: "Manrope", sans-serif; font-size: 13.5px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+
+  .canvas {
+    min-height: 100vh;
+    padding: 48px 32px 96px;
+    background:
+      radial-gradient(ellipse 900px 500px at 50% 0%, rgba(188, 237, 9, 0.03), transparent 70%),
+      #07090a;
+    position: relative;
+  }
+
+  /* state nav */
+  .switcher {
+    max-width: 720px;
+    margin: 0 auto 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .switcher .brand {
+    font-family: "JetBrains Mono", monospace;
+    color: var(--fg-muted);
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    font-size: 10.5px;
+  }
+  .switcher .brand .dot { color: var(--accent); margin: 0 6px; }
+  .switcher nav { display: flex; gap: 2px; margin-left: auto; padding: 3px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-base); }
+  .switcher nav a {
+    text-decoration: none;
+    color: var(--fg-muted);
+    padding: 6px 12px;
+    border-radius: 2px;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+    text-transform: uppercase;
+    transition: color 120ms ease, background-color 120ms ease;
+  }
+  .switcher nav a.active { color: var(--accent); background: var(--accent-tint); }
+  .switcher nav a:hover:not(.active) { color: var(--fg); }
+
+  /* modal shell */
+  .modal {
+    width: 720px;
+    max-width: calc(100vw - 64px);
+    margin: 0 auto 56px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .modal::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+    pointer-events: none;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+    gap: 16px;
+  }
+  .modal-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .modal-title .sep { color: var(--fg-faint); font-weight: 400; }
+  .modal-title .crumb {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+  }
+  .modal-title .crumb.live { color: var(--accent); }
+
+  .icon-btn {
+    width: 28px; height: 28px;
+    margin-left: auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-base);
+    color: var(--fg-muted);
+    cursor: pointer;
+    transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--surface-pressed); border-color: var(--border); }
+  .icon-btn svg { width: 14px; height: 14px; }
+
+  .modal-body {
+    background: var(--surface);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* section label */
+  .field-label {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .field-label .k {
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--fg-muted);
+  }
+  .field-label .rule {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--border) 0%, transparent 90%);
+  }
+  .field-label .hint {
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.04em;
+  }
+
+  /* ============ ORDER FORM ============ */
+  .order {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    overflow: hidden;
+  }
+  .order-head {
+    display: grid;
+    grid-template-columns: 90px 1fr 1fr 1fr;
+    gap: 0;
+    background: var(--surface-deep);
+    border-bottom: 1px solid var(--border);
+  }
+  .order-head .cell {
+    padding: 10px 14px;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    font-weight: 700;
+  }
+  .order-head .cell + .cell { border-left: 1px solid var(--border); }
+
+  .order-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 1fr 1fr;
+    gap: 0;
+    border-top: 1px solid var(--border);
+  }
+  .order-row:first-of-type { border-top: 0; }
+  .order-row .ratio-cell {
+    display: flex;
+    align-items: center;
+    padding: 14px 14px;
+    background: var(--surface-deep);
+    border-right: 1px solid var(--border);
+  }
+  .order-row .ratio {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: 0.06em;
+  }
+  .order-row .check-cell {
+    display: flex;
+    align-items: stretch;
+    border-right: 1px solid var(--border);
+  }
+  .order-row .check-cell:last-child { border-right: 0; }
+  .check {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+    cursor: pointer;
+    background: transparent;
+    border: 0;
+    transition: background-color 120ms ease;
+  }
+  .check:hover { background: var(--surface-pressed); }
+  .check.on { background: var(--accent-tint); }
+  .check .box {
+    width: 18px; height: 18px;
+    flex-shrink: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 2px;
+    background: var(--surface);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: transparent;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+  .check .box svg { width: 11px; height: 11px; }
+  .check.on .box { background: var(--accent); border-color: var(--accent); color: #0e1416; }
+
+  /* ============ FILENAME ============ */
+  .name-input {
+    display: flex;
+    align-items: stretch;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    overflow: hidden;
+    transition: border-color 140ms ease;
+  }
+  .name-input:focus-within { border-color: var(--accent); }
+  .name-input input {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    outline: none;
+    padding: 10px 12px;
+    color: var(--fg);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.01em;
+  }
+  .name-input .ext {
+    padding: 0 12px;
+    display: inline-flex; align-items: center;
+    background: var(--surface-deep);
+    color: var(--fg-muted);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    border-left: 1px solid var(--border);
+  }
+  .name-help {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.02em;
+  }
+  .name-help .tok { color: var(--accent); }
+
+  /* ============ FOLDER ============ */
+  .folder-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    padding: 6px 6px 6px 12px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+  }
+  .folder-row .crumbs { flex: 1; color: var(--fg-muted); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folder-row .crumbs .sep { color: var(--fg-faint); }
+  .folder-row .crumbs .leaf { color: var(--fg); font-weight: 500; }
+  .folder-row .crumbs .stamp {
+    color: var(--fg);
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 2px;
+    background: var(--accent-tint);
+    border: 1px solid rgba(188, 237, 9, 0.20);
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .folder-row .crumbs .stamp .seq {
+    color: var(--accent);
+    font-weight: 700;
+    margin-left: 2px;
+  }
+  .folder-row .crumbs .stamp svg { width: 10px; height: 10px; opacity: 0.7; color: var(--accent); }
+  .folder-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .folder-hint .swatch {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0.6;
+  }
+
+  /* ============ BUTTONS ============ */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: "Manrope", sans-serif;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    padding: 7px 12px;
+    border-radius: var(--r-base);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-raised);
+    color: var(--fg);
+    cursor: pointer;
+    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+  }
+  .btn:hover { border-color: var(--fg-muted); background: var(--surface-deep); }
+  .btn-ghost {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--fg-muted);
+  }
+  .btn-ghost:hover { color: var(--fg); background: var(--surface-deep); }
+  .btn-primary {
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #0e1416;
+    padding: 9px 18px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+  }
+  .btn-primary:hover { background: #d0ff14; }
+  .btn-primary:disabled, .btn-primary.disabled {
+    background: var(--surface-pressed);
+    border-color: var(--border);
+    color: var(--fg-dim);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+  .btn-danger {
+    border: 1px solid var(--accent-warm);
+    background: var(--accent-warm);
+    color: #1a0908;
+    padding: 9px 18px;
+    font-weight: 700;
+  }
+
+  /* ============ FOOTER ============ */
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    gap: 12px;
+    background: var(--surface-raised);
+    border-top: 1px solid var(--border);
+  }
+  .modal-footer .summary {
+    margin-right: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .modal-footer .summary .l1 {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+  }
+  .modal-footer .summary .l1 strong { color: var(--accent); font-weight: 700; }
+  .modal-footer .summary .l2 {
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.04em;
+  }
+  .modal-footer .summary .l2 .sep { color: var(--fg-faint); margin: 0 6px; }
+
+  /* ============ JOB LIST (render + done) ============ */
+  .job-list {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    overflow: hidden;
+  }
+  .job {
+    display: grid;
+    grid-template-columns: 28px 1fr 110px 90px;
+    gap: 14px;
+    align-items: center;
+    padding: 11px 14px;
+    border-top: 1px solid var(--border);
+    transition: background-color 140ms ease;
+  }
+  .job:first-of-type { border-top: 0; }
+  .job:hover { background: var(--surface-deep); }
+  .job .status {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px;
+    color: var(--fg-dim);
+  }
+  .job.queued .status svg { color: var(--fg-dim); }
+  .job.running .status {
+    color: var(--accent);
+  }
+  .job.running .status .spin {
+    animation: spin 1.4s linear infinite;
+    transform-origin: 50% 50%;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .job.done .status {
+    color: #0e1416;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+  .job .name {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .job.queued .name { color: var(--fg-muted); }
+  .job .name .ext { color: var(--fg-dim); }
+  .job .name .ch-tag {
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 2px;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    background: var(--accent-tint);
+    margin-right: 6px;
+    text-transform: uppercase;
+  }
+  .job .name .ch-tag.m { color: var(--accent-cold); background: rgba(47, 82, 224, 0.10); }
+  .job .name .ch-tag.v { color: var(--accent-warm); background: rgba(255, 113, 91, 0.10); }
+  .job .bar-cell {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .job .bar { height: 3px; background: var(--surface-deep); border-radius: 2px; overflow: hidden; }
+  .job .bar .fill { height: 100%; background: var(--accent); border-radius: 2px; }
+  .job.queued .bar .fill { background: var(--fg-faint); }
+  .job.done .bar .fill { width: 100% !important; }
+  .job .pct {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    color: var(--fg-dim);
+    letter-spacing: 0.02em;
+  }
+  .job .eta {
+    text-align: right;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+  .job.done .eta { color: var(--accent); }
+
+  /* render banner */
+  .render-summary {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px;
+    border-radius: var(--r-base);
+    background: linear-gradient(90deg, var(--accent-tint), transparent 70%), var(--surface-raised);
+    border: 1px solid var(--accent-tint);
+  }
+  .render-summary .pulse {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(188, 237, 9, 0.5);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(188, 237, 9, 0.5); }
+    50% { box-shadow: 0 0 0 6px rgba(188, 237, 9, 0); }
+  }
+  .render-summary .label {
+    font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700;
+  }
+  .render-summary .main {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+  }
+  .render-summary .main strong { color: var(--accent); font-weight: 700; }
+  .render-summary .meta {
+    margin-left: auto;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+  .render-summary .meta .k { color: var(--fg-dim); margin-right: 4px; }
+  .render-summary .meta .sep { color: var(--fg-faint); margin: 0 8px; }
+
+  /* done banner */
+  .done-summary {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px;
+    border-radius: var(--r-base);
+    background: linear-gradient(90deg, rgba(188, 237, 9, 0.10), transparent 60%), var(--surface-raised);
+    border: 1px solid rgba(188, 237, 9, 0.30);
+  }
+  .done-summary .check {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #0e1416;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .done-summary .title {
+    font-size: 13.5px; font-weight: 700; color: var(--fg);
+  }
+  .done-summary .sub {
+    margin-top: 2px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+  .done-summary .sub strong { color: var(--accent); }
+  .done-summary .right { margin-left: auto; }
+
+  /* design note */
+  .note {
+    max-width: 720px;
+    margin: -40px auto 32px;
+    padding: 12px 16px;
+    background: var(--surface-raised);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-base);
+    color: var(--fg-muted);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+  .note .k {
+    color: var(--accent);
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 10px;
+    margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <!-- STATE NAV -->
+  <div class="switcher">
+    <span class="brand">TRAILCUT<span class="dot">●</span>EXPORT</span>
+    <nav>
+      <a href="#state-selection" class="active">01 · Configure</a>
+      <a href="#state-rendering">02 · Rendering</a>
+      <a href="#state-done">03 · Complete</a>
+    </nav>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 1 — CONFIGURE ============= -->
+  <!-- ============================================== -->
+  <section id="state-selection" class="modal" aria-label="Export — configure">
+    <header class="modal-header">
+      <h2 class="modal-title">Export</h2>
+      <button class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <!-- ORDER FORM -->
+      <div>
+        <div class="order">
+          <div class="order-head">
+            <span class="cell">Aspect</span>
+            <span class="cell">Composite</span>
+            <span class="cell">Map only</span>
+            <span class="cell">Video only</span>
+          </div>
+
+          <div class="order-row">
+            <div class="ratio-cell"><span class="ratio">16:9</span></div>
+            <div class="check-cell">
+              <button class="check on">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+            <div class="check-cell">
+              <button class="check">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+            <div class="check-cell">
+              <button class="check">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="order-row">
+            <div class="ratio-cell"><span class="ratio">4:5</span></div>
+            <div class="check-cell">
+              <button class="check on">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+            <div class="check-cell">
+              <button class="check on">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+            <div class="check-cell">
+              <button class="check">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="order-row">
+            <div class="ratio-cell"><span class="ratio">9:16</span></div>
+            <div class="check-cell">
+              <button class="check on">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+            <div class="check-cell">
+              <button class="check">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+            <div class="check-cell">
+              <button class="check">
+                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- OUTPUT FOLDER -->
+      <div>
+        <div class="field-label">
+          <span class="k">Output folder</span>
+          <span class="rule"></span>
+        </div>
+        <div class="folder-row">
+          <span class="crumbs">
+            <span>~</span><span class="sep">/</span>
+            <span>Movies</span><span class="sep">/</span>
+            <span>TrailCut</span><span class="sep">/</span>
+            <span class="stamp">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 5h4l1.5-1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><path d="M11 8v3M9.5 9.5h3"/></svg>
+              Cascade Pass Traverse<span class="seq">2</span>
+            </span>
+          </span>
+          <button class="btn" title="Reveal in Finder" style="padding: 6px 8px;">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" width="13" height="13"><path d="M3 6h4l1.5-2H13v8H3z"/></svg>
+          </button>
+          <button class="btn">Choose…</button>
+        </div>
+        <div class="folder-hint">
+          <span class="swatch"></span>
+          Folder name matches the project — auto-numbered (<span style="color: var(--fg-muted);">Cascade Pass Traverse 1</span>, <span style="color: var(--fg);">Cascade Pass Traverse 2</span>, …) when the name already exists
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>4 files</strong> · ≈ 232 MB</div>
+        <div class="l2">Estimated render ≈ 2 min 41 s</div>
+      </div>
+      <button class="btn btn-ghost">Cancel</button>
+      <button class="btn btn-primary">Render 4 files</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">IA</span>
+    Three rows, one per aspect ratio. Each row carries the three output checkboxes. Empty rows produce zero jobs; ticked cells produce one job each. By default the export drops into an auto-named timestamped subfolder, so the user only needs to pick a parent location once.
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 2 — RENDERING ============= -->
+  <!-- ============================================== -->
+  <section id="state-rendering" class="modal" aria-label="Export — rendering">
+    <header class="modal-header">
+      <h2 class="modal-title">Export</h2>
+      <button class="icon-btn" aria-label="Hide — render continues in background">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 8h10"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <div class="render-summary">
+        <span class="pulse"></span>
+        <div>
+          <div class="label">Rendering</div>
+          <div class="main">Job <strong>2 of 4</strong> · 16:9 composite</div>
+        </div>
+        <div class="meta">
+          <span class="k">elapsed</span><span>00:54</span>
+          <span class="sep">·</span>
+          <span class="k">eta</span><span>1:47</span>
+        </div>
+      </div>
+
+      <div class="job-list">
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">100% · 34.1 s</span>
+          </div>
+          <span class="eta">53.2 MB</span>
+        </div>
+
+        <div class="job running">
+          <span class="status">
+            <svg class="spin" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="8" cy="8" r="5.5" stroke-opacity="0.25"/>
+              <path d="M13.5 8a5.5 5.5 0 0 0-5.5-5.5" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 42%;"></div></div>
+            <span class="pct">42% · 412 / 980 frames</span>
+          </div>
+          <span class="eta">eta 1:24</span>
+        </div>
+
+        <div class="job queued">
+          <span class="status">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__map-only<span class="ext">.mov</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 0%;"></div></div>
+            <span class="pct">queued</span>
+          </div>
+          <span class="eta">est 0:38</span>
+        </div>
+
+        <div class="job queued">
+          <span class="status">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 0%;"></div></div>
+            <span class="pct">queued</span>
+          </div>
+          <span class="eta">est 0:42</span>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>1 done</strong> · 1 rendering · 2 queued</div>
+        <div class="l2">Elapsed 00:54<span class="sep">·</span>Total ETA ≈ 2:41</div>
+      </div>
+      <button class="btn btn-ghost">Hide</button>
+      <button class="btn btn-danger">Cancel render</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">Render</span>
+    The same body slot transforms into a job list — one row per ticked output cell, in the order they were checked. A small render banner names the file currently encoding so users always know what's writing.
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 3 — COMPLETE ============= -->
+  <!-- ============================================== -->
+  <section id="state-done" class="modal" aria-label="Export — complete">
+    <header class="modal-header">
+      <h2 class="modal-title">Export</h2>
+      <button class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <div class="done-summary">
+        <span class="check">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+        </span>
+        <div>
+          <div class="title">4 files exported</div>
+          <div class="sub">to <strong>~/Movies/TrailCut/Cascade Pass Traverse 2</strong> · <strong>238.0 MB</strong> · 02:38 total</div>
+        </div>
+        <div class="right">
+          <button class="btn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" width="13" height="13"><path d="M3 6h4l1.5-2H13v8H3z"/></svg>
+            Reveal folder
+          </button>
+        </div>
+      </div>
+
+      <div class="job-list">
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">34.1 s · H.264</span>
+          </div>
+          <span class="eta">53.2 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">58.4 s · H.264</span>
+          </div>
+          <span class="eta">71.8 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__map-only<span class="ext">.mov</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">38.2 s · ProRes</span>
+          </div>
+          <span class="eta">54.0 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">46.3 s · HEVC</span>
+          </div>
+          <span class="eta">59.0 MB</span>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>4 files</strong> · 238.0 MB · 02:38 total</div>
+        <div class="l2">~/Movies/TrailCut/Cascade Pass Traverse 2</div>
+      </div>
+      <button class="btn btn-ghost">Render again</button>
+      <button class="btn btn-primary">Done</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">Done</span>
+    Same form factor — banner up top, results list below. The folder-level reveal button is the primary affordance; per-file actions stay implicit (the row stays click-targetable for reveal-this-file).
+  </div>
+
+  <script>
+    // state nav scrolls smoothly to anchors
+    const navLinks = document.querySelectorAll('.switcher nav a');
+    navLinks.forEach(link => {
+      link.addEventListener('click', () => {
+        navLinks.forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      });
+    });
+    // checkbox toggle on order form (configure state only)
+    document.querySelectorAll('#state-selection .check').forEach(c => {
+      c.addEventListener('click', () => c.classList.toggle('on'));
+    });
+  </script>
+</div>
+</body>
+</html>

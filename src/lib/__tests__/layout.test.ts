@@ -77,37 +77,37 @@ describe('defaultLayout — sanity', () => {
     it(`${aspect}: produces a non-degenerate slot rect`, () => {
       const layout = defaultLayout(aspect);
       const resolved = resolveSlots(layout, aspect);
-      // Both slots must have positive area; corner radius must be positive
-      // (defaults are PiP with a small rounded corner).
       expect(resolved.map_slot.w).toBeGreaterThan(0);
       expect(resolved.map_slot.h).toBeGreaterThan(0);
       expect(resolved.video_slot.w).toBeGreaterThan(0);
       expect(resolved.video_slot.h).toBeGreaterThan(0);
-      expect(resolved.corner_radius_px).toBeGreaterThan(0);
       expect(resolved.output).toEqual(OUTPUT_DIMS[aspect]);
     });
 
-    it(`${aspect}: default layout's inset stays inside the output frame`, () => {
+    it(`${aspect}: default layout's slots tile the output frame`, () => {
       const layout = defaultLayout(aspect);
-      // defaultLayout currently returns PiP only — guard, then check bounds.
-      if (layout.mode !== 'pip') throw new Error('expected PiP default');
+      if (layout.mode !== 'split') throw new Error('expected Split default');
       const resolved = resolveSlots(layout, aspect);
-      const inset =
-        layout.inset_source === 'map' ? resolved.map_slot : resolved.video_slot;
-      expect(inset.x + inset.w).toBeLessThanOrEqual(resolved.output.w);
-      expect(inset.y + inset.h).toBeLessThanOrEqual(resolved.output.h);
+      // Split slots partition the output: their combined area equals the
+      // frame's area, and each individually fits inside the frame.
+      const total = resolved.map_slot.w * resolved.map_slot.h
+        + resolved.video_slot.w * resolved.video_slot.h;
+      expect(total).toBeCloseTo(resolved.output.w * resolved.output.h, 5);
+      for (const slot of [resolved.map_slot, resolved.video_slot]) {
+        expect(slot.x + slot.w).toBeLessThanOrEqual(resolved.output.w);
+        expect(slot.y + slot.h).toBeLessThanOrEqual(resolved.output.h);
+      }
     });
   }
 });
 
-describe('defaultPipLayout — agreement with defaultLayout', () => {
+describe('defaultSplitLayout — agreement with defaultLayout', () => {
   const aspects: AspectRatio[] = ['9_16', '16_9', '4_5'];
   for (const aspect of aspects) {
-    it(`${aspect}: defaultPipLayout and defaultLayout return identical layouts`, () => {
-      // Back-compat contract: every call site that uses `defaultLayout` today
-      // gets the same PiP starter when 110's mode toggle synthesizes via
-      // `defaultPipLayout`.
-      expect(defaultPipLayout(aspect)).toEqual(defaultLayout(aspect));
+    it(`${aspect}: defaultSplitLayout and defaultLayout return identical layouts`, () => {
+      // Contract: `defaultLayout` is the alias every "give me a starter"
+      // call site uses; it must agree with the canonical split factory.
+      expect(defaultSplitLayout(aspect)).toEqual(defaultLayout(aspect));
     });
   }
 });

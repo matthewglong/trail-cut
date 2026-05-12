@@ -33,6 +33,11 @@ export interface LayoutConfiguratorProps {
    *  the caller's own control surface (the triptych modal's unified rail)
    *  isn't duplicated. The interactive SVG overlay still mounts. */
   chromeless?: boolean;
+  /** Visual mode for the underlying LayoutPreview backdrop. `'configurator'`
+   *  (default) is the bare wireframe paired with the interactive overlay.
+   *  `'triptych'` paints the distinct map/video fills used in the Map
+   *  Positioning tiles. Labels are suppressed in either case. */
+  previewMode?: 'configurator' | 'triptych';
 }
 
 const HANDLE_RADIUS_PX = 7;
@@ -41,6 +46,7 @@ const HANDLE_FILL = '#52d6ff';
 const HANDLE_STROKE = '#0b1a23';
 const DIVIDER_HANDLE_LENGTH = 56;
 const DIVIDER_HANDLE_THICKNESS = 14;
+const SWAP_BADGE_RADIUS_PX = 10;
 const SNAP_GUIDE_STROKE = 'rgba(120, 180, 255, 0.7)';
 const SNAP_EASE_TRANSITION = 'x 120ms ease-out, y 120ms ease-out, width 120ms ease-out, height 120ms ease-out, cx 120ms ease-out, cy 120ms ease-out';
 
@@ -55,6 +61,7 @@ export function LayoutConfigurator({
   style,
   onDone,
   chromeless = false,
+  previewMode = 'configurator',
 }: LayoutConfiguratorProps) {
   // Derived directly from prop — the parent owns snap mode. Past iterations
   // froze this in useState, which silently ignored prop changes mid-session.
@@ -88,7 +95,8 @@ export function LayoutConfigurator({
           aspect={aspect}
           containerWidth={containerWidth}
           containerHeight={containerHeight}
-          mode="configurator"
+          mode={previewMode}
+          showLabels={false}
         />
         {drawn.width > 0 && drawn.height > 0 && (
           <ConfiguratorOverlay
@@ -302,7 +310,10 @@ function PipOverlay({
     ? { transition: SNAP_EASE_TRANSITION }
     : {};
 
+  const readoutText = `${pct(layout.inset.x)} · ${pct(layout.inset.y)}  ·  ${pct(layout.inset.w)} × ${pct(layout.inset.h)}`;
+
   return (
+    <>
     <svg
       xmlns="http://www.w3.org/2000/svg"
       viewBox={`0 0 ${resolved.output.w} ${resolved.output.h}`}
@@ -382,7 +393,66 @@ function PipOverlay({
           />
         </g>
       ))}
+      {!disabled && !drag.isDragging && (() => {
+        // Pick the inset edge to anchor the swap badge to. Horizontal sides
+        // (left/right) are preferred — they read more naturally as a "swap"
+        // affordance — provided the side has at least 2/3 of the badge's
+        // radius of clearance outside the inset. Top/bottom is the fallback.
+        const badgeRadius = SWAP_BADGE_RADIUS_PX / Math.max(scaleFactor, 1e-6);
+        const threshold = badgeRadius * (2 / 3);
+        const rightSpace = resolved.output.w - (insetSlot.x + insetSlot.w);
+        const leftSpace = insetSlot.x;
+        const topSpace = insetSlot.y;
+        const bottomSpace = resolved.output.h - (insetSlot.y + insetSlot.h);
+
+        let side: 'top' | 'right' | 'bottom' | 'left';
+        if (rightSpace >= threshold || leftSpace >= threshold) {
+          side = rightSpace >= leftSpace ? 'right' : 'left';
+        } else {
+          side = bottomSpace >= topSpace ? 'bottom' : 'top';
+        }
+
+        let badgeCx = insetSlot.x + insetSlot.w / 2;
+        let badgeCy = insetSlot.y + insetSlot.h / 2;
+        let badgeOrientation: 'horizontal' | 'vertical' = 'horizontal';
+        switch (side) {
+          case 'top':
+            badgeCy = insetSlot.y;
+            badgeOrientation = 'vertical';
+            break;
+          case 'bottom':
+            badgeCy = insetSlot.y + insetSlot.h;
+            badgeOrientation = 'vertical';
+            break;
+          case 'left':
+            badgeCx = insetSlot.x;
+            badgeOrientation = 'horizontal';
+            break;
+          case 'right':
+            badgeCx = insetSlot.x + insetSlot.w;
+            badgeOrientation = 'horizontal';
+            break;
+        }
+        return (
+          <SwapBadge
+            cx={badgeCx}
+            cy={badgeCy}
+            orientation={badgeOrientation}
+            scaleFactor={scaleFactor}
+            onSwap={() => {
+              const swapped: PipLayout = {
+                ...layout,
+                inset_source: layout.inset_source === 'video' ? 'map' : 'video',
+              };
+              onChange(clampLayout(swapped, aspect));
+            }}
+            ariaLabel={`Swap inset (currently ${layout.inset_source})`}
+          />
+        );
+      })()}
     </svg>
+    {drag.isDragging && <DragReadout text={readoutText} />}
+    </>
   );
 }
 
@@ -456,7 +526,47 @@ function SplitOverlay({
     ? drag.activeSnap.divider * resolved.output.h
     : null;
 
+  // Pane rects + per-pane readout content while dragging. The readout always
+  // shows the pane's percentage of the frame; aspect-fit stops append the
+  // pane's aspect ("32% · 9:16") and outline the named pane, proportion stops
+  // append the proportion name ("33% · ⅓", "62% · φ"). `leading` = left for
+  // 16:9, top for 9:16/4:5.
+  const paneInfo = (() => {
+    const leadingFraction = layout.divider;
+    const trailingFraction = 1 - layout.divider;
+    const dPxX = horizontalAxis ? layout.divider * resolved.output.w : 0;
+    const dPxY = horizontalAxis ? 0 : layout.divider * resolved.output.h;
+    const leadingRect = horizontalAxis
+      ? { x: 0, y: 0, w: dPxX, h: resolved.output.h }
+      : { x: 0, y: 0, w: resolved.output.w, h: dPxY };
+    const trailingRect = horizontalAxis
+      ? { x: dPxX, y: 0, w: resolved.output.w - dPxX, h: resolved.output.h }
+      : { x: 0, y: dPxY, w: resolved.output.w, h: resolved.output.h - dPxY };
+
+    const active = drag.activeSnap.label;
+    let leadingExtra = '';
+    let trailingExtra = '';
+    let highlightedSide: 'leading' | 'trailing' | null = null;
+    if (active) {
+      if (active.kind === 'aspect-fit') {
+        if (active.side === 'leading') leadingExtra = active.label;
+        else trailingExtra = active.label;
+        highlightedSide = active.side;
+      } else {
+        leadingExtra = active.leading;
+        trailingExtra = active.trailing;
+      }
+    }
+
+    return {
+      leading: { rect: leadingRect, fraction: leadingFraction, extra: leadingExtra },
+      trailing: { rect: trailingRect, fraction: trailingFraction, extra: trailingExtra },
+      highlightedSide,
+    };
+  })();
+
   return (
+    <>
     <svg
       xmlns="http://www.w3.org/2000/svg"
       viewBox={`0 0 ${resolved.output.w} ${resolved.output.h}`}
@@ -465,6 +575,12 @@ function SplitOverlay({
       style={{ ...overlaySvgStyle, touchAction: 'none' }}
       data-testid="layout-configurator-svg"
     >
+      {paneInfo.highlightedSide && (
+        <AspectFitOutline
+          rect={paneInfo[paneInfo.highlightedSide].rect}
+          scaleFactor={scaleFactor}
+        />
+      )}
       {guideX !== null && (
         <line
           x1={guideX}
@@ -528,8 +644,200 @@ function SplitOverlay({
         onPointerDown={startHandle}
         data-testid="layout-configurator-split-handle"
       />
+      {!disabled && !drag.isDragging && (() => {
+        const offsetPx = 60;
+        const offsetSvg = offsetPx / Math.max(scaleFactor, 1e-6);
+        const badgeCx = horizontalAxis
+          ? dividerPxX
+          : resolved.output.w / 2 + offsetSvg;
+        const badgeCy = horizontalAxis
+          ? resolved.output.h / 2 + offsetSvg
+          : dividerPxY;
+        return (
+          <SwapBadge
+            cx={badgeCx}
+            cy={badgeCy}
+            orientation={horizontalAxis ? 'horizontal' : 'vertical'}
+            scaleFactor={scaleFactor}
+            onSwap={() => {
+              const sides = legalSplitSides(aspect);
+              const i = sides.indexOf(layout.video_side);
+              const nextSide = sides[(i + 1) % sides.length];
+              const swapped: SplitLayout = { ...layout, video_side: nextSide };
+              onChange(clampLayout(swapped, aspect));
+            }}
+            ariaLabel={`Swap order (video on ${layout.video_side})`}
+          />
+        );
+      })()}
+      {drag.isDragging && (
+        <>
+          <PaneReadout
+            rect={paneInfo.leading.rect}
+            text={readoutText(paneInfo.leading.fraction, paneInfo.leading.extra)}
+            scaleFactor={scaleFactor}
+            testid="layout-configurator-split-readout-leading"
+          />
+          <PaneReadout
+            rect={paneInfo.trailing.rect}
+            text={readoutText(paneInfo.trailing.fraction, paneInfo.trailing.extra)}
+            scaleFactor={scaleFactor}
+            testid="layout-configurator-split-readout-trailing"
+          />
+        </>
+      )}
     </svg>
+    </>
   );
+}
+
+function readoutText(fraction: number, extra: string): string {
+  return extra ? `${pct(fraction)} · ${extra}` : pct(fraction);
+}
+
+interface SwapBadgeProps {
+  cx: number;
+  cy: number;
+  orientation: 'horizontal' | 'vertical';
+  scaleFactor: number;
+  onSwap: () => void;
+  ariaLabel: string;
+}
+
+function SwapBadge({ cx, cy, orientation, scaleFactor, onSwap, ariaLabel }: SwapBadgeProps) {
+  const inv = 1 / Math.max(scaleFactor, 1e-6);
+  const r = SWAP_BADGE_RADIUS_PX * inv;
+  const stroke = 1.2 * inv;
+  const arrowStroke = 1.3 * inv;
+  // The two arrows are drawn once in a horizontal layout (top arrow points
+  // right, bottom arrow points left). The vertical variant is the same path
+  // rotated 90°, so it reads as a true rotation of the horizontal glyph.
+  const reach = 5 * inv;
+  const sep = 2.5 * inv;
+  const headInset = 2.2 * inv;
+  const headSpread = 1.6 * inv;
+  const rotate = orientation === 'vertical' ? 90 : 0;
+  return (
+    <g
+      style={{ cursor: 'pointer' }}
+      onClick={(e) => { e.stopPropagation(); onSwap(); }}
+      onPointerDown={(e) => e.stopPropagation()}
+      role="button"
+      aria-label={ariaLabel}
+      data-testid="layout-configurator-swap-badge"
+    >
+      <circle
+        cx={cx}
+        cy={cy}
+        r={r}
+        fill="rgba(7, 27, 38, 0.92)"
+        stroke={HANDLE_FILL}
+        strokeWidth={stroke}
+      />
+      <g
+        transform={`translate(${cx} ${cy}) rotate(${rotate})`}
+        fill="none"
+        stroke={HANDLE_FILL}
+        strokeWidth={arrowStroke}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d={`M ${-reach} ${-sep} H ${reach} M ${reach - headInset} ${-sep - headSpread} L ${reach} ${-sep} L ${reach - headInset} ${-sep + headSpread}`} />
+        <path d={`M ${reach} ${sep} H ${-reach} M ${-reach + headInset} ${sep - headSpread} L ${-reach} ${sep} L ${-reach + headInset} ${sep + headSpread}`} />
+      </g>
+    </g>
+  );
+}
+
+interface AspectFitOutlineProps {
+  rect: { x: number; y: number; w: number; h: number };
+  scaleFactor: number;
+}
+
+// Dashed outline + tint on the pane that landed flush at a nameable source
+// aspect. The pane's text label is delivered separately via the per-pane
+// PaneReadout, which keeps a single labeling surface (the readout chip) and
+// lets the outline focus purely on "this pane is the named one".
+function AspectFitOutline({ rect, scaleFactor }: AspectFitOutlineProps) {
+  const inv = 1 / Math.max(scaleFactor, 1e-6);
+  const stroke = 1.6 * inv;
+  return (
+    <rect
+      x={rect.x}
+      y={rect.y}
+      width={rect.w}
+      height={rect.h}
+      fill="rgba(82, 214, 255, 0.10)"
+      stroke={HANDLE_FILL}
+      strokeOpacity={0.85}
+      strokeWidth={stroke}
+      strokeDasharray={`${4 * inv} ${3 * inv}`}
+      pointerEvents="none"
+      data-testid="layout-configurator-aspect-fit-outline"
+    />
+  );
+}
+
+interface PaneReadoutProps {
+  rect: { x: number; y: number; w: number; h: number };
+  text: string;
+  scaleFactor: number;
+  testid: string;
+}
+
+// Pill-shaped readout centered in a pane during drag. Shows the pane's
+// percentage of the frame, optionally augmented with an aspect or proportion
+// name. Renders inside the configurator SVG so it scales with the viewBox.
+function PaneReadout({ rect, text, scaleFactor, testid }: PaneReadoutProps) {
+  const inv = 1 / Math.max(scaleFactor, 1e-6);
+  const chipHeight = 24 * inv;
+  // Width estimated from char count; JetBrains Mono is roughly 7.2px per
+  // glyph at 12px — adding generous padding so short readouts ("33%") and
+  // long ones ("33% · ⅓") both look centered without text measurement.
+  const chipWidth = Math.max(chipHeight * 2, (text.length + 1.5) * 7.2 * inv);
+  const chipX = rect.x + rect.w / 2 - chipWidth / 2;
+  const chipY = rect.y + rect.h / 2 - chipHeight / 2;
+  const fontSize = 11.5 * inv;
+  return (
+    <g pointerEvents="none" data-testid={testid}>
+      <rect
+        x={chipX}
+        y={chipY}
+        width={chipWidth}
+        height={chipHeight}
+        rx={3 * inv}
+        ry={3 * inv}
+        fill="rgba(7, 27, 38, 0.92)"
+        stroke={HANDLE_FILL}
+        strokeWidth={1.1 * inv}
+      />
+      <text
+        x={chipX + chipWidth / 2}
+        y={chipY + chipHeight / 2}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill={HANDLE_FILL}
+        fontFamily="'JetBrains Mono', 'SF Mono', ui-monospace, monospace"
+        fontSize={fontSize}
+        fontWeight={700}
+        letterSpacing={`${0.4 * inv}px`}
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
+function DragReadout({ text }: { text: string }) {
+  return (
+    <div style={dragReadoutStyle} data-testid="layout-configurator-drag-readout">
+      {text}
+    </div>
+  );
+}
+
+function pct(v: number): string {
+  return `${Math.round(v * 100)}%`;
 }
 
 const overlayContainerStyle: CSSProperties = {
@@ -544,6 +852,23 @@ const overlayContainerStyle: CSSProperties = {
 const overlaySvgStyle: CSSProperties = {
   pointerEvents: 'auto',
   overflow: 'visible',
+};
+
+const dragReadoutStyle: CSSProperties = {
+  position: 'absolute',
+  top: 8,
+  left: '50%',
+  transform: 'translateX(-50%)',
+  padding: '4px 10px',
+  background: 'rgba(7, 27, 38, 0.92)',
+  border: `1px solid ${HANDLE_FILL}`,
+  borderRadius: 3,
+  color: HANDLE_FILL,
+  fontFamily: "'JetBrains Mono', 'SF Mono', ui-monospace, monospace",
+  fontSize: 10.5,
+  letterSpacing: '0.08em',
+  pointerEvents: 'none',
+  whiteSpace: 'nowrap',
 };
 
 const chromeRowStyle: CSSProperties = {

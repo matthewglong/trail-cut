@@ -341,5 +341,99 @@ describe('useSplitDrag — activeSnap', () => {
       window.dispatchEvent(pointerEvent('pointerup', { clientX: 100, clientY: 105 }));
     });
     expect(result.current.activeSnap.divider).toBeNull();
+    expect(result.current.activeSnap.label).toBeNull();
+  });
+
+  it('exposes aspect-fit label metadata when snapping to a named stop', () => {
+    // 16:9 output (1920x1080) with vertical divider; FIT_9_16 ≈ 0.3164.
+    // Start at 0.30 and drag right to land in the 9:16-fit snap band.
+    const layout: SplitLayout = { mode: 'split', video_side: 'left', divider: 0.30 };
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout,
+        aspect: '16_9',
+        containerWidth: 1920,
+        containerHeight: 1080,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 130, clientY: 100 }),
+      );
+    });
+    const fit = (9 / 16) * (9 / 16);
+    expect(result.current.activeSnap.divider).toBe(fit);
+    expect(result.current.activeSnap.label).toEqual({
+      kind: 'aspect-fit',
+      divider: fit,
+      side: 'leading',
+      label: '9:16',
+    });
+  });
+
+  it('exposes proportion label metadata when snapping to a thirds stop', () => {
+    // 9:16 output, horizontal divider; drag toward 1/3 from 0.30.
+    const layout: SplitLayout = { mode: 'split', video_side: 'top', divider: 0.30 };
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout,
+        aspect: '9_16',
+        containerWidth: 1080,
+        containerHeight: 1920,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      // Drag ~64px down (0.30 → ≈0.333), into the 1/3 snap band.
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 100, clientY: 164 }),
+      );
+    });
+    expect(result.current.activeSnap.divider).toBe(1 / 3);
+    expect(result.current.activeSnap.label).toEqual({
+      kind: 'proportion',
+      divider: 1 / 3,
+      leading: '⅓',
+      trailing: '⅔',
+    });
+  });
+
+  it('label is null for unlabeled geometric snaps (0.5)', () => {
+    const layout: SplitLayout = { mode: 'split', video_side: 'top', divider: 0.49 };
+    const { result } = renderHook(() =>
+      useSplitDrag({
+        layout,
+        aspect: '9_16',
+        containerWidth: 540,
+        containerHeight: 960,
+        snapEnabled: true,
+        onChange: vi.fn(),
+      }),
+    );
+    act(() => {
+      result.current.beginDrag(
+        pointerEvent('pointerdown', { clientX: 100, clientY: 100 }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(
+        pointerEvent('pointermove', { clientX: 100, clientY: 105 }),
+      );
+    });
+    expect(result.current.activeSnap.divider).toBe(0.5);
+    expect(result.current.activeSnap.label).toBeNull();
   });
 });

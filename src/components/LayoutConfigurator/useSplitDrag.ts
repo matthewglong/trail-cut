@@ -6,7 +6,13 @@ import {
   type AspectRatio,
   type SplitLayout,
 } from '../../lib/layout';
-import { findActiveSnapTarget, splitSnapTargets, SNAP_THRESHOLD } from './snap';
+import {
+  findActiveSnapTarget,
+  matchLabeledStop,
+  splitSnapTargets,
+  SNAP_THRESHOLD,
+  type LabeledSplitStop,
+} from './snap';
 
 export interface UseSplitDragArgs {
   layout: SplitLayout;
@@ -20,6 +26,10 @@ export interface UseSplitDragArgs {
 
 export interface SplitActiveSnap {
   divider: number | null;
+  /** Populated when the active snap is a labeled stop — either aspect-fit
+   *  (a pane lands on a named aspect) or proportion (φ, thirds). `null` for
+   *  unlabeled geometric stops or when no snap is engaged. */
+  label: LabeledSplitStop | null;
 }
 
 export interface UseSplitDragHandlers {
@@ -34,7 +44,7 @@ interface DragSession {
   startDivider: number;
 }
 
-const NO_ACTIVE_SNAP: SplitActiveSnap = { divider: null };
+const NO_ACTIVE_SNAP: SplitActiveSnap = { divider: null, label: null };
 
 export function useSplitDrag(args: UseSplitDragArgs): UseSplitDragHandlers {
   const [isDragging, setIsDragging] = useState(false);
@@ -77,7 +87,8 @@ export function useSplitDrag(args: UseSplitDragArgs): UseSplitDragHandlers {
         active = findActiveSnapTarget(projected, splitSnapTargets(cur.aspect), SNAP_THRESHOLD);
         if (active !== null) snapped = active;
       }
-      setActiveSnap({ divider: active });
+      const label = active !== null ? matchLabeledStop(cur.aspect, active) : null;
+      setActiveSnap({ divider: active, label });
       const next: SplitLayout = { ...cur.layout, divider: snapped };
       const clamped = clampLayout(next, cur.aspect);
       if (clamped.mode === 'split') {

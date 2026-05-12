@@ -230,11 +230,10 @@ export function defaultSplitLayout(aspect: AspectRatio): SplitLayout {
   }
 }
 
-/** Back-compat alias. Pre-100 callers imported `defaultLayout`; that name now
- *  delegates to `defaultPipLayout`. New code should use `defaultPipLayout`
- *  for clarity (`defaultLayout` reads ambiguously once Split exists). */
+/** The starting layout for a new aspect: Split. Callers that want the
+ *  unambiguous form should use `defaultSplitLayout` directly. */
 export function defaultLayout(aspect: AspectRatio): LayoutConfig {
-  return defaultPipLayout(aspect);
+  return defaultSplitLayout(aspect);
 }
 
 /** The two `video_side` values legal for a given aspect's Split orientation.

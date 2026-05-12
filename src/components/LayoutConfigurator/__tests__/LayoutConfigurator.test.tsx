@@ -182,6 +182,63 @@ describe('LayoutConfigurator — swap toggle', () => {
   });
 });
 
+describe('LayoutConfigurator — in-overlay swap badge', () => {
+  it('PiP overlay renders a swap badge that flips inset_source', () => {
+    const onChange = vi.fn();
+    const layout: PipLayout = {
+      mode: 'pip',
+      inset_source: 'map',
+      inset: { x: 0.6, y: 0.7, w: 0.3, h: 0.2 },
+      corner_radius: 0.02,
+    };
+    render(
+      <LayoutConfigurator
+        layout={layout}
+        aspect="9_16"
+        containerWidth={540}
+        containerHeight={960}
+        onChange={onChange}
+        chromeless
+      />,
+    );
+    const badge = findByTestId('layout-configurator-swap-badge');
+    expect(badge).not.toBeNull();
+    act(() => {
+      badge!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0][0] as LayoutConfig;
+    if (next.mode !== 'pip') throw new Error('expected pip');
+    expect(next.inset_source).toBe('video');
+  });
+
+  it('Split overlay renders a swap badge that rotates video_side', () => {
+    const onChange = vi.fn();
+    const layout: SplitLayout = { mode: 'split', video_side: 'left', divider: 0.4 };
+    render(
+      <LayoutConfigurator
+        layout={layout}
+        aspect="16_9"
+        containerWidth={960}
+        containerHeight={540}
+        onChange={onChange}
+        chromeless
+      />,
+    );
+    const badge = findByTestId('layout-configurator-swap-badge');
+    expect(badge).not.toBeNull();
+    act(() => {
+      badge!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0][0] as LayoutConfig;
+    if (next.mode !== 'split') throw new Error('expected split');
+    const sides = legalSplitSides('16_9');
+    expect(next.video_side).toBe(sides[(sides.indexOf('left') + 1) % sides.length]);
+    expect(next.divider).toBeCloseTo(0.4, 6);
+  });
+});
+
 describe('LayoutConfigurator — corner-radius slider', () => {
   it('emits a new corner_radius when changed (PiP)', () => {
     const onChange = vi.fn();

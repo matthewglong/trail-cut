@@ -271,11 +271,10 @@ pub fn default_split_layout(aspect: AspectRatio) -> LayoutConfig {
     }
 }
 
-/// Back-compat alias. Pre-100 callers imported `default_layout`; that name now
-/// delegates to `default_pip_layout`. New code should prefer the explicit
-/// name (`default_layout` reads ambiguously once Split exists).
+/// The starting layout for a new aspect: Split. Callers that want the
+/// unambiguous form should use `default_split_layout` directly.
 pub fn default_layout(aspect: AspectRatio) -> LayoutConfig {
-    default_pip_layout(aspect)
+    default_split_layout(aspect)
 }
 
 /// The two `video_side` values legal for a given aspect's Split orientation.
