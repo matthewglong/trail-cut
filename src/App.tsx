@@ -7,18 +7,18 @@ import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
 import type { AspectRatio, Clip, ExportSelection, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
-import { defaultPipLayout } from './lib/layout';
+import { defaultSplitLayout } from './lib/layout';
 
-/** First-contact `ProjectLayouts` shape (task 100): all three aspects seeded
- *  with the baseline PiP-bottom-right layout. Used as the initial state and
- *  as the defensive fallback for projects whose Rust backfill didn't
- *  populate the field (hand-edited bundles, races). Mirrors the Rust
- *  `seeded_layouts()` in `src-tauri/src/models.rs`. */
+/** First-contact `ProjectLayouts` shape: all three aspects seeded with the
+ *  Split default. Used as the initial state and as the defensive fallback
+ *  for projects whose Rust backfill didn't populate the field (hand-edited
+ *  bundles, races). Mirrors the Rust `seeded_layouts()` in
+ *  `src-tauri/src/models.rs`. */
 function makeSeededLayouts(): ProjectLayouts {
   return {
-    '9_16': defaultPipLayout('9_16'),
-    '4_5': defaultPipLayout('4_5'),
-    '16_9': defaultPipLayout('16_9'),
+    '9_16': defaultSplitLayout('9_16'),
+    '4_5': defaultSplitLayout('4_5'),
+    '16_9': defaultSplitLayout('16_9'),
   };
 }
 
@@ -143,8 +143,6 @@ export default function App() {
       transitionFeel={transitionFeel}
       projectLayouts={projectLayouts}
       setProjectLayouts={setProjectLayouts}
-      selectedExportAspect={selectedExportAspect}
-      setSelectedExportAspect={setSelectedExportAspect}
       lastExportSelection={lastExportSelection}
       setLastExportSelection={setLastExportSelection}
       playheadMs={playheadMs}

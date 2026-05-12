@@ -5,7 +5,6 @@ import MapToolbar from '../components/MapToolbar/MapToolbar';
 import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
-import { LayoutPreview, LayoutPreviewToggle } from '../components/LayoutPreview';
 import { MapPositioningModal } from '../components/MapPositioningModal';
 import { ExportModal } from '../components/ExportModal';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
@@ -13,7 +12,7 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { AspectRatio, Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportSelection } from '../types';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportSelection } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -24,31 +23,6 @@ const V_SPLIT_MAX = 0.80;
 const H_CLIPS_MIN_PX = 80;
 const H_CLIPS_MAX_RATIO = 0.50; // clips can't exceed 50% of height
 const H_CLIPS_DEFAULT_PX = 140;
-
-const LAYOUT_PREVIEW_PREF_PREFIX = 'trailcut.layoutPreviewVisible:';
-
-/** Read the layout-preview toggle preference for a given project dir. Stored
- *  in localStorage rather than the project bundle to keep editor UI state
- *  out of the shareable on-disk JSON (task 080's "lower-friction" path).
- *  Returns false on missing/unparseable values — overlay defaults to off. */
-function readLayoutPreviewPref(projectDir: string | null): boolean {
-  if (!projectDir) return false;
-  try {
-    return localStorage.getItem(LAYOUT_PREVIEW_PREF_PREFIX + projectDir) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function writeLayoutPreviewPref(projectDir: string | null, value: boolean): void {
-  if (!projectDir) return;
-  try {
-    localStorage.setItem(LAYOUT_PREVIEW_PREF_PREFIX + projectDir, value ? '1' : '0');
-  } catch {
-    // Quota exceeded / private mode — silently drop. The toggle still works
-    // for the current session; only cross-session persistence is lost.
-  }
-}
 
 interface ProjectViewProps {
   projectDir: string | null;
@@ -68,9 +42,6 @@ interface ProjectViewProps {
   transitionFeel: TransitionFeel | undefined;
   projectLayouts: ProjectLayouts;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
-  /** Aspect for the LayoutPreview overlay. Cycles via Cmd/Ctrl+1/2/3. */
-  selectedExportAspect: AspectRatio;
-  setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   /** Last user-confirmed Export modal selection (task 280). The Export
    *  modal prefills aspects/channels/output folder from this on open;
    *  `null` means "no prior export — start clean". App-level state owns the
@@ -113,8 +84,6 @@ export default function ProjectView({
   transitionFeel,
   projectLayouts,
   setProjectLayouts,
-  selectedExportAspect,
-  setSelectedExportAspect,
   lastExportSelection,
   setLastExportSelection,
   playheadMs,
@@ -150,60 +119,7 @@ export default function ProjectView({
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
 
-  // Layout-preview overlay toggle (task 080). Persisted in localStorage
-  // keyed by projectDir so the preference travels with the project but
-  // doesn't bloat the project bundle's JSON. Defaults to off — the editor's
-  // resting state is "edit clips," not "configure layout."
-  const [layoutPreviewVisible, setLayoutPreviewVisible] = useState(() =>
-    readLayoutPreviewPref(projectDir),
-  );
   const [positioningModalOpen, setPositioningModalOpen] = useState(false);
-  useEffect(() => {
-    setLayoutPreviewVisible(readLayoutPreviewPref(projectDir));
-  }, [projectDir]);
-  const handleToggleLayoutPreview = useCallback(() => {
-    setLayoutPreviewVisible((v) => {
-      const next = !v;
-      writeLayoutPreviewPref(projectDir, next);
-      return next;
-    });
-  }, [projectDir]);
-
-  // Measured size of the video pane content area — fed to LayoutPreview so
-  // its aspect-fit math produces letterbox / pillarbox correctly when the
-  // editor's pane shape doesn't match the layout's output shape.
-  const videoPaneContentRef = useRef<HTMLDivElement>(null);
-  const [videoPaneSize, setVideoPaneSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-  useEffect(() => {
-    const el = videoPaneContentRef.current;
-    if (!el) return;
-    const update = () => {
-      const rect = el.getBoundingClientRect();
-      setVideoPaneSize({ w: rect.width, h: rect.height });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if ((e.target as HTMLElement | null)?.isContentEditable) return;
-      let next: AspectRatio | null = null;
-      if (e.key === '1') next = '16_9';
-      else if (e.key === '2') next = '4_5';
-      else if (e.key === '3') next = '9_16';
-      if (next === null) return;
-      e.preventDefault();
-      setSelectedExportAspect(next);
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [setSelectedExportAspect]);
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -620,7 +536,7 @@ export default function ProjectView({
               cropPreview={cropPreview}
               onToggleCropPreview={() => setCropPreview(p => !p)}
             />
-            <div ref={videoPaneContentRef} style={styles.videoPaneContent}>
+            <div style={styles.videoPaneContent}>
               <VideoPreview
                 clip={selectedClip}
                 proxyPath={selectedProxyPath}
@@ -671,22 +587,6 @@ export default function ProjectView({
                   setPlayheadMs(projectMs);
                 }}
               />
-              {layoutPreviewVisible &&
-                projectLayouts[selectedExportAspect] &&
-                videoPaneSize.w > 0 && (
-                  <LayoutPreview
-                    layout={projectLayouts[selectedExportAspect]!}
-                    aspect={selectedExportAspect}
-                    containerWidth={videoPaneSize.w}
-                    containerHeight={videoPaneSize.h}
-                  />
-                )}
-              <div style={styles.layoutToggleAnchor}>
-                <LayoutPreviewToggle
-                  visible={layoutPreviewVisible}
-                  onToggle={handleToggleLayoutPreview}
-                />
-              </div>
             </div>
           </div>
 
@@ -983,12 +883,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     position: 'relative',
-  },
-  layoutToggleAnchor: {
-    position: 'absolute' as const,
-    top: 8,
-    right: 8,
-    zIndex: 12,
   },
   mapPane: {
     display: 'flex',

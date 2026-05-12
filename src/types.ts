@@ -210,9 +210,7 @@ export interface Project {
   /** Aspect that the export pipeline targets (task 100). Creative-content
    *  state — travels with the project bundle. The Rust side guarantees this
    *  field is populated on every load (serde default for pre-100 bundles
-   *  fills `'9_16'`); the TS type is non-optional. The export handlers in
-   *  ProjectView and the LayoutPreview overlay both read this value to
-   *  decide which aspect to render. */
+   *  fills `'9_16'`); the TS type is non-optional. */
   selected_export_aspect: AspectRatio;
   map_settings?: MapSettings;
   /** Optional: defaults to 'natural' at the consumer. Pre-task-350 projects
