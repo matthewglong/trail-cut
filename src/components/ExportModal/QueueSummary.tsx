@@ -57,9 +57,11 @@ export function QueueSummary({ jobs, outputDir, onClose }: QueueSummaryProps) {
         </span>
         <div>
           <div className={styles.doneTitle} data-testid="export-queue-summary-heading">
-            {done.length} {done.length === 1 ? 'file' : 'files'} exported
+            {cancelled.length > 0 && done.length === 0
+              ? 'Export cancelled'
+              : `${done.length} ${done.length === 1 ? 'file' : 'files'} exported`}
             {failed.length > 0 && ` · ${failed.length} failed`}
-            {cancelled.length > 0 && ` · ${cancelled.length} skipped`}
+            {cancelled.length > 0 && done.length > 0 && ` · ${cancelled.length} skipped`}
           </div>
           {outputDir && (
             <div className={styles.doneSub}>

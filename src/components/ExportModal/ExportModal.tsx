@@ -182,55 +182,59 @@ export function ExportModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, view, configState]);
 
-  // Watch the queue for completion to advance the view.
+  // Watch the queue for completion to advance the view. Both terminal
+  // states ('done' = ran to completion, 'cancelled' = user broke out mid-
+  // run) route to the same done summary; QueueSummary differentiates the
+  // copy based on which jobs are in which state.
   useEffect(() => {
-    if (view === 'running' && queue.queueState === 'done') {
+    if (view !== 'running') return;
+    if (queue.queueState === 'done' || queue.queueState === 'cancelled') {
       setView('done');
     }
   }, [view, queue.queueState]);
 
-  // Persist the user's selection on a successful queue completion.
+  // Persist the user's selection on any terminal state where at least one
+  // job finished — including cancelled runs that completed some jobs. The
+  // user got value from those choices; remembering them matches their
+  // expectation on reopen.
   useEffect(() => {
-    if (queue.queueState !== 'done') return;
+    if (queue.queueState !== 'done' && queue.queueState !== 'cancelled') return;
     if (persistedThisRunRef.current) return;
     if (!queue.jobs.some((j) => j.state === 'done')) return;
     persistedThisRunRef.current = true;
     onSelectionPersist?.(selectionRef.current);
   }, [queue.queueState, queue.jobs, onSelectionPersist]);
 
-  // Prefill on close → open transition only. The parent owns `selection`,
-  // and an `initialSelection` passed in at mount takes precedence over
-  // `lastExportSelection`; the rehydrate path is exclusively for "user
-  // reopened the modal after a successful prior export".
+  // Prefill + auto-default in one effect on open. On a close → open
+  // transition we replace the parent's selection with `lastExportSelection`
+  // (verbatim — "the user reopened after a prior export"); on initial mount
+  // we honor whatever `selection` the parent passed in. Then, if the
+  // resulting selection has no `output_dir`, we resolve
+  // `~/Movies/TrailCut/{projectName}` via the Rust auto-numbering helper.
+  //
+  // Merged into one effect (rather than two) so the auto-default sees the
+  // post-prefill folder synchronously — running them as separate effects
+  // races the parent's setState propagation and can silently skip the
+  // resolver in the narrow case where the parent's pre-close selection
+  // had a folder but `lastExportSelection` doesn't.
   const prevOpenRef = useRef(open);
+  const autoDefaultedRef = useRef(false);
   useEffect(() => {
     const wasOpen = prevOpenRef.current;
     prevOpenRef.current = open;
-    if (!open || wasOpen) return;
-    onSelectionChange(lastExportSelection ?? EMPTY_GRID);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  // Auto-default the output folder when the modal is open with no folder
-  // set. Fires both on first mount (initialOpen=true) and after a close →
-  // open transition. The `lastExportSelection.output_dir` check short-
-  // circuits the resolve_output_dir call when prefill is going to bring a
-  // folder anyway — without it, both effects race and the modal makes a
-  // wasted Rust call on every reopen.
-  const autoDefaultedRef = useRef(false);
-  useEffect(() => {
     if (!open) return;
     if (autoDefaultedRef.current) return;
-    if (lastExportSelection?.output_dir != null) {
-      autoDefaultedRef.current = true;
-      return;
+
+    const effective: ExportGridModel = !wasOpen
+      ? (lastExportSelection ?? EMPTY_GRID)
+      : selectionRef.current;
+    if (!wasOpen) {
+      onSelectionChange(effective);
     }
-    if (selection.output_dir != null) {
-      autoDefaultedRef.current = true; // honor whatever the parent prefilled
-      return;
-    }
-    let cancelled = false;
     autoDefaultedRef.current = true;
+    if (effective.output_dir != null) return;
+
+    let cancelled = false;
     (async () => {
       try {
         const movies = await videoDir();
@@ -240,16 +244,23 @@ export function ExportModal({
           name: projectName,
         });
         if (cancelled) return;
-        onSelectionChange({ ...selectionRef.current, output_dir: resolved });
+        // The async closure can race a synchronous folder pick (user
+        // clicked Choose… and the picker resolved before us). Re-read the
+        // live selection from the ref and bail out if it already has a
+        // folder, so we don't clobber the user's choice.
+        const current = selectionRef.current;
+        if (current.output_dir != null) return;
+        onSelectionChange({ ...current, output_dir: resolved });
       } catch {
-        // Surface as "no folder selected" — user can pick manually.
+        // Resolver failed (no Movies dir, FS error, …). Leave the folder
+        // unset — the user can still pick manually.
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selection.output_dir, projectName, lastExportSelection?.output_dir]);
+  }, [open]);
 
   // Reset modal state on close so the next open starts clean.
   useEffect(() => {

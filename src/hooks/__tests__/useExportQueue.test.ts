@@ -97,7 +97,7 @@ describe('useExportQueue', () => {
     expect(result.current.jobs.map((j) => j.state)).toEqual(['done', 'done', 'done']);
   });
 
-  it('cancel-after-current leaves remaining jobs pending and ends in done', async () => {
+  it('cancel-after-current leaves remaining jobs pending and ends in cancelled', async () => {
     const d1 = deferred<{ frames_written: number; output_path: string; wall_clock_ms: number }>();
     invokeMock
       .mockImplementationOnce(() => d1.promise)
@@ -122,7 +122,11 @@ describe('useExportQueue', () => {
       await Promise.resolve();
     });
 
-    expect(result.current.queueState).toBe('done');
+    // The terminal state for a user-cancelled run is `'cancelled'` — distinct
+    // from `'done'`, which is reserved for "queue ran to completion". The
+    // ExportModal's view-advance effect routes both to the summary view,
+    // but the summary differentiates copy based on which jobs ran.
+    expect(result.current.queueState).toBe('cancelled');
     expect(result.current.jobs.map((j) => j.state)).toEqual([
       'done',
       'pending',

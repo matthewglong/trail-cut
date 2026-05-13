@@ -26,7 +26,13 @@ export interface QueueJob extends ExportJob {
   summary?: RenderExportSummary;
 }
 
-export type QueueState = 'idle' | 'running' | 'cancelling' | 'done';
+/** Terminal states are `'done'` (queue ran to completion — some jobs may
+ *  still be `'failed'`) and `'cancelled'` (user called `cancel()` mid-run,
+ *  the loop broke before all jobs ran). They are differentiated so the
+ *  modal can route to a "complete" view vs a "cancelled" view; both unlock
+ *  the user to close the modal. `'cancelling'` is the transient state
+ *  between `cancel()` being called and the in-flight job resolving. */
+export type QueueState = 'idle' | 'running' | 'cancelling' | 'cancelled' | 'done';
 
 export interface UseExportQueue {
   jobs: QueueJob[];
@@ -96,7 +102,12 @@ export function useExportQueue(): UseExportQueue {
           }
         } finally {
           runningRef.current = false;
-          setQueueState('done');
+          // Distinguish "ran to completion" (some jobs may still be 'failed')
+          // from "user cancelled mid-run" so the modal can route to the
+          // right terminal view. The cancelRef latch survives the in-flight
+          // job resolution so this branch fires on the cancel path even when
+          // the for-loop broke between iterations.
+          setQueueState(cancelRef.current ? 'cancelled' : 'done');
         }
       })();
     },

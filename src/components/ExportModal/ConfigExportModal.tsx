@@ -113,12 +113,15 @@ export function ConfigExportModal({
     setFps(initial.fps);
   }, [open, initial.quality, initial.fps]);
 
-  // Esc closes — the parent listens via onCancel.
+  // Esc closes. The outer ExportModal's Esc handler is gated on
+  // `configState !== null` so it doesn't fire while we're mounted —
+  // both listeners attach to `window`, where `e.stopPropagation()`
+  // would be a no-op between sibling listeners. The layering invariant
+  // lives in one place: the outer handler's `configState` guard.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      e.stopPropagation();
       onCancel();
     };
     window.addEventListener('keydown', onKey);
