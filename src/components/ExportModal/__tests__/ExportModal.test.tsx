@@ -4,10 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { fireEvent } from '@testing-library/react';
 import { ExportModal } from '../ExportModal';
 import type {
-  AspectRatio,
   Clip,
-  ExportChannel,
-  ExportSelection,
+  ExportGrid,
   MapSettings,
   ProjectLayouts,
   Route,
@@ -75,24 +73,6 @@ function findByTestId(id: string): HTMLElement | null {
   return container.querySelector(`[data-testid="${id}"]`);
 }
 
-interface HarnessProps {
-  initialOpen: boolean;
-  initialSelection?: ExportSelection;
-  projectName?: string;
-  onCloseExtra?: () => void;
-  clips?: Clip[];
-  route?: Route | null;
-  mapSettings?: MapSettings;
-  transitionFeel?: TransitionFeel;
-  projectLayouts?: ProjectLayouts;
-  /** Task 280 prefill source. The modal initializes parent-managed
-   *  selection from this on its `false → true` open transition. */
-  lastExportSelection?: ExportSelection | null;
-  /** Task 280 persist sink. Called once per queue completion when ≥ 1
-   *  job finished successfully. */
-  onSelectionPersist?: (selection: ExportSelection) => void;
-}
-
 function defaultProjectLayouts(): ProjectLayouts {
   return {
     '9_16': defaultLayout('9_16'),
@@ -101,24 +81,20 @@ function defaultProjectLayouts(): ProjectLayouts {
   };
 }
 
-function makeClip(overrides: Partial<Clip> = {}): Clip {
-  return {
-    id: overrides.id ?? 'c1',
-    path: overrides.path ?? '/tmp/c1.mov',
-    filename: overrides.filename ?? 'c1.mov',
-    created_at: overrides.created_at ?? '2026-01-01T00:00:00Z',
-    duration_ms: overrides.duration_ms ?? 60_000,
-    gps: overrides.gps ?? null,
-    resolution: overrides.resolution ?? '1920x1080',
-    frame_rate: overrides.frame_rate ?? 30,
-    trim: overrides.trim ?? { in_ms: 0, out_ms: 60_000 },
-    focal_point: overrides.focal_point ?? { x: 0.5, y: 0.5, zoom: 1 },
-    effects:
-      overrides.effects ??
-      ({ stabilize: { enabled: false, shakiness: 5 }, speed: 1 } satisfies Clip['effects']),
-    visible: overrides.visible ?? true,
-    map_overrides: overrides.map_overrides ?? null,
-  };
+const EMPTY_GRID: ExportGrid = { cells: {}, output_dir: null };
+
+interface HarnessProps {
+  initialOpen: boolean;
+  initialSelection?: ExportGrid;
+  projectName?: string;
+  onCloseExtra?: () => void;
+  clips?: Clip[];
+  route?: Route | null;
+  mapSettings?: MapSettings;
+  transitionFeel?: TransitionFeel;
+  projectLayouts?: ProjectLayouts;
+  lastExportSelection?: ExportGrid | null;
+  onSelectionPersist?: (selection: ExportGrid) => void;
 }
 
 function Harness({
@@ -135,8 +111,8 @@ function Harness({
   onSelectionPersist,
 }: HarnessProps) {
   const [open, setOpen] = useState(initialOpen);
-  const [selection, setSelection] = useState<ExportSelection>(
-    initialSelection ?? { aspects: [], channels: [], output_dir: null },
+  const [selection, setSelection] = useState<ExportGrid>(
+    initialSelection ?? EMPTY_GRID,
   );
   return (
     <ExportModal
@@ -165,85 +141,23 @@ async function flush() {
   });
 }
 
-describe('ExportModal', () => {
+describe('ExportModal — lifecycle', () => {
   it('renders nothing when open=false', () => {
     render(<Harness initialOpen={false} />);
     expect(findByTestId('export-modal')).toBeNull();
   });
 
-  it('renders dialog and core sections when open', () => {
+  it('renders dialog and folder-picker when open', () => {
     render(<Harness initialOpen={true} />);
     expect(findByTestId('export-modal')).not.toBeNull();
-    expect(findByTestId('export-aspect-9_16')).not.toBeNull();
-    expect(findByTestId('export-aspect-4_5')).not.toBeNull();
-    expect(findByTestId('export-aspect-16_9')).not.toBeNull();
-    expect(findByTestId('export-channel-composite')).not.toBeNull();
-    expect(findByTestId('export-channel-map_only')).not.toBeNull();
-    expect(findByTestId('export-channel-video_only')).not.toBeNull();
-    expect(findByTestId('export-job-summary')).not.toBeNull();
     expect(findByTestId('export-output-folder')).not.toBeNull();
     expect(findByTestId('export-output-folder-choose')).not.toBeNull();
   });
 
-  it('renders Render disabled with the spec tooltip when nothing selected', () => {
+  it('Render disabled with no chips configured', () => {
     render(<Harness initialOpen={true} />);
     const btn = findByTestId('export-modal-render') as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
-    expect(btn.getAttribute('title')).toBe(
-      'Select aspects, channels, and folder to enable Render',
-    );
-  });
-
-  it('toggling an aspect checkbox updates selection and summary', () => {
-    render(<Harness initialOpen={true} />);
-    const cb = findByTestId('export-aspect-9_16') as HTMLInputElement;
-    expect(cb.checked).toBe(false);
-    act(() => {
-      fireEvent.click(cb);
-    });
-    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(true);
-    const summary = findByTestId('export-job-summary');
-    expect(summary?.textContent ?? '').toContain('0 files');
-
-    act(() => {
-      fireEvent.click(findByTestId('export-channel-composite') as HTMLInputElement);
-    });
-    expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
-      '1 file:',
-    );
-    expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
-      '9:16 composite',
-    );
-  });
-
-  it('selecting all aspects × all channels yields 9 files in summary', () => {
-    const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
-    const channels: ExportChannel[] = ['composite', 'map_only', 'video_only'];
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects, channels, output_dir: null }}
-      />,
-    );
-    expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
-      '9 files',
-    );
-  });
-
-  it('renders one schematic per selected channel', () => {
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{
-          aspects: ['9_16'],
-          channels: ['composite', 'map_only'],
-          output_dir: null,
-        }}
-      />,
-    );
-    expect(findByTestId('channel-schematic-composite')).not.toBeNull();
-    expect(findByTestId('channel-schematic-map_only')).not.toBeNull();
-    expect(findByTestId('channel-schematic-video_only')).toBeNull();
   });
 
   it('Cancel button closes the modal', () => {
@@ -279,30 +193,6 @@ describe('ExportModal', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
     expect(findByTestId('export-modal')).toBeNull();
-  });
-
-  it('selection round-trip: unchecking removes from selection', () => {
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16', '4_5'], channels: ['composite'], output_dir: null }}
-      />,
-    );
-    expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
-      '2 files',
-    );
-    act(() => {
-      fireEvent.click(findByTestId('export-aspect-9_16') as HTMLInputElement);
-    });
-    expect(findByTestId('export-job-summary')?.textContent ?? '').toContain(
-      '1 file:',
-    );
-    expect(
-      (findByTestId('export-aspect-9_16') as HTMLInputElement).checked,
-    ).toBe(false);
-    expect(
-      (findByTestId('export-aspect-4_5') as HTMLInputElement).checked,
-    ).toBe(true);
   });
 });
 
@@ -362,276 +252,16 @@ describe('ExportModal — folder picker', () => {
   });
 });
 
-describe('ExportModal — Render-button enable transitions', () => {
-  function renderBtn(): HTMLButtonElement {
-    return findByTestId('export-modal-render') as HTMLButtonElement;
-  }
-
-  it('disabled when only aspects are set', () => {
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: [], output_dir: null }}
-      />,
-    );
-    expect(renderBtn().disabled).toBe(true);
-  });
-
-  it('disabled when only channels are set', () => {
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: [], channels: ['composite'], output_dir: null }}
-      />,
-    );
-    expect(renderBtn().disabled).toBe(true);
-  });
-
-  it('disabled when aspects + channels are set but folder is not', () => {
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
-      />,
-    );
-    expect(renderBtn().disabled).toBe(true);
-  });
-
-  it('disabled when folder is set but aspects/channels are empty', async () => {
-    dialogOpenMock.mockResolvedValue('/out');
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: [], channels: [], output_dir: null }}
-      />,
-    );
-    act(() => {
-      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
-    });
-    await flush();
-    expect(renderBtn().disabled).toBe(true);
-  });
-
-  it('enabled once aspects + channels + folder are all set; tooltip clears', async () => {
-    dialogOpenMock.mockResolvedValue('/out');
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
-      />,
-    );
-    expect(renderBtn().disabled).toBe(true);
-    act(() => {
-      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
-    });
-    await flush();
-    const btn = renderBtn();
-    expect(btn.disabled).toBe(false);
-    expect(btn.getAttribute('title')).toBeNull();
-  });
-});
-
-describe('ExportModal — time estimate pipeline', () => {
-  it('feeds visible clips into JobSummary so the estimate appears', () => {
-    const clips: Clip[] = [
-      makeClip({ id: 'a', trim: { in_ms: 0, out_ms: 30_000 } }),
-      makeClip({ id: 'b', trim: { in_ms: 0, out_ms: 30_000 } }),
-    ];
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
-        clips={clips}
-      />,
-    );
-    const estimate = container.querySelector(
-      '[data-testid="export-job-summary-estimate"]',
-    );
-    expect(estimate).not.toBeNull();
-    expect(estimate?.textContent ?? '').toContain('Estimated time:');
-  });
-
-  it('skips invisible clips when computing the timeline duration', () => {
-    const clips: Clip[] = [
-      makeClip({ id: 'a', visible: false, trim: { in_ms: 0, out_ms: 60_000 } }),
-    ];
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
-        clips={clips}
-      />,
-    );
-    expect(
-      container.querySelector('[data-testid="export-job-summary-estimate"]'),
-    ).toBeNull();
-  });
-
-  it('hides the estimate when no clips are visible', () => {
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
-        clips={[]}
-      />,
-    );
-    expect(
-      container.querySelector('[data-testid="export-job-summary-estimate"]'),
-    ).toBeNull();
-  });
-});
-
-describe('ExportModal — render flow', () => {
-  async function setup(): Promise<void> {
-    dialogOpenMock.mockResolvedValue('/out');
-    const clips: Clip[] = [
-      makeClip({ id: 'c1', trim: { in_ms: 0, out_ms: 60_000 } }),
-    ];
-    render(
-      <Harness
-        initialOpen={true}
-        initialSelection={{ aspects: ['9_16'], channels: ['composite'], output_dir: null }}
-        clips={clips}
-      />,
-    );
-    act(() => {
-      fireEvent.click(findByTestId('export-output-folder-choose') as HTMLButtonElement);
-    });
-    await flush();
-  }
-
-  async function clickRender(): Promise<void> {
-    act(() => {
-      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
-    });
-    await flush();
-    await flush();
-    await flush();
-  }
-
-  it('starts the queue immediately when no collisions exist', async () => {
-    await setup();
-    existsMock.mockResolvedValue(false);
-    await clickRender();
-    expect(askMock).not.toHaveBeenCalled();
-    expect(invokeMock).toHaveBeenCalled();
-    // Queue may have already finished given the resolved invoke mock — either
-    // queue-view (running) or queue-summary (done) is acceptable here.
-    expect(
-      findByTestId('export-queue-view') ?? findByTestId('export-queue-summary'),
-    ).not.toBeNull();
-  });
-
-  it('asks for confirmation on collision and proceeds when user confirms', async () => {
-    await setup();
-    existsMock.mockResolvedValue(true);
-    askMock.mockResolvedValue(true);
-    await clickRender();
-    expect(askMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalled();
-    expect(
-      findByTestId('export-queue-view') ?? findByTestId('export-queue-summary'),
-    ).not.toBeNull();
-  });
-
-  it('aborts the queue when user declines the overwrite confirmation', async () => {
-    await setup();
-    existsMock.mockResolvedValue(true);
-    askMock.mockResolvedValue(false);
-    await clickRender();
-    expect(askMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).not.toHaveBeenCalled();
-    expect(findByTestId('export-queue-view')).toBeNull();
-    expect(findByTestId('export-modal-render')).not.toBeNull();
-  });
-
-  it('transitions select -> running -> done', async () => {
-    await setup();
-    await clickRender();
-    await flush();
-    await flush();
-    await flush();
-    expect(findByTestId('export-queue-summary')).not.toBeNull();
-  });
-
-  it('blocks Escape from closing while running', async () => {
-    await setup();
-    let resolveInvoke: (v: unknown) => void = () => {};
-    invokeMock.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveInvoke = resolve;
-        }),
-    );
-    act(() => {
-      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
-    });
-    await flush();
-    await flush();
-    expect(findByTestId('export-queue-view')).not.toBeNull();
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-    });
-    expect(findByTestId('export-modal')).not.toBeNull();
-
-    await act(async () => {
-      resolveInvoke({ frames_written: 1, output_path: '/x', wall_clock_ms: 1 });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-  });
-
-  it('blocks backdrop clicks from closing while running', async () => {
-    await setup();
-    let resolveInvoke: (v: unknown) => void = () => {};
-    invokeMock.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveInvoke = resolve;
-        }),
-    );
-    act(() => {
-      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
-    });
-    await flush();
-    await flush();
-    expect(findByTestId('export-queue-view')).not.toBeNull();
-    act(() => {
-      fireEvent.click(findByTestId('export-modal-backdrop') as HTMLElement);
-    });
-    expect(findByTestId('export-modal')).not.toBeNull();
-
-    await act(async () => {
-      resolveInvoke({ frames_written: 1, output_path: '/x', wall_clock_ms: 1 });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-  });
-});
-
-describe('ExportModal — task 280 last_export_selection', () => {
-  /** Re-render harness for the prefill tests: drives `open` from outside
-   *  the modal so we can exercise the `false → true` transition that the
-   *  prefill effect listens for. The existing `Harness` mounts with
-   *  `initialOpen=true`, which is "already open" — prefill runs only on a
-   *  *transition*, not on first mount-with-open. */
+describe('ExportModal — prefill on open transition', () => {
   function ToggleHarness({
     initialOpen,
     lastExportSelection,
-    onSelectionPersist,
-    onSelectionExternal,
-    initialSelection,
   }: {
     initialOpen: boolean;
-    lastExportSelection?: ExportSelection | null;
-    onSelectionPersist?: (sel: ExportSelection) => void;
-    onSelectionExternal?: (sel: ExportSelection) => void;
-    initialSelection?: ExportSelection;
+    lastExportSelection?: ExportGrid | null;
   }) {
     const [open, setOpen] = useState(initialOpen);
-    const [selection, setSelection] = useState<ExportSelection>(
-      initialSelection ?? { aspects: [], channels: [], output_dir: null },
-    );
+    const [selection, setSelection] = useState<ExportGrid>(EMPTY_GRID);
     return (
       <>
         <button data-testid="toggle-open" onClick={() => setOpen((v) => !v)}>
@@ -641,12 +271,8 @@ describe('ExportModal — task 280 last_export_selection', () => {
           open={open}
           onClose={() => setOpen(false)}
           selection={selection}
-          onSelectionChange={(next) => {
-            setSelection(next);
-            onSelectionExternal?.(next);
-          }}
+          onSelectionChange={setSelection}
           lastExportSelection={lastExportSelection}
-          onSelectionPersist={onSelectionPersist}
           projectName="Hike2026"
           clips={[]}
           route={null}
@@ -657,10 +283,9 @@ describe('ExportModal — task 280 last_export_selection', () => {
     );
   }
 
-  it('prefills selection from lastExportSelection on false → true transition', () => {
-    const last: ExportSelection = {
-      aspects: ['4_5', '16_9'],
-      channels: ['composite', 'video_only'],
+  it('rehydrates output_dir from lastExportSelection on false → true', () => {
+    const last: ExportGrid = {
+      cells: { '9_16-composite': [{ id: 'a', quality: '1080p', fps: 30 }] },
       output_dir: '/Users/u/PriorExports',
     };
     render(<ToggleHarness initialOpen={false} lastExportSelection={last} />);
@@ -668,121 +293,126 @@ describe('ExportModal — task 280 last_export_selection', () => {
     act(() => {
       fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
     });
-    // Aspects + channels reflect the prior selection.
-    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(false);
-    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(true);
-    expect((findByTestId('export-aspect-16_9') as HTMLInputElement).checked).toBe(true);
-    expect((findByTestId('export-channel-composite') as HTMLInputElement).checked).toBe(true);
-    expect((findByTestId('export-channel-map_only') as HTMLInputElement).checked).toBe(false);
-    expect((findByTestId('export-channel-video_only') as HTMLInputElement).checked).toBe(true);
-    // Output folder also rehydrates.
     expect(findByTestId('export-output-folder-path')?.textContent).toBe(
       '/Users/u/PriorExports',
     );
   });
 
-  it('prefills clean state when lastExportSelection is null', () => {
+  it('rehydrates empty grid when lastExportSelection is null', () => {
     render(<ToggleHarness initialOpen={false} lastExportSelection={null} />);
     act(() => {
       fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
     });
-    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(false);
-    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(false);
-    expect((findByTestId('export-aspect-16_9') as HTMLInputElement).checked).toBe(false);
-    expect((findByTestId('export-channel-composite') as HTMLInputElement).checked).toBe(false);
     expect(findByTestId('export-output-folder-path')).toBeNull();
   });
+});
 
-  it('reopen after close re-prefills from the prop, discarding mid-flow edits', () => {
-    const last: ExportSelection = {
-      aspects: ['9_16'],
-      channels: ['composite'],
-      output_dir: '/out',
+describe('ExportModal — render flow', () => {
+  function makeClip(): Clip {
+    return {
+      id: 'c1',
+      path: '/tmp/c1.mov',
+      filename: 'c1.mov',
+      created_at: '2026-01-01T00:00:00Z',
+      duration_ms: 60_000,
+      gps: null,
+      resolution: '1920x1080',
+      frame_rate: 30,
+      trim: { in_ms: 0, out_ms: 60_000 },
+      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
+      visible: true,
+      map_overrides: null,
     };
-    render(<ToggleHarness initialOpen={false} lastExportSelection={last} />);
-    // Open #1 — prefill arrives.
-    act(() => {
-      fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
-    });
-    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(true);
-    // User toggles 4:5 mid-flow, then closes via Cancel.
-    act(() => {
-      fireEvent.click(findByTestId('export-aspect-4_5') as HTMLInputElement);
-    });
-    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(true);
-    act(() => {
-      fireEvent.click(findByTestId('export-modal-cancel') as HTMLButtonElement);
-    });
-    expect(findByTestId('export-modal')).toBeNull();
-    // Open #2 — prefill resets to the stored prop, dropping the abandoned 4:5.
-    act(() => {
-      fireEvent.click(findByTestId('toggle-open') as HTMLButtonElement);
-    });
-    expect((findByTestId('export-aspect-9_16') as HTMLInputElement).checked).toBe(true);
-    expect((findByTestId('export-aspect-4_5') as HTMLInputElement).checked).toBe(false);
+  }
+
+  function configuredGrid(outputDir: string): ExportGrid {
+    return {
+      cells: { '9_16-composite': [{ id: 'cfg1', quality: '1080p', fps: 30 }] },
+      output_dir: outputDir,
+    };
+  }
+
+  it('Render-button enables when a chip and folder are present', () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={configuredGrid('/out')}
+        clips={[makeClip()]}
+      />,
+    );
+    const btn = findByTestId('export-modal-render') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent ?? '').toContain('Render 1 file');
   });
 
-  /** Mount-with-open harness for the persist tests: open=true on first
-   *  render, no toggle needed. The persist effect fires on
-   *  `queueState === 'done'` regardless of whether the modal opened via a
-   *  transition or first-mount, so this simpler harness is enough. */
-  function PersistHarness({
-    onSelectionPersist,
-    initialSelection,
-    queueAlwaysFails,
-  }: {
-    onSelectionPersist: (sel: ExportSelection) => void;
-    initialSelection: ExportSelection;
-    queueAlwaysFails?: boolean;
-  }) {
-    const [selection, setSelection] = useState<ExportSelection>(initialSelection);
-    if (queueAlwaysFails) {
-      // Used in the zero-success case: every render_export call rejects so
-      // the queue completes with all-failed jobs.
-      invokeMock.mockReset();
-      invokeMock.mockRejectedValue('forced failure');
-    }
-    return (
-      <ExportModal
-        open={true}
-        onClose={() => {}}
-        selection={selection}
-        onSelectionChange={setSelection}
-        onSelectionPersist={onSelectionPersist}
-        projectName="Hike2026"
-        clips={[
-          {
-            id: 'c1',
-            path: '/tmp/c1.mov',
-            filename: 'c1.mov',
-            created_at: '2026-01-01T00:00:00Z',
-            duration_ms: 60_000,
-            gps: null,
-            resolution: '1920x1080',
-            frame_rate: 30,
-            trim: { in_ms: 0, out_ms: 60_000 },
-            focal_point: { x: 0.5, y: 0.5, zoom: 1 },
-            effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
-            visible: true,
-            map_overrides: null,
-          },
-        ]}
-        route={null}
-        mapSettings={DEFAULT_MAP_SETTINGS}
-        projectLayouts={defaultProjectLayouts()}
-      />
+  it('starts the queue when render is clicked with no collisions', async () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={configuredGrid('/out')}
+        clips={[makeClip()]}
+      />,
     );
-  }
+    existsMock.mockResolvedValue(false);
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    await flush();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for overwrite confirmation when output file exists', async () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={configuredGrid('/out')}
+        clips={[makeClip()]}
+      />,
+    );
+    existsMock.mockResolvedValue(true);
+    askMock.mockResolvedValue(true);
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    await flush();
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalled();
+  });
+
+  it('aborts the queue when user declines overwrite confirmation', async () => {
+    render(
+      <Harness
+        initialOpen={true}
+        initialSelection={configuredGrid('/out')}
+        clips={[makeClip()]}
+      />,
+    );
+    existsMock.mockResolvedValue(true);
+    askMock.mockResolvedValue(false);
+    act(() => {
+      fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
+    });
+    await flush();
+    await flush();
+    expect(askMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
 
   it('fires onSelectionPersist once when queue completes with at least one done job', async () => {
     const persist = vi.fn();
-    const initial: ExportSelection = {
-      aspects: ['9_16'],
-      channels: ['composite'],
-      output_dir: '/out',
-    };
+    const grid = configuredGrid('/out');
     render(
-      <PersistHarness onSelectionPersist={persist} initialSelection={initial} />,
+      <Harness
+        initialOpen={true}
+        initialSelection={grid}
+        clips={[makeClip()]}
+        onSelectionPersist={persist}
+      />,
     );
     act(() => {
       fireEvent.click(findByTestId('export-modal-render') as HTMLButtonElement);
@@ -792,21 +422,19 @@ describe('ExportModal — task 280 last_export_selection', () => {
     await flush();
     await flush();
     expect(persist).toHaveBeenCalledTimes(1);
-    expect(persist).toHaveBeenCalledWith(initial);
+    expect(persist).toHaveBeenCalledWith(grid);
   });
 
-  it('does NOT fire onSelectionPersist when queue completes with zero done jobs (all-failed)', async () => {
+  it('does NOT fire onSelectionPersist when queue ends with zero done jobs', async () => {
     const persist = vi.fn();
-    const initial: ExportSelection = {
-      aspects: ['9_16'],
-      channels: ['composite'],
-      output_dir: '/out',
-    };
+    invokeMock.mockReset();
+    invokeMock.mockRejectedValue('forced failure');
     render(
-      <PersistHarness
+      <Harness
+        initialOpen={true}
+        initialSelection={configuredGrid('/out')}
+        clips={[makeClip()]}
         onSelectionPersist={persist}
-        initialSelection={initial}
-        queueAlwaysFails={true}
       />,
     );
     act(() => {

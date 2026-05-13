@@ -68,29 +68,36 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 
     let mut project = match version {
         1 => {
-            // Chain v1 → v2 → v3 → v4 → v5. Each step is value-level until
-            // the final `from_value` so a partially-migrated bundle (e.g. an
-            // interrupted save) reads through cleanly.
+            // Chain v1 → v2 → v3 → v4 → v5 → v6. Each step is value-level
+            // until the final `from_value` so a partially-migrated bundle
+            // (e.g. an interrupted save) reads through cleanly.
             let v2 = migrate_v1_to_v2_value(raw)?;
             let v3 = migrate_v2_to_v3_value(v2)?;
             let v4 = migrate_v3_to_v4_value(v3)?;
-            migrate_v4_to_v5(v4)?
+            let v5 = migrate_v4_to_v5_value(v4)?;
+            migrate_v5_to_v6(v5)?
         }
         2 => {
             let v3 = migrate_v2_to_v3_value(raw)?;
             let v4 = migrate_v3_to_v4_value(v3)?;
-            migrate_v4_to_v5(v4)?
+            let v5 = migrate_v4_to_v5_value(v4)?;
+            migrate_v5_to_v6(v5)?
         }
         3 => {
             let v4 = migrate_v3_to_v4_value(raw)?;
-            migrate_v4_to_v5(v4)?
+            let v5 = migrate_v4_to_v5_value(v4)?;
+            migrate_v5_to_v6(v5)?
         }
-        4 => migrate_v4_to_v5(raw)?,
-        5 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v5 project: {}", e))?,
+        4 => {
+            let v5 = migrate_v4_to_v5_value(raw)?;
+            migrate_v5_to_v6(v5)?
+        }
+        5 => migrate_v5_to_v6(raw)?,
+        6 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v6 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1–v5)",
+                "Unknown project schema version {} (this app supports v1–v6)",
                 version
             ));
         }
@@ -228,22 +235,56 @@ fn migrate_v3_to_v4(raw: serde_json::Value) -> Result<Project, String> {
     Ok(project)
 }
 
-/// v4 → v5 migration. Purely additive: v5 introduces
-/// `last_export_selection: Option<ExportSelection>` per task 280. The field
-/// has `#[serde(default)]` so absence deserializes as `None`; this migration
-/// only stamps the version. Stamps `schema_version: CURRENT_SCHEMA_VERSION`
-/// so the in-memory project reflects the latest schema after load.
-fn migrate_v4_to_v5(mut raw: serde_json::Value) -> Result<Project, String> {
+/// v4 → v5 migration (value-form). Purely additive: v5 introduced
+/// `last_export_selection` (flat `{ aspects, channels, output_dir }` shape).
+/// The field has `#[serde(default)]` so absence deserializes as `None`. v6
+/// later changed the shape; this step stamps v5 only — the v5→v6 step
+/// handles the structural break.
+fn migrate_v4_to_v5_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Some(obj) = raw.as_object_mut() {
+        obj.insert("schema_version".into(), serde_json::Value::from(5u32));
+    } else {
+        return Err("v4 project root is not a JSON object".into());
+    }
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v4 → v5 migration that returns a parsed
+/// Project at v5. Stamps `schema_version: 5` rather than
+/// `CURRENT_SCHEMA_VERSION` so per-step tests observe the per-step bump.
+#[cfg(test)]
+fn migrate_v4_to_v5(raw: serde_json::Value) -> Result<Project, String> {
+    let v5 = migrate_v4_to_v5_value(raw)?;
+    let mut project: Project = serde_json::from_value(v5)
+        .map_err(|e| format!("Failed to parse v4 project during v5 migration: {}", e))?;
+    project.schema_version = 5;
+    Ok(project)
+}
+
+/// v5 → v6 migration. v6 replaces the flat `last_export_selection` shape
+/// (`{ aspects, channels, output_dir }`) with the per-cell `ExportGrid`
+/// (`{ cells, output_dir }`). The two shapes are structurally incompatible:
+/// the flat selection conveys "every aspect × every channel is enabled"
+/// without per-cell chip configuration (`quality`, `fps`), and there's no
+/// deterministic way to invent chip configs that match the user's intent.
+/// So this migration **drops** any v5 `last_export_selection` value rather
+/// than transforming it — users re-configure their grid on first open
+/// post-upgrade. The cost is minor (a few seconds re-clicking); the
+/// alternative would carry a versioning-shim type that lingers indefinitely.
+fn migrate_v5_to_v6(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        // Drop the v5 flat shape — incompatible with the v6 grid type and
+        // not safely transformable.
+        obj.remove("last_export_selection");
         obj.insert(
             "schema_version".into(),
             serde_json::Value::from(CURRENT_SCHEMA_VERSION),
         );
     } else {
-        return Err("v4 project root is not a JSON object".into());
+        return Err("v5 project root is not a JSON object".into());
     }
     let mut project: Project = serde_json::from_value(raw)
-        .map_err(|e| format!("Failed to parse v4 project during v5 migration: {}", e))?;
+        .map_err(|e| format!("Failed to parse v5 project during v6 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
@@ -681,6 +722,7 @@ mod tests {
         // with," not "an aesthetic imposition." selected_export_aspect
         // defaults to 9:16.
         use crate::export::layout::{resolve_slots, AspectRatio};
+        use crate::export::resolution::OutputResolution;
 
         let project = Project::default();
         let layouts = project
@@ -702,7 +744,7 @@ mod tests {
             });
             // Non-degenerate slot rect — guards against a future refactor
             // that accidentally seeds the wrong shape.
-            let slots = resolve_slots(layout, aspect);
+            let slots = resolve_slots(layout, aspect, OutputResolution::default());
             assert!(slots.map_slot.w > 0 && slots.map_slot.h > 0);
             assert!(slots.video_slot.w > 0 && slots.video_slot.h > 0);
         }
@@ -947,10 +989,9 @@ mod tests {
 
     #[test]
     fn load_v4_bundle_loads_with_none_last_export_selection() {
-        // Task 280 backward-compat: a v4 bundle on disk lacks the
-        // `last_export_selection` field. The v4 → v5 migration is purely
-        // additive — load must succeed and surface `None` for the field
-        // without any user-facing error.
+        // v4 bundles on disk lack the `last_export_selection` field. The
+        // chained v4 → v5 → v6 migration is purely additive on this field —
+        // load must succeed and surface `None` without error.
         let dir = std::env::temp_dir().join(format!(
             "trailcut-test-{}-{}-v4nolastexport",
             std::process::id(),
@@ -964,7 +1005,7 @@ mod tests {
         let v4_no_export_selection = r#"{
             "schema_version": 4,
             "version": 1,
-            "name": "Pre-280 v4 Project",
+            "name": "Pre-grid v4 Project",
             "thumbnail": null,
             "clips": [],
             "selected_export_aspect": "9_16",
@@ -973,12 +1014,82 @@ mod tests {
         std::fs::write(dir.join("project.json"), v4_no_export_selection).unwrap();
 
         let dir_str = dir.to_string_lossy().into_owned();
-        let loaded = load_project(dir_str).expect("v4 → v5 load must succeed");
+        let loaded = load_project(dir_str).expect("v4 → v6 load must succeed");
         assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(
             loaded.last_export_selection.is_none(),
-            "pre-280 bundle must surface None for last_export_selection"
+            "pre-grid bundle must surface None for last_export_selection"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v5_to_v6_drops_flat_export_selection() {
+        // The flat v5 shape (`{ aspects, channels, output_dir }`) is
+        // structurally incompatible with the v6 `ExportGrid` shape
+        // (`{ cells, output_dir }`). The migration must drop the value
+        // rather than crashing on the unknown variant. Users re-configure
+        // the grid on first open post-upgrade.
+        let v5_with_flat_selection = serde_json::json!({
+            "schema_version": 5,
+            "version": 1,
+            "name": "v5 with prior export selection",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": null,
+            "last_export_selection": {
+                "aspects": ["9_16", "16_9"],
+                "channels": ["composite", "video_only"],
+                "output_dir": "/Users/u/Movies/Hike"
+            }
+        });
+        let project = migrate_v5_to_v6(v5_with_flat_selection)
+            .expect("v5 → v6 migration must succeed when flat selection is present");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            project.last_export_selection.is_none(),
+            "v5 → v6 must drop the incompatible flat last_export_selection value"
+        );
+    }
+
+    #[test]
+    fn load_v5_bundle_with_flat_export_selection_loads_at_v6() {
+        // End-to-end variant of the previous test: a v5 bundle on disk
+        // with a populated flat `last_export_selection` must load through
+        // the chained migration to v6 without error, with the field
+        // dropped on the way.
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-v5flat",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let v5_with_flat = r#"{
+            "schema_version": 5,
+            "version": 1,
+            "name": "v5 flat",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": null,
+            "last_export_selection": {
+                "aspects": ["9_16"],
+                "channels": ["composite"],
+                "output_dir": "/Users/u/out"
+            }
+        }"#;
+        std::fs::write(dir.join("project.json"), v5_with_flat).unwrap();
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        let loaded = load_project(dir_str).expect("v5 → v6 load must succeed");
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(loaded.last_export_selection.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

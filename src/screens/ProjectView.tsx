@@ -12,7 +12,7 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportSelection } from '../types';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportGrid } from '../types';
 import { resolveMapSettings } from '../types';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -46,8 +46,8 @@ interface ProjectViewProps {
    *  modal prefills aspects/channels/output folder from this on open;
    *  `null` means "no prior export — start clean". App-level state owns the
    *  value so it travels through `useAutoSave` to disk. */
-  lastExportSelection: ExportSelection | null;
-  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportSelection | null>>;
+  lastExportSelection: ExportGrid | null;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -106,9 +106,8 @@ export default function ProjectView({
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showGpxMenu, setShowGpxMenu] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
-  const [exportSelection, setExportSelection] = useState<ExportSelection>({
-    aspects: [],
-    channels: [],
+  const [exportSelection, setExportSelection] = useState<ExportGrid>({
+    cells: {},
     output_dir: null,
   });
   const [previewAspect, setPreviewAspect] = useState('16:9');

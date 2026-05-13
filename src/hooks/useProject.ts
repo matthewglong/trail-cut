@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AspectRatio, Clip, ExportSelection, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 import { defaultPipLayout } from '../lib/layout';
 
@@ -23,7 +23,7 @@ interface UseProjectParams {
   setTransitionFeel: React.Dispatch<React.SetStateAction<TransitionFeel | undefined>>;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
-  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportSelection | null>>;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;

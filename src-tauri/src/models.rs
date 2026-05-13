@@ -1,5 +1,7 @@
 use crate::export::layout::{default_split_layout, AspectRatio, ProjectLayouts};
+use crate::export::resolution::OutputResolution;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,15 +250,37 @@ pub enum ExportChannel {
     VideoOnly,
 }
 
-/// Last user-confirmed Export modal selection (task 280). Persisted per
-/// project so reopening the modal prefills aspects + channels + output folder
-/// instead of forcing the user to reselect each time. Written only on a
-/// successful queue completion (at least one `done` job); cancel-with-zero-
-/// successes does not clobber the previous value.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportSelection {
-    pub aspects: Vec<AspectRatio>,
-    pub channels: Vec<ExportChannel>,
+/// One configured chip within a grid cell. The Export modal's secondary
+/// "Configure export" panel writes these — each holds an output resolution
+/// and frame rate. `id` is a UUID minted at chip creation time so multiple
+/// chips can coexist in the same cell without React-key collisions, even
+/// mid-edit when `(quality, fps)` values transiently overlap. Mirrors the
+/// TypeScript `ExportConfig` in `src/types.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportConfig {
+    pub id: String,
+    pub quality: OutputResolution,
+    /// 24 | 30 | 60 — narrower than the wire-level `RenderExportRequest.fps`
+    /// but stored as plain `u32` here for serde simplicity. The TS layer
+    /// constrains the literal at the type level.
+    pub fps: u32,
+}
+
+/// User's last-confirmed Export modal selection — the 3×3 cell grid plus
+/// the chosen output folder. Schema v6 replaced the prior flat
+/// `{ aspects, channels }` shape with this map; the v5→v6 migration drops
+/// any prior value rather than attempting a structural transform (the old
+/// shape conveys "all selected" intent that doesn't deterministically map
+/// to per-cell chip configs).
+///
+/// Cell keys are flat `"{aspect}-{channel}"` strings to round-trip cleanly
+/// as JSON object keys. The TS side stores them in
+/// `Partial<Record<CellKey, ExportConfig[]>>`; the on-wire shape is
+/// `HashMap<String, Vec<ExportConfig>>`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ExportGrid {
+    #[serde(default)]
+    pub cells: HashMap<String, Vec<ExportConfig>>,
     pub output_dir: Option<PathBuf>,
 }
 
@@ -266,12 +290,13 @@ pub struct ExportSelection {
 /// `entry_transition`) — all optional, so the v2→v3 migration is purely
 /// additive. v4 drops the placeholder `exports` array (no UI ever wrote it)
 /// and adds the per-aspect `layouts` field per
-/// `docs/export/LAYOUT.md` and task 050. v5 is purely additive: it adds
-/// `last_export_selection` (per-project memory of the last successful Export
-/// modal selection — aspects, channels, output folder) per task 280. The
-/// field is `Option` with `#[serde(default)]`, so older bundles load cleanly
-/// without a value-level migration step.
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+/// `docs/export/LAYOUT.md` and task 050. v5 added `last_export_selection`
+/// (per-project memory of the last successful Export modal selection) as
+/// the flat `{ aspects, channels, output_dir }` shape. v6 replaces that
+/// shape with the per-cell `ExportGrid` to support the configure-grid
+/// redesign — the migration drops the v5 value rather than transforming it
+/// (the flat shape's intent doesn't map cleanly to per-cell chip configs).
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -347,13 +372,12 @@ pub struct Project {
     /// clip's own `entry_transition` overrides individual fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_entry_transition: Option<ClipEntryTransition>,
-    /// Last user-confirmed Export modal selection (task 280, schema v5).
-    /// `None` until the user completes their first export; the modal
-    /// prefills from this on subsequent opens. Pre-v5 bundles lack the
-    /// field — `#[serde(default)]` supplies `None`, no migration step
-    /// required.
+    /// Last user-confirmed Export modal selection (schema v6: the 3×3 cell
+    /// grid replaces the prior `{ aspects, channels }` shape). `None` until
+    /// the user completes their first export; the modal prefills from this
+    /// on subsequent opens. The v5→v6 migration drops any prior flat value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_export_selection: Option<ExportSelection>,
+    pub last_export_selection: Option<ExportGrid>,
 }
 
 impl Default for Project {
@@ -430,46 +454,74 @@ mod tests {
     }
 
     #[test]
-    fn export_selection_round_trips_through_serde() {
-        let selection = ExportSelection {
-            aspects: vec![AspectRatio::NineSixteen, AspectRatio::FourFive],
-            channels: vec![ExportChannel::Composite, ExportChannel::MapOnly],
+    fn export_grid_round_trips_through_serde() {
+        let mut cells = HashMap::new();
+        cells.insert(
+            "9_16-composite".to_string(),
+            vec![
+                ExportConfig {
+                    id: "cfg-a".to_string(),
+                    quality: OutputResolution::P1080,
+                    fps: 30,
+                },
+                ExportConfig {
+                    id: "cfg-b".to_string(),
+                    quality: OutputResolution::P2160,
+                    fps: 60,
+                },
+            ],
+        );
+        cells.insert(
+            "4_5-map_only".to_string(),
+            vec![ExportConfig {
+                id: "cfg-c".to_string(),
+                quality: OutputResolution::P1080,
+                fps: 30,
+            }],
+        );
+        let grid = ExportGrid {
+            cells,
             output_dir: Some(PathBuf::from("/Users/u/Movies/Hike2026")),
         };
-        let json = serde_json::to_string(&selection).unwrap();
-        let parsed: ExportSelection = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.aspects, selection.aspects);
-        assert_eq!(parsed.channels, selection.channels);
-        assert_eq!(parsed.output_dir, selection.output_dir);
+        let json = serde_json::to_string(&grid).unwrap();
+        let parsed: ExportGrid = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.output_dir, grid.output_dir);
+        assert_eq!(parsed.cells.len(), 2);
+        assert_eq!(
+            parsed.cells.get("9_16-composite").map(|v| v.len()),
+            Some(2),
+        );
+        assert_eq!(
+            parsed.cells.get("4_5-map_only").map(|v| v.len()),
+            Some(1),
+        );
     }
 
     #[test]
-    fn export_selection_round_trips_with_null_output_dir() {
-        // The user can confirm an export without a folder having been picked
-        // in some future flow — and the persisted record must preserve that.
-        // (In practice the modal blocks Render until a folder is chosen, but
-        // the persistence layer treats `None` as legal.)
-        let selection = ExportSelection {
-            aspects: vec![AspectRatio::SixteenNine],
-            channels: vec![ExportChannel::VideoOnly],
+    fn export_grid_round_trips_with_null_output_dir() {
+        // The persistence layer treats `None` output_dir as legal even
+        // though the modal blocks Render until a folder is chosen.
+        let grid = ExportGrid {
+            cells: HashMap::new(),
             output_dir: None,
         };
-        let json = serde_json::to_string(&selection).unwrap();
-        let parsed: ExportSelection = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&grid).unwrap();
+        let parsed: ExportGrid = serde_json::from_str(&json).unwrap();
         assert!(parsed.output_dir.is_none());
-        assert_eq!(parsed.channels, vec![ExportChannel::VideoOnly]);
+        assert!(parsed.cells.is_empty());
     }
 
     #[test]
     fn project_loads_without_last_export_selection_field() {
         // Backward-compat for v4 (and earlier-migrated) bundles: the field
-        // didn't exist before task 280. `#[serde(default)]` must supply
-        // `None` on deserialize without erroring — no migration code path is
-        // needed for this additive bump.
+        // didn't exist before v5. `#[serde(default)]` must supply `None` on
+        // deserialize without erroring. The v5→v6 migration in
+        // `commands/project.rs` handles the case where a v5 file *does*
+        // carry an incompatible value.
         let raw = r#"{
             "schema_version": 4,
             "version": 1,
-            "name": "Pre-280 Project",
+            "name": "Pre-grid Project",
             "thumbnail": null,
             "clips": [],
             "map_settings": null
@@ -480,14 +532,21 @@ mod tests {
 
     #[test]
     fn project_round_trips_with_last_export_selection() {
-        // Full save/load round-trip exercise: write a Project with a
-        // populated `last_export_selection`, parse it back, confirm every
-        // field survives. This is the contract the Export modal relies on
-        // when prefilling on open.
+        // Full save/load round-trip: write a Project with a populated
+        // `last_export_selection` (grid shape), parse back, confirm every
+        // field survives. The modal relies on this on prefill.
+        let mut cells = HashMap::new();
+        cells.insert(
+            "9_16-composite".to_string(),
+            vec![ExportConfig {
+                id: "cfg-1".to_string(),
+                quality: OutputResolution::P1080,
+                fps: 30,
+            }],
+        );
         let project = Project {
-            last_export_selection: Some(ExportSelection {
-                aspects: vec![AspectRatio::NineSixteen, AspectRatio::SixteenNine],
-                channels: vec![ExportChannel::Composite, ExportChannel::VideoOnly],
+            last_export_selection: Some(ExportGrid {
+                cells,
                 output_dir: Some(PathBuf::from("/tmp/exports")),
             }),
             ..Project::default()
@@ -497,14 +556,7 @@ mod tests {
         let sel = parsed
             .last_export_selection
             .expect("last_export_selection must round-trip");
-        assert_eq!(
-            sel.aspects,
-            vec![AspectRatio::NineSixteen, AspectRatio::SixteenNine]
-        );
-        assert_eq!(
-            sel.channels,
-            vec![ExportChannel::Composite, ExportChannel::VideoOnly]
-        );
         assert_eq!(sel.output_dir, Some(PathBuf::from("/tmp/exports")));
+        assert_eq!(sel.cells.get("9_16-composite").map(|v| v.len()), Some(1));
     }
 }

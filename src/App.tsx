@@ -5,7 +5,7 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { AspectRatio, Clip, ExportSelection, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
+import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
 import { defaultSplitLayout } from './lib/layout';
 
@@ -33,7 +33,7 @@ export default function App() {
   const [transitionFeel, setTransitionFeel] = useState<TransitionFeel | undefined>(undefined);
   const [projectLayouts, setProjectLayouts] = useState<ProjectLayouts>(makeSeededLayouts);
   const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
-  const [lastExportSelection, setLastExportSelection] = useState<ExportSelection | null>(null);
+  const [lastExportSelection, setLastExportSelection] = useState<ExportGrid | null>(null);
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();

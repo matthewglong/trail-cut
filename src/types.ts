@@ -128,9 +128,10 @@ export type {
   OutputDimensions,
   LayoutDescriptor,
   NormalizedRect,
+  OutputResolution,
 } from './lib/layout';
 
-import type { AspectRatio, ProjectLayouts } from './lib/layout';
+import type { AspectRatio, ProjectLayouts, OutputResolution } from './lib/layout';
 
 /** Channel selector for the export pipeline. Mirrors the Rust enum-by-string
  *  in `RenderExportRequest.channel` and the union already exported from
@@ -138,18 +139,39 @@ import type { AspectRatio, ProjectLayouts } from './lib/layout';
  *  on `types.ts` without pulling in the request builder. */
 export type ExportChannel = 'composite' | 'map_only' | 'video_only';
 
-/** User's pending (or last-confirmed) choice in the Export modal: which
- *  aspects × which channels, plus the chosen output folder. Cartesian
- *  product of `aspects` × `channels` yields the render-queue jobs (one job
- *  per pair). Persisted per project as `Project.last_export_selection`
- *  (task 280) so reopening the modal prefills the prior choice. Field name
- *  `output_dir` is snake_case to match the Rust serde wire format — Tauri's
- *  IPC bridge passes the struct through verbatim. */
-export interface ExportSelection {
-  aspects: AspectRatio[];
-  channels: ExportChannel[];
+/** Frame rates surfaced by the Export modal's secondary "configure export"
+ *  panel. The wire-level `RenderExportRequest.fps` is a `number`; this
+ *  narrower union is the set the UI exposes. */
+export type ExportFps = 24 | 30 | 60;
+
+/** A single configured export within a grid cell. The user can add multiple
+ *  of these to one cell to render the same (aspect × channel) at several
+ *  quality/fps combinations in one queue. `id` is a UUID minted at chip
+ *  creation time so React keys, edit-target lookup, and queue-job ids stay
+ *  collision-free even when two configs share `(quality, fps)` mid-edit. */
+export interface ExportConfig {
+  id: string;
+  quality: OutputResolution;
+  fps: ExportFps;
+}
+
+/** Grid cell key: `"{aspect}-{channel}"`. The flat-string form serializes
+ *  cleanly through Rust serde as a HashMap key, works as a React key without
+ *  joining at the call site, and avoids the nested-record gymnastics that a
+ *  `Record<AspectRatio, Record<ExportChannel, ...>>` would force. */
+export type CellKey = `${AspectRatio}-${ExportChannel}`;
+
+/** User's pending (or last-confirmed) Export modal selection. The 3×3 grid
+ *  (aspect × channel) is stored as a sparse map: only occupied cells appear
+ *  in `cells`; each entry holds the chips the user has added. `output_dir`
+ *  is snake_case to match the Rust serde wire format. Persisted per project
+ *  as `Project.last_export_selection` (schema v6) so reopening the modal
+ *  prefills the prior choice. */
+export interface ExportGrid {
+  cells: Partial<Record<CellKey, ExportConfig[]>>;
   output_dir: string | null;
 }
+
 
 /** Project-level "transition feel" knob. Drives the duration multiplier for
  *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
@@ -224,11 +246,13 @@ export interface Project {
   /** Project-level defaults for every clip's entry transition. Each clip's
    *  own `entry_transition` overrides individual fields. */
   default_entry_transition?: ClipEntryTransition;
-  /** Last user-confirmed Export modal selection (task 280). `null` until
-   *  the user completes their first successful export; set on
-   *  `queueState === 'done'` with at least one done job. The Export modal
-   *  prefills aspects/channels/output folder from this on subsequent opens. */
-  last_export_selection: ExportSelection | null;
+  /** Last user-confirmed Export modal selection. `null` until the user
+   *  completes their first successful export; set on `queueState === 'done'`
+   *  with at least one done job. The Export modal prefills the grid + output
+   *  folder from this on subsequent opens. Schema v6 replaced the flat
+   *  `{aspects, channels}` shape with the 3×3 cell map; the v5→v6 migration
+   *  drops any prior value rather than attempting a structural transform. */
+  last_export_selection: ExportGrid | null;
 }
 
 export interface RecentProject {

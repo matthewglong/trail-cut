@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  configsInCell,
   deriveFilename,
   deriveJobs,
+  gridJobCount,
   slugifyProjectName,
 } from '../exportFilenames';
-import type { ExportSelection } from '../../types';
+import type { ExportGrid } from '../../types';
 
 describe('slugifyProjectName', () => {
   it('lowercases ASCII names', () => {
@@ -41,139 +43,185 @@ describe('slugifyProjectName', () => {
 });
 
 describe('deriveFilename', () => {
-  it('uses .mp4 for composite', () => {
-    expect(deriveFilename('Hike2026', '9_16', 'composite')).toBe(
-      'hike2026-9_16-composite.mp4',
+  it('renders the mockup template for composite', () => {
+    expect(deriveFilename('Hike2026', '9_16', 'composite', '1080p')).toBe(
+      'hike2026__9x16__1080__composite.mp4',
     );
   });
 
-  it('uses .mov for map_only', () => {
-    expect(deriveFilename('Hike2026', '4_5', 'map_only')).toBe(
-      'hike2026-4_5-map_only.mov',
+  it('uses .mov + map-only token for map_only', () => {
+    expect(deriveFilename('Hike2026', '4_5', 'map_only', '1080p')).toBe(
+      'hike2026__4x5__1080__map-only.mov',
     );
   });
 
-  it('uses .mov for video_only', () => {
-    expect(deriveFilename('Hike2026', '16_9', 'video_only')).toBe(
-      'hike2026-16_9-video_only.mov',
+  it('uses .mov + video-only token for video_only', () => {
+    expect(deriveFilename('Hike2026', '16_9', 'video_only', '2160p')).toBe(
+      'hike2026__16x9__4k__video-only.mov',
     );
   });
 
-  it('keeps the underscore aspect token', () => {
-    const f = deriveFilename('hike', '9_16', 'composite');
-    expect(f).toContain('9_16');
-    expect(f).not.toContain('9:16');
+  it('maps 2160p quality to the 4k token', () => {
+    expect(deriveFilename('Hike', '9_16', 'composite', '2160p')).toContain('__4k__');
+  });
+
+  it('maps intermediate qualities to bare-number tokens', () => {
+    expect(deriveFilename('Hike', '9_16', 'composite', '720p')).toContain('__720__');
+    expect(deriveFilename('Hike', '9_16', 'composite', '1440p')).toContain('__1440__');
+  });
+
+  it('replaces underscore in aspect with x', () => {
+    const f = deriveFilename('hike', '9_16', 'composite', '1080p');
+    expect(f).toContain('9x16');
+    expect(f).not.toContain('9_16');
   });
 
   it('applies slug fallback when project name is unrenderable', () => {
-    expect(deriveFilename('', '9_16', 'composite')).toBe(
-      'trailcut-export-9_16-composite.mp4',
+    expect(deriveFilename('', '9_16', 'composite', '1080p')).toBe(
+      'trailcut-export__9x16__1080__composite.mp4',
     );
   });
 });
 
 describe('deriveJobs', () => {
-  it('returns no jobs when nothing is selected', () => {
-    const sel: ExportSelection = { aspects: [], channels: [], output_dir: null };
-    expect(deriveJobs('Hike', '/Users/u/out', sel)).toEqual([]);
+  const emptyGrid: ExportGrid = { cells: {}, output_dir: null };
+
+  it('returns no jobs when grid is empty', () => {
+    expect(deriveJobs('Hike', '/out', emptyGrid)).toEqual([]);
   });
 
-  it('returns no jobs when aspects are empty', () => {
-    const sel: ExportSelection = { aspects: [], channels: ['composite'], output_dir: null };
-    expect(deriveJobs('Hike', '/Users/u/out', sel)).toEqual([]);
-  });
-
-  it('returns no jobs when channels are empty', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: [], output_dir: null };
-    expect(deriveJobs('Hike', '/Users/u/out', sel)).toEqual([]);
-  });
-
-  it('produces aspect-major ordering (outer loop = aspects)', () => {
-    const sel: ExportSelection = {
-      aspects: ['9_16', '4_5'],
-      channels: ['composite', 'map_only'],
+  it('walks cells in (aspect, channel) display order', () => {
+    const grid: ExportGrid = {
+      cells: {
+        '9_16-composite': [{ id: 'a', quality: '1080p', fps: 30 }],
+        '4_5-map_only': [{ id: 'b', quality: '1080p', fps: 30 }],
+        '16_9-composite': [{ id: 'c', quality: '1080p', fps: 30 }],
+      },
       output_dir: null,
     };
-    const jobs = deriveJobs('Hike', '/out', sel);
-    expect(jobs.map((j) => j.id)).toEqual([
-      '9_16-composite',
-      '9_16-map_only',
-      '4_5-composite',
-      '4_5-map_only',
-    ]);
-  });
-
-  it('preserves selection order for both axes', () => {
-    const sel: ExportSelection = {
-      aspects: ['16_9', '9_16'],
-      channels: ['video_only', 'composite'],
-      output_dir: null,
-    };
-    const jobs = deriveJobs('Hike', '/out', sel);
-    expect(jobs.map((j) => j.id)).toEqual([
-      '16_9-video_only',
+    const jobs = deriveJobs('Hike', '/out', grid);
+    // Aspect order is ['16_9', '4_5', '9_16']; within a tier, cell-walk
+    // order is preserved.
+    expect(jobs.map((j) => `${j.aspect}-${j.channel}`)).toEqual([
       '16_9-composite',
-      '9_16-video_only',
+      '4_5-map_only',
       '9_16-composite',
     ]);
   });
 
-  it('joins outputDir + filename with a single separator (no trailing slash)', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'], output_dir: null };
-    const [job] = deriveJobs('Hike', '/Users/u/out', sel);
-    expect(job.outputPath).toBe('/Users/u/out/hike-9_16-composite.mp4');
+  it('sorts all jobs by quality tier (fastest first), preserving cell order within tier', () => {
+    const grid: ExportGrid = {
+      cells: {
+        '9_16-composite': [
+          { id: 'a', quality: '2160p', fps: 30 },
+          { id: 'b', quality: '1080p', fps: 30 },
+        ],
+        '16_9-composite': [{ id: 'c', quality: '1080p', fps: 30 }],
+      },
+      output_dir: null,
+    };
+    const jobs = deriveJobs('Hike', '/out', grid);
+    expect(jobs.map((j) => `${j.aspect}-${j.quality}`)).toEqual([
+      '16_9-1080p',
+      '9_16-1080p',
+      '9_16-2160p',
+    ]);
   });
 
-  it('joins outputDir + filename without doubling when outputDir has trailing slash', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'], output_dir: null };
-    const [job] = deriveJobs('Hike', '/Users/u/out/', sel);
-    expect(job.outputPath).toBe('/Users/u/out/hike-9_16-composite.mp4');
+  it('joins outputDir + filename with a single separator', () => {
+    const grid: ExportGrid = {
+      cells: { '9_16-composite': [{ id: 'a', quality: '1080p', fps: 30 }] },
+      output_dir: null,
+    };
+    const [job] = deriveJobs('Hike', '/Users/u/out', grid);
+    expect(job.outputPath).toBe('/Users/u/out/hike__9x16__1080__composite.mp4');
+  });
+
+  it('joins outputDir + filename without doubling slashes when outputDir trails with /', () => {
+    const grid: ExportGrid = {
+      cells: { '9_16-composite': [{ id: 'a', quality: '1080p', fps: 30 }] },
+      output_dir: null,
+    };
+    const [job] = deriveJobs('Hike', '/Users/u/out/', grid);
+    expect(job.outputPath).toBe('/Users/u/out/hike__9x16__1080__composite.mp4');
   });
 
   it('passes folder paths with spaces through verbatim', () => {
-    const sel: ExportSelection = { aspects: ['9_16'], channels: ['composite'], output_dir: null };
-    const [job] = deriveJobs('Hike', '/Users/u/My Folder', sel);
-    expect(job.outputPath).toBe('/Users/u/My Folder/hike-9_16-composite.mp4');
-  });
-
-  it('produces a stable id per (aspect, channel) pair', () => {
-    const sel: ExportSelection = {
-      aspects: ['9_16', '4_5', '16_9'],
-      channels: ['composite', 'map_only', 'video_only'],
+    const grid: ExportGrid = {
+      cells: { '9_16-composite': [{ id: 'a', quality: '1080p', fps: 30 }] },
       output_dir: null,
     };
-    const jobs = deriveJobs('Hike', '/out', sel);
-    expect(jobs).toHaveLength(9);
+    const [job] = deriveJobs('Hike', '/Users/u/My Folder', grid);
+    expect(job.outputPath).toBe('/Users/u/My Folder/hike__9x16__1080__composite.mp4');
+  });
+
+  it('every job id is unique across a full 9-cell grid with 2 configs per cell', () => {
+    const cells: ExportGrid['cells'] = {};
+    const aspects = ['16_9', '4_5', '9_16'] as const;
+    const channels = ['composite', 'map_only', 'video_only'] as const;
+    for (const aspect of aspects) {
+      for (const channel of channels) {
+        cells[`${aspect}-${channel}`] = [
+          { id: `${aspect}-${channel}-1`, quality: '1080p', fps: 30 },
+          { id: `${aspect}-${channel}-2`, quality: '2160p', fps: 60 },
+        ];
+      }
+    }
+    const grid: ExportGrid = { cells, output_dir: null };
+    const jobs = deriveJobs('Hike', '/out', grid);
+    expect(jobs).toHaveLength(18);
     const ids = jobs.map((j) => j.id);
-    expect(new Set(ids).size).toBe(9);
+    expect(new Set(ids).size).toBe(18);
   });
 
-  it('every job carries the aspect, channel, and resolved outputPath', () => {
-    const sel: ExportSelection = {
-      aspects: ['9_16'],
-      channels: ['composite', 'map_only', 'video_only'],
+  it('every job carries aspect, channel, quality, fps, and an outputPath', () => {
+    const grid: ExportGrid = {
+      cells: {
+        '9_16-composite': [{ id: 'cfg', quality: '2160p', fps: 60 }],
+      },
       output_dir: null,
     };
-    const jobs = deriveJobs('Hike2026', '/out', sel);
-    expect(jobs).toEqual([
-      {
-        id: '9_16-composite',
-        aspect: '9_16',
-        channel: 'composite',
-        outputPath: '/out/hike2026-9_16-composite.mp4',
+    const [job] = deriveJobs('Hike2026', '/out', grid);
+    expect(job.aspect).toBe('9_16');
+    expect(job.channel).toBe('composite');
+    expect(job.quality).toBe('2160p');
+    expect(job.fps).toBe(60);
+    expect(job.outputPath).toBe('/out/hike2026__9x16__4k__composite.mp4');
+  });
+});
+
+describe('gridJobCount', () => {
+  it('returns 0 for an empty grid', () => {
+    expect(gridJobCount({ cells: {}, output_dir: null })).toBe(0);
+  });
+
+  it('sums configs across all cells', () => {
+    const grid: ExportGrid = {
+      cells: {
+        '9_16-composite': [
+          { id: 'a', quality: '1080p', fps: 30 },
+          { id: 'b', quality: '2160p', fps: 60 },
+        ],
+        '4_5-map_only': [{ id: 'c', quality: '1080p', fps: 30 }],
       },
-      {
-        id: '9_16-map_only',
-        aspect: '9_16',
-        channel: 'map_only',
-        outputPath: '/out/hike2026-9_16-map_only.mov',
-      },
-      {
-        id: '9_16-video_only',
-        aspect: '9_16',
-        channel: 'video_only',
-        outputPath: '/out/hike2026-9_16-video_only.mov',
-      },
+      output_dir: null,
+    };
+    expect(gridJobCount(grid)).toBe(3);
+  });
+});
+
+describe('configsInCell', () => {
+  it('returns the configs in the given cell', () => {
+    const grid: ExportGrid = {
+      cells: { '9_16-composite': [{ id: 'a', quality: '1080p', fps: 30 }] },
+      output_dir: null,
+    };
+    expect(configsInCell(grid, '9_16', 'composite')).toEqual([
+      { id: 'a', quality: '1080p', fps: 30 },
     ]);
+  });
+
+  it('returns [] when the cell has no entry', () => {
+    expect(configsInCell({ cells: {}, output_dir: null }, '9_16', 'composite')).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AspectRatio,
   Clip,
-  ExportSelection,
+  ExportGrid,
   Route,
   Project,
   ProjectLayouts,
@@ -28,11 +28,12 @@ interface AutoSaveParams {
    *  value; `undefined` here only triggers on a prop-drilling regression and
    *  the defensive backfill below maps it to `'9_16'`. */
   selectedExportAspect: AspectRatio | undefined;
-  /** Last user-confirmed Export modal selection (task 280). `null` until
-   *  the user completes a successful export; the Export modal writes a new
-   *  value via its `onSelectionPersist` callback, which flows up to App
-   *  state and lands here on the next auto-save cycle. */
-  lastExportSelection: ExportSelection | null;
+  /** Last user-confirmed Export modal selection. `null` until the user
+   *  completes a successful export; the Export modal writes a new value via
+   *  its `onSelectionPersist` callback, which flows up to App state and
+   *  lands here on the next auto-save cycle. Schema v6 uses the grid shape
+   *  (3×3 cells × N configs each) — see `ExportGrid` in `types.ts`. */
+  lastExportSelection: ExportGrid | null;
 }
 
 /** Defensive backfill mirroring `useProject`'s + Rust's `seeded_layouts()`.
