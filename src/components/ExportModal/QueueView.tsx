@@ -1,4 +1,6 @@
-import type { QueueJob, QueueState } from '../../hooks/useExportQueue';
+import type { QueueJob, QueueState, JobState } from '../../hooks/useExportQueue';
+import type { ExportChannel } from '../../types';
+import styles from './ExportModal.module.css';
 
 export interface QueueViewProps {
   jobs: QueueJob[];
@@ -6,47 +8,89 @@ export interface QueueViewProps {
   onCancel: () => void;
 }
 
+const CHANNEL_TAG: Record<ExportChannel, { letter: string; cls: string }> = {
+  composite: { letter: 'C', cls: styles.chTagC },
+  map_only: { letter: 'M', cls: styles.chTagM },
+  video_only: { letter: 'V', cls: styles.chTagV },
+};
+const ASPECT_LABEL: Record<QueueJob['aspect'], string> = {
+  '9_16': '9:16',
+  '4_5': '4:5',
+  '16_9': '16:9',
+};
+const CHANNEL_LABEL: Record<ExportChannel, string> = {
+  composite: 'composite',
+  map_only: 'map only',
+  video_only: 'video only',
+};
+const QUALITY_LABEL: Record<QueueJob['quality'], string> = {
+  '720p': '720',
+  '1080p': '1080',
+  '1440p': '1440',
+  '2160p': '4K',
+};
+
 export function QueueView({ jobs, queueState, onCancel }: QueueViewProps) {
   const doneCount = jobs.filter((j) => j.state === 'done').length;
+  const runningJob = jobs.find((j) => j.state === 'running');
+  const runningIdx = runningJob ? jobs.indexOf(runningJob) : -1;
   const showCancel = queueState === 'running' || queueState === 'cancelling';
   const cancelDisabled = queueState !== 'running';
 
   return (
-    <div data-testid="export-queue-view">
-      <div style={styles.progress} data-testid="export-queue-progress">
-        {doneCount} of {jobs.length} done
+    <div
+      className={styles.scope}
+      data-testid="export-queue-view"
+      style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+    >
+      <div
+        className={styles.renderSummary}
+        data-testid="export-queue-banner"
+      >
+        <span className={styles.pulse} aria-hidden />
+        <div>
+          <div className={styles.renderSummaryLabel}>
+            {queueState === 'cancelling' ? 'Cancelling' : 'Rendering'}
+          </div>
+          <div className={styles.renderSummaryMain}>
+            {runningJob ? (
+              <>
+                Job <strong>{runningIdx + 1} of {jobs.length}</strong>
+                {' · '}
+                {ASPECT_LABEL[runningJob.aspect]} {CHANNEL_LABEL[runningJob.channel]}
+                {' · '}
+                <span style={{ color: 'var(--accent)' }}>
+                  {QUALITY_LABEL[runningJob.quality]}
+                </span>
+              </>
+            ) : (
+              <>Queued — preparing…</>
+            )}
+          </div>
+        </div>
+        <div className={styles.renderSummaryMeta}>
+          <span data-testid="export-queue-progress">
+            {doneCount} of {jobs.length} done
+          </span>
+        </div>
       </div>
-      <ul style={styles.list}>
+
+      <ul className={styles.jobList}>
         {jobs.map((job) => (
-          <li
-            key={job.id}
-            style={styles.row}
-            data-testid={`export-queue-row-${job.id}`}
-          >
-            <span style={styles.filename}>{filenameOf(job.outputPath)}</span>
-            <span
-              style={badgeStyle(job.state)}
-              data-testid={`export-queue-badge-${job.id}`}
-            >
-              {job.state === 'running' ? (
-                <Spinner />
-              ) : (
-                <span>{badgeLabel(job.state)}</span>
-              )}
-            </span>
-          </li>
+          <JobRow key={job.id} job={job} />
         ))}
       </ul>
+
       {showCancel && (
-        <div style={styles.actions}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button
             type="button"
+            className={`${styles.btn} ${styles.btnDanger}`}
             onClick={onCancel}
             disabled={cancelDisabled}
-            style={cancelDisabled ? styles.secondaryDisabled : styles.secondary}
             data-testid="export-queue-cancel"
           >
-            {queueState === 'cancelling' ? 'Cancelling…' : 'Cancel'}
+            {queueState === 'cancelling' ? 'Cancelling…' : 'Cancel render'}
           </button>
         </div>
       )}
@@ -54,15 +98,96 @@ export function QueueView({ jobs, queueState, onCancel }: QueueViewProps) {
   );
 }
 
-function Spinner() {
+function JobRow({ job }: { job: QueueJob }) {
+  const tag = CHANNEL_TAG[job.channel];
+  const filename = filenameOf(job.outputPath);
+  const { base, ext } = splitExt(filename);
+  const rowClass = `${styles.job} ${stateClass(job.state)}`;
   return (
-    <span style={styles.spinner} data-testid="export-queue-spinner" aria-label="running">
-      ⟳
-    </span>
+    <li
+      className={rowClass}
+      data-testid={`export-queue-row-${job.id}`}
+    >
+      <span className={styles.jobStatus}>
+        <StatusIcon state={job.state} />
+      </span>
+      <span className={styles.jobName}>
+        <span className={`${styles.chTag} ${tag.cls}`}>{tag.letter}</span>
+        {base}
+        <span className={styles.ext}>{ext}</span>
+      </span>
+      <div className={styles.barCell}>
+        <div className={styles.bar}>
+          <div
+            className={styles.barFill}
+            style={{ width: job.state === 'done' ? '100%' : '0%' }}
+          />
+        </div>
+        <span
+          className={styles.pct}
+          data-testid={`export-queue-badge-${job.id}`}
+        >
+          {badgeLabel(job.state)}
+        </span>
+      </div>
+      <span className={styles.jobMeta}>{metaLabel(job)}</span>
+    </li>
   );
 }
 
-function badgeLabel(state: QueueJob['state']): string {
+function StatusIcon({ state }: { state: JobState }) {
+  if (state === 'running') {
+    return (
+      <svg
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        className={styles.spin}
+        data-testid="export-queue-spinner"
+        aria-label="running"
+      >
+        <circle cx="8" cy="8" r="5.5" strokeOpacity="0.25" />
+        <path d="M13.5 8a5.5 5.5 0 0 0-5.5-5.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (state === 'done') {
+    return (
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.6" aria-hidden>
+        <path d="M3 8l3.5 3.5L13 5" />
+      </svg>
+    );
+  }
+  if (state === 'failed') {
+    return (
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+        <path d="M4 4l8 8M12 4l-8 8" />
+      </svg>
+    );
+  }
+  // pending
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden>
+      <circle cx="8" cy="8" r="5" />
+    </svg>
+  );
+}
+
+function stateClass(state: JobState): string {
+  switch (state) {
+    case 'running':
+      return styles.jobRunning;
+    case 'done':
+      return styles.jobDone;
+    case 'failed':
+      return styles.jobFailed;
+    case 'pending':
+      return styles.jobPending;
+  }
+}
+
+function badgeLabel(state: JobState): string {
   switch (state) {
     case 'pending':
       return 'pending';
@@ -75,94 +200,30 @@ function badgeLabel(state: QueueJob['state']): string {
   }
 }
 
-function badgeStyle(state: QueueJob['state']): React.CSSProperties {
-  const base: React.CSSProperties = { ...styles.badgeBase };
-  switch (state) {
-    case 'pending':
-      return { ...base, backgroundColor: '#2a2a2a', color: '#888' };
-    case 'running':
-      return { ...base, backgroundColor: '#2a3a4a', color: '#9bd' };
-    case 'done':
-      return { ...base, backgroundColor: '#1f3a25', color: '#8bc49a' };
-    case 'failed':
-      return { ...base, backgroundColor: '#3a1a1a', color: '#ff8888' };
+function metaLabel(job: QueueJob): string {
+  if (job.state === 'done' && job.summary) {
+    return formatSeconds(job.summary.wall_clock_ms / 1000);
   }
+  if (job.state === 'failed') return 'failed';
+  if (job.state === 'running') return '—';
+  return 'queued';
+}
+
+function formatSeconds(s: number): string {
+  if (!Number.isFinite(s) || s <= 0) return '—';
+  if (s < 60) return `${s.toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  const r = Math.round(s - m * 60);
+  return `${m}:${String(r).padStart(2, '0')}`;
+}
+
+function splitExt(filename: string): { base: string; ext: string } {
+  const idx = filename.lastIndexOf('.');
+  if (idx <= 0) return { base: filename, ext: '' };
+  return { base: filename.slice(0, idx), ext: filename.slice(idx) };
 }
 
 function filenameOf(outputPath: string): string {
   const idx = outputPath.lastIndexOf('/');
   return idx >= 0 ? outputPath.slice(idx + 1) : outputPath;
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  progress: {
-    fontSize: '13px',
-    color: '#bbb',
-    marginBottom: '8px',
-  },
-  list: {
-    margin: 0,
-    padding: 0,
-    listStyle: 'none',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '4px',
-  },
-  row: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '6px 8px',
-    backgroundColor: '#1f1f1f',
-    border: '1px solid #2a2a2a',
-    borderRadius: '4px',
-    fontSize: '12px',
-  },
-  filename: {
-    fontFamily: '"SF Mono", Menlo, monospace',
-    color: '#ccc',
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
-    flex: 1,
-    marginRight: '8px',
-  },
-  badgeBase: {
-    padding: '2px 8px',
-    borderRadius: '10px',
-    fontSize: '11px',
-    fontWeight: 600,
-    textTransform: 'uppercase',
-    letterSpacing: '0.6px',
-    minWidth: '60px',
-    textAlign: 'center',
-  },
-  spinner: {
-    display: 'inline-block',
-    fontSize: '12px',
-    animation: 'tcSpin 1s linear infinite',
-  },
-  actions: {
-    display: 'flex',
-    justifyContent: 'flex-end',
-    marginTop: '12px',
-  },
-  secondary: {
-    padding: '6px 14px',
-    backgroundColor: '#2a2a2a',
-    color: '#ccc',
-    border: '1px solid #444',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    fontSize: '13px',
-  },
-  secondaryDisabled: {
-    padding: '6px 14px',
-    backgroundColor: '#222',
-    color: '#666',
-    border: '1px solid #2a2a2a',
-    borderRadius: '4px',
-    cursor: 'not-allowed',
-    fontSize: '13px',
-  },
-};

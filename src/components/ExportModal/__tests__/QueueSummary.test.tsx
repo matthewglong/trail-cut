@@ -53,7 +53,7 @@ async function flush() {
 }
 
 describe('QueueSummary', () => {
-  it('shows N files written matching the done count', () => {
+  it('shows N files exported matching the done count', () => {
     const jobs: QueueJob[] = [
       makeJob({ id: 'a', state: 'done' }),
       makeJob({ id: 'b', state: 'done' }),
@@ -61,7 +61,7 @@ describe('QueueSummary', () => {
     ];
     render(<QueueSummary jobs={jobs} outputDir="/out" onClose={() => {}} />);
     const heading = findByTestId('export-queue-summary-heading');
-    expect(heading?.textContent).toContain('2 files written');
+    expect(heading?.textContent).toContain('2 files exported');
     expect(heading?.textContent).toContain('1 failed');
   });
 
@@ -69,7 +69,7 @@ describe('QueueSummary', () => {
     const jobs: QueueJob[] = [makeJob({ id: 'a', state: 'done' })];
     render(<QueueSummary jobs={jobs} outputDir="/out" onClose={() => {}} />);
     expect(findByTestId('export-queue-summary-heading')?.textContent).toContain(
-      '1 file written',
+      '1 file exported',
     );
   });
 
