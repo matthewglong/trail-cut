@@ -1,6 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog, ask } from '@tauri-apps/plugin-dialog';
 import { exists } from '@tauri-apps/plugin-fs';
+import { videoDir, join } from '@tauri-apps/api/path';
+import { ExportGrid } from './ExportGrid';
+import { ConfigExportModal, configToInitial } from './ConfigExportModal';
+import type {
+  CellConflict,
+  FpsDisabled,
+  QualityDisabled,
+} from './ConfigExportModal';
 import { QueueView } from './QueueView';
 import { QueueSummary } from './QueueSummary';
 import {
@@ -15,9 +24,15 @@ import {
 } from '../../lib/exportRequest';
 import { useExportQueue } from '../../hooks/useExportQueue';
 import type {
+  AspectRatio,
+  CellKey,
   Clip,
-  ExportGrid,
+  ExportChannel,
+  ExportConfig,
+  ExportFps,
+  ExportGrid as ExportGridModel,
   MapSettings,
+  OutputResolution,
   ProjectLayouts,
   Route,
   TransitionFeel,
@@ -27,23 +42,32 @@ const DISABLED_RENDER_TOOLTIP =
   'Add at least one export and choose an output folder to enable Render';
 
 type View = 'select' | 'running' | 'done';
+type ConfigState =
+  | { aspect: AspectRatio; channel: ExportChannel; mode: 'add' }
+  | {
+      aspect: AspectRatio;
+      channel: ExportChannel;
+      mode: 'edit';
+      editingId: string;
+      initial: ExportConfig;
+    };
 
 export interface ExportModalProps {
   open: boolean;
   onClose: () => void;
-  selection: ExportGrid;
-  onSelectionChange: (next: ExportGrid) => void;
+  selection: ExportGridModel;
+  onSelectionChange: (next: ExportGridModel) => void;
   /** Last-confirmed selection from a prior successful export. When the modal
    *  transitions `false → true`, the parent-managed `selection` is
    *  rehydrated from this value via `onSelectionChange`. `null` means "no
    *  prior export — start clean (empty grid, no folder)". */
-  lastExportSelection?: ExportGrid | null;
+  lastExportSelection?: ExportGridModel | null;
   /** Called once per queue completion when at least one job finished
    *  successfully. The parent persists the value to project state, where
    *  `useAutoSave` writes it to disk on the next debounce tick. Cancelled
    *  queues with zero done jobs do NOT trigger this — the previous
    *  `lastExportSelection` survives. */
-  onSelectionPersist?: (selection: ExportGrid) => void;
+  onSelectionPersist?: (selection: ExportGridModel) => void;
   projectName: string;
   clips: Clip[];
   route: Route | null;
@@ -52,7 +76,67 @@ export interface ExportModalProps {
   projectLayouts: ProjectLayouts;
 }
 
-const EMPTY_GRID: ExportGrid = { cells: {}, output_dir: null };
+const EMPTY_GRID: ExportGridModel = { cells: {}, output_dir: null };
+
+/** Default chip when the user opens the secondary modal in add mode. */
+const DEFAULT_INITIAL = { quality: '1080p' as OutputResolution, fps: 30 as ExportFps };
+
+/** Pixel-height threshold per quality tier — short edge of the output
+ *  canvas. Mirrors the comment on `OutputResolution` in `lib/layout.ts`. */
+const QUALITY_SHORT_EDGE: Record<OutputResolution, number> = {
+  '720p': 720,
+  '1080p': 1080,
+  '1440p': 1440,
+  '2160p': 2160,
+};
+const QUALITY_TIERS: ReadonlyArray<OutputResolution> = [
+  '720p',
+  '1080p',
+  '1440p',
+  '2160p',
+];
+const FPS_TIERS: ReadonlyArray<ExportFps> = [24, 30, 60];
+
+function parseSourceShortEdge(resolution: string | null | undefined): number | null {
+  if (!resolution) return null;
+  const m = resolution.match(/^(\d+)x(\d+)$/);
+  if (!m) return null;
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return null;
+  return Math.min(w, h);
+}
+
+/** Max short-edge resolution and max fps across visible clips. Used to gate
+ *  composite + video_only quality/fps in the secondary modal. Source < target
+ *  triggers a tooltip-explained hard-disable per the design notes. */
+function summarizeSource(clips: Clip[]): {
+  maxShortEdge: number | null;
+  maxFps: number | null;
+  resolutionLabel: string | null;
+  fpsLabel: string | null;
+} {
+  let maxShortEdge: number | null = null;
+  let maxFps: number | null = null;
+  let resolutionLabel: string | null = null;
+  for (const clip of clips) {
+    if (clip.visible === false) continue;
+    const edge = parseSourceShortEdge(clip.resolution);
+    if (edge != null && (maxShortEdge == null || edge > maxShortEdge)) {
+      maxShortEdge = edge;
+      resolutionLabel = clip.resolution;
+    }
+    if (typeof clip.frame_rate === 'number') {
+      if (maxFps == null || clip.frame_rate > maxFps) maxFps = clip.frame_rate;
+    }
+  }
+  return {
+    maxShortEdge,
+    maxFps,
+    resolutionLabel,
+    fpsLabel: maxFps != null ? `${maxFps} fps` : null,
+  };
+}
 
 export function ExportModal({
   open,
@@ -69,6 +153,7 @@ export function ExportModal({
   projectLayouts,
 }: ExportModalProps) {
   const [view, setView] = useState<View>('select');
+  const [configState, setConfigState] = useState<ConfigState | null>(null);
   const queue = useExportQueue();
   const outputFolder = selection.output_dir;
   // Latch so `onSelectionPersist` fires exactly once per queue completion.
@@ -78,24 +163,14 @@ export function ExportModal({
     selectionRef.current = selection;
   }, [selection]);
 
-  const { nClips, timelineDurationSec } = useMemo(() => {
-    let total = 0;
-    let count = 0;
-    for (const clip of clips) {
-      if (clip.visible === false) continue;
-      const trim = clip.trim;
-      if (!trim) continue;
-      const speed = clip.effects?.speed ?? 1;
-      if (speed <= 0) continue;
-      total += (trim.out_ms - trim.in_ms) / 1000 / speed;
-      count += 1;
-    }
-    return { nClips: count, timelineDurationSec: total };
-  }, [clips]);
+  // Source-capability summary for the secondary modal's disable rules.
+  const sourceSummary = useMemo(() => summarizeSource(clips), [clips]);
 
-  // Modal-close lifecycle: backdrop / Esc are gated by view.
+  // Modal-close lifecycle: backdrop / Esc are gated by view AND by whether
+  // the secondary modal is open (Esc should close the secondary first).
   useEffect(() => {
     if (!open) return;
+    if (configState !== null) return; // secondary modal owns Esc
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (view === 'running') return;
@@ -105,7 +180,7 @@ export function ExportModal({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, view]);
+  }, [open, view, configState]);
 
   // Watch the queue for completion to advance the view.
   useEffect(() => {
@@ -123,7 +198,10 @@ export function ExportModal({
     onSelectionPersist?.(selectionRef.current);
   }, [queue.queueState, queue.jobs, onSelectionPersist]);
 
-  // Prefill on open transition. Runs only on `false → true`.
+  // Prefill on close → open transition only. The parent owns `selection`,
+  // and an `initialSelection` passed in at mount takes precedence over
+  // `lastExportSelection`; the rehydrate path is exclusively for "user
+  // reopened the modal after a successful prior export".
   const prevOpenRef = useRef(open);
   useEffect(() => {
     const wasOpen = prevOpenRef.current;
@@ -133,19 +211,182 @@ export function ExportModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Auto-default the output folder when the modal is open with no folder
+  // set. Fires both on first mount (initialOpen=true) and after a close →
+  // open transition. The `lastExportSelection.output_dir` check short-
+  // circuits the resolve_output_dir call when prefill is going to bring a
+  // folder anyway — without it, both effects race and the modal makes a
+  // wasted Rust call on every reopen.
+  const autoDefaultedRef = useRef(false);
+  useEffect(() => {
+    if (!open) return;
+    if (autoDefaultedRef.current) return;
+    if (lastExportSelection?.output_dir != null) {
+      autoDefaultedRef.current = true;
+      return;
+    }
+    if (selection.output_dir != null) {
+      autoDefaultedRef.current = true; // honor whatever the parent prefilled
+      return;
+    }
+    let cancelled = false;
+    autoDefaultedRef.current = true;
+    (async () => {
+      try {
+        const movies = await videoDir();
+        const base = await join(movies, 'TrailCut');
+        const resolved = await invoke<string>('resolve_output_dir', {
+          base,
+          name: projectName,
+        });
+        if (cancelled) return;
+        onSelectionChange({ ...selectionRef.current, output_dir: resolved });
+      } catch {
+        // Surface as "no folder selected" — user can pick manually.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, selection.output_dir, projectName, lastExportSelection?.output_dir]);
+
   // Reset modal state on close so the next open starts clean.
   useEffect(() => {
     if (open) return;
     setView('select');
+    setConfigState(null);
     queue.reset();
     persistedThisRunRef.current = false;
+    autoDefaultedRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  if (!open) return null;
+  // ---- Cell-level mutations -------------------------------------------------
+  const updateCell = useCallback(
+    (
+      aspect: AspectRatio,
+      channel: ExportChannel,
+      updater: (prev: ExportConfig[]) => ExportConfig[],
+    ) => {
+      const key: CellKey = `${aspect}-${channel}`;
+      const prevConfigs = selectionRef.current.cells[key] ?? [];
+      const next = updater(prevConfigs);
+      const nextCells: ExportGridModel['cells'] = { ...selectionRef.current.cells };
+      if (next.length === 0) {
+        delete nextCells[key];
+      } else {
+        nextCells[key] = next;
+      }
+      onSelectionChange({ ...selectionRef.current, cells: nextCells });
+    },
+    [onSelectionChange],
+  );
 
-  const setOutputFolder = (folder: string | null) =>
-    onSelectionChange({ ...selection, output_dir: folder });
+  const handleAdd = useCallback((aspect: AspectRatio, channel: ExportChannel) => {
+    setConfigState({ aspect, channel, mode: 'add' });
+  }, []);
+
+  const handleEditChip = useCallback(
+    (aspect: AspectRatio, channel: ExportChannel, config: ExportConfig) => {
+      setConfigState({
+        aspect,
+        channel,
+        mode: 'edit',
+        editingId: config.id,
+        initial: config,
+      });
+    },
+    [],
+  );
+
+  const handleRemoveChip = useCallback(
+    (aspect: AspectRatio, channel: ExportChannel, configId: string) => {
+      updateCell(aspect, channel, (prev) => prev.filter((c) => c.id !== configId));
+    },
+    [updateCell],
+  );
+
+  const handleConfigSave = useCallback(
+    (next: { quality: OutputResolution; fps: ExportFps }) => {
+      if (configState === null) return;
+      const { aspect, channel } = configState;
+      if (configState.mode === 'edit') {
+        const editingId = configState.editingId;
+        updateCell(aspect, channel, (prev) =>
+          prev.map((c) =>
+            c.id === editingId ? { ...c, quality: next.quality, fps: next.fps } : c,
+          ),
+        );
+      } else {
+        const id = newConfigId();
+        updateCell(aspect, channel, (prev) => [
+          ...prev,
+          { id, quality: next.quality, fps: next.fps },
+        ]);
+      }
+      setConfigState(null);
+    },
+    [configState, updateCell],
+  );
+
+  const handleConfigCancel = useCallback(() => setConfigState(null), []);
+
+  // ---- Secondary-modal disable rules ----------------------------------------
+  // Composite + video_only branches consume the source media; map_only is
+  // procedural and always allows everything. The disable lists here surface
+  // the source-ceiling tooltips per the design notes.
+  const { disabledQualities, disabledFps } = useMemo(() => {
+    if (configState == null) {
+      return { disabledQualities: [], disabledFps: [] };
+    }
+    if (configState.channel === 'map_only') {
+      return { disabledQualities: [], disabledFps: [] };
+    }
+    const dq: QualityDisabled[] = [];
+    const df: FpsDisabled[] = [];
+    const { maxShortEdge, maxFps, resolutionLabel, fpsLabel } = sourceSummary;
+    if (maxShortEdge != null) {
+      for (const tier of QUALITY_TIERS) {
+        if (QUALITY_SHORT_EDGE[tier] > maxShortEdge) {
+          dq.push({
+            quality: tier,
+            reason: resolutionLabel
+              ? `Source ${resolutionLabel} — would require upsample`
+              : `Source too small for ${tier}`,
+          });
+        }
+      }
+    }
+    if (maxFps != null) {
+      for (const fps of FPS_TIERS) {
+        if (fps > maxFps) {
+          df.push({
+            fps,
+            reason: fpsLabel
+              ? `Source ${fpsLabel} — would require frame duplication`
+              : `Source fps too low for ${fps}`,
+          });
+        }
+      }
+    }
+    return { disabledQualities: dq, disabledFps: df };
+  }, [configState, sourceSummary]);
+
+  // Conflict combos = (quality, fps) pairs currently present in the target
+  // cell, excluding the chip the user is editing. In add mode every present
+  // pair conflicts. In edit mode the chip's own pair is excluded so the user
+  // can edit other axes without false conflict.
+  const conflictingCombos: CellConflict[] = useMemo(() => {
+    if (configState == null) return [];
+    const key: CellKey = `${configState.aspect}-${configState.channel}`;
+    const configs = selection.cells[key] ?? [];
+    return configs
+      .filter((c) => configState.mode === 'add' || c.id !== configState.editingId)
+      .map((c) => ({ quality: c.quality, fps: c.fps }));
+  }, [configState, selection.cells]);
+
+  if (!open) return null;
 
   const handleChooseFolder = async () => {
     let result: string | string[] | null;
@@ -157,10 +398,11 @@ export function ExportModal({
     } catch {
       return;
     }
-    if (typeof result === 'string') {
-      setOutputFolder(result);
-    } else if (Array.isArray(result) && result.length > 0) {
-      setOutputFolder(result[0]);
+    let chosen: string | null = null;
+    if (typeof result === 'string') chosen = result;
+    else if (Array.isArray(result) && result.length > 0) chosen = result[0];
+    if (chosen != null) {
+      onSelectionChange({ ...selection, output_dir: chosen });
     }
   };
 
@@ -168,11 +410,13 @@ export function ExportModal({
     if (view === 'running') return;
     queue.reset();
     setView('select');
+    setConfigState(null);
     onClose();
   };
 
   const handleBackdropClick = () => {
     if (view === 'running') return;
+    if (configState !== null) return; // secondary modal owns clicks
     handleClose();
   };
 
@@ -220,10 +464,10 @@ export function ExportModal({
 
   const renderEnabled = jobCount > 0 && outputFolder !== null;
   const renderDisabled = !renderEnabled;
-
-  // Suppress unused-warnings for fields the grid UI (commit 4) consumes.
-  void nClips;
-  void timelineDurationSec;
+  const configInitial =
+    configState?.mode === 'edit'
+      ? configToInitial(configState.initial)
+      : DEFAULT_INITIAL;
 
   return (
     <div
@@ -247,10 +491,13 @@ export function ExportModal({
           {view === 'select' && (
             <>
               <section style={styles.section}>
-                <div style={styles.label}>Exports</div>
-                <div style={styles.placeholder} data-testid="export-grid-placeholder">
-                  The configure grid lands in a follow-up commit.
-                </div>
+                <div style={styles.label}>Configured exports</div>
+                <ExportGrid
+                  grid={selection}
+                  onAdd={handleAdd}
+                  onEditChip={handleEditChip}
+                  onRemoveChip={handleRemoveChip}
+                />
               </section>
 
               <section style={styles.section}>
@@ -320,6 +567,31 @@ export function ExportModal({
           </div>
         )}
       </div>
+
+      {configState !== null && (
+        <ConfigExportModal
+          open={true}
+          mode={configState.mode}
+          aspect={configState.aspect}
+          channel={configState.channel}
+          initial={configInitial}
+          disabledQualities={disabledQualities}
+          disabledFps={disabledFps}
+          conflictingCombos={conflictingCombos}
+          sourceResolution={
+            configState.channel !== 'map_only'
+              ? (sourceSummary.resolutionLabel ?? undefined)
+              : undefined
+          }
+          sourceFps={
+            configState.channel !== 'map_only'
+              ? (sourceSummary.fpsLabel ?? undefined)
+              : undefined
+          }
+          onSave={handleConfigSave}
+          onCancel={handleConfigCancel}
+        />
+      )}
     </div>
   );
 }
@@ -333,6 +605,15 @@ function viewTitle(view: View): string {
     case 'done':
       return 'Export complete';
   }
+}
+
+/** Stable id for a freshly-added chip. `crypto.randomUUID` is available in
+ *  every Tauri webview (and JSDOM as of Node 20+). The id is used as a React
+ *  key and as the trailing token in the queue's per-job id so two chips
+ *  added with the same (quality, fps) before the conflict-detect ran still
+ *  stay distinguishable. */
+function newConfigId(): string {
+  return crypto.randomUUID();
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -389,15 +670,6 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase',
     letterSpacing: '1.9px',
     fontWeight: 700,
-  },
-  placeholder: {
-    padding: '20px',
-    border: '1px dashed #4c5b5c',
-    borderRadius: '3px',
-    color: '#8a9697',
-    fontFamily: 'JetBrains Mono, monospace',
-    fontSize: '11.5px',
-    textAlign: 'center',
   },
   folderRow: {
     display: 'flex',

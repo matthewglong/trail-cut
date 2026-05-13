@@ -27,6 +27,7 @@ pub fn run() {
             commands::register_recent_project,
             commands::rename_project,
             commands::delete_project,
+            commands::resolve_output_dir,
             commands::probe_encoders,
             export::render_export,
         ])

@@ -335,6 +335,56 @@ pub fn delete_project(project_dir: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve an export output directory under `base`, auto-numbering when the
+/// chosen `name` already exists on disk. Returns a path the caller can show
+/// to the user; the directory is **not** created — the renderer creates it
+/// later. The probe runs at modal-open and again at render-time (GAP-004).
+///
+/// Strategy: try `{base}/{name}` first. If it exists, try
+/// `{base}/{name} 2`, `{base}/{name} 3`, …, stopping at the first path that
+/// doesn't exist on disk. Iteration is bounded to keep a runaway directory
+/// (10k+ siblings) from hanging the modal — falls back to a millisecond-
+/// suffixed name beyond `MAX_AUTO_INDEX`.
+///
+/// Inputs:
+/// - `base`: parent directory (e.g. `~/Movies/TrailCut`). Tilde is **not**
+///   expanded — the frontend resolves it before invoking. Must be absolute.
+/// - `name`: leaf name to start from (typically the project name verbatim).
+#[tauri::command]
+pub fn resolve_output_dir(base: String, name: String) -> Result<String, String> {
+    const MAX_AUTO_INDEX: u32 = 1_000;
+    let base_path = Path::new(&base);
+    if !base_path.is_absolute() {
+        return Err(format!(
+            "resolve_output_dir: base must be absolute, got {base:?}"
+        ));
+    }
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("resolve_output_dir: name must be non-empty".into());
+    }
+    let first = base_path.join(trimmed);
+    if !first.exists() {
+        return Ok(first.to_string_lossy().into_owned());
+    }
+    for i in 2..=MAX_AUTO_INDEX {
+        let candidate = base_path.join(format!("{trimmed} {i}"));
+        if !candidate.exists() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
+    }
+    // Pathological fallback: every numbered slot below MAX_AUTO_INDEX is
+    // taken. Use a timestamp suffix so the export still proceeds.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    Ok(base_path
+        .join(format!("{trimmed} {stamp}"))
+        .to_string_lossy()
+        .into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1112,5 +1162,97 @@ mod tests {
         assert!(loaded.route.is_none(), "missing route.gpx → route is None");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unique-per-invocation scratch directory under `std::env::temp_dir()`.
+    /// Each test that touches the filesystem must use its own subdir so
+    /// parallel `cargo test` runs don't trip over each other.
+    fn scratch_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-resolve-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_output_dir_returns_first_when_no_collision() {
+        let base = scratch_dir("no-collision");
+        let base_str = base.to_string_lossy().into_owned();
+        let got = resolve_output_dir(base_str, "Cascade Pass".into())
+            .expect("resolve must succeed");
+        assert_eq!(got, base.join("Cascade Pass").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_output_dir_increments_when_name_exists() {
+        let base = scratch_dir("collision");
+        std::fs::create_dir_all(base.join("Cascade Pass")).unwrap();
+        let base_str = base.to_string_lossy().into_owned();
+        let got = resolve_output_dir(base_str, "Cascade Pass".into())
+            .expect("resolve must succeed");
+        // First collision → " 2", not " 1" (matches mockup affordance).
+        assert_eq!(got, base.join("Cascade Pass 2").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_output_dir_skips_to_first_free_slot() {
+        let base = scratch_dir("multi");
+        std::fs::create_dir_all(base.join("Hike")).unwrap();
+        std::fs::create_dir_all(base.join("Hike 2")).unwrap();
+        std::fs::create_dir_all(base.join("Hike 3")).unwrap();
+        let base_str = base.to_string_lossy().into_owned();
+        let got = resolve_output_dir(base_str, "Hike".into()).expect("resolve must succeed");
+        assert_eq!(got, base.join("Hike 4").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_output_dir_increments_on_file_collision_not_just_dir() {
+        // "exists" probes any inode, not just directories — if the user has a
+        // file at that path, we still want to advance. GAP-004 calls out the
+        // probe runs again at render-time, so this also keeps the modal
+        // surface honest about what render-time will see.
+        let base = scratch_dir("file");
+        std::fs::write(base.join("Trip"), b"sentinel").unwrap();
+        let base_str = base.to_string_lossy().into_owned();
+        let got = resolve_output_dir(base_str, "Trip".into()).expect("resolve must succeed");
+        assert_eq!(got, base.join("Trip 2").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_output_dir_trims_whitespace_in_name() {
+        let base = scratch_dir("ws");
+        let base_str = base.to_string_lossy().into_owned();
+        let got =
+            resolve_output_dir(base_str, "  Padded Trip  ".into()).expect("resolve must succeed");
+        assert_eq!(got, base.join("Padded Trip").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn resolve_output_dir_rejects_relative_base() {
+        let err = resolve_output_dir("not/absolute".into(), "Hike".into())
+            .expect_err("relative base must error");
+        assert!(err.contains("absolute"));
+    }
+
+    #[test]
+    fn resolve_output_dir_rejects_empty_name() {
+        let base = scratch_dir("empty");
+        let base_str = base.to_string_lossy().into_owned();
+        let err = resolve_output_dir(base_str, "   ".into())
+            .expect_err("empty name must error");
+        assert!(err.contains("non-empty"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
