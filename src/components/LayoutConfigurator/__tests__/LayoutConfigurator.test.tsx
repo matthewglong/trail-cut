@@ -298,6 +298,140 @@ describe('LayoutConfigurator — disabled', () => {
   });
 });
 
+describe('LayoutConfigurator — PiP drag readout', () => {
+  // A roomy-margin inset: 0.30 inset on all sides leaves ~324px (1080×0.3)
+  // horizontal and ~576px (1920×0.3) vertical gap — plenty of room for cues
+  // to render even at the 540×960 container's 0.5 scaleFactor.
+  const ROOMY_PIP: PipLayout = {
+    mode: 'pip',
+    inset_source: 'map',
+    inset: { x: 0.3, y: 0.3, w: 0.4, h: 0.4 },
+    corner_radius: 0.012,
+  };
+
+  it('removes the readout after pointerup', () => {
+    render(
+      <LayoutConfigurator
+        layout={ROOMY_PIP}
+        aspect="9_16"
+        containerWidth={540}
+        containerHeight={960}
+        snapEnabledByDefault={false}
+        onChange={() => {}}
+      />,
+    );
+    const body = findByTestId('layout-configurator-pip-body') as Element;
+    act(() => {
+      body.dispatchEvent(pointerEvent('pointerdown', { clientX: 200, clientY: 200 }));
+    });
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointermove', { clientX: 210, clientY: 210 }));
+    });
+    expect(findByTestId('layout-configurator-pip-readout')).not.toBeNull();
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointerup', { clientX: 210, clientY: 210 }));
+    });
+    expect(findByTestId('layout-configurator-pip-readout')).toBeNull();
+  });
+
+  it('renders no chips and no equality ticks during a free drag with no snap engaged', () => {
+    // Snap disabled → no axis, aspect, or margin engagement possible. The
+    // readout group should still mount during drag, but it must contain no
+    // equality ticks and no body/edge chips.
+    render(
+      <LayoutConfigurator
+        layout={ROOMY_PIP}
+        aspect="9_16"
+        containerWidth={540}
+        containerHeight={960}
+        snapEnabledByDefault={false}
+        onChange={() => {}}
+      />,
+    );
+    const body = findByTestId('layout-configurator-pip-body') as Element;
+    act(() => {
+      body.dispatchEvent(pointerEvent('pointerdown', { clientX: 200, clientY: 200 }));
+    });
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointermove', { clientX: 213, clientY: 217 }));
+    });
+    const readout = findByTestId('layout-configurator-pip-readout');
+    expect(readout).not.toBeNull();
+    for (const side of ['left', 'right', 'top', 'bottom'] as const) {
+      expect(findByTestId(`layout-configurator-pip-equal-tick-${side}`)).toBeNull();
+      expect(findByTestId(`layout-configurator-pip-margin-${side}`)).toBeNull();
+    }
+    expect(findByTestId('layout-configurator-pip-body-chip')).toBeNull();
+    expect(findByTestId('layout-configurator-pip-aspect-chip')).toBeNull();
+  });
+
+  it('renders equal-margin ticks on the two involved sides when a pair engages', () => {
+    // On 9:16 (1080×1920), with inset {x:0.4, y:0.3, w:0.415, h:0.596}:
+    //   left_px=432, right_px=200, top_px=576, bottom_px=200.
+    // Only right=bottom matches within the 24px threshold; all other
+    // adjacent pairs and the centered-axis checks fall well outside it.
+    const pairEqual: PipLayout = {
+      mode: 'pip',
+      inset_source: 'map',
+      inset: { x: 0.4, y: 0.3, w: 0.415, h: 0.596 },
+      corner_radius: 0.012,
+    };
+    render(
+      <LayoutConfigurator
+        layout={pairEqual}
+        aspect="9_16"
+        containerWidth={540}
+        containerHeight={960}
+        snapEnabledByDefault
+        onChange={() => {}}
+      />,
+    );
+    const body = findByTestId('layout-configurator-pip-body') as Element;
+    act(() => {
+      body.dispatchEvent(pointerEvent('pointerdown', { clientX: 200, clientY: 600 }));
+    });
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointermove', { clientX: 201, clientY: 601 }));
+    });
+    expect(findByTestId('layout-configurator-pip-equal-tick-right')).not.toBeNull();
+    expect(findByTestId('layout-configurator-pip-equal-tick-bottom')).not.toBeNull();
+    expect(findByTestId('layout-configurator-pip-equal-tick-left')).toBeNull();
+    expect(findByTestId('layout-configurator-pip-equal-tick-top')).toBeNull();
+  });
+
+  it('renders an aspect label chip when an aspect-fit is engaged', () => {
+    // Square inset → 1:1 aspect snap engages on any drag. The aspect label
+    // chip renders inside the inset.
+    const squareInset: PipLayout = {
+      mode: 'pip',
+      inset_source: 'map',
+      inset: { x: 0.2, y: 0.35, w: 0.3, h: (0.3 * 1080) / 1920 },
+      corner_radius: 0.012,
+    };
+    render(
+      <LayoutConfigurator
+        layout={squareInset}
+        aspect="9_16"
+        containerWidth={540}
+        containerHeight={960}
+        snapEnabledByDefault
+        onChange={() => {}}
+      />,
+    );
+    const corner = findByTestId('layout-configurator-pip-corner-br-hit') as Element;
+    act(() => {
+      corner.dispatchEvent(pointerEvent('pointerdown', { clientX: 270, clientY: 540 }));
+    });
+    act(() => {
+      window.dispatchEvent(pointerEvent('pointermove', { clientX: 271, clientY: 541 }));
+    });
+    const chip = findByTestId('layout-configurator-pip-aspect-chip');
+    expect(chip).not.toBeNull();
+    const text = chip!.querySelector('text');
+    expect(text?.textContent).toBe('1:1');
+  });
+});
+
 describe('LayoutConfigurator — pointer listeners do not leak', () => {
   it('subsequent pointermove after pointerup does not emit onChange', () => {
     const onChange = vi.fn();

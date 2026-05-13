@@ -371,7 +371,8 @@ pub enum CompositeMode {
 ///       mask path — Split structurally has no corner radius.
 /// - final `format=yuv420p[vout]` to strip alpha for H.265 4:2:0 output,
 /// - `-map [vout] -map [aout]`, HEVC encoder spliced (`-c:v {name}` +
-///   `codec_args`), AAC audio (`-c:a aac -b:a 256k`), `+faststart`.
+///   `codec_args`), AAC audio (`-c:a aac -b:a {audio_bitrate_kbps}k`),
+///   `+faststart`.
 ///
 /// `frame_bytes_per_input == map_slot.w * map_slot.h * 4` — the
 /// orchestrator writes RGBA frames at the map slot dims.
@@ -390,7 +391,7 @@ pub fn build_composite_filtergraph(
     fps: u32,
     total_frames: u32,
     video_encoder: &EncoderChoice,
-    audio_encoder_args: &[&str],
+    audio_bitrate_kbps: u32,
     output_path: &Path,
 ) -> Result<FiltergraphPlan, ClipChainError> {
     assert!(
@@ -457,9 +458,11 @@ pub fn build_composite_filtergraph(
         argv.push(a.clone());
     }
 
-    // Audio codec — typically `["-c:a", "aac", "-b:a", "256k"]`.
-    for a in audio_encoder_args {
-        argv.push((*a).to_string());
+    // Audio codec — AAC at the requested bitrate. The composite branch
+    // (Channel A) is always AAC; the bitrate is the only knob the user
+    // controls (export-controls plan, Phase 3).
+    for a in aac_args(audio_bitrate_kbps) {
+        argv.push(a);
     }
 
     push(&mut argv, ["-movflags", "+faststart"]);
@@ -471,6 +474,19 @@ pub fn build_composite_filtergraph(
         // RGBA frames at the map slot dims (the rawvideo input geometry).
         frame_bytes_per_input: (map_slot.w as usize) * (map_slot.h as usize) * 4,
     })
+}
+
+/// Audio encoder flags for Channel A composites: `-c:a aac -b:a {kbps}k`.
+/// Replaces the old test-only `aac_args()` const. Production callers thread
+/// `audio_bitrate_kbps` from `RenderExportRequest`; the composite branch is
+/// the only consumer (Channel C uses pcm_s16le, Channel B has no audio).
+fn aac_args(kbps: u32) -> Vec<String> {
+    vec![
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        format!("{}k", kbps),
+    ]
 }
 
 fn build_composite_filter_complex(
@@ -1155,9 +1171,9 @@ mod tests {
         }
     }
 
-    fn aac_args() -> &'static [&'static str] {
-        &["-c:a", "aac", "-b:a", "256k"]
-    }
+    /// Default audio bitrate used by the composite tests — matches the
+    /// production default in `RenderExportRequest`.
+    const DEFAULT_AUDIO_KBPS: u32 = 256;
 
     fn fc_of(plan: &FiltergraphPlan) -> &str {
         plan.argv
@@ -1194,7 +1210,7 @@ mod tests {
             30,
             105,
             &hevc_choice(),
-            aac_args(),
+            DEFAULT_AUDIO_KBPS,
             out_path(),
         )
         .unwrap();
@@ -1291,7 +1307,7 @@ mod tests {
             30,
             105,
             &hevc_choice(),
-            aac_args(),
+            DEFAULT_AUDIO_KBPS,
             out_path(),
         )
         .unwrap();
@@ -1339,7 +1355,7 @@ mod tests {
             30,
             105,
             &hevc_choice(),
-            aac_args(),
+            DEFAULT_AUDIO_KBPS,
             out_path(),
         )
         .unwrap();
@@ -1373,7 +1389,7 @@ mod tests {
             30,
             105,
             &hevc_choice(),
-            aac_args(),
+            DEFAULT_AUDIO_KBPS,
             out_path(),
         )
         .unwrap();
@@ -1424,7 +1440,7 @@ mod tests {
                 30,
                 105,
                 &hevc_choice(),
-                aac_args(),
+                DEFAULT_AUDIO_KBPS,
                 out_path(),
             )
             .unwrap();
@@ -1460,7 +1476,7 @@ mod tests {
                 30,
                 60,
                 &hevc_choice(),
-                aac_args(),
+                DEFAULT_AUDIO_KBPS,
                 out_path(),
             )
             .unwrap();
@@ -1490,7 +1506,7 @@ mod tests {
             30,
             10,
             &hevc_choice(),
-            aac_args(),
+            DEFAULT_AUDIO_KBPS,
             out_path(),
         )
         .unwrap();
@@ -1524,7 +1540,7 @@ mod tests {
                 30,
                 60,
                 &hevc_choice(),
-                aac_args(),
+                DEFAULT_AUDIO_KBPS,
                 out_path(),
             )
             .unwrap();
@@ -1562,7 +1578,7 @@ mod tests {
             30,
             60,
             &hevc_choice(),
-            aac_args(),
+            DEFAULT_AUDIO_KBPS,
             out_path(),
         )
         .unwrap();

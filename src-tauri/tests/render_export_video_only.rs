@@ -27,8 +27,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
     default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
-    resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor, NormalizedRect, PipInsetSource,
-    RenderExportRequest,
+    resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, NormalizedRect,
+    OutputResolution, PipInsetSource, RenderExportRequest,
 };
 
 fn assert_ffmpeg_on_path() {
@@ -171,9 +171,10 @@ fn build_request(
             corner_radius,
         }
     };
-    let resolved = resolve_slots(&layout, aspect);
+    let resolved = resolve_slots(&layout, aspect, OutputResolution::default());
     let layout_descriptor = LayoutDescriptor {
         aspect,
+        resolution: OutputResolution::default(),
         layout,
         resolved,
     };
@@ -201,6 +202,8 @@ fn build_request(
         fps: 30,
         output_path: output_path.to_string(),
         layout: layout_descriptor,
+        codec_preference: CodecPreference::default(),
+        audio_bitrate_kbps: 256,
         project_state,
     }
 }
@@ -446,9 +449,10 @@ fn build_request_with_layout(
     aspect: AspectRatio,
     layout: LayoutConfig,
 ) -> RenderExportRequest {
-    let resolved = resolve_slots(&layout, aspect);
+    let resolved = resolve_slots(&layout, aspect, OutputResolution::default());
     let layout_descriptor = LayoutDescriptor {
         aspect,
+        resolution: OutputResolution::default(),
         layout,
         resolved,
     };
@@ -466,6 +470,8 @@ fn build_request_with_layout(
         fps: 30,
         output_path: output_path.to_string(),
         layout: layout_descriptor,
+        codec_preference: CodecPreference::default(),
+        audio_bitrate_kbps: 256,
         project_state,
     }
 }
@@ -524,7 +530,7 @@ async fn channel_c_full_matrix() {
                 pix_fmt,
             );
 
-            let dims = output_dims(aspect);
+            let dims = output_dims(aspect, OutputResolution::default());
             assert_eq!(
                 video["width"].as_u64().unwrap() as u32,
                 dims.w,

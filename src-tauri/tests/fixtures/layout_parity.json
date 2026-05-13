@@ -198,6 +198,104 @@
         "corner_radius_px": 0,
         "corner_radius_slot": "none"
       }
+    },
+    {
+      "name": "pip_9_16_p720_map_inset",
+      "aspect": "9_16",
+      "resolution": "720p",
+      "layout": {
+        "mode": "pip",
+        "inset_source": "map",
+        "inset": { "x": 0.65, "y": 0.78, "w": 0.32, "h": 0.18 },
+        "corner_radius": 0.012
+      },
+      "expected": {
+        "output": { "w": 720, "h": 1280 },
+        "map_slot": { "x": 468, "y": 998, "w": 230, "h": 230 },
+        "video_slot": { "x": 0, "y": 0, "w": 720, "h": 1280 },
+        "corner_radius_px": 9,
+        "corner_radius_slot": "map"
+      }
+    },
+    {
+      "name": "pip_16_9_p2160_video_inset",
+      "aspect": "16_9",
+      "resolution": "2160p",
+      "layout": {
+        "mode": "pip",
+        "inset_source": "video",
+        "inset": { "x": 0.05, "y": 0.05, "w": 0.3, "h": 0.3 },
+        "corner_radius": 0.02
+      },
+      "expected": {
+        "output": { "w": 3840, "h": 2160 },
+        "map_slot": { "x": 0, "y": 0, "w": 3840, "h": 2160 },
+        "video_slot": { "x": 192, "y": 108, "w": 1152, "h": 648 },
+        "corner_radius_px": 43,
+        "corner_radius_slot": "video"
+      }
+    },
+    {
+      "name": "split_4_5_p1440_video_top",
+      "aspect": "4_5",
+      "resolution": "1440p",
+      "layout": { "mode": "split", "video_side": "top", "divider": 0.5 },
+      "expected": {
+        "output": { "w": 1440, "h": 1800 },
+        "map_slot": { "x": 0, "y": 900, "w": 1440, "h": 900 },
+        "video_slot": { "x": 0, "y": 0, "w": 1440, "h": 900 },
+        "corner_radius_px": 0,
+        "corner_radius_slot": "none"
+      }
+    },
+    {
+      "name": "split_9_16_p720_video_top",
+      "aspect": "9_16",
+      "resolution": "720p",
+      "layout": { "mode": "split", "video_side": "top", "divider": 0.3 },
+      "expected": {
+        "output": { "w": 720, "h": 1280 },
+        "map_slot": { "x": 0, "y": 384, "w": 720, "h": 896 },
+        "video_slot": { "x": 0, "y": 0, "w": 720, "h": 384 },
+        "corner_radius_px": 0,
+        "corner_radius_slot": "none"
+      }
+    },
+    {
+      "name": "pip_16_9_p1440_map_inset",
+      "aspect": "16_9",
+      "resolution": "1440p",
+      "layout": {
+        "mode": "pip",
+        "inset_source": "map",
+        "inset": { "x": 0.72, "y": 0.68, "w": 0.25, "h": 0.27 },
+        "corner_radius": 0.012
+      },
+      "expected": {
+        "output": { "w": 2560, "h": 1440 },
+        "map_slot": { "x": 1843, "y": 979, "w": 640, "h": 389 },
+        "video_slot": { "x": 0, "y": 0, "w": 2560, "h": 1440 },
+        "corner_radius_px": 17,
+        "corner_radius_slot": "map"
+      }
+    },
+    {
+      "name": "pip_4_5_p2160_video_inset",
+      "aspect": "4_5",
+      "resolution": "2160p",
+      "layout": {
+        "mode": "pip",
+        "inset_source": "video",
+        "inset": { "x": 0.25, "y": 0.3, "w": 0.5, "h": 0.4 },
+        "corner_radius": 0.05
+      },
+      "expected": {
+        "output": { "w": 2160, "h": 2700 },
+        "map_slot": { "x": 0, "y": 0, "w": 2160, "h": 2700 },
+        "video_slot": { "x": 540, "y": 810, "w": 1080, "h": 1080 },
+        "corner_radius_px": 108,
+        "corner_radius_slot": "video"
+      }
     }
   ]
 }

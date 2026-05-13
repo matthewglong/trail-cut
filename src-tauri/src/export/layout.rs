@@ -11,6 +11,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::export::resolution::OutputResolution;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AspectRatio {
     #[serde(rename = "9_16")]
@@ -27,12 +29,22 @@ pub struct OutputDimensions {
     pub h: u32,
 }
 
-/// Output pixel dimensions per aspect, fixed per LAYOUT.md §2.
-pub fn output_dims(aspect: AspectRatio) -> OutputDimensions {
+/// Output pixel dimensions per aspect and resolution.
+///
+/// The `resolution` selects the short edge (720/1080/1440/2160); the long
+/// edge derives from the aspect. All twelve `(aspect, resolution)` results
+/// are even on both axes, which yuv420p compositing requires.
+pub fn output_dims(aspect: AspectRatio, resolution: OutputResolution) -> OutputDimensions {
+    let short: u32 = match resolution {
+        OutputResolution::P720 => 720,
+        OutputResolution::P1080 => 1080,
+        OutputResolution::P1440 => 1440,
+        OutputResolution::P2160 => 2160,
+    };
     match aspect {
-        AspectRatio::NineSixteen => OutputDimensions { w: 1080, h: 1920 },
-        AspectRatio::FourFive => OutputDimensions { w: 1080, h: 1350 },
-        AspectRatio::SixteenNine => OutputDimensions { w: 1920, h: 1080 },
+        AspectRatio::NineSixteen => OutputDimensions { w: short, h: short * 16 / 9 },
+        AspectRatio::FourFive => OutputDimensions { w: short, h: short * 5 / 4 },
+        AspectRatio::SixteenNine => OutputDimensions { w: short * 16 / 9, h: short },
     }
 }
 
@@ -121,6 +133,12 @@ pub struct SlotResolution {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LayoutDescriptor {
     pub aspect: AspectRatio,
+    /// Output resolution. Phase 1 scaffolding — round-trips through serde
+    /// but is **not** consumed by `output_dims` / `resolve_slots` yet. Phase 4
+    /// makes those helpers resolution-aware and threads this value into them.
+    /// `#[serde(default)]` keeps pre-controls wire data deserializing cleanly.
+    #[serde(default)]
+    pub resolution: OutputResolution,
     pub layout: LayoutConfig,
     pub resolved: SlotResolution,
 }
@@ -193,8 +211,12 @@ fn split_slots(side: SplitSide, divider: f64, out: OutputDimensions) -> (PixelRe
 /// Out-of-range inputs produce broken slots — the configurator UI (110) owns
 /// validation. See task 050's "Numeric clamping at the type boundary
 /// (intentionally absent)" note.
-pub fn resolve_slots(layout: &LayoutConfig, aspect: AspectRatio) -> SlotResolution {
-    let output = output_dims(aspect);
+pub fn resolve_slots(
+    layout: &LayoutConfig,
+    aspect: AspectRatio,
+    resolution: OutputResolution,
+) -> SlotResolution {
+    let output = output_dims(aspect, resolution);
     match layout {
         LayoutConfig::Pip {
             inset_source,
@@ -295,7 +317,11 @@ pub fn legal_split_sides(aspect: AspectRatio) -> &'static [SplitSide] {
 /// operates on. The export-time validator does *not* call this — bad
 /// descriptors are rejected, not silently clamped. Pure; always returns a
 /// fresh value.
-pub fn clamp_layout(layout: &LayoutConfig, aspect: AspectRatio) -> LayoutConfig {
+pub fn clamp_layout(
+    layout: &LayoutConfig,
+    aspect: AspectRatio,
+    resolution: OutputResolution,
+) -> LayoutConfig {
     match layout {
         LayoutConfig::Split { video_side, divider } => LayoutConfig::Split {
             video_side: *video_side,
@@ -306,7 +332,7 @@ pub fn clamp_layout(layout: &LayoutConfig, aspect: AspectRatio) -> LayoutConfig 
             inset,
             corner_radius,
         } => {
-            let out = output_dims(aspect);
+            let out = output_dims(aspect, resolution);
             let min_w = 1.0 / out.w as f64;
             let min_h = 1.0 / out.h as f64;
             let w = clamp_f64(inset.w, min_w, 1.0);
@@ -329,5 +355,81 @@ fn clamp_f64(n: f64, lo: f64, hi: f64) -> f64 {
         hi
     } else {
         n
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Output-dimension math per the Phase 4 short-edge table (export-controls
+    // plan). Every (aspect, resolution) pair must produce even W and H so the
+    // composite filtergraph's yuv420p chroma subsampling stays well-defined.
+
+    #[test]
+    fn output_dims_9_16_p720() {
+        assert_eq!(
+            output_dims(AspectRatio::NineSixteen, OutputResolution::P720),
+            OutputDimensions { w: 720, h: 1280 },
+        );
+    }
+
+    #[test]
+    fn output_dims_4_5_p2160() {
+        assert_eq!(
+            output_dims(AspectRatio::FourFive, OutputResolution::P2160),
+            OutputDimensions { w: 2160, h: 2700 },
+        );
+    }
+
+    #[test]
+    fn output_dims_16_9_p1440() {
+        assert_eq!(
+            output_dims(AspectRatio::SixteenNine, OutputResolution::P1440),
+            OutputDimensions { w: 2560, h: 1440 },
+        );
+    }
+
+    #[test]
+    fn output_dims_default_resolution_preserves_legacy_canvas() {
+        // P1080 must match the pre-Phase-4 hard-coded table so existing
+        // exports keep producing the same dimensions when no resolution is
+        // explicitly chosen (LayoutDescriptor.resolution defaults to P1080).
+        assert_eq!(
+            output_dims(AspectRatio::NineSixteen, OutputResolution::P1080),
+            OutputDimensions { w: 1080, h: 1920 },
+        );
+        assert_eq!(
+            output_dims(AspectRatio::FourFive, OutputResolution::P1080),
+            OutputDimensions { w: 1080, h: 1350 },
+        );
+        assert_eq!(
+            output_dims(AspectRatio::SixteenNine, OutputResolution::P1080),
+            OutputDimensions { w: 1920, h: 1080 },
+        );
+    }
+
+    #[test]
+    fn output_dims_all_combinations_are_even() {
+        // yuv420p requires even W and H. If the short-edge / long-edge math
+        // ever produces an odd dimension, FFmpeg will reject the canvas.
+        let aspects = [
+            AspectRatio::NineSixteen,
+            AspectRatio::FourFive,
+            AspectRatio::SixteenNine,
+        ];
+        let resolutions = [
+            OutputResolution::P720,
+            OutputResolution::P1080,
+            OutputResolution::P1440,
+            OutputResolution::P2160,
+        ];
+        for aspect in aspects {
+            for resolution in resolutions {
+                let d = output_dims(aspect, resolution);
+                assert_eq!(d.w % 2, 0, "{:?} {:?} → w={} is odd", aspect, resolution, d.w);
+                assert_eq!(d.h % 2, 0, "{:?} {:?} → h={} is odd", aspect, resolution, d.h);
+            }
+        }
     }
 }

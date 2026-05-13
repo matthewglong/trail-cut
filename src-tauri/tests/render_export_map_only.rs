@@ -26,7 +26,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 use trail_cut_lib::export::{
     default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
-    resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor, RenderExportRequest,
+    resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, OutputResolution,
+    RenderExportRequest,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -102,9 +103,10 @@ fn build_request(output_path: &str) -> RenderExportRequest {
 
     let aspect = AspectRatio::NineSixteen;
     let layout = default_layout(aspect);
-    let resolved = resolve_slots(&layout, aspect);
+    let resolved = resolve_slots(&layout, aspect, OutputResolution::default());
     let layout_descriptor = LayoutDescriptor {
         aspect,
+        resolution: OutputResolution::default(),
         layout,
         resolved,
     };
@@ -117,6 +119,8 @@ fn build_request(output_path: &str) -> RenderExportRequest {
         fps: 30,
         output_path: output_path.to_string(),
         layout: layout_descriptor,
+        codec_preference: CodecPreference::default(),
+        audio_bitrate_kbps: 256,
         project_state: setup_value,
     }
 }
@@ -305,9 +309,10 @@ fn build_request_with_layout(
         obj.remove("fps");
     }
 
-    let resolved = resolve_slots(&layout, aspect);
+    let resolved = resolve_slots(&layout, aspect, OutputResolution::default());
     let layout_descriptor = LayoutDescriptor {
         aspect,
+        resolution: OutputResolution::default(),
         layout,
         resolved,
     };
@@ -316,6 +321,8 @@ fn build_request_with_layout(
         fps: 30,
         output_path: output_path.to_string(),
         layout: layout_descriptor,
+        codec_preference: CodecPreference::default(),
+        audio_bitrate_kbps: 256,
         project_state: setup_value,
     }
 }
@@ -379,7 +386,7 @@ async fn channel_b_full_matrix() {
                 video["pix_fmt"],
             );
 
-            let dims = output_dims(aspect);
+            let dims = output_dims(aspect, OutputResolution::default());
             assert_eq!(
                 video["width"].as_u64().unwrap() as u32,
                 dims.w,

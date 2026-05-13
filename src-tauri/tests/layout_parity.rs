@@ -12,11 +12,14 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use trail_cut_lib::export::layout::{resolve_slots, AspectRatio, LayoutConfig, SlotResolution};
+use trail_cut_lib::export::resolution::OutputResolution;
 
 #[derive(Debug, Deserialize)]
 struct FixtureCase {
     name: String,
     aspect: AspectRatio,
+    #[serde(default)]
+    resolution: OutputResolution,
     layout: LayoutConfig,
     expected: SlotResolution,
 }
@@ -50,7 +53,7 @@ fn resolve_slots_matches_shared_fixture() {
         "fixture must contain at least one case"
     );
     for case in &fixture.cases {
-        let got = resolve_slots(&case.layout, case.aspect);
+        let got = resolve_slots(&case.layout, case.aspect, case.resolution);
         assert_eq!(got, case.expected, "case {} resolved to {:?}", case.name, got);
     }
 }

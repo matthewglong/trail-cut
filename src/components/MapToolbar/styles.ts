@@ -109,4 +109,54 @@ export const styles: Record<string, React.CSSProperties> = {
     cursor: 'not-allowed',
   },
 
+  // Wrapper around the bar + the optional second-row overflow. The second row
+  // is absolutely positioned, anchored to this root's top-right corner just
+  // below the bar — so we need a positioning context here.
+  root: {
+    position: 'relative' as const,
+  },
+
+  // One item slot — separator + group. Rendered identically in the bar, the
+  // wrapped overflow row, and the hidden measurement mirror so the mirror's
+  // offsetWidth equals the item's footprint in the bar exactly.
+  itemWrapper: {
+    display: 'flex',
+    alignItems: 'center',
+    flexShrink: 0,
+    gap: '4px',
+  },
+
+  // Wrapped overflow row — floats below the bar, anchored top-right, over the
+  // content beneath. Same tint as the bar; bottom-left rounded so it reads as
+  // a panel descending from the bar.
+  overflowRow: {
+    position: 'absolute' as const,
+    top: '100%',
+    right: 0,
+    zIndex: 5,
+    display: 'flex',
+    alignItems: 'center',
+    height: '40px',
+    padding: '0 12px',
+    gap: '4px',
+    borderBottomLeftRadius: '10px',
+    boxShadow: '0 6px 16px rgba(0, 0, 0, 0.35)',
+  },
+
+  // Hidden measurement mirror — every item rendered off-screen at its natural
+  // width so the visible bar can decide how many fit. visibility:hidden +
+  // pointer-events:none keeps it invisible and inert; position:fixed escapes
+  // the parent's overflow:hidden without affecting layout.
+  mirror: {
+    position: 'fixed' as const,
+    top: -9999,
+    left: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    visibility: 'hidden' as const,
+    pointerEvents: 'none' as const,
+    whiteSpace: 'nowrap' as const,
+  },
+
 };

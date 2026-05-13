@@ -46,8 +46,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
     default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
-    resolve_slots, AspectRatio, LayoutConfig, LayoutDescriptor, NormalizedRect, PipInsetSource,
-    RenderExportRequest, SplitSide,
+    resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, NormalizedRect,
+    OutputResolution, PipInsetSource, RenderExportRequest, SplitSide,
 };
 
 // --- env / fixture helpers --------------------------------------------------
@@ -311,9 +311,10 @@ fn build_request(
     layout: LayoutConfig,
 ) -> RenderExportRequest {
     let aspect = AspectRatio::NineSixteen;
-    let resolved = resolve_slots(&layout, aspect);
+    let resolved = resolve_slots(&layout, aspect, OutputResolution::default());
     let layout_descriptor = LayoutDescriptor {
         aspect,
+        resolution: OutputResolution::default(),
         layout,
         resolved,
     };
@@ -345,6 +346,8 @@ fn build_request(
         fps: 30,
         output_path: output_path.to_string(),
         layout: layout_descriptor,
+        codec_preference: CodecPreference::default(),
+        audio_bitrate_kbps: 256,
         project_state,
     }
 }
@@ -409,7 +412,7 @@ async fn composite_pip_map_inset_default_layout() {
 
     // Default 9:16: PipInsetSource::Map with map as bottom-right inset.
     let layout = default_layout(AspectRatio::NineSixteen);
-    let resolved = resolve_slots(&layout, AspectRatio::NineSixteen);
+    let resolved = resolve_slots(&layout, AspectRatio::NineSixteen, OutputResolution::default());
     let req = build_request(
         output_path.to_string_lossy().as_ref(),
         &clip_a,
@@ -657,6 +660,7 @@ fn build_request_with_aspect(
     let resolved = resolve_slots(&layout, aspect);
     let layout_descriptor = LayoutDescriptor {
         aspect,
+        resolution: OutputResolution::default(),
         layout,
         resolved,
     };
@@ -686,6 +690,8 @@ fn build_request_with_aspect(
         fps: 30,
         output_path: output_path.to_string(),
         layout: layout_descriptor,
+        codec_preference: CodecPreference::default(),
+        audio_bitrate_kbps: 256,
         project_state,
     }
 }

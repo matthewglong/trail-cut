@@ -18,6 +18,7 @@ import {
   synthesizeLayoutForMode,
   type AspectRatio,
   type LayoutConfig,
+  type OutputResolution,
   type SlotResolution,
   type SplitSide,
 } from '../layout';
@@ -26,6 +27,9 @@ import rawFixture from '../../../src-tauri/tests/fixtures/layout_parity.json';
 interface FixtureCase {
   name: string;
   aspect: AspectRatio;
+  /** Optional. Cases that omit it test the default-resolution path (1080p);
+   *  cases that set it exercise the Phase 4 resolution-aware code. */
+  resolution?: OutputResolution;
   layout: LayoutConfig;
   expected: SlotResolution;
 }
@@ -40,7 +44,11 @@ const fixture = rawFixture as unknown as Fixture;
 describe('resolveSlots — shared parity fixture', () => {
   for (const c of fixture.cases) {
     it(c.name, () => {
-      const got = resolveSlots(c.layout, c.aspect);
+      // Phase 5: cases now optionally carry a `resolution` field (mirrors the
+      // Rust fixture loader's `#[serde(default)]`). Pre-Phase-5 cases omit it
+      // and exercise the 1080p default path; the new non-1080p cases pin the
+      // resolution-aware math against the same fixture.
+      const got = resolveSlots(c.layout, c.aspect, c.resolution);
       expect(got).toEqual(c.expected);
     });
   }

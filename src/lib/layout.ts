@@ -8,16 +8,49 @@
 
 export type AspectRatio = '9_16' | '16_9' | '4_5';
 
+/** Output video resolution. Phase 1 scaffolding — rides on `LayoutDescriptor`
+ *  (mirrors `OutputResolution` in `src-tauri/src/export/resolution.rs`). The
+ *  pipeline does not yet consume the value; Phase 4 wires it into
+ *  `outputDims` / `resolveSlots` to make the canvas size variable. The string
+ *  tags match the Rust enum's `#[serde(rename = "Np")]` shape. */
+export type OutputResolution = '720p' | '1080p' | '1440p' | '2160p';
+
 export interface OutputDimensions {
   w: number;
   h: number;
 }
 
-/** Output pixel dimensions per aspect, fixed per LAYOUT.md §2. */
+/** Output pixel dimensions per aspect and resolution. The short edge is
+ *  determined by `resolution` (720/1080/1440/2160); the long edge derives from
+ *  the aspect. All twelve `(aspect, resolution)` results are even on both
+ *  axes — required by yuv420p compositing. Mirror of `output_dims` in
+ *  `src-tauri/src/export/layout.rs`. */
+export function outputDims(
+  aspect: AspectRatio,
+  resolution: OutputResolution = '1080p',
+): OutputDimensions {
+  const short =
+    resolution === '720p' ? 720
+    : resolution === '1080p' ? 1080
+    : resolution === '1440p' ? 1440
+    : 2160;
+  switch (aspect) {
+    case '9_16':
+      return { w: short, h: Math.trunc((short * 16) / 9) };
+    case '4_5':
+      return { w: short, h: Math.trunc((short * 5) / 4) };
+    case '16_9':
+      return { w: Math.trunc((short * 16) / 9), h: short };
+  }
+}
+
+/** Legacy 1080p table preserved for UI callers (layout configurator preview,
+ *  channel schematic) that show the canonical layout shape, not the export
+ *  pixels. New code should call `outputDims(aspect, resolution)`. */
 export const OUTPUT_DIMS: Record<AspectRatio, OutputDimensions> = {
-  '9_16': { w: 1080, h: 1920 },
-  '4_5': { w: 1080, h: 1350 },
-  '16_9': { w: 1920, h: 1080 },
+  '9_16': outputDims('9_16', '1080p'),
+  '4_5': outputDims('4_5', '1080p'),
+  '16_9': outputDims('16_9', '1080p'),
 };
 
 /** Normalized rect — frame is `(0,0)..(1,1)` regardless of aspect. */
@@ -87,9 +120,14 @@ export interface SlotResolution {
 
 /** Wire payload consumed by `render_export` (Tauri command shipping in 060/090).
  *  Carries both the user's raw config (for archival round-trip) and resolved
- *  pixel rects; Rust re-runs `resolve_slots` and asserts equality. */
+ *  pixel rects; Rust re-runs `resolve_slots` and asserts equality.
+ *
+ *  `resolution` is Phase 1 scaffolding (export-controls plan): the field
+ *  round-trips through serde but is **not** consumed by `resolveSlots` /
+ *  `output_dims` yet. Phase 4 makes the canvas size variable per resolution. */
 export interface LayoutDescriptor {
   aspect: AspectRatio;
+  resolution: OutputResolution;
   layout: LayoutConfig;
   resolved: SlotResolution;
 }
@@ -161,8 +199,9 @@ function splitSlots(
 export function resolveSlots(
   layout: LayoutConfig,
   aspect: AspectRatio,
+  resolution: OutputResolution = '1080p',
 ): SlotResolution {
-  const output = OUTPUT_DIMS[aspect];
+  const output = outputDims(aspect, resolution);
   if (layout.mode === 'pip') {
     const { map_slot, video_slot } = pipSlots(layout, output);
     return {
@@ -256,12 +295,13 @@ export function legalSplitSides(aspect: AspectRatio): readonly SplitSide[] {
 export function clampLayout(
   layout: LayoutConfig,
   aspect: AspectRatio,
+  resolution: OutputResolution = '1080p',
 ): LayoutConfig {
   if (layout.mode === 'split') {
     const divider = clamp(layout.divider, 0.05, 0.95);
     return { mode: 'split', video_side: layout.video_side, divider };
   }
-  const out = OUTPUT_DIMS[aspect];
+  const out = outputDims(aspect, resolution);
   // Clamp the rect into the frame: bound w/h to (0, 1], clamp x/y so x+w<=1
   // and y+h<=1. The minimum width/height (1px-equivalent in the output frame)
   // keeps `resolveSlots` from producing zero-area inset rects.

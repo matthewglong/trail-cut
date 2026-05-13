@@ -175,8 +175,10 @@
     background: var(--surface-raised);
     border: 1px solid var(--border);
     border-radius: var(--r-base);
-    overflow: hidden;
+    overflow: visible;
   }
+  .order-head { border-radius: var(--r-base) var(--r-base) 0 0; }
+  .order-row:last-child .ratio-cell { border-bottom-left-radius: var(--r-base); }
   .order-head {
     display: grid;
     grid-template-columns: 90px 1fr 1fr 1fr;
@@ -191,6 +193,7 @@
     text-transform: uppercase;
     color: var(--fg-dim);
     font-weight: 700;
+    text-align: center;
   }
   .order-head .cell + .cell { border-left: 1px solid var(--border); }
 
@@ -226,28 +229,131 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 14px;
-    cursor: pointer;
+    gap: 8px;
+    padding: 12px;
     background: transparent;
-    border: 0;
-    transition: background-color 120ms ease;
+    min-height: 52px;
   }
-  .check:hover { background: var(--surface-pressed); }
-  .check.on { background: var(--accent-tint); }
-  .check .box {
-    width: 18px; height: 18px;
+
+  /* + add icon */
+  .add {
     flex-shrink: 0;
-    border: 1px solid var(--border-strong);
-    border-radius: 2px;
-    background: var(--surface);
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+    color: var(--fg-dim);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: transparent;
-    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+    padding: 0;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, border-style 120ms ease, background-color 120ms ease;
   }
-  .check .box svg { width: 11px; height: 11px; }
-  .check.on .box { background: var(--accent); border-color: var(--accent); color: #0e1416; }
+  .add:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    border-style: solid;
+    background: rgba(188, 237, 9, 0.06);
+  }
+  .add svg { width: 11px; height: 11px; }
+  .add.hidden { display: none; }
+
+  /* quality chip (acts as dropdown) */
+  .chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 5px 8px 5px 10px;
+    border-radius: 2px;
+    border: 1px solid rgba(188, 237, 9, 0.55);
+    background: rgba(188, 237, 9, 0.14);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(188, 237, 9, 0.18) inset;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    text-transform: uppercase;
+    line-height: 1;
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip .caret {
+    width: 8px; height: 8px;
+    opacity: 0.7;
+    transition: transform 140ms ease, opacity 120ms ease;
+  }
+  .chip:hover .caret { opacity: 1; }
+  .chip.open .caret { transform: rotate(180deg); }
+
+  /* hover-X to remove a chip */
+  .chip .x {
+    position: absolute;
+    top: -6px; right: -6px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    color: var(--fg-muted);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
+  }
+  .chip:hover .x,
+  .chip.demo-x .x { display: inline-flex; }
+  .chip .x:hover {
+    color: var(--accent-warm);
+    border-color: var(--accent-warm);
+    transform: scale(1.08);
+  }
+  .chip .x svg { width: 7px; height: 7px; }
+
+  /* chip dropdown menu */
+  .chip-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 96px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-base);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    display: none;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .chip.open .chip-menu { display: block; }
+  .chip-menu .opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px 6px 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip-menu .opt:hover { background: var(--surface-pressed); color: var(--fg); }
+  .chip-menu .opt.current { color: var(--accent); }
+  .chip-menu .opt .tick {
+    flex-shrink: 0;
+    width: 10px; height: 10px;
+    opacity: 0;
+  }
+  .chip-menu .opt.current .tick { opacity: 1; }
 
   /* ============ FILENAME ============ */
   .name-input {
@@ -584,6 +690,100 @@
     font-size: 10px;
     margin-right: 6px;
   }
+
+  /* ============ SECONDARY (CONFIG) MODAL ============ */
+  .modal.compact { width: 480px; }
+
+  .opt-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .opt-row button {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 8px 14px;
+    border-radius: var(--r-base);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--fg-muted);
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    text-transform: uppercase;
+    line-height: 1;
+    transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .opt-row button:hover { color: var(--fg); border-color: var(--fg-muted); }
+  .opt-row button.on {
+    color: var(--accent);
+    background: rgba(188, 237, 9, 0.14);
+    border-color: rgba(188, 237, 9, 0.55);
+    box-shadow: 0 0 0 1px rgba(188, 237, 9, 0.18) inset;
+  }
+  .opt-row button.on:hover { border-color: var(--accent); }
+  .opt-row button:disabled,
+  .opt-row button.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .opt-meta {
+    margin-top: 10px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-dim);
+    letter-spacing: 0.04em;
+  }
+  .opt-meta .src { color: var(--fg-muted); }
+  .opt-meta .sep { color: var(--fg-faint); margin: 0 6px; }
+
+  /* future-options placeholder */
+  .future {
+    padding: 12px 14px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-base);
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    line-height: 1.7;
+  }
+  .future .k {
+    display: inline-block;
+    color: var(--fg-muted);
+    font-weight: 700;
+    margin-right: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 9.5px;
+  }
+  .future .item {
+    display: inline-block;
+    margin-right: 12px;
+    color: var(--fg-muted);
+  }
+  .future .item::before {
+    content: "·";
+    color: var(--fg-faint);
+    margin-right: 6px;
+  }
+  .future .item:first-of-type::before { content: ""; margin-right: 0; }
+
+  /* floating overlay form of the secondary modal */
+  .config-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 100;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 80px 32px 32px;
+    overflow: auto;
+  }
+  .config-overlay.open { display: flex; }
+  .config-overlay .modal { margin: 0; }
 </style>
 </head>
 <body>
@@ -594,8 +794,9 @@
     <span class="brand">TRAILCUT<span class="dot">●</span>EXPORT</span>
     <nav>
       <a href="#state-selection" class="active">01 · Configure</a>
-      <a href="#state-rendering">02 · Rendering</a>
-      <a href="#state-done">03 · Complete</a>
+      <a href="#state-edit">02 · Edit export</a>
+      <a href="#state-rendering">03 · Rendering</a>
+      <a href="#state-done">04 · Complete</a>
     </nav>
   </div>
 
@@ -625,57 +826,77 @@
           <div class="order-row">
             <div class="ratio-cell"><span class="ratio">16:9</span></div>
             <div class="check-cell">
-              <button class="check on">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="16:9 composite">
+                <div class="chip" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <div class="chip" data-q="4k" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 4K at 30 fps">
+                  <span class="lbl">4K·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
             <div class="check-cell">
-              <button class="check">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="16:9 map only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
             <div class="check-cell">
-              <button class="check">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="16:9 video only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
           </div>
 
           <div class="order-row">
             <div class="ratio-cell"><span class="ratio">4:5</span></div>
             <div class="check-cell">
-              <button class="check on">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="4:5 composite">
+                <div class="chip" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
             <div class="check-cell">
-              <button class="check on">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="4:5 map only">
+                <div class="chip demo-x" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
             <div class="check-cell">
-              <button class="check">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="4:5 video only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
           </div>
 
           <div class="order-row">
             <div class="ratio-cell"><span class="ratio">9:16</span></div>
             <div class="check-cell">
-              <button class="check on">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="9:16 composite">
+                <div class="chip" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
             <div class="check-cell">
-              <button class="check">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="9:16 map only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
             <div class="check-cell">
-              <button class="check">
-                <span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg></span>
-              </button>
+              <div class="check" aria-label="9:16 video only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
             </div>
           </div>
         </div>
@@ -712,17 +933,91 @@
 
     <footer class="modal-footer">
       <div class="summary">
-        <div class="l1"><strong>4 files</strong> · ≈ 232 MB</div>
-        <div class="l2">Estimated render ≈ 2 min 41 s</div>
+        <div class="l1"><strong>5 files</strong> · ≈ 528 MB <span style="color: var(--fg-faint);">·</span> <span style="color: var(--fg-muted);">4× 1080</span> <span style="color: var(--fg-faint);">·</span> <span style="color: var(--fg-muted);">1× 4K</span></div>
+        <div class="l2">Estimated render ≈ 5 min 56 s</div>
       </div>
       <button class="btn btn-ghost">Cancel</button>
-      <button class="btn btn-primary">Render 4 files</button>
+      <button class="btn btn-primary">Render 5 files</button>
     </footer>
   </section>
 
   <div class="note">
     <span class="k">IA</span>
-    Three rows, one per aspect ratio. Each row carries the three output checkboxes. Empty rows produce zero jobs; ticked cells produce one job each. By default the export drops into an auto-named timestamped subfolder, so the user only needs to pick a parent location once.
+    Empty cells show a dashed <span style="color: var(--accent);">+</span> — click it to open the secondary config modal scoped to that aspect × channel slot. Each export lives as a chip summarising its key settings (here, <code style="color: var(--accent);">quality·fps</code>). Clicking a chip reopens that same modal in edit mode; hovering reveals a small <span style="color: var(--accent-warm);">✕</span> to delete. The grid stays a clean overview matrix while per-export depth lives one layer in.
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 1B — EDIT EXPORT ========== -->
+  <!-- ============================================== -->
+  <section id="state-edit" class="modal compact" aria-label="Configure export">
+    <header class="modal-header">
+      <h2 class="modal-title">
+        Configure export
+        <span class="sep">/</span>
+        <span class="crumb">16:9 · Video only</span>
+      </h2>
+      <button class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <div>
+        <div class="field-label">
+          <span class="k">Quality</span>
+          <span class="rule"></span>
+        </div>
+        <div class="opt-row" data-field="quality">
+          <button class="on" data-v="1080">1080</button>
+          <button data-v="4k">4K</button>
+        </div>
+        <div class="opt-meta">Source <span class="src">3840×2160</span><span class="sep">·</span>downsample on export</div>
+      </div>
+
+      <div>
+        <div class="field-label">
+          <span class="k">Frame rate</span>
+          <span class="rule"></span>
+        </div>
+        <div class="opt-row" data-field="fps">
+          <button data-v="24">24</button>
+          <button class="on" data-v="30">30</button>
+          <button data-v="60">60</button>
+        </div>
+        <div class="opt-meta">Source <span class="src">30 fps</span><span class="sep">·</span>no resampling at 30</div>
+      </div>
+
+      <div>
+        <div class="field-label">
+          <span class="k">Coming later</span>
+          <span class="rule"></span>
+        </div>
+        <div class="future">
+          <span class="k">soon</span>
+          <span class="item">codec</span>
+          <span class="item">color profile</span>
+          <span class="item">bitrate</span>
+          <span class="item">HDR</span>
+          <span class="item">stabilization passthrough</span>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>1080 · 30 fps</strong> · ProRes 4444</div>
+        <div class="l2">≈ 54 MB<span class="sep">·</span>est 0:38 render</div>
+      </div>
+      <button class="btn btn-ghost">Cancel</button>
+      <button class="btn btn-primary">Add export</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">Edit</span>
+    Scoped to one cell. Opens via <span style="color: var(--accent);">+</span> (create — "Add export" CTA) or by clicking an existing chip (edit — CTA becomes "Save changes"). Source-resolution and source-framerate hints sit beneath each option row so the user can pick informed defaults. New configuration axes (codec, color profile, bitrate, HDR…) slot into this same body without disturbing the configure-grid IA.
   </div>
 
   <!-- ============================================== -->
@@ -742,12 +1037,12 @@
         <span class="pulse"></span>
         <div>
           <div class="label">Rendering</div>
-          <div class="main">Job <strong>2 of 4</strong> · 16:9 composite</div>
+          <div class="main">Job <strong>2 of 5</strong> · 16:9 composite <span style="color: var(--fg-muted);">·</span> <span style="color: var(--accent);">1080</span></div>
         </div>
         <div class="meta">
           <span class="k">elapsed</span><span>00:54</span>
           <span class="sep">·</span>
-          <span class="k">eta</span><span>1:47</span>
+          <span class="k">eta</span><span>5:02</span>
         </div>
       </div>
 
@@ -756,7 +1051,7 @@
           <span class="status">
             <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__composite<span class="ext">.mp4</span></span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__1080__composite<span class="ext">.mp4</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 100%;"></div></div>
             <span class="pct">100% · 34.1 s</span>
@@ -771,7 +1066,7 @@
               <path d="M13.5 8a5.5 5.5 0 0 0-5.5-5.5" stroke-linecap="round"/>
             </svg>
           </span>
-          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__composite<span class="ext">.mp4</span></span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__1080__composite<span class="ext">.mp4</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 42%;"></div></div>
             <span class="pct">42% · 412 / 980 frames</span>
@@ -783,7 +1078,7 @@
           <span class="status">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__map-only<span class="ext">.mov</span></span>
+          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__1080__map-only<span class="ext">.mov</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 0%;"></div></div>
             <span class="pct">queued</span>
@@ -795,12 +1090,24 @@
           <span class="status">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__composite<span class="ext">.mp4</span></span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__1080__composite<span class="ext">.mp4</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 0%;"></div></div>
             <span class="pct">queued</span>
           </div>
           <span class="eta">est 0:42</span>
+        </div>
+
+        <div class="job queued">
+          <span class="status">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__4k__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 0%;"></div></div>
+            <span class="pct">queued</span>
+          </div>
+          <span class="eta">est 3:00</span>
         </div>
       </div>
 
@@ -808,8 +1115,8 @@
 
     <footer class="modal-footer">
       <div class="summary">
-        <div class="l1"><strong>1 done</strong> · 1 rendering · 2 queued</div>
-        <div class="l2">Elapsed 00:54<span class="sep">·</span>Total ETA ≈ 2:41</div>
+        <div class="l1"><strong>1 done</strong> · 1 rendering · 3 queued</div>
+        <div class="l2">Elapsed 00:54<span class="sep">·</span>Total ETA ≈ 5:56</div>
       </div>
       <button class="btn btn-ghost">Hide</button>
       <button class="btn btn-danger">Cancel render</button>
@@ -818,7 +1125,7 @@
 
   <div class="note">
     <span class="k">Render</span>
-    The same body slot transforms into a job list — one row per ticked output cell, in the order they were checked. A small render banner names the file currently encoding so users always know what's writing.
+    Job order: 1080 passes first in cell-order, then 4K passes (smaller/faster jobs first so the user gets feedback early). The banner names the file currently encoding, including its resolution. Each pill in the configure grid produced one row here.
   </div>
 
   <!-- ============================================== -->
@@ -839,8 +1146,8 @@
           <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
         </span>
         <div>
-          <div class="title">4 files exported</div>
-          <div class="sub">to <strong>~/Movies/TrailCut/Cascade Pass Traverse 2</strong> · <strong>238.0 MB</strong> · 02:38 total</div>
+          <div class="title">5 files exported</div>
+          <div class="sub">to <strong>~/Movies/TrailCut/Cascade Pass Traverse 2</strong> · <strong>525.0 MB</strong> · 05:55 total</div>
         </div>
         <div class="right">
           <button class="btn">
@@ -855,10 +1162,10 @@
           <span class="status">
             <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__composite<span class="ext">.mp4</span></span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__1080__composite<span class="ext">.mp4</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 100%;"></div></div>
-            <span class="pct">34.1 s · H.264</span>
+            <span class="pct">34.1 s · HEVC</span>
           </div>
           <span class="eta">53.2 MB</span>
         </div>
@@ -866,10 +1173,10 @@
           <span class="status">
             <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__composite<span class="ext">.mp4</span></span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__1080__composite<span class="ext">.mp4</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 100%;"></div></div>
-            <span class="pct">58.4 s · H.264</span>
+            <span class="pct">58.4 s · HEVC</span>
           </div>
           <span class="eta">71.8 MB</span>
         </div>
@@ -877,7 +1184,7 @@
           <span class="status">
             <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__map-only<span class="ext">.mov</span></span>
+          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__1080__map-only<span class="ext">.mov</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 100%;"></div></div>
             <span class="pct">38.2 s · ProRes</span>
@@ -888,12 +1195,23 @@
           <span class="status">
             <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
           </span>
-          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__composite<span class="ext">.mp4</span></span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__1080__composite<span class="ext">.mp4</span></span>
           <div class="bar-cell">
             <div class="bar"><div class="fill" style="width: 100%;"></div></div>
             <span class="pct">46.3 s · HEVC</span>
           </div>
           <span class="eta">59.0 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__4k__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">2:58 · HEVC</span>
+          </div>
+          <span class="eta">287.0 MB</span>
         </div>
       </div>
 
@@ -901,7 +1219,7 @@
 
     <footer class="modal-footer">
       <div class="summary">
-        <div class="l1"><strong>4 files</strong> · 238.0 MB · 02:38 total</div>
+        <div class="l1"><strong>5 files</strong> · 525.0 MB · 05:55 total</div>
         <div class="l2">~/Movies/TrailCut/Cascade Pass Traverse 2</div>
       </div>
       <button class="btn btn-ghost">Render again</button>
@@ -914,6 +1232,75 @@
     Same form factor — banner up top, results list below. The folder-level reveal button is the primary affordance; per-file actions stay implicit (the row stays click-targetable for reveal-this-file).
   </div>
 
+  <!-- ============================================== -->
+  <!-- ===== INTERACTIVE OVERLAY (LIVE PROTOTYPE) === -->
+  <!-- ============================================== -->
+  <div class="config-overlay" aria-hidden="true">
+    <section class="modal compact" aria-label="Configure export">
+      <header class="modal-header">
+        <h2 class="modal-title">
+          Configure export
+          <span class="sep">/</span>
+          <span class="crumb">16:9 · Composite</span>
+        </h2>
+        <button class="icon-btn" data-act="close" aria-label="Close">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </header>
+
+      <div class="modal-body">
+        <div>
+          <div class="field-label">
+            <span class="k">Quality</span>
+            <span class="rule"></span>
+          </div>
+          <div class="opt-row" data-field="quality">
+            <button class="on" data-v="1080">1080</button>
+            <button data-v="4k">4K</button>
+          </div>
+          <div class="opt-meta">Source <span class="src">3840×2160</span><span class="sep">·</span>downsample on export</div>
+        </div>
+
+        <div>
+          <div class="field-label">
+            <span class="k">Frame rate</span>
+            <span class="rule"></span>
+          </div>
+          <div class="opt-row" data-field="fps">
+            <button data-v="24">24</button>
+            <button class="on" data-v="30">30</button>
+            <button data-v="60">60</button>
+          </div>
+          <div class="opt-meta">Source <span class="src">30 fps</span><span class="sep">·</span>no resampling at 30</div>
+        </div>
+
+        <div>
+          <div class="field-label">
+            <span class="k">Coming later</span>
+            <span class="rule"></span>
+          </div>
+          <div class="future">
+            <span class="k">soon</span>
+            <span class="item">codec</span>
+            <span class="item">color profile</span>
+            <span class="item">bitrate</span>
+            <span class="item">HDR</span>
+            <span class="item">stabilization passthrough</span>
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <div class="summary">
+          <div class="l1"><strong>1080 · 30 fps</strong> · HEVC</div>
+          <div class="l2">≈ 72 MB<span class="sep">·</span>est 0:58 render</div>
+        </div>
+        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-primary" data-act="save">Add export</button>
+      </footer>
+    </section>
+  </div>
+
   <script>
     // state nav scrolls smoothly to anchors
     const navLinks = document.querySelectorAll('.switcher nav a');
@@ -923,9 +1310,126 @@
         link.classList.add('active');
       });
     });
-    // checkbox toggle on order form (configure state only)
-    document.querySelectorAll('#state-selection .check').forEach(c => {
-      c.addEventListener('click', () => c.classList.toggle('on'));
+
+    // ---------- secondary (config) modal ----------
+    const overlay = document.querySelector('.config-overlay');
+    const overlayCrumb = overlay.querySelector('.crumb');
+    const overlaySave = overlay.querySelector('[data-act="save"]');
+    let editingChip = null;
+
+    const qLabel = (q) => (q === '4k' ? '4K' : '1080');
+
+    const humanizeCell = (label) => {
+      if (!label) return '';
+      const m = label.match(/^(\S+)\s+(.+)$/);
+      if (!m) return label;
+      const ch = m[2].charAt(0).toUpperCase() + m[2].slice(1);
+      return `${m[1]} · ${ch}`;
+    };
+
+    const readOverlayValues = () => ({
+      quality: overlay.querySelector('.opt-row[data-field="quality"] button.on')?.dataset.v || '1080',
+      fps:     overlay.querySelector('.opt-row[data-field="fps"] button.on')?.dataset.v || '30',
+    });
+
+    const setOverlayValues = ({ quality, fps }) => {
+      overlay.querySelectorAll('.opt-row[data-field="quality"] button').forEach(b => b.classList.toggle('on', b.dataset.v === quality));
+      overlay.querySelectorAll('.opt-row[data-field="fps"] button').forEach(b => b.classList.toggle('on', b.dataset.v === fps));
+      updateSummary();
+    };
+
+    const updateSummary = () => {
+      const { quality, fps } = readOverlayValues();
+      const cellLabel = overlay.dataset.cellLabel || '';
+      const codec = cellLabel.includes('composite') ? 'HEVC' : 'ProRes 4444';
+      const l1 = overlay.querySelector('.modal-footer .summary .l1');
+      if (l1) l1.innerHTML = `<strong>${qLabel(quality)} · ${fps} fps</strong> · ${codec}`;
+    };
+
+    const openOverlayForAdd = (check) => {
+      editingChip = null;
+      overlay.dataset.cellLabel = check.getAttribute('aria-label');
+      overlayCrumb.textContent = humanizeCell(check.getAttribute('aria-label'));
+      overlaySave.textContent = 'Add export';
+      setOverlayValues({ quality: '1080', fps: '30' });
+      overlay.classList.add('open');
+    };
+
+    const openOverlayForEdit = (chip) => {
+      editingChip = chip;
+      const check = chip.closest('.check');
+      overlay.dataset.cellLabel = check.getAttribute('aria-label');
+      overlayCrumb.textContent = humanizeCell(check.getAttribute('aria-label'));
+      overlaySave.textContent = 'Save changes';
+      setOverlayValues({ quality: chip.dataset.q, fps: chip.dataset.fps || '30' });
+      overlay.classList.add('open');
+    };
+
+    const closeOverlay = () => {
+      overlay.classList.remove('open');
+      editingChip = null;
+    };
+
+    // pill rows act as radios
+    overlay.querySelectorAll('.opt-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn || btn.disabled || btn.classList.contains('disabled')) return;
+        row.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+        updateSummary();
+      });
+    });
+
+    // save commits the chip
+    overlaySave.addEventListener('click', () => {
+      const { quality, fps } = readOverlayValues();
+      const label = `${qLabel(quality)}·${fps}`;
+      if (editingChip) {
+        editingChip.dataset.q = quality;
+        editingChip.dataset.fps = fps;
+        editingChip.querySelector('.lbl').textContent = label;
+        editingChip.setAttribute('aria-label', `Edit export — ${qLabel(quality)} at ${fps} fps`);
+      } else {
+        const cellLabel = overlay.dataset.cellLabel;
+        const check = [...document.querySelectorAll('#state-selection .check')]
+          .find(c => c.getAttribute('aria-label') === cellLabel);
+        if (check) {
+          const add = check.querySelector(':scope > .add');
+          add.insertAdjacentHTML('beforebegin',
+            `<div class="chip" data-q="${quality}" data-fps="${fps}" role="button" tabindex="0" aria-label="Edit export — ${qLabel(quality)} at ${fps} fps">` +
+            `<span class="lbl">${label}</span>` +
+            `<button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>` +
+            `</div>`
+          );
+        }
+      }
+      closeOverlay();
+    });
+
+    overlay.querySelector('[data-act="cancel"]').addEventListener('click', closeOverlay);
+    overlay.querySelector('[data-act="close"]').addEventListener('click', closeOverlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.classList.contains('open')) closeOverlay();
+    });
+
+    // ---------- configure-grid interactions ----------
+    const grid = document.querySelector('#state-selection .order');
+    grid.addEventListener('click', (e) => {
+      const addBtn = e.target.closest('.add');
+      if (addBtn) {
+        openOverlayForAdd(addBtn.closest('.check'));
+        return;
+      }
+      const xBtn = e.target.closest('.chip .x');
+      if (xBtn) {
+        e.stopPropagation();
+        xBtn.closest('.chip').remove();
+        return;
+      }
+      const chip = e.target.closest('.chip');
+      if (chip) openOverlayForEdit(chip);
     });
   </script>
 </div>

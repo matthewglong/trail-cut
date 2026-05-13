@@ -19,6 +19,7 @@ pub mod filtergraph;
 pub mod layout;
 pub mod orchestrator;
 pub mod protocol;
+pub mod resolution;
 pub mod sink;
 
 pub use clip_chain::{
@@ -47,6 +48,7 @@ pub use layout::{
 };
 pub use orchestrator::{render_map_frames, OrchestratorConfig, RECYCLE_EVERY_FRAMES};
 pub use protocol::{SetupPayload, Viewport};
+pub use resolution::{CodecPreference, OutputResolution};
 pub use sink::{FrameSink, SinkError, VecSink};
 
 use std::path::{Path, PathBuf};
@@ -70,10 +72,25 @@ pub struct RenderExportRequest {
     pub fps: u32,
     pub output_path: String,
     pub layout: LayoutDescriptor,
+    /// User-selected video codec preference. Defaults to `Auto` (current
+    /// behavior — Hevc with internal fallback ladder). Phase 3 of the
+    /// export-controls plan wires this into the composite-branch encoder
+    /// selection in this module; this phase only adds the field.
+    #[serde(default)]
+    pub codec_preference: CodecPreference,
+    /// AAC audio bitrate in kbps. Defaults to 256 (the value currently
+    /// hardcoded in the composite branch). Phase 3 plumbs this through
+    /// `build_composite_filtergraph`; this phase only adds the field.
+    #[serde(default = "default_audio_bitrate_kbps")]
+    pub audio_bitrate_kbps: u32,
     /// Same project-state fields as the orchestrator's `SetupPayload` —
     /// pass-through to the workers.
     #[serde(flatten)]
     pub project_state: Value,
+}
+
+fn default_audio_bitrate_kbps() -> u32 {
+    256
 }
 
 /// Successful return value from `render_export`. `wall_clock_ms` includes
@@ -125,7 +142,11 @@ fn validate_request(req: &RenderExportRequest) -> Result<ValidatedRequest, Rende
     // IPC parity check — re-run resolve_slots, compare. The TS port is the
     // source of truth (LAYOUT.md / task 050); this catches a tampered
     // descriptor before any FFmpeg / ffprobe / orchestrator work begins.
-    let recomputed = resolve_slots(&req.layout.layout, req.layout.aspect);
+    let recomputed = resolve_slots(
+        &req.layout.layout,
+        req.layout.aspect,
+        req.layout.resolution,
+    );
     if recomputed != req.layout.resolved {
         return Err(RenderExportError::validation(format!(
             "layout descriptor parity check failed: frontend resolved={:?}, rust resolved={:?}",
@@ -188,6 +209,72 @@ fn select_channel_encoder(class: EncoderClass) -> Result<EncoderChoice, RenderEx
         message: format!("select_encoder({:?}): {}", class, e),
         stderr_tail: None,
     })
+}
+
+/// Resolve the user-facing codec preference into a concrete encoder for the
+/// composite branch (Channel A). Only this branch consults the preference —
+/// `map_only` / `video_only` always pick `ProResAlpha` because ProRes is an
+/// internal compositing intermediate, not a user-facing codec.
+///
+/// Behavior per `CodecPreference`:
+///   - `Auto`  → probe `Hevc` (the same fallback ladder of HEVC candidates
+///     `select_encoder` already walks: hevc_videotoolbox → libx265 on macOS,
+///     etc.). On total HEVC failure this propagates as a generic validation
+///     error — same shape as today's default-path behavior.
+///   - `H264`  → probe `H264` only; never touches the Hevc class.
+///   - `Hevc`  → probe `Hevc` and, on `NoEncoderForClass(Hevc)`, return a
+///     user-facing validation error pointing the user at H.264 or Auto.
+///     Explicitly does NOT silently fall back to H.264 — the export-controls
+///     plan's architecture decision: "Codec preference does NOT silently
+///     fall back" (export-controls.md §"Architecture decisions").
+///
+/// Audit of `select_encoder` / `select_channel_encoder`: neither has any
+/// implicit codec fallback today. `EncoderClass::Hevc`'s candidate ladder
+/// contains only HEVC encoders (hevc_videotoolbox / hevc_nvenc / libx265,
+/// per `candidates_for` in encoder.rs); failing the whole class returns
+/// `NoEncoderForClass(Hevc)` with no auto-retry against H264. So the
+/// "strict" path here only needs to translate that error into a friendlier
+/// message — no behavior bypass is required.
+fn select_composite_encoder(
+    pref: CodecPreference,
+) -> Result<EncoderChoice, RenderExportError> {
+    select_composite_encoder_with(pref, select_encoder)
+}
+
+/// Generic core of `select_composite_encoder`. Parameterized on the
+/// encoder-selection function so unit tests can inject a stub that returns
+/// `NoEncoderForClass(Hevc)` without spawning ffmpeg or touching the cache.
+fn select_composite_encoder_with<F>(
+    pref: CodecPreference,
+    select: F,
+) -> Result<EncoderChoice, RenderExportError>
+where
+    F: Fn(EncoderClass) -> Result<EncoderChoice, EncoderError>,
+{
+    let class = match pref {
+        CodecPreference::Auto | CodecPreference::Hevc => EncoderClass::Hevc,
+        CodecPreference::H264 => EncoderClass::H264,
+    };
+    match select(class) {
+        Ok(choice) => Ok(choice),
+        Err(EncoderError::NoEncoderForClass(EncoderClass::Hevc))
+            if matches!(pref, CodecPreference::Hevc) =>
+        {
+            // Explicit-HEVC strict path. The user picked HEVC, the system
+            // has no working HEVC encoder, and the architecture decision is
+            // to surface that rather than silently downgrade. Stage is
+            // "validation" so the frontend treats it the same as any other
+            // pre-flight error.
+            Err(RenderExportError::validation(
+                "HEVC encoder not available on this system; choose H.264 or Auto.",
+            ))
+        }
+        Err(e) => Err(RenderExportError {
+            stage: "validation".to_string(),
+            message: format!("select_encoder({:?}): {}", class, e),
+            stderr_tail: None,
+        }),
+    }
 }
 
 #[tauri::command]
@@ -573,9 +660,12 @@ async fn render_export_composite(
         None
     };
 
-    // HEVC for the deliverable. Channel A picks its own encoder (post-refactor
-    // in `validate_request`) — B/C use ProResAlpha, A uses Hevc.
-    let encoder = select_channel_encoder(EncoderClass::Hevc)?;
+    // Channel A's deliverable codec. `CodecPreference` (export-controls plan,
+    // Phase 3) selects between Auto (probe HEVC, same ladder as today), H264
+    // (compatibility mode), and strict HEVC (no silent H264 fallback). B/C
+    // ignore the preference — they use ProResAlpha as an internal
+    // compositing intermediate.
+    let encoder = select_composite_encoder(req.codec_preference)?;
 
     let plan = build_composite_filtergraph(
         &visible_inputs,
@@ -587,7 +677,7 @@ async fn render_export_composite(
         req.fps,
         validated.total_frames,
         &encoder,
-        &["-c:a", "aac", "-b:a", "256k"],
+        req.audio_bitrate_kbps,
         &validated.output_path_buf,
     )
     .map_err(classify_clip_chain_error)?;
@@ -748,9 +838,14 @@ mod tests {
             inset: NormalizedRect { x: 0.65, y: 0.78, w: 0.32, h: 0.18 },
             corner_radius: 0.012,
         };
-        let resolved = resolve_slots(&layout, AspectRatio::NineSixteen);
+        let resolved = resolve_slots(
+            &layout,
+            AspectRatio::NineSixteen,
+            OutputResolution::default(),
+        );
         LayoutDescriptor {
             aspect: AspectRatio::NineSixteen,
+            resolution: OutputResolution::default(),
             layout,
             resolved,
         }
@@ -774,6 +869,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: pip_descriptor(),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export(req).await.unwrap_err();
@@ -789,6 +886,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mp4".to_string(),
             layout: pip_descriptor(),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export(req).await.unwrap_err();
@@ -814,6 +913,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mp4".to_string(),
             layout: descriptor,
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export(req).await.unwrap_err();
@@ -841,6 +942,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: pip_descriptor(),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(0),
         };
         let err = validate_request(&req).expect_err("zero duration must fail");
@@ -862,6 +965,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: descriptor,
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export(req).await.unwrap_err();
@@ -877,6 +982,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: pip_descriptor(),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export(req).await.unwrap_err();
@@ -914,6 +1021,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: pip_descriptor(),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project,
         };
         let err = render_export(req).await.unwrap_err();
@@ -940,6 +1049,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: descriptor,
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export(req).await.unwrap_err();
@@ -958,6 +1069,8 @@ mod tests {
             fps: 30,
             output_path: "/tmp/x.mov".to_string(),
             layout: pip_descriptor(),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(0),
         };
         let err = render_export(req).await.unwrap_err();
@@ -993,5 +1106,183 @@ mod tests {
         // 1980ms × 30fps = 59_400 → +500 = 59_900 → /1000 = 59.
         let total = (1980u64 * 30 + 500) / 1000;
         assert_eq!(total, 59);
+    }
+
+    #[test]
+    fn render_export_request_defaults_phase_1_fields() {
+        // Phase 1 of the export-controls plan adds `codec_preference`,
+        // `audio_bitrate_kbps`, and `layout.resolution` to the wire protocol.
+        // All three are `#[serde(default)]`-decorated so back-compat wire data
+        // captured before the plan landed deserializes cleanly to the
+        // documented defaults. This is the back-compat smoke test the plan
+        // calls out under §"Phase 1 — Tests".
+        //
+        // The JSON below intentionally omits all three new fields plus the
+        // `resolution` field on the layout descriptor; serde must fill them in.
+        let raw = json!({
+            "channel": "map_only",
+            "fps": 30,
+            "output_path": "/tmp/x.mov",
+            "layout": {
+                "aspect": "9_16",
+                // resolution intentionally absent — should default to "1080p".
+                "layout": {
+                    "mode": "pip",
+                    "inset_source": "map",
+                    "inset": { "x": 0.65, "y": 0.78, "w": 0.32, "h": 0.18 },
+                    "corner_radius": 0.012
+                },
+                "resolved": {
+                    "output": { "w": 1080, "h": 1920 },
+                    "map_slot": { "x": 702, "y": 1498, "w": 346, "h": 346 },
+                    "video_slot": { "x": 0, "y": 0, "w": 1080, "h": 1920 },
+                    "corner_radius_px": 13,
+                    "corner_radius_slot": "map"
+                }
+            },
+            // codec_preference + audio_bitrate_kbps intentionally absent.
+            "timeline": { "totalDurationMs": 2000 },
+            "route": null,
+            "clips": [],
+            "mapSettings": {}
+        });
+        let req: RenderExportRequest = serde_json::from_value(raw)
+            .expect("wire JSON missing Phase 1 fields must deserialize via serde defaults");
+        assert_eq!(req.codec_preference, CodecPreference::Auto);
+        assert_eq!(req.audio_bitrate_kbps, 256);
+        assert_eq!(req.layout.resolution, OutputResolution::P1080);
+    }
+
+    #[test]
+    fn render_export_request_defaults_via_raw_json_string() {
+        // Phase 5 integration coverage. The Phase 1 back-compat test above
+        // exercises `serde_json::from_value`; this one exercises the
+        // `serde_json::from_str` path against a realistic raw JSON payload
+        // captured pre-controls (no `codec_preference`, no
+        // `audio_bitrate_kbps`, no `layout.resolution`). Both code paths route
+        // through serde derives, but only the string parser exercises the
+        // tokenizer — a missing-comma or stray-trailing-comma defaults
+        // regression would slip past the `Value`-based test.
+        let raw_json = r#"{
+            "channel": "map_only",
+            "fps": 30,
+            "output_path": "/tmp/x.mov",
+            "layout": {
+                "aspect": "9_16",
+                "layout": {
+                    "mode": "pip",
+                    "inset_source": "map",
+                    "inset": { "x": 0.65, "y": 0.78, "w": 0.32, "h": 0.18 },
+                    "corner_radius": 0.012
+                },
+                "resolved": {
+                    "output": { "w": 1080, "h": 1920 },
+                    "map_slot": { "x": 702, "y": 1498, "w": 346, "h": 346 },
+                    "video_slot": { "x": 0, "y": 0, "w": 1080, "h": 1920 },
+                    "corner_radius_px": 13,
+                    "corner_radius_slot": "map"
+                }
+            },
+            "timeline": { "totalDurationMs": 2000 },
+            "route": null,
+            "clips": [],
+            "mapSettings": {}
+        }"#;
+        let req: RenderExportRequest = serde_json::from_str(raw_json).expect(
+            "raw JSON missing controls fields must deserialize via serde(default) end-to-end",
+        );
+        assert_eq!(req.codec_preference, CodecPreference::Auto);
+        assert_eq!(req.audio_bitrate_kbps, 256);
+        assert_eq!(req.layout.resolution, OutputResolution::P1080);
+    }
+
+    // ---- Phase 3: codec-preference selector tests ----
+
+    use crate::export::encoder::{EncoderChoice, EncoderError, EncoderKind};
+    use std::cell::RefCell;
+
+    fn stub_choice(class: EncoderClass, name: &str) -> EncoderChoice {
+        EncoderChoice {
+            class,
+            name: name.to_string(),
+            kind: EncoderKind::Software,
+            codec_args: vec![],
+            probe_wall_clock_ms: 0,
+        }
+    }
+
+    #[test]
+    fn h264_preference_picks_h264_and_never_probes_hevc() {
+        // `H264` must route through `EncoderClass::H264`; the selector must
+        // never request `EncoderClass::Hevc`. We assert both: the returned
+        // encoder's class is H264, and the stub records show no Hevc lookup.
+        let calls = RefCell::new(Vec::<EncoderClass>::new());
+        let stub = |class: EncoderClass| -> Result<EncoderChoice, EncoderError> {
+            calls.borrow_mut().push(class);
+            Ok(stub_choice(class, "libx264"))
+        };
+        let choice = select_composite_encoder_with(CodecPreference::H264, stub).unwrap();
+        assert_eq!(choice.class, EncoderClass::H264);
+        let recorded = calls.borrow().clone();
+        assert_eq!(recorded, vec![EncoderClass::H264]);
+        assert!(
+            !recorded.contains(&EncoderClass::Hevc),
+            "H264 preference must never probe Hevc, got {:?}",
+            recorded,
+        );
+    }
+
+    #[test]
+    fn auto_preference_probes_hevc_class() {
+        // Auto is the today-equivalent: walk `EncoderClass::Hevc`'s candidate
+        // ladder. Internally that ladder is HEVC-only (hevc_videotoolbox →
+        // libx265 etc.) — no silent fallback to H264.
+        let calls = RefCell::new(Vec::<EncoderClass>::new());
+        let stub = |class: EncoderClass| -> Result<EncoderChoice, EncoderError> {
+            calls.borrow_mut().push(class);
+            Ok(stub_choice(class, "hevc_videotoolbox"))
+        };
+        let choice = select_composite_encoder_with(CodecPreference::Auto, stub).unwrap();
+        assert_eq!(choice.class, EncoderClass::Hevc);
+        assert_eq!(calls.borrow().clone(), vec![EncoderClass::Hevc]);
+    }
+
+    #[test]
+    fn explicit_hevc_with_no_hevc_returns_strict_validation_error() {
+        // Stub a "Hevc unavailable" environment: the selector returns
+        // `NoEncoderForClass(Hevc)`. Explicit `Hevc` preference must surface
+        // the user-facing validation message, NOT silently fall back to H264.
+        let calls = RefCell::new(Vec::<EncoderClass>::new());
+        let stub = |class: EncoderClass| -> Result<EncoderChoice, EncoderError> {
+            calls.borrow_mut().push(class);
+            Err(EncoderError::NoEncoderForClass(class))
+        };
+        let err = select_composite_encoder_with(CodecPreference::Hevc, stub).unwrap_err();
+        assert_eq!(err.stage, "validation");
+        assert_eq!(
+            err.message,
+            "HEVC encoder not available on this system; choose H.264 or Auto.",
+        );
+        // The stub must have been asked exactly once, for Hevc. No silent
+        // retry against H264.
+        assert_eq!(calls.borrow().clone(), vec![EncoderClass::Hevc]);
+    }
+
+    #[test]
+    fn auto_with_no_hevc_returns_generic_validation_error_not_strict_message() {
+        // Auto preference: if Hevc is unavailable the user gets a generic
+        // failure (the today-equivalent code path), NOT the strict-Hevc
+        // message — that message would mislead a user who didn't pick HEVC
+        // explicitly.
+        let stub = |class: EncoderClass| -> Result<EncoderChoice, EncoderError> {
+            Err(EncoderError::NoEncoderForClass(class))
+        };
+        let err = select_composite_encoder_with(CodecPreference::Auto, stub).unwrap_err();
+        assert_eq!(err.stage, "validation");
+        assert!(
+            !err.message.contains("choose H.264 or Auto"),
+            "Auto preference must not surface the strict-Hevc message: {}",
+            err.message,
+        );
     }
 }

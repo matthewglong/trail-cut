@@ -202,9 +202,9 @@
   background: rgba(8, 12, 13, 0.78);
   z-index: 1100;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding: 80px 32px 32px;
+  padding: 32px;
   overflow: auto;
 }
 .configModal {

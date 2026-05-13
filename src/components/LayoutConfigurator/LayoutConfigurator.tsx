@@ -13,11 +13,12 @@ import {
   type SlotResolution,
 } from '../../lib/layout';
 import { LayoutPreview } from '../LayoutPreview/LayoutPreview';
-import { usePipDrag, type PipDragHandle } from './usePipDrag';
+import { usePipDrag, type PipActiveSnap, type PipDragHandle } from './usePipDrag';
 import { useSplitDrag } from './useSplitDrag';
 import { ModeToggle } from './ModeToggle';
 import { SwapToggle } from './SwapToggle';
 import { CornerRadiusSlider } from './CornerRadiusSlider';
+import type { PipAxisTarget } from './snap';
 
 export interface LayoutConfiguratorProps {
   layout: LayoutConfig;
@@ -48,6 +49,12 @@ const DIVIDER_HANDLE_LENGTH = 56;
 const DIVIDER_HANDLE_THICKNESS = 14;
 const SWAP_BADGE_RADIUS_PX = 10;
 const SNAP_GUIDE_STROKE = 'rgba(120, 180, 255, 0.7)';
+/** Magenta, dedicated to alignment engagement (edge-flush, centered, gridline,
+ *  equal-margin). Distinct from `HANDLE_FILL` (cyan-blue) so the user sees
+ *  "you are aligned" as a different visual class from "this is a drag
+ *  affordance / snap target." */
+const ALIGNMENT_FILL = '#ff52d6';
+const ALIGNMENT_STROKE = 'rgba(255, 82, 214, 0.85)';
 const SNAP_EASE_TRANSITION = 'x 120ms ease-out, y 120ms ease-out, width 120ms ease-out, height 120ms ease-out, cx 120ms ease-out, cy 120ms ease-out';
 
 export function LayoutConfigurator({
@@ -289,28 +296,19 @@ function PipOverlay({
   const edgeHitThicknessSvg = (HANDLE_HIT_RADIUS_PX * 1.5) / Math.max(scaleFactor, 1e-6);
 
   const guideStroke = Math.max(1 / scaleFactor, 0.5);
-  const verticalGuideX =
-    drag.activeSnap.x !== null
-      ? drag.activeSnap.x * resolved.output.w
-      : drag.activeSnap.w !== null
-      ? (layout.inset.x + drag.activeSnap.w) * resolved.output.w
-      : null;
-  const horizontalGuideY =
-    drag.activeSnap.y !== null
-      ? drag.activeSnap.y * resolved.output.h
-      : drag.activeSnap.h !== null
-      ? (layout.inset.y + drag.activeSnap.h) * resolved.output.h
-      : null;
   const snapEngaged =
-    drag.activeSnap.x !== null ||
-    drag.activeSnap.y !== null ||
-    drag.activeSnap.w !== null ||
-    drag.activeSnap.h !== null;
+    drag.activeSnap.axisX !== null ||
+    drag.activeSnap.axisY !== null ||
+    drag.activeSnap.aspect !== null;
   const settleTransition: CSSProperties = snapEngaged
     ? { transition: SNAP_EASE_TRANSITION }
     : {};
 
-  const readoutText = `${pct(layout.inset.x)} · ${pct(layout.inset.y)}  ·  ${pct(layout.inset.w)} × ${pct(layout.inset.h)}`;
+  // Per-axis frame position of the alignment guide. For 'leading' the line is
+  // the left/top frame edge; for 'trailing' it's the right/bottom; for
+  // 'center' it's the inset's center coordinate (centered or gridline).
+  const xGuideFrame = axisGuideFraction(drag.activeSnap.axisX, layout.inset.w);
+  const yGuideFrame = axisGuideFraction(drag.activeSnap.axisY, layout.inset.h);
 
   return (
     <>
@@ -322,26 +320,29 @@ function PipOverlay({
       style={{ ...overlaySvgStyle, touchAction: 'none' }}
       data-testid="layout-configurator-svg"
     >
-      {verticalGuideX !== null && (
+      {drag.activeSnap.aspect && (
+        <AspectFitOutline rect={insetSlot} scaleFactor={scaleFactor} />
+      )}
+      {xGuideFrame !== null && (
         <line
-          x1={verticalGuideX}
+          x1={xGuideFrame * resolved.output.w}
           y1={0}
-          x2={verticalGuideX}
+          x2={xGuideFrame * resolved.output.w}
           y2={resolved.output.h}
-          stroke={SNAP_GUIDE_STROKE}
-          strokeWidth={guideStroke}
+          stroke={ALIGNMENT_STROKE}
+          strokeWidth={guideStroke * 1.2}
           pointerEvents="none"
           data-testid="layout-configurator-snap-guide-vertical"
         />
       )}
-      {horizontalGuideY !== null && (
+      {yGuideFrame !== null && (
         <line
           x1={0}
-          y1={horizontalGuideY}
+          y1={yGuideFrame * resolved.output.h}
           x2={resolved.output.w}
-          y2={horizontalGuideY}
-          stroke={SNAP_GUIDE_STROKE}
-          strokeWidth={guideStroke}
+          y2={yGuideFrame * resolved.output.h}
+          stroke={ALIGNMENT_STROKE}
+          strokeWidth={guideStroke * 1.2}
           pointerEvents="none"
           data-testid="layout-configurator-snap-guide-horizontal"
         />
@@ -393,6 +394,17 @@ function PipOverlay({
           />
         </g>
       ))}
+      {drag.isDragging && (
+        <PipDragReadout
+          insetSlot={insetSlot}
+          snap={drag.activeSnap}
+          xGuideFrame={xGuideFrame}
+          yGuideFrame={yGuideFrame}
+          outputW={resolved.output.w}
+          outputH={resolved.output.h}
+          scaleFactor={scaleFactor}
+        />
+      )}
       {!disabled && !drag.isDragging && (() => {
         // Pick the inset edge to anchor the swap badge to. Horizontal sides
         // (left/right) are preferred — they read more naturally as a "swap"
@@ -451,8 +463,339 @@ function PipOverlay({
         );
       })()}
     </svg>
-    {drag.isDragging && <DragReadout text={readoutText} />}
     </>
+  );
+}
+
+/** Frame-coord fraction (0..1) for the guide line drawn along an axis when a
+ *  position snap is engaged. Returns `null` when no snap is active. */
+function axisGuideFraction(
+  target: PipAxisTarget | null,
+  extent: number,
+): number | null {
+  if (!target) return null;
+  if (target.side === 'leading') return target.value;          // = 0
+  if (target.side === 'trailing') return target.value + extent; // = 1
+  return target.value + extent / 2; // center (centered axis or gridline)
+}
+
+interface PipDragReadoutProps {
+  insetSlot: PixelRect;
+  snap: PipActiveSnap;
+  xGuideFrame: number | null;
+  yGuideFrame: number | null;
+  outputW: number;
+  outputH: number;
+  scaleFactor: number;
+}
+
+/** Event-driven drag cues for the inset. Renders only on alignment:
+ *
+ *   - `EqualMarginTick` in each gap involved in an engaged equal-margin pair
+ *     (or all four gaps when fully symmetric).
+ *
+ *   - `AspectLabelChip` centered in the inset when an aspect-fit is engaged,
+ *     showing the matched aspect (e.g. "16:9").
+ *
+ *   - `SnapLabelChip` near each axis guide line, displaying the snap's name
+ *     (`flush`, `center`, `⅓`, `⅔`, `φ`).
+ *
+ *  All elements render inside the SVG so they scale with the viewBox. */
+function PipDragReadout({
+  insetSlot,
+  snap,
+  xGuideFrame,
+  yGuideFrame,
+  outputW,
+  outputH,
+  scaleFactor,
+}: PipDragReadoutProps) {
+  const sides = equalMarginSides(snap);
+
+  return (
+    <g pointerEvents="none" data-testid="layout-configurator-pip-readout">
+      {sides.left && (
+        <EqualMarginTick
+          side="left"
+          insetSlot={insetSlot}
+          outputW={outputW}
+          outputH={outputH}
+          scaleFactor={scaleFactor}
+        />
+      )}
+      {sides.right && (
+        <EqualMarginTick
+          side="right"
+          insetSlot={insetSlot}
+          outputW={outputW}
+          outputH={outputH}
+          scaleFactor={scaleFactor}
+        />
+      )}
+      {sides.top && (
+        <EqualMarginTick
+          side="top"
+          insetSlot={insetSlot}
+          outputW={outputW}
+          outputH={outputH}
+          scaleFactor={scaleFactor}
+        />
+      )}
+      {sides.bottom && (
+        <EqualMarginTick
+          side="bottom"
+          insetSlot={insetSlot}
+          outputW={outputW}
+          outputH={outputH}
+          scaleFactor={scaleFactor}
+        />
+      )}
+      {snap.aspect && (
+        <AspectLabelChip
+          insetSlot={insetSlot}
+          aspectLabel={snap.aspect.label}
+          scaleFactor={scaleFactor}
+        />
+      )}
+      {snap.axisX && xGuideFrame !== null && (
+        <SnapLabelChip
+          label={snap.axisX.label}
+          x={xGuideFrame * outputW}
+          y={20 / Math.max(scaleFactor, 1e-6)}
+          outputW={outputW}
+          outputH={outputH}
+          scaleFactor={scaleFactor}
+          testid="layout-configurator-pip-snap-label-x"
+        />
+      )}
+      {snap.axisY && yGuideFrame !== null && (
+        <SnapLabelChip
+          label={snap.axisY.label}
+          x={20 / Math.max(scaleFactor, 1e-6)}
+          y={yGuideFrame * outputH}
+          outputW={outputW}
+          outputH={outputH}
+          scaleFactor={scaleFactor}
+          testid="layout-configurator-pip-snap-label-y"
+        />
+      )}
+    </g>
+  );
+}
+
+// Adjacent-corner pair equalities (right=bottom etc.) mark the two involved
+// gaps. Fully-symmetric supersedes pairs and marks all four. centeredX/Y are
+// already cued by the axis guide + snap label, so they don't drive ticks here.
+function equalMarginSides(snap: PipActiveSnap): {
+  left: boolean; right: boolean; top: boolean; bottom: boolean;
+} {
+  const m = snap.margins;
+  if (m.fullySymmetric) {
+    return { left: true, right: true, top: true, bottom: true };
+  }
+  let left = false;
+  let right = false;
+  let top = false;
+  let bottom = false;
+  for (const pair of m.pairs) {
+    if (pair === 'right=bottom') { right = true; bottom = true; }
+    else if (pair === 'right=top') { right = true; top = true; }
+    else if (pair === 'left=bottom') { left = true; bottom = true; }
+    else if (pair === 'left=top') { left = true; top = true; }
+  }
+  return { left, right, top, bottom };
+}
+
+interface EqualMarginTickProps {
+  side: 'left' | 'right' | 'top' | 'bottom';
+  insetSlot: PixelRect;
+  outputW: number;
+  outputH: number;
+  scaleFactor: number;
+}
+
+// A small magenta `=` glyph rendered in the gap between the inset edge and the
+// frame wall. Two identical glyphs appearing in two different gaps reads as
+// "these gaps are equal" — that visual matching IS the cue.
+function EqualMarginTick({ side, insetSlot, outputW, outputH, scaleFactor }: EqualMarginTickProps) {
+  const inv = 1 / Math.max(scaleFactor, 1e-6);
+  const tickLength = 10 * inv;
+  const strokeWidth = 1.5 * inv;
+  const sep = 3 * inv;
+  const padding = 4 * inv;
+
+  const leftGap = insetSlot.x;
+  const rightGap = outputW - insetSlot.x - insetSlot.w;
+  const topGap = insetSlot.y;
+  const bottomGap = outputH - insetSlot.y - insetSlot.h;
+
+  let gapAlongAxis: number;
+  let cx: number;
+  let cy: number;
+  switch (side) {
+    case 'left':
+      gapAlongAxis = leftGap;
+      cx = insetSlot.x / 2;
+      cy = insetSlot.y + insetSlot.h / 2;
+      break;
+    case 'right':
+      gapAlongAxis = rightGap;
+      cx = (insetSlot.x + insetSlot.w + outputW) / 2;
+      cy = insetSlot.y + insetSlot.h / 2;
+      break;
+    case 'top':
+      gapAlongAxis = topGap;
+      cx = insetSlot.x + insetSlot.w / 2;
+      cy = insetSlot.y / 2;
+      break;
+    case 'bottom':
+      gapAlongAxis = bottomGap;
+      cx = insetSlot.x + insetSlot.w / 2;
+      cy = (insetSlot.y + insetSlot.h + outputH) / 2;
+      break;
+  }
+  if (gapAlongAxis <= 0 || gapAlongAxis < tickLength + padding) {
+    return null;
+  }
+
+  const horizontalGap = side === 'left' || side === 'right';
+  // For horizontal gaps the `=` reads as two horizontal strokes stacked
+  // vertically; for vertical gaps it rotates 90° to two vertical strokes
+  // side-by-side. Either way it remains a "matched marker" glyph.
+  const strokes = horizontalGap
+    ? [
+        { x1: cx - tickLength / 2, y1: cy - sep / 2, x2: cx + tickLength / 2, y2: cy - sep / 2 },
+        { x1: cx - tickLength / 2, y1: cy + sep / 2, x2: cx + tickLength / 2, y2: cy + sep / 2 },
+      ]
+    : [
+        { x1: cx - sep / 2, y1: cy - tickLength / 2, x2: cx - sep / 2, y2: cy + tickLength / 2 },
+        { x1: cx + sep / 2, y1: cy - tickLength / 2, x2: cx + sep / 2, y2: cy + tickLength / 2 },
+      ];
+
+  return (
+    <g data-testid={`layout-configurator-pip-equal-tick-${side}`}>
+      {strokes.map((s, i) => (
+        <line
+          key={i}
+          x1={s.x1}
+          y1={s.y1}
+          x2={s.x2}
+          y2={s.y2}
+          stroke={ALIGNMENT_FILL}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+        />
+      ))}
+    </g>
+  );
+}
+
+interface AspectLabelChipProps {
+  insetSlot: PixelRect;
+  aspectLabel: string;
+  scaleFactor: number;
+}
+
+function AspectLabelChip({ insetSlot, aspectLabel, scaleFactor }: AspectLabelChipProps) {
+  const inv = 1 / Math.max(scaleFactor, 1e-6);
+  const fontSize = 11.5 * inv;
+  const padX = 8 * inv;
+  const padY = 5 * inv;
+  const lineHeight = fontSize * 1.25;
+  const chipWidth = Math.max(fontSize * 4, (aspectLabel.length + 1) * 7.2 * inv) + padX * 2;
+  const chipHeight = lineHeight + padY * 2;
+
+  if (insetSlot.w < chipWidth * 1.05 || insetSlot.h < chipHeight * 1.1) {
+    return null;
+  }
+
+  const cx = insetSlot.x + insetSlot.w / 2;
+  const cy = insetSlot.y + insetSlot.h / 2;
+
+  return (
+    <g data-testid="layout-configurator-pip-aspect-chip">
+      <rect
+        x={cx - chipWidth / 2}
+        y={cy - chipHeight / 2}
+        width={chipWidth}
+        height={chipHeight}
+        rx={3 * inv}
+        ry={3 * inv}
+        fill="rgba(40, 7, 30, 0.94)"
+        stroke={ALIGNMENT_FILL}
+        strokeWidth={1.1 * inv}
+      />
+      <text
+        x={cx}
+        y={cy}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill={ALIGNMENT_FILL}
+        fontFamily="'JetBrains Mono', 'SF Mono', ui-monospace, monospace"
+        fontSize={fontSize}
+        fontWeight={700}
+        letterSpacing={`${0.4 * inv}px`}
+      >
+        {aspectLabel}
+      </text>
+    </g>
+  );
+}
+
+interface SnapLabelChipProps {
+  label: string;
+  x: number;
+  y: number;
+  outputW: number;
+  outputH: number;
+  scaleFactor: number;
+  testid: string;
+}
+
+// Clamps the chip's center so the chip stays fully inside the frame. Without
+// this, a flush-edge guide lands the chip half-off the frame (its anchor x/y
+// sits ON the frame edge for flush stops).
+function SnapLabelChip({ label, x, y, outputW, outputH, scaleFactor, testid }: SnapLabelChipProps) {
+  const inv = 1 / Math.max(scaleFactor, 1e-6);
+  const chipHeight = 18 * inv;
+  const chipWidth = Math.max(chipHeight * 1.8, (label.length + 1.5) * 7 * inv);
+  const fontSize = 10 * inv;
+  const padding = 4 * inv;
+  const cx = Math.min(
+    Math.max(x, chipWidth / 2 + padding),
+    outputW - chipWidth / 2 - padding,
+  );
+  const cy = Math.min(
+    Math.max(y, chipHeight / 2 + padding),
+    outputH - chipHeight / 2 - padding,
+  );
+  return (
+    <g data-testid={testid}>
+      <rect
+        x={cx - chipWidth / 2}
+        y={cy - chipHeight / 2}
+        width={chipWidth}
+        height={chipHeight}
+        rx={3 * inv}
+        ry={3 * inv}
+        fill="rgba(40, 7, 30, 0.94)"
+        stroke={ALIGNMENT_FILL}
+        strokeWidth={1.1 * inv}
+      />
+      <text
+        x={cx}
+        y={cy}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill={ALIGNMENT_FILL}
+        fontFamily="'JetBrains Mono', 'SF Mono', ui-monospace, monospace"
+        fontSize={fontSize}
+        fontWeight={700}
+        letterSpacing={`${0.4 * inv}px`}
+      >
+        {label}
+      </text>
+    </g>
   );
 }
 
@@ -828,14 +1171,6 @@ function PaneReadout({ rect, text, scaleFactor, testid }: PaneReadoutProps) {
   );
 }
 
-function DragReadout({ text }: { text: string }) {
-  return (
-    <div style={dragReadoutStyle} data-testid="layout-configurator-drag-readout">
-      {text}
-    </div>
-  );
-}
-
 function pct(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
@@ -852,23 +1187,6 @@ const overlayContainerStyle: CSSProperties = {
 const overlaySvgStyle: CSSProperties = {
   pointerEvents: 'auto',
   overflow: 'visible',
-};
-
-const dragReadoutStyle: CSSProperties = {
-  position: 'absolute',
-  top: 8,
-  left: '50%',
-  transform: 'translateX(-50%)',
-  padding: '4px 10px',
-  background: 'rgba(7, 27, 38, 0.92)',
-  border: `1px solid ${HANDLE_FILL}`,
-  borderRadius: 3,
-  color: HANDLE_FILL,
-  fontFamily: "'JetBrains Mono', 'SF Mono', ui-monospace, monospace",
-  fontSize: 10.5,
-  letterSpacing: '0.08em',
-  pointerEvents: 'none',
-  whiteSpace: 'nowrap',
 };
 
 const chromeRowStyle: CSSProperties = {

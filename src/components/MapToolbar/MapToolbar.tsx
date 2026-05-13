@@ -1,10 +1,34 @@
-import { Route as RouteIcon, MapPin, LocateFixed, Layers, ZoomIn, Compass, LayoutPanelTop } from 'lucide-react';
-import CollapsibleToolbar from '../CollapsibleToolbar';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import {
+  Route as RouteIcon,
+  MapPin,
+  LocateFixed,
+  Layers,
+  ZoomIn,
+  Compass,
+  LayoutPanelTop,
+} from 'lucide-react';
+import Toolbar from '../Toolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
 import type { MapSettings, MapStyleId, TriMode } from '../../types';
 import { colors } from '../../theme/tokens';
 import { styles } from './styles';
+
+// Right-to-left overflow wrap — items are an ordered list. A hidden off-screen
+// mirror renders every item at its natural width; we walk left-to-right against
+// the bar's available width and split at the first item that doesn't fit. Items
+// before the cut render in the bar; items after wrap onto a second row that
+// floats below the bar, right-aligned over the content beneath. Reorder = swap
+// a line in the `items` array below.
+const CONTENT_GAP = 4;
 
 export type MapToolbarScope = 'project' | 'clip';
 
@@ -18,8 +42,8 @@ interface MapToolbarProps {
   onScopeChange: (scope: MapToolbarScope) => void;
   /** Which fields the current clip overrides (non-null keys). Null when scope is 'project'. */
   overriddenKeys: Set<keyof MapSettings> | null;
-  /** Opens the Map Positioning modal. When omitted, the entry-point button is hidden. */
-  onOpenPositioning?: () => void;
+  /** Opens the Map Positioning modal. */
+  onOpenPositioning: () => void;
 }
 
 const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
@@ -34,11 +58,14 @@ const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
   { value: 'satellite', label: 'Satellite', short: 'S' },
 ];
 
-const styleLabel = (s: MapStyleId) =>
-  s === 'default' ? 'Default' : s === '3d' ? '3D' : 'Satellite';
-
-const labelFor = (m: TriMode) =>
-  m === 'none' ? 'None' : m === 'visited' ? 'Visited' : 'Full';
+type Item = {
+  id: string;
+  menuLabel: string;
+  /** The rendered content for one toolbar slot. The same React element instance
+   *  is mounted in the visible bar (or overflow menu) AND the hidden mirror —
+   *  controlled-prop state means duplication is safe. */
+  node: ReactNode;
+};
 
 export default function MapToolbar({
   settings,
@@ -58,47 +85,82 @@ export default function MapToolbar({
   const overrideColor = (field: keyof MapSettings): string | undefined =>
     overriddenKeys?.has(field) ? colors.accent : undefined;
 
-  const bearingChipText = bearingAuto
-    ? `Bearing: Auto (${settings.bearing_stops})`
-    : `Bearing: ${Math.round(settings.bearing_degrees)}°`;
-
-  const collapsedContent = (
-    <div style={styles.chipRow}>
-      <ScopeToggle scope={scope} onScopeChange={onScopeChange} />
-      <span style={styles.divider} />
-      <span style={settings.route_mode === 'none' ? styles.chip : styles.chipAccent}>
-        Route: {labelFor(settings.route_mode)}
-      </span>
-      <span style={styles.divider} />
-      <span style={settings.waypoints_mode === 'none' ? styles.chip : styles.chipAccent}>
-        Waypoints: {labelFor(settings.waypoints_mode)}
-      </span>
-      <span style={styles.divider} />
-      <span style={followOn ? styles.chipAccent : styles.chip}>
-        {followOn ? 'Following' : 'Free pan'}
-      </span>
-      <span style={styles.divider} />
-      <span style={bearingAuto ? styles.chipAccent : styles.chip}>
-        {bearingChipText}
-      </span>
-      <span style={styles.divider} />
-      <span style={styles.chipAccent}>Style: {styleLabel(settings.map_style)}</span>
-      <span style={styles.divider} />
-      <span style={styles.chipAccent}>Zoom: {settings.zoom.toFixed(1)}</span>
+  const followPill = (
+    <div
+      onClick={() => onChange({ ...settings, follow_playhead: !followOn })}
+      style={followOn ? styles.previewPillOn : styles.previewPillOff}
+      title={followOn ? 'Map follows playhead — click to pan freely' : 'Free pan — click to follow playhead'}
+    >
+      <span style={followOn ? styles.previewDotOn : styles.previewDotOff} />
+      <span>FOLLOW</span>
     </div>
   );
 
-  const barTint = scope === 'project'
-    ? styles.barTintProject
-    : styles.barTintClip;
+  const bearingPill = (
+    <div
+      onClick={() =>
+        onChange({
+          ...settings,
+          bearing_mode: bearingAuto ? 'fixed' : 'auto',
+        })
+      }
+      style={bearingAuto ? styles.previewPillOn : styles.previewPillOff}
+      title={
+        bearingAuto
+          ? 'Bearing follows trail with predetermined stops — click for fixed'
+          : 'Fixed bearing — click to auto-follow trail'
+      }
+    >
+      <span style={bearingAuto ? styles.previewDotOn : styles.previewDotOff} />
+      <span>{bearingAuto ? 'AUTO' : 'FIXED'}</span>
+    </div>
+  );
 
-  return (
-    <CollapsibleToolbar collapsedContent={collapsedContent} contentGap={4} barStyle={barTint}>
-      {/* Scope toggle */}
-      <ScopeToggle scope={scope} onScopeChange={onScopeChange} />
+  const bearingStepper = bearingAuto ? (
+    <NumberStepper
+      value={settings.bearing_stops}
+      min={1}
+      max={99}
+      step={1}
+      unit=""
+      decimals={0}
+      onChange={(v) => onChange({ ...settings, bearing_stops: Math.max(1, Math.round(v)) })}
+    />
+  ) : (
+    <NumberStepper
+      value={settings.bearing_degrees}
+      min={0}
+      max={359}
+      step={1}
+      unit="°"
+      decimals={0}
+      onChange={(v) =>
+        onChange({ ...settings, bearing_degrees: ((Math.round(v) % 360) + 360) % 360 })
+      }
+    />
+  );
 
-      {/* Route mode */}
-      <div style={styles.group}>
+  const items: Item[] = [
+    {
+      id: 'style',
+      menuLabel: 'Style',
+      node: (
+        <ModePicker<MapStyleId>
+          value={settings.map_style}
+          options={STYLE_OPTIONS}
+          onChange={(v) => onChange({ ...settings, map_style: v })}
+          title="Base map style"
+          minWidth={76}
+          icon={<Layers size={15} strokeWidth={2} />}
+          variant="minimal"
+          iconColor={overrideColor('map_style')}
+        />
+      ),
+    },
+    {
+      id: 'route',
+      menuLabel: 'Route',
+      node: (
         <ModePicker<TriMode>
           value={settings.route_mode}
           options={TRI_OPTIONS}
@@ -110,12 +172,12 @@ export default function MapToolbar({
           variant="minimal"
           iconColor={overrideColor('route_mode')}
         />
-      </div>
-
-      <div style={styles.separator} />
-
-      {/* Waypoints */}
-      <div style={styles.group}>
+      ),
+    },
+    {
+      id: 'waypoints',
+      menuLabel: 'Waypoints',
+      node: (
         <ModePicker<TriMode>
           value={settings.waypoints_mode}
           options={TRI_OPTIONS}
@@ -126,152 +188,233 @@ export default function MapToolbar({
           variant="minimal"
           iconColor={overrideColor('waypoints_mode')}
         />
-      </div>
-
-      <div style={styles.separator} />
-
-      {/* Follow playhead */}
-      <div style={styles.group}>
-        <span
-          style={{ ...styles.groupLabel, color: overrideColor('follow_playhead') ?? styles.groupLabel.color, transition: 'color 0.15s ease' }}
-          title="Follow playhead"
-        >
-          <LocateFixed size={15} strokeWidth={2} />
-        </span>
-        <div
-          onClick={() => onChange({ ...settings, follow_playhead: !followOn })}
-          style={followOn ? styles.previewPillOn : styles.previewPillOff}
-          title={followOn ? 'Map follows playhead — click to pan freely' : 'Free pan — click to follow playhead'}
-        >
-          <span style={followOn ? styles.previewDotOn : styles.previewDotOff} />
-          <span>FOLLOW</span>
-        </div>
-      </div>
-
-      <div style={styles.separator} />
-
-      {/* Bearing — mode + degrees, one coupled group (no internal separator).
-          Compass icon anchors the group; the AUTO/FIXED pill toggles mode and
-          the trailing element is either an editable stepper (fixed) or a
-          live readout of the GPX heading (auto). */}
-      <div style={styles.group}>
-        <span
-          style={{
-            ...styles.groupLabel,
-            color:
-              overrideColor('bearing_mode') ??
-              overrideColor('bearing_degrees') ??
-              styles.groupLabel.color,
-            transition: 'color 0.15s ease',
-          }}
-          title="Map bearing"
-        >
-          <Compass size={15} strokeWidth={2} />
-        </span>
-        <div
-          onClick={() =>
-            onChange({
-              ...settings,
-              bearing_mode: bearingAuto ? 'fixed' : 'auto',
-            })
-          }
-          style={bearingAuto ? styles.previewPillOn : styles.previewPillOff}
-          title={
-            bearingAuto
-              ? 'Bearing follows trail with predetermined stops — click for fixed'
-              : 'Fixed bearing — click to auto-follow trail'
-          }
-        >
-          <span style={bearingAuto ? styles.previewDotOn : styles.previewDotOff} />
-          <span>{bearingAuto ? 'AUTO' : 'FIXED'}</span>
-        </div>
-        {bearingAuto ? (
-          <NumberStepper
-            value={settings.bearing_stops}
-            min={1}
-            max={99}
-            step={1}
-            unit=""
-            decimals={0}
-            onChange={(v) =>
-              onChange({
-                ...settings,
-                bearing_stops: Math.max(1, Math.round(v)),
-              })
-            }
-          />
-        ) : (
-          <NumberStepper
-            value={settings.bearing_degrees}
-            min={0}
-            max={359}
-            step={1}
-            unit="°"
-            decimals={0}
-            onChange={(v) =>
-              onChange({
-                ...settings,
-                bearing_degrees: ((Math.round(v) % 360) + 360) % 360,
-              })
-            }
-          />
-        )}
-      </div>
-
-      <div style={styles.separator} />
-
-      {/* Zoom (default zoom applied when entering a clip) */}
-      <div style={styles.group}>
-        <span
-          style={{ ...styles.groupLabel, color: overrideColor('zoom') ?? styles.groupLabel.color, transition: 'color 0.15s ease' }}
-          title="Default zoom level applied when entering a clip"
-        >
-          <ZoomIn size={15} strokeWidth={2} />
-        </span>
-        <NumberStepper
-          value={settings.zoom}
-          min={1}
-          max={20}
-          step={0.5}
-          unit=""
-          onChange={(v) => onChange({ ...settings, zoom: v })}
-        />
-      </div>
-
-      <div style={styles.separator} />
-
-      {/* Map style */}
-      <div style={styles.group}>
-        <ModePicker<MapStyleId>
-          value={settings.map_style}
-          options={STYLE_OPTIONS}
-          onChange={(v) => onChange({ ...settings, map_style: v })}
-          title="Base map style"
-          minWidth={76}
-          icon={<Layers size={15} strokeWidth={2} />}
-          variant="minimal"
-          iconColor={overrideColor('map_style')}
-        />
-      </div>
-
-      {onOpenPositioning && (
+      ),
+    },
+    {
+      id: 'zoom',
+      menuLabel: 'Zoom',
+      node: (
         <>
-          <div style={styles.separator} />
-          <div style={styles.group}>
-            <button
-              type="button"
-              onClick={onOpenPositioning}
-              title="Map positioning"
-              aria-label="Map positioning"
-              style={positioningButtonStyle}
-              data-testid="map-toolbar-positioning"
-            >
-              <LayoutPanelTop size={15} strokeWidth={2} />
-            </button>
-          </div>
+          <span
+            style={{
+              ...styles.groupLabel,
+              color: overrideColor('zoom') ?? styles.groupLabel.color,
+              transition: 'color 0.15s ease',
+            }}
+            title="Default zoom level applied when entering a clip"
+          >
+            <ZoomIn size={15} strokeWidth={2} />
+          </span>
+          <NumberStepper
+            value={settings.zoom}
+            min={1}
+            max={20}
+            step={0.5}
+            unit=""
+            onChange={(v) => onChange({ ...settings, zoom: v })}
+          />
         </>
+      ),
+    },
+    {
+      id: 'positioning',
+      menuLabel: 'Positioning',
+      node: (
+        <button
+          type="button"
+          onClick={onOpenPositioning}
+          title="Map positioning"
+          aria-label="Map positioning"
+          style={positioningButtonStyle}
+          data-testid="map-toolbar-positioning"
+        >
+          <LayoutPanelTop size={15} strokeWidth={2} />
+        </button>
+      ),
+    },
+    {
+      id: 'follow',
+      menuLabel: 'Follow',
+      node: (
+        <>
+          <span
+            style={{
+              ...styles.groupLabel,
+              color: overrideColor('follow_playhead') ?? styles.groupLabel.color,
+              transition: 'color 0.15s ease',
+            }}
+            title="Follow playhead"
+          >
+            <LocateFixed size={15} strokeWidth={2} />
+          </span>
+          {followPill}
+        </>
+      ),
+    },
+    {
+      id: 'bearing',
+      menuLabel: 'Bearing',
+      node: (
+        <>
+          <span
+            style={{
+              ...styles.groupLabel,
+              color:
+                overrideColor('bearing_mode') ??
+                overrideColor('bearing_degrees') ??
+                styles.groupLabel.color,
+              transition: 'color 0.15s ease',
+            }}
+            title="Map bearing"
+          >
+            <Compass size={15} strokeWidth={2} />
+          </span>
+          {bearingPill}
+          {bearingStepper}
+        </>
+      ),
+    },
+  ];
+
+  // --- Overflow measurement -------------------------------------------------
+  const barRef = useRef<HTMLDivElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = useState(items.length);
+
+  const recompute = useCallback(() => {
+    const bar = barRef.current;
+    const mirror = mirrorRef.current;
+    if (!bar || !mirror) return;
+
+    const content = bar.firstElementChild as HTMLElement | null;
+    if (!content) return;
+
+    const available = content.clientWidth;
+    if (available <= 0) return;
+
+    // The scope toggle is content's first child and never wraps. Each visible
+    // wrapper after it is preceded by one flex gap (CONTENT_GAP). Each mirror
+    // wrapper renders the SAME structure as a visible bar item (separator +
+    // group), so its offsetWidth matches the in-bar footprint exactly.
+    //
+    // Negative margins reduce a flex item's main-axis footprint — the scope
+    // toggle uses margin-left: -16px to bleed into the bar's left padding —
+    // so we have to add horizontal margins to offsetWidth to get the actual
+    // flex consumption.
+    const pinned = content.firstElementChild as HTMLElement | null;
+    const itemBudget = available - (pinned ? flexFootprint(pinned) : 0);
+
+    const wrappers = mirror.querySelectorAll<HTMLElement>('[data-mt-item]');
+    if (wrappers.length !== items.length) return;
+
+    let used = 0;
+    let nextCount = items.length;
+    for (let i = 0; i < wrappers.length; i++) {
+      const step = CONTENT_GAP + wrappers[i].offsetWidth;
+      if (used + step > itemBudget) {
+        nextCount = i;
+        break;
+      }
+      used += step;
+    }
+
+    setVisibleCount((prev) => (prev === nextCount ? prev : nextCount));
+  }, [items.length]);
+
+  // Re-measure after every commit (catches content swaps like AUTO ↔ FIXED).
+  useLayoutEffect(() => {
+    recompute();
+  });
+
+  // Re-measure when the bar or any mirror item changes size.
+  useEffect(() => {
+    const bar = barRef.current;
+    const mirror = mirrorRef.current;
+    if (!bar || !mirror) return;
+    const ro = new ResizeObserver(() => recompute());
+    ro.observe(bar);
+    mirror.querySelectorAll<HTMLElement>('[data-mt-item]').forEach((el) => ro.observe(el));
+    return () => ro.disconnect();
+  }, [recompute]);
+
+  // --- Render ---------------------------------------------------------------
+  const visibleItems = items.slice(0, visibleCount);
+  const wrappedItems = items.slice(visibleCount);
+
+  const barTint = scope === 'project' ? styles.barTintProject : styles.barTintClip;
+  const barFinalStyle: React.CSSProperties = {
+    ...barTint,
+    overflow: 'visible', // allow the wrapped overflow row to escape the bar
+  };
+
+  return (
+    <div style={styles.root}>
+      <Toolbar barRef={barRef} barStyle={barFinalStyle} contentGap={CONTENT_GAP}>
+        <ScopeToggle scope={scope} onScopeChange={onScopeChange} />
+
+        {visibleItems.map((it, i) => (
+          <ItemWrapper key={it.id} firstInRow={i === 0}>
+            {it.node}
+          </ItemWrapper>
+        ))}
+      </Toolbar>
+
+      {wrappedItems.length > 0 && (
+        <div style={{ ...styles.overflowRow, ...barTint }}>
+          {wrappedItems.map((it, i) => (
+            <ItemWrapper key={it.id} firstInRow={i === 0}>
+              {it.node}
+            </ItemWrapper>
+          ))}
+        </div>
       )}
-    </CollapsibleToolbar>
+
+      {/* Hidden measurement mirror — every item rendered at natural width,
+          off-screen. We read each wrapper's offsetWidth to learn its footprint,
+          then decide how many fit in the visible bar. items[0]'s wrapper has
+          no leading separator (matching how it renders as the bar's first
+          item); subsequent wrappers do, matching their in-bar appearance. */}
+      <div ref={mirrorRef} style={styles.mirror} aria-hidden>
+        {items.map((it, i) => (
+          <ItemWrapper key={it.id} measured firstInRow={i === 0}>
+            {it.node}
+          </ItemWrapper>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Horizontal main-axis footprint of a flex item — offsetWidth plus
+ *  horizontal margins. Margins can be negative (the scope toggle uses
+ *  margin-left: -16px to bleed into the bar's left padding), and a flex item
+ *  with negative margin consumes *less* than its offsetWidth would imply. */
+function flexFootprint(el: HTMLElement): number {
+  const cs = getComputedStyle(el);
+  const ml = parseFloat(cs.marginLeft) || 0;
+  const mr = parseFloat(cs.marginRight) || 0;
+  return el.offsetWidth + ml + mr;
+}
+
+/** A single toolbar slot. Renders an identical [separator + group] structure
+ *  in the visible bar, the wrapped overflow row, and the hidden mirror — so
+ *  the mirror's offsetWidth equals the in-bar footprint. The `measured` flag
+ *  tags the wrapper for the recompute pass. `firstInRow` suppresses the
+ *  leading separator (separators belong *between* items, not before them). */
+function ItemWrapper({
+  children,
+  measured,
+  firstInRow,
+}: {
+  children: ReactNode;
+  measured?: boolean;
+  firstInRow?: boolean;
+}) {
+  return (
+    <div data-mt-item={measured || undefined} style={styles.itemWrapper}>
+      {!firstInRow && <span style={styles.separator} />}
+      <div style={styles.group}>{children}</div>
+    </div>
   );
 }
 
@@ -314,7 +457,6 @@ function ScopeIcon({ isProject, fill }: { isProject: boolean; fill: string }) {
   const px = 12;  // front frame x in project mode
   return (
     <svg width="22" height="14" viewBox="0 0 22 14" fill="none">
-      {/* Back bracket (leftmost, smaller, open path) */}
       <path
         d={PARTIAL_SMALL}
         stroke="currentColor"
@@ -326,7 +468,6 @@ function ScopeIcon({ isProject, fill }: { isProject: boolean; fill: string }) {
           transition: TRANSITION,
         }}
       />
-      {/* Middle bracket (slightly smaller than front, open path) */}
       <path
         d={PARTIAL_MED}
         stroke="currentColor"
@@ -338,7 +479,6 @@ function ScopeIcon({ isProject, fill }: { isProject: boolean; fill: string }) {
           transition: TRANSITION,
         }}
       />
-      {/* Front frame (complete, filled to occlude) */}
       <path
         d={FRAME}
         stroke="currentColor"
@@ -354,7 +494,10 @@ function ScopeIcon({ isProject, fill }: { isProject: boolean; fill: string }) {
   );
 }
 
-function ScopeToggle({ scope, onScopeChange }: {
+function ScopeToggle({
+  scope,
+  onScopeChange,
+}: {
   scope: MapToolbarScope;
   onScopeChange: (scope: MapToolbarScope) => void;
 }) {
