@@ -43,8 +43,18 @@ interface InitPayload {
    *  inner URLs (sources, glyphs, sprite) still flow through the rewriter
    *  the moment maplibre needs them. */
   style: AnyJSON;
-  /** Map slot pixel dims; the page's <div id="map"> sizes to this. */
-  viewport: { w: number; h: number };
+  /** CSS-pixel dims at which `#map` is laid out. Combined with `pixelRatio`,
+   *  these determine the WebGL drawing-buffer size — `cssViewport * pixelRatio
+   *  = framebuffer`. The page sizes the container in CSS pixels; MapLibre
+   *  scales internally by its `pixelRatio` constructor arg. */
+  cssViewport: { w: number; h: number };
+  /** Actual WebGL drawing-buffer pixel dims. Equal to the map slot pixel
+   *  dims; the readback path is sized to these. */
+  framebuffer: { w: number; h: number };
+  /** `framebuffer.w / cssViewport.w`. Passed to MapLibre's `pixelRatio`
+   *  constructor arg so map tile selection + label sizing honor the export's
+   *  effective DPR. Can be < 1 (downscaled insets) or > 1 (high-res). */
+  pixelRatio: number;
   /** True if `mapSettings.map_style === '3d'`. Toggles
    *  BUILDINGS_LAYER_SPEC addition post-style-load. */
   add3dBuildings: boolean;
@@ -56,6 +66,14 @@ interface InitPayload {
   staticLayers: AnyJSON[];
   /** [layerId, visibility] one-shot at init time. */
   visibility: Array<[string, 'visible' | 'none']>;
+  /** Resolved static paint values — applied via setPaintProperty after the
+   *  static layers are added. The layer specs ship placeholder `1`s for
+   *  every size-based property, so these MUST be applied before the first
+   *  frame or the map will render with 1-pixel lines and 1-pixel circles. */
+  staticPaints: Array<[string, string, number]>;
+  /** Resolved static layout values (text-size on waypoints-label). Same
+   *  contract as staticPaints — applied via setLayoutProperty. */
+  staticLayouts: Array<[string, string, number]>;
   /** Just the BUILDINGS_LAYER_SPEC if add3dBuildings; null otherwise. */
   buildingsLayer: AnyJSON | null;
   /** When true, page-side __init/__applyFrame log diagnostic breadcrumbs
@@ -179,6 +197,17 @@ window.__map = null;
 window.__verbose = false;
 window.__transport = 'readpixels';
 
+// Expected framebuffer dims, captured at __init. The orchestrator (Node side)
+// validates that the readback buffer is exactly framebuffer.w*h*4 bytes, so
+// the page must always honor those dims regardless of how the browser/MapLibre
+// rounded the actual `gl.drawingBufferWidth/Height`. For canonical-css-width
+// exports the math doesn't always round-trip cleanly (e.g. css_h=3413,
+// pixel_ratio=27/128 → 719.93, which Chromium has been seen to floor to 719),
+// so captureFramebufferIntoBuf pads/crops by ≤1 row/col to match.
+let expectedFbW = 0;
+let expectedFbH = 0;
+let mismatchWarned = false;
+
 // ---------------------------------------------------------------------------
 // __init — construct map with transformRequest + addProtocol, apply patch,
 // seed sources/layers.
@@ -188,6 +217,9 @@ window.__init = async (payload: InitPayload): Promise<void> => {
   // are read by __applyFrame on every frame.
   window.__verbose = !!payload.verbose;
   window.__transport = payload.transport ?? 'readpixels';
+  expectedFbW = payload.framebuffer.w;
+  expectedFbH = payload.framebuffer.h;
+  mismatchWarned = false;
 
   const t0 = Date.now();
   const bc = (msg: string): void => {
@@ -206,19 +238,22 @@ window.__init = async (payload: InitPayload): Promise<void> => {
     const container = document.getElementById('map');
     if (!container) throw new Error('no #map container in page');
 
-    // Set the container's pixel size so the map's WebGL framebuffer matches
-    // the worker's viewport. The body CSS is 100% of the iframe; this div
-    // pins the map to exactly viewport.w × viewport.h.
-    container.style.width = `${payload.viewport.w}px`;
-    container.style.height = `${payload.viewport.h}px`;
-    bc(`container sized ${payload.viewport.w}x${payload.viewport.h}`);
+    // Set the container's CSS-pixel size. MapLibre multiplies this by its
+    // `pixelRatio` constructor arg (below) to size the WebGL drawing buffer,
+    // which is what __applyFrame's gl.readPixels reads back. This is the
+    // decoupling that lets `mapSettings.zoom` mean the same thing across
+    // export resolutions: zoom is interpreted at `cssViewport`, then the
+    // framebuffer scales independently via `pixelRatio`.
+    container.style.width = `${payload.cssViewport.w}px`;
+    container.style.height = `${payload.cssViewport.h}px`;
+    bc(`container sized css=${payload.cssViewport.w}x${payload.cssViewport.h} dpr=${payload.pixelRatio} → fb=${payload.framebuffer.w}x${payload.framebuffer.h}`);
 
     const map = new maplibregl.Map({
       container,
       style: payload.style,
       interactive: false,
       attributionControl: false,
-      pixelRatio: 1,
+      pixelRatio: payload.pixelRatio,
       // Disable label fade so deterministic project-time → identical output.
       fadeDuration: 0,
       transformRequest: (url) => {
@@ -345,6 +380,21 @@ window.__init = async (payload: InitPayload): Promise<void> => {
       bc(`setVisibility ${layerId}=${vis}`);
     }
 
+    // Static paint sizing. Layer specs ship placeholder `1`s for every
+    // size-based property (line-width, circle-radius, circle-stroke-width,
+    // text-size). The real values are
+    // `PAINT_SIZE_FRACTIONS.<name> * cssViewport.w` — resolved on the
+    // worker side and shipped here as ready-to-apply triplets. Skipping
+    // this would render the map with 1-pixel lines and 1-pixel circles.
+    for (const [layerId, prop, value] of payload.staticPaints) {
+      map.setPaintProperty(layerId, prop, value);
+      bc(`setStaticPaint ${layerId}.${prop}=${value}`);
+    }
+    for (const [layerId, prop, value] of payload.staticLayouts) {
+      map.setLayoutProperty(layerId, prop, value);
+      bc(`setStaticLayout ${layerId}.${prop}=${value}`);
+    }
+
     // ---- Sticky 'render' listener for the readpixels transport ----
     //
     // Why subscribe here, in __init, instead of inside __applyFrame: WebGL
@@ -463,7 +513,16 @@ let readScratch: Uint8Array | null = null;
  *  Called synchronously from the maplibre 'render' event handler — at
  *  that instant the framebuffer holds the just-painted pixels and the
  *  browser hasn't yet composited (so the default
- *  preserveDrawingBuffer:false hasn't cleared anything). */
+ *  preserveDrawingBuffer:false hasn't cleared anything).
+ *
+ *  Output buffer is always sized to the orchestrator-supplied
+ *  `framebuffer.w × framebuffer.h × 4` (captured at __init), not to the
+ *  actual `gl.drawingBufferWidth/Height`. The two can differ by ≤1 px on
+ *  axes where the canonical-css-width math can't round-trip exactly
+ *  through the browser's deviceScaleFactor (e.g. slot 405×720 → css_h
+ *  3413 × pr 27/128 = 719.93, which Chromium has been observed to floor
+ *  to 719). Map content is copied into the intersection rectangle (top-
+ *  left aligned after row flip); any extra rows/cols stay zero-filled. */
 function captureFramebufferIntoBuf(map: AnyJSON): void {
   const canvas = map.getCanvas() as HTMLCanvasElement;
   // The map's WebGL context was created in maplibre's _setupPainter; we
@@ -474,29 +533,62 @@ function captureFramebufferIntoBuf(map: AnyJSON): void {
     ?? (canvas.getContext('webgl') as WebGLRenderingContext | null);
   if (!gl) throw new Error('readPixels: map canvas has no WebGL context');
 
-  const w = gl.drawingBufferWidth;
-  const h = gl.drawingBufferHeight;
-  if (w === 0 || h === 0) {
+  const actualW = gl.drawingBufferWidth;
+  const actualH = gl.drawingBufferHeight;
+  if (actualW === 0 || actualH === 0) {
     // Pre-load tick — framebuffer not yet sized. Skip silently; a real
     // render with non-zero dims will fire later.
     return;
   }
-  const len = w * h * 4;
-  if (!readbackBuf || readbackBufW !== w || readbackBufH !== h) {
-    readbackBuf = new Uint8Array(len);
-    readScratch = new Uint8Array(len);
-    readbackBufW = w;
-    readbackBufH = h;
-  }
-  const scratch = readScratch as Uint8Array;
-  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
 
-  const rowBytes = w * 4;
+  // Expected dims govern the output buffer size — the orchestrator
+  // strictly validates `framebuffer.w*h*4` on the Node side.
+  const expW = expectedFbW || actualW;
+  const expH = expectedFbH || actualH;
+  const expLen = expW * expH * 4;
+  if (!readbackBuf || readbackBufW !== expW || readbackBufH !== expH) {
+    readbackBuf = new Uint8Array(expLen);
+    readbackBufW = expW;
+    readbackBufH = expH;
+  } else {
+    // Zero-fill so any padding rows/cols (when actual < expected) are
+    // transparent black rather than stale pixels from a prior frame.
+    readbackBuf.fill(0);
+  }
+
+  // Scratch is sized to the *actual* drawing buffer — gl.readPixels with
+  // a width/height beyond the framebuffer has implementation-defined
+  // behavior, so we never ask for more than is actually there.
+  const actualLen = actualW * actualH * 4;
+  if (!readScratch || readScratch.length !== actualLen) {
+    readScratch = new Uint8Array(actualLen);
+  }
+  const scratch = readScratch;
+  gl.readPixels(0, 0, actualW, actualH, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+
+  // Copy the intersection of (actual, expected). Map content is top-left
+  // aligned in the output; row flip happens here (gl.readPixels is
+  // bottom-up, our consumers want top-down).
+  const copyW = Math.min(actualW, expW);
+  const copyH = Math.min(actualH, expH);
+  const copyRowBytes = copyW * 4;
+  const srcRowBytes = actualW * 4;
+  const dstRowBytes = expW * 4;
   const out = readbackBuf;
-  for (let y = 0; y < h; y++) {
-    const srcStart = (h - 1 - y) * rowBytes;
-    const dstStart = y * rowBytes;
-    out.set(scratch.subarray(srcStart, srcStart + rowBytes), dstStart);
+  for (let y = 0; y < copyH; y++) {
+    const srcStart = (actualH - 1 - y) * srcRowBytes;
+    const dstStart = y * dstRowBytes;
+    out.set(scratch.subarray(srcStart, srcStart + copyRowBytes), dstStart);
+  }
+
+  if (!mismatchWarned && (actualW !== expW || actualH !== expH)) {
+    mismatchWarned = true;
+    console.warn(
+      `[readpixels] drawing-buffer dims ${actualW}x${actualH} differ from ` +
+      `expected framebuffer ${expW}x${expH} — padding/cropping to match. ` +
+      `This is benign at ≤1px (canonical-css rounding) but a larger drift ` +
+      `indicates a viewport setup bug.`,
+    );
   }
 }
 
@@ -537,7 +629,15 @@ window.__applyFrame = async (frame: FramePayload): Promise<{ rgbaB64: string | n
       bearing: frame.camera.bearing,
       pitch: frame.camera.pitch,
     });
-    bc('jumpTo done');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tr: AnyJSON = (map as any).transform;
+    bc(
+      `jumpTo done zoom=${frame.camera.zoom.toFixed(3)} ` +
+      `center=${frame.camera.center.lng.toFixed(5)},${frame.camera.center.lat.toFixed(5)} ` +
+      `bearing=${frame.camera.bearing.toFixed(1)} pitch=${frame.camera.pitch.toFixed(1)} ` +
+      `transformW=${tr?.width} transformH=${tr?.height} ` +
+      `tileSize=${tr?.tileSize} pixelRatio=${map.getPixelRatio().toFixed(3)}`
+    );
 
     // Force a repaint scheduling: once('idle') only fires the *next* time idle
     // is dispatched, not if the map happens to already be idle. Calling

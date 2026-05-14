@@ -8,6 +8,9 @@ const invokeMock = vi.fn();
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+  Channel: class<T> {
+    onmessage: ((ev: T) => void) | null = null;
+  },
 }));
 
 function makeJob(id: string): ExportJob {

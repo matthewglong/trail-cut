@@ -11,8 +11,17 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use trail_cut_lib::export::layout::{resolve_slots, AspectRatio, LayoutConfig, SlotResolution};
+use trail_cut_lib::export::layout::{
+    canonical_map_viewport, resolve_slots, AspectRatio, LayoutConfig, SlotResolution,
+};
 use trail_cut_lib::export::resolution::OutputResolution;
+
+#[derive(Debug, Deserialize)]
+struct ExpectedCanonicalMapViewport {
+    css_w: u32,
+    css_h: u32,
+    pixel_ratio: f64,
+}
 
 #[derive(Debug, Deserialize)]
 struct FixtureCase {
@@ -22,6 +31,12 @@ struct FixtureCase {
     resolution: OutputResolution,
     layout: LayoutConfig,
     expected: SlotResolution,
+    /// Per-case expected output of `canonical_map_viewport(aspect, map_slot.w,
+    /// map_slot.h)`. Float comparison uses an epsilon (`< 1e-9`) because
+    /// legitimate non-integer ratios like 0.32037037... don't survive strict
+    /// `f64` equality across JSON-round-trip.
+    #[serde(default)]
+    expected_canonical_map_viewport: Option<ExpectedCanonicalMapViewport>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,4 +71,53 @@ fn resolve_slots_matches_shared_fixture() {
         let got = resolve_slots(&case.layout, case.aspect, case.resolution);
         assert_eq!(got, case.expected, "case {} resolved to {:?}", case.name, got);
     }
+}
+
+#[test]
+fn canonical_map_viewport_matches_shared_fixture() {
+    // Parity-anchored counterpart of `resolve_slots_matches_shared_fixture`.
+    // For every case the TS test (`src/lib/__tests__/layout.test.ts`) runs
+    // the same comparison against `canonicalMapViewport`; drift between the
+    // ports surfaces as a per-case failure here AND there.
+    let fixture = load_fixture();
+    let mut covered = 0usize;
+    for case in &fixture.cases {
+        let Some(expected) = case.expected_canonical_map_viewport.as_ref() else {
+            // Tolerated for forward-compat — new fixture cases can land
+            // before being annotated. Existing cases all carry the field;
+            // the count-check below catches regressions.
+            continue;
+        };
+        covered += 1;
+        let map_slot = case.expected.map_slot;
+        let got = canonical_map_viewport(case.aspect, map_slot.w, map_slot.h, case.resolution);
+        assert_eq!(
+            got.css_w, expected.css_w,
+            "case {} css_w: got {} expected {}",
+            case.name, got.css_w, expected.css_w,
+        );
+        assert_eq!(
+            got.css_h, expected.css_h,
+            "case {} css_h: got {} expected {}",
+            case.name, got.css_h, expected.css_h,
+        );
+        // Epsilon: pixel_ratio is a non-integer ratio like 0.32037... in
+        // many cases; strict equality would fail after JSON round-trip.
+        // 1e-9 is well above f64 round-trip precision (~1e-15) and tight
+        // enough to catch any real drift.
+        assert!(
+            (got.pixel_ratio - expected.pixel_ratio).abs() < 1e-9,
+            "case {} pixel_ratio: got {} expected {} (diff {})",
+            case.name,
+            got.pixel_ratio,
+            expected.pixel_ratio,
+            (got.pixel_ratio - expected.pixel_ratio).abs(),
+        );
+    }
+    assert!(
+        covered >= fixture.cases.len(),
+        "every fixture case must carry `expected_canonical_map_viewport` (got {} of {})",
+        covered,
+        fixture.cases.len(),
+    );
 }

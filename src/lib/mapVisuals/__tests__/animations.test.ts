@@ -4,14 +4,17 @@
 // on this being deterministic at any sampled t.
 
 import { describe, it, expect } from 'vitest';
-import { pulseAt, PULSE_PERIOD_MS } from '../animations';
+import { pulseAt, pulseAtScaled, PULSE_PERIOD_MS } from '../animations';
+import { PAINT_SIZE_FRACTIONS } from '../styleSpec';
 
 const FLOAT_EPS = 1e-9;
+const START_R = PAINT_SIZE_FRACTIONS.pulseStartRadius * 1080;
+const END_R = PAINT_SIZE_FRACTIONS.pulseEndRadius * 1080;
 
 describe('pulseAt', () => {
-  it('boundary at t=0: radius=8 and opacity=0.55', () => {
+  it('boundary at t=0: radius=pulseStartRadius × PAINT_REFERENCE_WIDTH and opacity=0.55', () => {
     const v = pulseAt(0);
-    expect(Math.abs(v.radius - 8)).toBeLessThan(FLOAT_EPS);
+    expect(Math.abs(v.radius - START_R)).toBeLessThan(FLOAT_EPS);
     expect(Math.abs(v.opacity - 0.55)).toBeLessThan(FLOAT_EPS);
   });
 
@@ -51,16 +54,45 @@ describe('pulseAt', () => {
     const b = pulseAt(PULSE_PERIOD_MS - 100);
     expect(Math.abs(a.radius - b.radius)).toBeLessThan(FLOAT_EPS);
     expect(Math.abs(a.opacity - b.opacity)).toBeLessThan(FLOAT_EPS);
-    // Range check.
-    expect(a.radius).toBeGreaterThanOrEqual(8);
-    expect(a.radius).toBeLessThanOrEqual(22);
+    // Range check (radius bounded by start and end fractions × PAINT_REFERENCE_WIDTH).
+    expect(a.radius).toBeGreaterThanOrEqual(START_R - FLOAT_EPS);
+    expect(a.radius).toBeLessThanOrEqual(END_R + FLOAT_EPS);
     expect(a.opacity).toBeGreaterThanOrEqual(0);
     expect(a.opacity).toBeLessThanOrEqual(0.55);
   });
 
-  it('end of period: t = PULSE_PERIOD_MS - 0.001 → radius ≈ 22, opacity ≈ 0', () => {
+  it('end of period: t = PULSE_PERIOD_MS - 0.001 → radius ≈ pulseEndRadius × 1080, opacity ≈ 0', () => {
     const v = pulseAt(PULSE_PERIOD_MS - 0.001);
-    expect(Math.abs(v.radius - 22)).toBeLessThan(0.01);
+    expect(Math.abs(v.radius - END_R)).toBeLessThan(0.01);
     expect(v.opacity).toBeLessThan(0.01);
+  });
+});
+
+describe('pulseAtScaled', () => {
+  // Preview composition: scaled reference width drives radius linearly,
+  // opacity is invariant.
+  it('boundary at t=0 with width 540: radius=pulseStartRadius × 540', () => {
+    const v = pulseAtScaled(0, 540);
+    expect(Math.abs(v.radius - PAINT_SIZE_FRACTIONS.pulseStartRadius * 540)).toBeLessThan(
+      FLOAT_EPS,
+    );
+    expect(Math.abs(v.opacity - 0.55)).toBeLessThan(FLOAT_EPS);
+  });
+
+  it('scales linearly with the scaledRefWidth argument', () => {
+    const a = pulseAtScaled(400, 1080);
+    const b = pulseAtScaled(400, 540);
+    expect(b.radius).toBeCloseTo(a.radius * 0.5, 9);
+    // Opacity is width-independent.
+    expect(b.opacity).toBeCloseTo(a.opacity, 9);
+  });
+
+  it('at scaledRefWidth=1080 matches pulseAt() exactly', () => {
+    for (const t of [0, 250, 800, 1599]) {
+      const a = pulseAt(t);
+      const b = pulseAtScaled(t, 1080);
+      expect(Math.abs(a.radius - b.radius)).toBeLessThan(FLOAT_EPS);
+      expect(Math.abs(a.opacity - b.opacity)).toBeLessThan(FLOAT_EPS);
+    }
   });
 });

@@ -48,7 +48,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use trail_cut_lib::export::{
-    render_map_frames, FrameSink, OrchestratorConfig, SetupPayload, SinkError, Viewport,
+    canonical_map_viewport, render_map_frames, AspectRatio, FrameSink, OrchestratorConfig,
+    OutputResolution, SetupPayload, SinkError, Viewport,
 };
 
 /// Frame indices the fixture commits PNGs for. Times: 0s, 1s, 2s, 4s.
@@ -112,8 +113,9 @@ fn chrome_bin_env_present() -> bool {
 }
 
 /// Load the committed setup.json fixture and reshape it into a SetupPayload.
-/// The wire-only keys (`cmd`, `viewport`, `fps`) are stripped so SetupPayload's
-/// flatten+typed wrapper round-trips cleanly.
+/// The wire-only keys (`cmd`, `cssViewport`, `framebuffer`, `pixelRatio`,
+/// `fps`) are stripped so SetupPayload's flatten+typed wrapper round-trips
+/// cleanly.
 fn load_setup_payload() -> SetupPayload {
     let path = fixture_dir().join("setup.json");
     let bytes = std::fs::read(&path)
@@ -122,14 +124,25 @@ fn load_setup_payload() -> SetupPayload {
         .unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
     if let Some(obj) = value.as_object_mut() {
         obj.remove("cmd");
-        obj.remove("viewport");
+        obj.remove("cssViewport");
+        obj.remove("framebuffer");
+        obj.remove("pixelRatio");
         obj.remove("fps");
     }
+    // 9_16 aspect, framebuffer = VIEWPORT_W × VIEWPORT_H. Under the
+    // multiplier model `canonical_map_viewport` is the single source of
+    // truth for (css_viewport, pixel_ratio); the golden fixture was
+    // captured at the canonical 1080p reference resolution.
+    let aspect = AspectRatio::NineSixteen;
+    let framebuffer = Viewport { w: VIEWPORT_W, h: VIEWPORT_H };
+    let canonical =
+        canonical_map_viewport(aspect, framebuffer.w, framebuffer.h, OutputResolution::P1080);
+    let css_viewport = Viewport { w: canonical.css_w, h: canonical.css_h };
+    let pixel_ratio = canonical.pixel_ratio;
     SetupPayload {
-        viewport: Viewport {
-            w: VIEWPORT_W,
-            h: VIEWPORT_H,
-        },
+        css_viewport,
+        framebuffer,
+        pixel_ratio,
         fps: FPS,
         project_state: value,
     }
@@ -254,6 +267,7 @@ async fn golden_frame_parity_chromium() {
         TOTAL_FRAMES,
         OrchestratorConfig::default(),
         Box::new(sink),
+        None,
     )
     .await
     .expect("render_map_frames");

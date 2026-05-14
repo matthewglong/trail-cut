@@ -1,9 +1,14 @@
 {
   "cmd": "setup",
-  "viewport": {
+  "cssViewport": {
+    "w": 1080,
+    "h": 1920
+  },
+  "framebuffer": {
     "w": 540,
     "h": 960
   },
+  "pixelRatio": 0.5,
   "fps": 30,
   "timeline": {
     "clipSpans": [

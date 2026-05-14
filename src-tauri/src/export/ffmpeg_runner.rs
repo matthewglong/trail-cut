@@ -17,10 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{ChildStderr, Command};
+use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::task::JoinHandle;
 
 pub use crate::export::error::FFmpegRunnerError;
+use crate::export::orchestrator::FrameProgress;
 
 const STDERR_TAIL_BYTES: usize = 4096;
 
@@ -36,6 +37,7 @@ pub struct FFmpegRunResult {
 pub struct FFmpegRunner {
     child: tokio::process::Child,
     stderr_handle: Option<JoinHandle<()>>,
+    stdout_handle: Option<JoinHandle<()>>,
     stderr_tail: Arc<Mutex<StderrRing>>,
     started: Instant,
 }
@@ -43,12 +45,27 @@ pub struct FFmpegRunner {
 impl FFmpegRunner {
     /// Spawn FFmpeg with `argv`. Stdin is inherited as null (FFmpeg won't
     /// block waiting for input); stderr is piped and forwarded.
-    pub async fn spawn(ffmpeg_path: &Path, argv: &[String]) -> Result<Self, FFmpegRunnerError> {
+    ///
+    /// When `on_progress` is `Some`, FFmpeg's stdout is also piped and parsed
+    /// as the `-progress pipe:1` key/value stream: `frame=N` lines drive the
+    /// callback. Callers that want progress must include `-progress pipe:1`
+    /// in `argv` themselves — this function does not inject it, to keep the
+    /// filtergraph builders in charge of the full argv.
+    pub async fn spawn(
+        ffmpeg_path: &Path,
+        argv: &[String],
+        on_progress: Option<FrameProgress>,
+    ) -> Result<Self, FFmpegRunnerError> {
         let started = Instant::now();
+        let stdout_kind = if on_progress.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        };
         let mut child = Command::new(ffmpeg_path)
             .args(argv)
             .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
+            .stdout(stdout_kind)
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true)
             .spawn()
@@ -64,9 +81,17 @@ impl FFmpegRunner {
             tokio::spawn(forward_stderr(stderr, tail))
         };
 
+        let stdout_handle = if let Some(cb) = on_progress {
+            let stdout = child.stdout.take().expect("piped");
+            Some(tokio::spawn(parse_progress_stream(stdout, cb)))
+        } else {
+            None
+        };
+
         Ok(Self {
             child,
             stderr_handle: Some(stderr_handle),
+            stdout_handle,
             stderr_tail,
             started,
         })
@@ -77,6 +102,9 @@ impl FFmpegRunner {
     pub async fn wait(mut self) -> Result<FFmpegRunResult, FFmpegRunnerError> {
         let status = self.child.wait().await?;
         if let Some(h) = self.stderr_handle.take() {
+            let _ = h.await;
+        }
+        if let Some(h) = self.stdout_handle.take() {
             let _ = h.await;
         }
         let stderr_tail = self.stderr_tail.lock().unwrap().tail();
@@ -104,8 +132,44 @@ pub async fn run_ffmpeg(
     ffmpeg_path: &Path,
     argv: &[String],
 ) -> Result<FFmpegRunResult, FFmpegRunnerError> {
-    let runner = FFmpegRunner::spawn(ffmpeg_path, argv).await?;
+    let runner = FFmpegRunner::spawn(ffmpeg_path, argv, None).await?;
     runner.wait().await
+}
+
+/// Progress-emitting variant of `run_ffmpeg`. Callers must include
+/// `-progress pipe:1` in `argv` (the filtergraph builders own the argv, so
+/// this stays separate from the runner). The callback is invoked with each
+/// `frame=N` value FFmpeg writes to stdout.
+pub async fn run_ffmpeg_with_progress(
+    ffmpeg_path: &Path,
+    argv: &[String],
+    on_progress: FrameProgress,
+) -> Result<FFmpegRunResult, FFmpegRunnerError> {
+    let runner = FFmpegRunner::spawn(ffmpeg_path, argv, Some(on_progress)).await?;
+    runner.wait().await
+}
+
+/// Read FFmpeg's `-progress pipe:1` key=value stream line by line and call
+/// `on_progress(frame_index)` for each `frame=N` line. Other keys (`speed`,
+/// `bitrate`, `out_time`, …) are ignored — we only need the frame count to
+/// drive the progress bar.
+async fn parse_progress_stream(stdout: ChildStdout, on_progress: FrameProgress) {
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line).await {
+            Ok(0) => break,
+            Ok(_) => {
+                if let Some(rest) = line.strip_prefix("frame=") {
+                    if let Ok(n) = rest.trim().parse::<u32>() {
+                        on_progress(n);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
 }
 
 async fn forward_stderr(stderr: ChildStderr, tail: Arc<Mutex<StderrRing>>) {

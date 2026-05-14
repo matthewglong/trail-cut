@@ -1,7 +1,8 @@
 // Per-frame paint deltas. The active-clip highlight on `waypoints-circle` is
 // expressed as MapLibre `case` expressions keyed off the feature's `id`
 // property so the highlight is data-driven (no layer churn, no per-feature
-// rebuild). The pulse values come from `pulseAt(projectTimeMs)`.
+// rebuild). The pulse values come from `pulseAt(projectTimeMs)` (renderer)
+// / `pulseAtScaled` (preview).
 //
 // Magic literal `'#4a9eff'` — the active-waypoint blue — lives here, not at
 // the consumer. Anywhere else and it would drift between preview and export.
@@ -10,30 +11,66 @@ import type {
   DataDrivenPropertyValueSpecification,
   ExpressionSpecification,
 } from 'maplibre-gl';
+import { canonicalMapCssWidth, type AspectRatio } from '../layout';
 import { colors } from '../../theme/tokens';
-import { pulseAt } from './animations';
+import { pulseAt, pulseAtScaled } from './animations';
+import { PAINT_REFERENCE_WIDTH, PAINT_SIZE_FRACTIONS } from './styleSpec';
 import type { PaintUpdates } from './types';
 
 const ACTIVE_WAYPOINT_COLOR = '#4a9eff';
 const DEFAULT_WAYPOINT_COLOR = colors.accent;
 const DEFAULT_STROKE_COLOR = 'rgba(255, 255, 255, 0.85)';
 const ACTIVE_STROKE_COLOR = 'rgba(255, 255, 255, 0.95)';
-const DEFAULT_RADIUS = 11;
-const ACTIVE_RADIUS = 14;
 
 /** Build the per-frame paint deltas. When `activeClipId` is non-null, returns
  *  data-driven `case` expressions that bump radius/color/stroke for the
  *  feature whose `id` property matches. When null, returns scalar defaults
- *  (no feature is highlighted). Pulse always comes from `pulseAt`. */
+ *  (no feature is highlighted). Pulse always comes from `pulseAt`.
+ *
+ *  Width-independent under the lever model: radii anchor to
+ *  `PAINT_REFERENCE_WIDTH` (1080 CSS px), the renderer's `pixelRatio` lever
+ *  absorbs the resolution shift. The preview uses
+ *  `buildPerFramePaintsForPreview` so the values scale with the pane
+ *  reshape factor. Color, stroke color, and opacity outputs are
+ *  untouched. */
 export function buildPerFramePaints(
   activeClipId: string | null,
   projectTimeMs: number,
 ): PaintUpdates {
   const pulse = pulseAt(projectTimeMs);
+  const defaultRadius =
+    PAINT_SIZE_FRACTIONS.waypointsCircleRadius * PAINT_REFERENCE_WIDTH;
+  const activeRadius =
+    PAINT_SIZE_FRACTIONS.waypointsActiveRadius * PAINT_REFERENCE_WIDTH;
+  return composePaints(activeClipId, pulse, defaultRadius, activeRadius);
+}
 
+/** Preview variant of `buildPerFramePaints`. Scales the radii (and the
+ *  pulse) by `paneCssWidth / canonicalMapCssWidth(aspect)` so the per-frame
+ *  paints compose with the pane reshape factor exactly like the static
+ *  paints. See `MAP_RENDERING_PLAN.md` §"Preview behavior". */
+export function buildPerFramePaintsForPreview(
+  activeClipId: string | null,
+  projectTimeMs: number,
+  paneCssWidth: number,
+  aspect: AspectRatio,
+): PaintUpdates {
+  const w = PAINT_REFERENCE_WIDTH * (paneCssWidth / canonicalMapCssWidth(aspect));
+  const pulse = pulseAtScaled(projectTimeMs, w);
+  const defaultRadius = PAINT_SIZE_FRACTIONS.waypointsCircleRadius * w;
+  const activeRadius = PAINT_SIZE_FRACTIONS.waypointsActiveRadius * w;
+  return composePaints(activeClipId, pulse, defaultRadius, activeRadius);
+}
+
+function composePaints(
+  activeClipId: string | null,
+  pulse: { radius: number; opacity: number },
+  defaultRadius: number,
+  activeRadius: number,
+): PaintUpdates {
   if (!activeClipId) {
     return {
-      waypointCircleRadius: DEFAULT_RADIUS,
+      waypointCircleRadius: defaultRadius,
       waypointCircleColor: DEFAULT_WAYPOINT_COLOR,
       waypointCircleStrokeColor: DEFAULT_STROKE_COLOR,
       pulseRadius: pulse.radius,
@@ -44,8 +81,8 @@ export function buildPerFramePaints(
   const radiusExpr: ExpressionSpecification = [
     'case',
     ['==', ['get', 'id'], activeClipId],
-    ACTIVE_RADIUS,
-    DEFAULT_RADIUS,
+    activeRadius,
+    defaultRadius,
   ];
   const colorExpr: ExpressionSpecification = [
     'case',

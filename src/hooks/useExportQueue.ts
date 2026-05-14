@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type { ExportJob } from '../lib/exportFilenames';
 import type { RenderExportRequest } from '../lib/exportRequest';
 
@@ -9,6 +9,14 @@ export interface RenderExportSummary {
   frames_written: number;
   output_path: string;
   wall_clock_ms: number;
+}
+
+/** Mirrors the Rust `ProgressEvent` struct emitted over the per-job
+ *  Tauri channel. `frames_done` is the running output-frame count;
+ *  `total_frames` is the constant denominator the bar divides by. */
+export interface ProgressEvent {
+  frames_done: number;
+  total_frames: number;
 }
 
 /** Surface area of a Rust `RenderExportError` as it crosses IPC. The Rust
@@ -24,6 +32,14 @@ export interface QueueJob extends ExportJob {
   state: JobState;
   error?: string;
   summary?: RenderExportSummary;
+  /** Output frames rendered so far; populated while `state === 'running'`
+   *  via the per-job Tauri progress channel. Undefined until the first
+   *  event arrives. */
+  framesDone?: number;
+  /** Total frames the job will produce (timeline duration × output fps).
+   *  Sent in the same progress event as `framesDone` so the bar has both
+   *  endpoints without recomputing on the frontend. */
+  totalFrames?: number;
 }
 
 /** Terminal states are `'done'` (queue ran to completion — some jobs may
@@ -92,8 +108,17 @@ export function useExportQueue(): UseExportQueue {
             setJobAt(i, { state: 'running' });
             try {
               const req = buildRequest(initial[i]);
+              const progress = new Channel<ProgressEvent>();
+              const jobIndex = i;
+              progress.onmessage = (ev) => {
+                setJobAt(jobIndex, {
+                  framesDone: ev.frames_done,
+                  totalFrames: ev.total_frames,
+                });
+              };
               const summary = await invoke<RenderExportSummary>('render_export', {
                 req,
+                progress,
               });
               setJobAt(i, { state: 'done', summary });
             } catch (err) {

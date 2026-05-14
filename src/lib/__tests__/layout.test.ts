@@ -9,6 +9,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   OUTPUT_DIMS,
+  canonicalMapCssWidth,
+  canonicalMapViewport,
+  outputDims,
   resolveSlots,
   defaultLayout,
   defaultPipLayout,
@@ -24,6 +27,12 @@ import {
 } from '../layout';
 import rawFixture from '../../../src-tauri/tests/fixtures/layout_parity.json';
 
+interface ExpectedCanonicalMapViewport {
+  css_w: number;
+  css_h: number;
+  pixel_ratio: number;
+}
+
 interface FixtureCase {
   name: string;
   aspect: AspectRatio;
@@ -32,6 +41,10 @@ interface FixtureCase {
   resolution?: OutputResolution;
   layout: LayoutConfig;
   expected: SlotResolution;
+  /** Optional in the schema (gracefully tolerates new cases that haven't been
+   *  augmented yet) but every case currently carries it; the parity test below
+   *  asserts presence. */
+  expected_canonical_map_viewport?: ExpectedCanonicalMapViewport;
 }
 
 interface Fixture {
@@ -265,6 +278,191 @@ describe('clampLayout', () => {
       divider: 0.5,
     };
     expect(clampLayout(layout, '4_5')).toEqual(layout);
+  });
+});
+
+describe('canonicalMapCssWidth', () => {
+  // The canonical CSS width for `mapSettings.zoom` interpretation is the width
+  // of the 1080p output for the selected export aspect. These values MUST
+  // match the Rust port's `canonical_map_css_width` (parity test hardcoded in
+  // `src-tauri/src/export/layout.rs`'s `#[cfg(test)] mod tests`).
+  it('9_16 → 1080', () => {
+    expect(canonicalMapCssWidth('9_16')).toBe(1080);
+  });
+
+  it('4_5 → 1080', () => {
+    expect(canonicalMapCssWidth('4_5')).toBe(1080);
+  });
+
+  it('16_9 → 1920', () => {
+    expect(canonicalMapCssWidth('16_9')).toBe(1920);
+  });
+
+  it('tracks outputDims(aspect, "1080p").w for every aspect', () => {
+    // The helper must literally call `outputDims(aspect, '1080p').w`; this
+    // test pins that contract so a future refactor can't silently drift from
+    // the single source of truth.
+    const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+    for (const aspect of aspects) {
+      expect(canonicalMapCssWidth(aspect)).toBe(outputDims(aspect, '1080p').w);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canonicalMapViewport — pure render-viewport math
+// ---------------------------------------------------------------------------
+//
+// `canonicalMapViewport` is the pure function the renderer worker, the Rust
+// orchestrator's `build_setup_payload`, and the TS↔Rust parity tests all share
+// for deriving `(cssW, cssH, pixelRatio)` from `(aspect, mapSlotW, mapSlotH)`.
+// The contract is documented on the helper itself; these tests pin it:
+//
+//   - `cssW === canonicalMapCssWidth(aspect)` (exact integer; independent of
+//     export resolution, because `mapSettings.zoom` is interpreted there).
+//   - `|cssW * pixelRatio - mapSlotW| < 1` (the slot's W axis round-trips
+//     within sub-pixel; for full-frame slots this is exact, for insets it can
+//     be ε due to integer rounding in `resolve_slots`).
+//   - `|cssH * pixelRatio - mapSlotH| < 1` (same on the H axis).
+//   - `pixelRatio > 0` and finite.
+
+describe('canonicalMapViewport — full-frame across all (aspect, resolution)', () => {
+  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+  const resolutions: OutputResolution[] = ['720p', '1080p', '1440p', '2160p'];
+
+  for (const aspect of aspects) {
+    for (const resolution of resolutions) {
+      it(`${aspect} @ ${resolution}: full-frame map slot satisfies the invariants`, () => {
+        const out = outputDims(aspect, resolution);
+        const got = canonicalMapViewport(aspect, out.w, out.h, resolution);
+        // pixelRatio is the multiplier = outputDims(aspect, res).w /
+        // outputDims(aspect, '1080p').w — exactly.
+        const expectedMultiplier =
+          outputDims(aspect, resolution).w / outputDims(aspect, '1080p').w;
+        expect(got.pixelRatio).toBe(expectedMultiplier);
+        // pixelRatio is positive and finite.
+        expect(Number.isFinite(got.pixelRatio)).toBe(true);
+        expect(got.pixelRatio).toBeGreaterThan(0);
+        // W-axis epsilon round-trip.
+        expect(Math.abs(got.cssW * got.pixelRatio - out.w)).toBeLessThan(1);
+        // H-axis epsilon round-trip.
+        expect(Math.abs(got.cssH * got.pixelRatio - out.h)).toBeLessThan(1);
+      });
+    }
+  }
+
+  // Decision 1 (plan §"Decisions"): no sub-1080p rendering. 720p deliverables
+  // go through 1080p render + FFmpeg downsample in the runtime pipeline; the
+  // pure-math helper itself is exposed at sub-1 for 720p by construction.
+  const supportedExportRes: OutputResolution[] = ['1080p', '1440p', '2160p'];
+  for (const aspect of aspects) {
+    for (const resolution of supportedExportRes) {
+      it(`${aspect} @ ${resolution}: pixelRatio >= 1`, () => {
+        const out = outputDims(aspect, resolution);
+        const got = canonicalMapViewport(aspect, out.w, out.h, resolution);
+        expect(got.pixelRatio).toBeGreaterThanOrEqual(1);
+      });
+    }
+  }
+});
+
+describe('canonicalMapViewport — composite slot shapes (PiP inset + Split halves)', () => {
+  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+
+  for (const aspect of aspects) {
+    it(`${aspect}: defaultPipLayout's resolved map-slot satisfies the invariants`, () => {
+      const layout = defaultPipLayout(aspect);
+      const resolved = resolveSlots(layout, aspect);
+      const slot = resolved.map_slot;
+      const got = canonicalMapViewport(aspect, slot.w, slot.h, '1080p');
+      expect(Number.isFinite(got.pixelRatio)).toBe(true);
+      expect(got.pixelRatio).toBeGreaterThan(0);
+      expect(Math.abs(got.cssW * got.pixelRatio - slot.w)).toBeLessThan(1);
+      expect(Math.abs(got.cssH * got.pixelRatio - slot.h)).toBeLessThan(1);
+    });
+
+    it(`${aspect}: defaultSplitLayout's resolved map-slot satisfies the invariants`, () => {
+      const layout = defaultSplitLayout(aspect);
+      const resolved = resolveSlots(layout, aspect);
+      const slot = resolved.map_slot;
+      const got = canonicalMapViewport(aspect, slot.w, slot.h, '1080p');
+      expect(Number.isFinite(got.pixelRatio)).toBe(true);
+      expect(got.pixelRatio).toBeGreaterThan(0);
+      expect(Math.abs(got.cssW * got.pixelRatio - slot.w)).toBeLessThan(1);
+      expect(Math.abs(got.cssH * got.pixelRatio - slot.h)).toBeLessThan(1);
+    });
+  }
+});
+
+describe('canonicalMapViewport — TS↔Rust parity from shared fixture', () => {
+  // Every fixture case carries an `expected_canonical_map_viewport`. Both
+  // ports (this TS test and `src-tauri/tests/layout_parity.rs`) call the
+  // helper against the resolved `map_slot` and assert the same values. Float
+  // `pixel_ratio` uses an epsilon (`toBeCloseTo(_, 9)` ≈ 5e-10 tolerance),
+  // because legitimate non-integer ratios like 0.32037037... don't survive
+  // strict equality across JSON-round-trip.
+  for (const c of fixture.cases) {
+    it(c.name, () => {
+      const expectedCMV = c.expected_canonical_map_viewport;
+      expect(
+        expectedCMV,
+        `fixture case ${c.name} missing expected_canonical_map_viewport`,
+      ).toBeDefined();
+      if (!expectedCMV) return;
+      const slot = c.expected.map_slot;
+      const got = canonicalMapViewport(
+        c.aspect,
+        slot.w,
+        slot.h,
+        c.resolution ?? '1080p',
+      );
+      expect(got.cssW).toBe(expectedCMV.css_w);
+      expect(got.cssH).toBe(expectedCMV.css_h);
+      expect(got.pixelRatio).toBeCloseTo(expectedCMV.pixel_ratio, 9);
+    });
+  }
+});
+
+describe('canonicalMapViewport — geographic invariance across resolutions', () => {
+  // Under the lever model the cssViewport is no longer constant across
+  // resolutions; what IS constant is the product `cssW × pixelRatio` (which
+  // equals the framebuffer width within < 1 px on both axes). Holding
+  // `mapSettings.zoom` constant, rendering the same aspect at different
+  // export resolutions still produces the SAME geographic framing — same
+  // meters-per-CSS-pixel at fixed Z under the multiplier model.
+  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+  const resolutions: OutputResolution[] = ['720p', '1080p', '1440p', '2160p'];
+
+  for (const aspect of aspects) {
+    for (const resolution of resolutions) {
+      it(`${aspect} @ ${resolution}: cssW * pixelRatio ≈ output.w (within 1px)`, () => {
+        const out = outputDims(aspect, resolution);
+        const got = canonicalMapViewport(aspect, out.w, out.h, resolution);
+        expect(Math.abs(got.cssW * got.pixelRatio - out.w)).toBeLessThan(1);
+        expect(Math.abs(got.cssH * got.pixelRatio - out.h)).toBeLessThan(1);
+      });
+    }
+  }
+
+  it('9_16 1080p slot 1080×1920: cssW=1080, cssH=1920, pixelRatio=1.0', () => {
+    const got = canonicalMapViewport('9_16', 1080, 1920, '1080p');
+    expect(got.cssW).toBe(1080);
+    expect(got.cssH).toBe(1920);
+    expect(got.pixelRatio).toBeCloseTo(1.0, 10);
+  });
+
+  it('9_16 1440p slot 1440×2560: cssW=1080, cssH=1920, pixelRatio=4/3', () => {
+    const got = canonicalMapViewport('9_16', 1440, 2560, '1440p');
+    expect(got.cssW).toBe(1080);
+    expect(got.cssH).toBe(1920);
+    expect(got.pixelRatio).toBeCloseTo(4 / 3, 10);
+  });
+
+  it('9_16 2160p slot 2160×3840: cssW=1080, cssH=1920, pixelRatio=2.0', () => {
+    const got = canonicalMapViewport('9_16', 2160, 3840, '2160p');
+    expect(got.cssW).toBe(1080);
+    expect(got.cssH).toBe(1920);
+    expect(got.pixelRatio).toBeCloseTo(2.0, 10);
   });
 });
 

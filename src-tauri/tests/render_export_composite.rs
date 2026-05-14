@@ -45,7 +45,7 @@ use std::process::{Command, Stdio};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
-    default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
+    default_layout, default_pip_layout, default_split_layout, output_dims, render_export_inner,
     resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, NormalizedRect,
     OutputResolution, PipInsetSource, RenderExportRequest, SplitSide,
 };
@@ -281,12 +281,15 @@ fn build_setup_payload_via_fixture(clips: &[Value]) -> Value {
     }
     let mut payload: Value =
         serde_json::from_slice(&output.stdout).expect("fixture stdout → JSON");
-    // The fixture emits the wire-shape SetupCmd (`cmd`, `viewport`, `fps`);
-    // `RenderExportRequest` re-injects those itself, so strip them so the
-    // flattened project_state has no leftover envelope fields.
+    // The fixture emits the wire-shape SetupCmd (`cmd`, `cssViewport`,
+    // `framebuffer`, `pixelRatio`, `fps`); `RenderExportRequest` re-injects
+    // those itself, so strip them so the flattened project_state has no
+    // leftover envelope fields.
     if let Some(obj) = payload.as_object_mut() {
         obj.remove("cmd");
-        obj.remove("viewport");
+        obj.remove("cssViewport");
+        obj.remove("framebuffer");
+        obj.remove("pixelRatio");
         obj.remove("fps");
     }
     payload
@@ -420,7 +423,7 @@ async fn composite_pip_map_inset_default_layout() {
         layout,
     );
 
-    let summary = render_export(req)
+    let summary = render_export_inner(req, None)
         .await
         .expect("render_export should succeed");
     // 1334ms × 30fps → 40 frames (round-half-up). The actual encoded count
@@ -509,7 +512,7 @@ async fn composite_pip_video_inset() {
         },
         corner_radius: 0.012,
     };
-    let resolved = resolve_slots(&layout, AspectRatio::NineSixteen);
+    let resolved = resolve_slots(&layout, AspectRatio::NineSixteen, OutputResolution::default());
     let req = build_request(
         output_path.to_string_lossy().as_ref(),
         &clip_a,
@@ -517,7 +520,7 @@ async fn composite_pip_video_inset() {
         layout,
     );
 
-    render_export(req)
+    render_export_inner(req, None)
         .await
         .expect("render_export should succeed");
 
@@ -587,7 +590,7 @@ async fn composite_split() {
         video_side: SplitSide::Top,
         divider: 0.5,
     };
-    let resolved = resolve_slots(&layout, AspectRatio::NineSixteen);
+    let resolved = resolve_slots(&layout, AspectRatio::NineSixteen, OutputResolution::default());
     let req = build_request(
         output_path.to_string_lossy().as_ref(),
         &clip_a,
@@ -595,7 +598,7 @@ async fn composite_split() {
         layout,
     );
 
-    render_export(req)
+    render_export_inner(req, None)
         .await
         .expect("render_export should succeed");
 
@@ -657,7 +660,7 @@ fn build_request_with_aspect(
     aspect: AspectRatio,
     layout: LayoutConfig,
 ) -> RenderExportRequest {
-    let resolved = resolve_slots(&layout, aspect);
+    let resolved = resolve_slots(&layout, aspect, OutputResolution::default());
     let layout_descriptor = LayoutDescriptor {
         aspect,
         resolution: OutputResolution::default(),
@@ -779,7 +782,7 @@ async fn channel_a_full_matrix() {
                 layout,
             );
 
-            render_export(req).await.unwrap_or_else(|e| {
+            render_export_inner(req, None).await.unwrap_or_else(|e| {
                 panic!("render_export failed for ({:?}, {}): {:?}", aspect, mode, e)
             });
 

@@ -159,7 +159,7 @@ describe('tile-cache hash-key parity (end-to-end)', () => {
       // Drive setup + 1 render so the worker fetches at minimum: the style
       // doc, glyph metadata, sprite metadata, plus the first viewport's tile
       // set. Any of those landing in the cache is enough to inspect.
-      send(child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
+      send(child, buildSetupPayload({ framebufferW: VIEWPORT_W, framebufferH: VIEWPORT_H, fps: 30 }));
       const ready = await withTimeout(reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'ready')
         .catch((e) => { throw new Error(e.message + stderrOnFail()); });
       expect(ready, stderrOnFail()).toBe('{"ready":true}');

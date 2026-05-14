@@ -131,7 +131,7 @@ async fn n1_four_frames_with_mid_run_recycle() {
     let inspector = sink.clone();
     let config = config_with(1, 2);
 
-    let count = render_map_frames(setup, 4, config, Box::new(sink))
+    let count = render_map_frames(setup, 4, config, Box::new(sink), None)
         .await
         .expect("orchestrator run");
     assert_eq!(count, 4);
@@ -152,7 +152,7 @@ async fn n2_ten_frames_orders_across_workers_with_recycle() {
     let inspector = sink.clone();
     let config = config_with(2, 4);
 
-    let count = render_map_frames(setup, 10, config, Box::new(sink))
+    let count = render_map_frames(setup, 10, config, Box::new(sink), None)
         .await
         .expect("orchestrator run");
     assert_eq!(count, 10);

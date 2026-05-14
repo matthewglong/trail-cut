@@ -33,7 +33,9 @@ pub use encoder::{
 pub use error::{
     ClipChainError, FFmpegRunnerError, FfprobeError, OrchestratorError, VideoOnlyValidationError,
 };
-pub use ffmpeg_runner::{run_ffmpeg, FFmpegRunResult, FFmpegRunner};
+pub use ffmpeg_runner::{
+    run_ffmpeg, run_ffmpeg_with_progress, FFmpegRunResult, FFmpegRunner,
+};
 pub use ffmpeg_sink::{FFmpegSink, FFmpegSinkError, EXPORT_FINISH_TIMEOUT_SECS};
 pub use ffprobe::{probe_clip, ProbedClip};
 pub use filtergraph::{
@@ -41,10 +43,11 @@ pub use filtergraph::{
     CompositeMode, FiltergraphPlan, VisibleClipInput,
 };
 pub use layout::{
-    clamp_layout, default_layout, default_pip_layout, default_split_layout, legal_split_sides,
-    output_dims, resolve_slots, AspectRatio, CornerRadiusSlot, LayoutConfig, LayoutDescriptor,
-    NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts, SlotResolution,
-    SplitSide,
+    canonical_map_css_width, canonical_map_viewport, clamp_layout, default_layout,
+    default_pip_layout, default_split_layout, legal_split_sides, output_dims, resolve_slots,
+    AspectRatio, CanonicalMapViewport, CornerRadiusSlot, LayoutConfig, LayoutDescriptor,
+    NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts,
+    SlotResolution, SplitSide,
 };
 pub use orchestrator::{render_map_frames, OrchestratorConfig, RECYCLE_EVERY_FRAMES};
 pub use protocol::{SetupPayload, Viewport};
@@ -52,12 +55,30 @@ pub use resolution::{CodecPreference, OutputResolution};
 pub use sink::{FrameSink, SinkError, VecSink};
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::models::Clip;
+
+/// Per-job progress event. Sent over `tauri::ipc::Channel` from the
+/// `render_export` command back to the frontend. `frames_done` is the
+/// current count of output frames the channel has produced; `total_frames`
+/// is the constant denominator (computed once at validate time).
+#[derive(Debug, Clone, Serialize)]
+pub struct ProgressEvent {
+    pub frames_done: u32,
+    pub total_frames: u32,
+}
+
+/// Per-frame progress callback. Channel-agnostic so the orchestrator and the
+/// ffmpeg runner can both invoke it without depending on Tauri's IPC types.
+/// `Arc` so it can be shared across the orchestrator's drain loop and the
+/// ffmpeg runner's stdout parser. The `Tauri` command constructs one that
+/// forwards via `tauri::ipc::Channel::send`; tests pass `None`.
+pub type ProgressCallback = Arc<dyn Fn(u32, u32) + Send + Sync>;
 
 /// Wire payload for the `render_export` command. Mirrors the IPC contract
 /// in PLAN.md §"IPC contract" (`channel`, `fps`, `output_path`, `layout`,
@@ -194,10 +215,28 @@ fn validate_request(req: &RenderExportRequest) -> Result<ValidatedRequest, Rende
         ));
     }
 
+    let output_path_buf = PathBuf::from(&req.output_path);
+    // `resolve_output_dir` deliberately does not create the directory it
+    // returns — the contract is "the renderer creates it later". This is
+    // that step. Without it, FFmpeg fails with "No such file or directory"
+    // when the user's project name resolves to a fresh subfolder under
+    // `~/Movies/TrailCut/{project}/` that has never been written to before.
+    if let Some(parent) = output_path_buf.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RenderExportError::validation(format!(
+                    "create output directory {}: {}",
+                    parent.display(),
+                    e,
+                ))
+            })?;
+        }
+    }
+
     Ok(ValidatedRequest {
         total_frames,
         output_dims: req.layout.resolved.output,
-        output_path_buf: PathBuf::from(&req.output_path),
+        output_path_buf,
     })
 }
 
@@ -277,15 +316,41 @@ where
     }
 }
 
+/// Tauri command entry point. Wraps `render_export_inner` with a progress
+/// callback that forwards `ProgressEvent`s over the Tauri-managed IPC channel
+/// passed in by the frontend. Tests call `render_export_inner` directly with
+/// `None` to skip the channel construction.
 #[tauri::command]
 pub async fn render_export(
     req: RenderExportRequest,
+    progress: tauri::ipc::Channel<ProgressEvent>,
+) -> Result<RenderExportSummary, RenderExportError> {
+    let callback: ProgressCallback = Arc::new(move |frames_done, total_frames| {
+        // Channel::send returns an error only if the frontend dropped the
+        // channel (window closed mid-export). The render itself shouldn't
+        // fail on that — let it continue and surface any real error from
+        // FFmpeg/orchestrator instead.
+        let _ = progress.send(ProgressEvent {
+            frames_done,
+            total_frames,
+        });
+    });
+    render_export_inner(req, Some(callback)).await
+}
+
+/// Channel-agnostic entry point. Same as `render_export` minus the Tauri
+/// `Channel<T>` arg, so unit + integration tests can call it without
+/// constructing a fake IPC channel. `on_progress` is `None` from tests; the
+/// command path always supplies one.
+pub async fn render_export_inner(
+    req: RenderExportRequest,
+    on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let started = Instant::now();
     match req.channel.as_str() {
-        "map_only" => render_export_map_only(req, started).await,
-        "video_only" => render_export_video_only(req, started).await,
-        "composite" => render_export_composite(req, started).await,
+        "map_only" => render_export_map_only(req, started, on_progress).await,
+        "video_only" => render_export_video_only(req, started, on_progress).await,
+        "composite" => render_export_composite(req, started, on_progress).await,
         other => Err(RenderExportError::validation(format!(
             "channel not yet implemented in this build: {}",
             other,
@@ -296,6 +361,7 @@ pub async fn render_export(
 async fn render_export_map_only(
     req: RenderExportRequest,
     started: Instant,
+    on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let validated = validate_request(&req)?;
 
@@ -359,20 +425,20 @@ async fn render_export_map_only(
             stderr_tail: e.stderr_tail().map(|s| s.to_string()),
         })?;
 
-    let setup = SetupPayload {
-        viewport: Viewport {
-            w: map_slot.w,
-            h: map_slot.h,
-        },
-        fps: req.fps,
-        project_state: req.project_state,
-    };
+    let setup = build_setup_payload(
+        map_slot,
+        req.layout.aspect,
+        req.layout.resolution,
+        req.fps,
+        req.project_state,
+    );
 
     let frames_written = render_map_frames(
         setup,
         validated.total_frames,
         OrchestratorConfig::default(),
         Box::new(sink),
+        frame_progress_for(on_progress, validated.total_frames),
     )
     .await
     .map_err(classify_orchestrator_error)?;
@@ -385,6 +451,94 @@ async fn render_export_map_only(
     })
 }
 
+/// Construct a `SetupPayload` from the resolved map slot, export aspect, and
+/// output resolution.
+///
+/// Computes the renderer-worker's three viewport-shape fields under the
+/// multiplier model (MAP_RENDERING_PLAN.md §"The lever model"):
+/// - `framebuffer` = map slot pixel dims (what gets read back into RGBA).
+/// - `pixel_ratio = multiplier = output_dims(aspect, resolution).w /
+///   output_dims(aspect, P1080).w` — purely a function of (aspect,
+///   resolution), independent of slot shape. `pixel_ratio ∈ {2/3, 1, 4/3, 2}`
+///   for the four `OutputResolution` variants.
+/// - `css_viewport = (round(slot_w / multiplier), round(slot_h /
+///   multiplier))`. The CSS viewport aspect matches the **slot** aspect (not
+///   `canonical_map_css_width` on the W axis any more) so MapLibre paints
+///   into the slot shape directly — no render-then-crop.
+///
+/// Sanity-checked with an epsilon tolerance: `|css * pixel_ratio - fb| <=
+/// pixel_ratio * 0.5` on each axis. Strict equality would fail because css_w
+/// / css_h are rounded to integers; rounding `slot/multiplier` can land up to
+/// `multiplier/2` off the original on a back-multiply. The renderer page
+/// pads/crops by ≤1 row/col to match (init.ts captureFramebufferIntoBuf), so
+/// this drift is benign — the assert just guards against the bound being
+/// blown by something larger (e.g. a malformed multiplier).
+fn build_setup_payload(
+    map_slot: PixelRect,
+    aspect: AspectRatio,
+    resolution: OutputResolution,
+    fps: u32,
+    project_state: Value,
+) -> SetupPayload {
+    let framebuffer = Viewport { w: map_slot.w, h: map_slot.h };
+    // Delegate the pure math to `canonical_map_viewport` in layout.rs so the
+    // renderer worker, this orchestrator helper, and the TS↔Rust parity tests
+    // all share one derivation. See `canonical_map_viewport`'s doc for the
+    // contract.
+    let canonical = canonical_map_viewport(aspect, framebuffer.w, framebuffer.h, resolution);
+    let drift_bound = canonical.pixel_ratio * 0.5 + 1e-9;
+    debug_assert!(
+        (canonical.css_w as f64 * canonical.pixel_ratio - framebuffer.w as f64).abs()
+            <= drift_bound,
+        "cssViewport.w * pixelRatio drifted from framebuffer.w by more than pr/2: css_w={} pr={} fb_w={}",
+        canonical.css_w, canonical.pixel_ratio, framebuffer.w,
+    );
+    debug_assert!(
+        (canonical.css_h as f64 * canonical.pixel_ratio - framebuffer.h as f64).abs()
+            <= drift_bound,
+        "cssViewport.h * pixelRatio drifted from framebuffer.h by more than pr/2: css_h={} pr={} fb_h={}",
+        canonical.css_h, canonical.pixel_ratio, framebuffer.h,
+    );
+    let css_viewport = Viewport {
+        w: canonical.css_w,
+        h: canonical.css_h,
+    };
+    SetupPayload {
+        css_viewport,
+        framebuffer,
+        pixel_ratio: canonical.pixel_ratio,
+        fps,
+        project_state,
+    }
+}
+
+/// Adapt a `ProgressCallback` (which expects `(done, total)`) into the
+/// single-arg `FrameProgress` the orchestrator + ffmpeg runner emit. Returns
+/// `None` when no outer callback is set so the orchestrator can skip the
+/// per-frame branch entirely.
+fn frame_progress_for(
+    outer: Option<ProgressCallback>,
+    total: u32,
+) -> Option<orchestrator::FrameProgress> {
+    outer.map(|cb| {
+        Arc::new(move |done: u32| cb(done, total)) as orchestrator::FrameProgress
+    })
+}
+
+/// Splice `-progress pipe:1` into a video_only argv. FFmpeg accepts the flag
+/// as a global option, but to be defensive we insert it after the leading
+/// `-hide_banner -y` so it sits with the other global flags.
+fn with_progress_pipe(mut argv: Vec<String>) -> Vec<String> {
+    let insert_at = argv
+        .iter()
+        .position(|a| a == "-y")
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    argv.insert(insert_at, "-progress".to_string());
+    argv.insert(insert_at + 1, "pipe:1".to_string());
+    argv
+}
+
 /// Channel C (video-only) — task 070.
 ///
 /// Reads source video files directly, builds a per-clip filter chain, concats,
@@ -395,6 +549,7 @@ async fn render_export_map_only(
 async fn render_export_video_only(
     req: RenderExportRequest,
     started: Instant,
+    on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let validated = validate_request(&req)?;
 
@@ -506,15 +661,27 @@ async fn render_export_video_only(
     )
     .map_err(classify_clip_chain_error)?;
 
-    // Spawn FFmpeg via the runner (no stdin, no FrameSink).
+    // Spawn FFmpeg via the runner (no stdin, no FrameSink). When the caller
+    // supplied a progress callback, splice `-progress pipe:1` into argv
+    // (FFmpeg writes a key=value block per stats interval; the runner
+    // parses `frame=N` and forwards via the callback). Channels A+B drive
+    // progress from the orchestrator's emit loop instead — no `-progress`
+    // flag, since there's no separate ffmpeg frame counter to consult.
     let ffmpeg_bin = ffmpeg_path();
-    run_ffmpeg(&ffmpeg_bin, &plan.argv)
-        .await
-        .map_err(|e| RenderExportError {
-            stage: "ffmpeg".to_string(),
-            message: e.to_string(),
-            stderr_tail: e.stderr_tail().map(|s| s.to_string()),
-        })?;
+    let argv = plan.argv;
+    let run_result = if let Some(outer) = on_progress {
+        let argv = with_progress_pipe(argv);
+        let frame_cb = frame_progress_for(Some(outer), validated.total_frames)
+            .expect("frame_progress_for returns Some when input is Some");
+        run_ffmpeg_with_progress(&ffmpeg_bin, &argv, frame_cb).await
+    } else {
+        run_ffmpeg(&ffmpeg_bin, &argv).await
+    };
+    run_result.map_err(|e| RenderExportError {
+        stage: "ffmpeg".to_string(),
+        message: e.to_string(),
+        stderr_tail: e.stderr_tail().map(|s| s.to_string()),
+    })?;
 
     let wall_clock_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
     Ok(RenderExportSummary {
@@ -545,6 +712,7 @@ async fn render_export_video_only(
 async fn render_export_composite(
     req: RenderExportRequest,
     started: Instant,
+    on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let validated = validate_request(&req)?;
 
@@ -693,20 +861,20 @@ async fn render_export_composite(
             stderr_tail: e.stderr_tail().map(|s| s.to_string()),
         })?;
 
-    let setup = SetupPayload {
-        viewport: Viewport {
-            w: map_slot.w,
-            h: map_slot.h,
-        },
-        fps: req.fps,
-        project_state: req.project_state,
-    };
+    let setup = build_setup_payload(
+        map_slot,
+        req.layout.aspect,
+        req.layout.resolution,
+        req.fps,
+        req.project_state,
+    );
 
     let frames_written = render_map_frames(
         setup,
         validated.total_frames,
         OrchestratorConfig::default(),
         Box::new(sink),
+        frame_progress_for(on_progress, validated.total_frames),
     )
     .await
     .map_err(classify_orchestrator_error)?;
@@ -873,7 +1041,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(err.message.contains("channel not yet implemented"));
     }
@@ -890,7 +1058,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(
             err.message.contains("no visible clips"),
@@ -917,7 +1085,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(
             err.message.contains("parity check failed"),
@@ -969,7 +1137,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(err.message.contains("parity check failed"), "got: {}", err.message);
     }
@@ -986,7 +1154,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(
             err.message.contains("no visible clips"),
@@ -1025,7 +1193,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project,
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(
             err.message.contains("source file missing"),
@@ -1053,7 +1221,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(2000),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(
             err.message.contains("parity check failed"),
@@ -1073,7 +1241,7 @@ mod tests {
             audio_bitrate_kbps: 256,
             project_state: project_state_with_duration(0),
         };
-        let err = render_export(req).await.unwrap_err();
+        let err = render_export_inner(req, None).await.unwrap_err();
         assert_eq!(err.stage, "validation");
         assert!(err.message.contains("zero duration"));
     }

@@ -120,19 +120,34 @@ function JobRow({ job }: { job: QueueJob }) {
         <div className={styles.bar}>
           <div
             className={styles.barFill}
-            style={{ width: job.state === 'done' ? '100%' : '0%' }}
+            style={{ width: `${barPercent(job)}%` }}
           />
         </div>
         <span
           className={styles.pct}
           data-testid={`export-queue-badge-${job.id}`}
         >
-          {badgeLabel(job.state)}
+          {badgeLabel(job)}
         </span>
       </div>
       <span className={styles.jobMeta}>{metaLabel(job)}</span>
     </li>
   );
+}
+
+function barPercent(job: QueueJob): number {
+  if (job.state === 'done') return 100;
+  if (job.state !== 'running') return 0;
+  const { framesDone, totalFrames } = job;
+  if (
+    typeof framesDone !== 'number' ||
+    typeof totalFrames !== 'number' ||
+    totalFrames <= 0
+  ) {
+    return 0;
+  }
+  const pct = (framesDone / totalFrames) * 100;
+  return Math.max(0, Math.min(100, pct));
 }
 
 function StatusIcon({ state }: { state: JobState }) {
@@ -187,12 +202,14 @@ function stateClass(state: JobState): string {
   }
 }
 
-function badgeLabel(state: JobState): string {
-  switch (state) {
+function badgeLabel(job: QueueJob): string {
+  switch (job.state) {
     case 'pending':
       return 'pending';
-    case 'running':
-      return 'running';
+    case 'running': {
+      const pct = barPercent(job);
+      return pct > 0 ? `${Math.round(pct)}%` : 'running';
+    }
     case 'done':
       return 'done';
     case 'failed':

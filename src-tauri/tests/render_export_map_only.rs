@@ -25,7 +25,7 @@ use std::process::Command;
 use serde_json::Value;
 use tempfile::TempDir;
 use trail_cut_lib::export::{
-    default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
+    default_layout, default_pip_layout, default_split_layout, output_dims, render_export_inner,
     resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, OutputResolution,
     RenderExportRequest,
 };
@@ -94,10 +94,13 @@ fn build_request(output_path: &str) -> RenderExportRequest {
     let mut setup_value: Value = serde_json::from_slice(&output.stdout)
         .expect("fixture stdout → JSON");
     // Strip wire-only keys the renderer worker expects but `render_export`
-    // doesn't (the SetupPayload re-injects `cmd`/`viewport` itself).
+    // doesn't (the SetupPayload re-injects `cmd`/`cssViewport`/`framebuffer`/
+    // `pixelRatio` itself).
     if let Some(obj) = setup_value.as_object_mut() {
         obj.remove("cmd");
-        obj.remove("viewport");
+        obj.remove("cssViewport");
+        obj.remove("framebuffer");
+        obj.remove("pixelRatio");
         obj.remove("fps");
     }
 
@@ -198,7 +201,7 @@ async fn map_only_export_produces_valid_mov() {
     // 2-second route in the fixture × 30 fps = 60 frames expected.
     let resolved = req.layout.resolved.clone();
 
-    let summary = render_export(req)
+    let summary = render_export_inner(req, None)
         .await
         .expect("render_export should succeed end-to-end");
     assert_eq!(summary.frames_written, 60);
@@ -305,7 +308,9 @@ fn build_request_with_layout(
         serde_json::from_slice(&output.stdout).expect("fixture stdout → JSON");
     if let Some(obj) = setup_value.as_object_mut() {
         obj.remove("cmd");
-        obj.remove("viewport");
+        obj.remove("cssViewport");
+        obj.remove("framebuffer");
+        obj.remove("pixelRatio");
         obj.remove("fps");
     }
 
@@ -357,7 +362,7 @@ async fn channel_b_full_matrix() {
                 layout,
             );
 
-            render_export(req).await.unwrap_or_else(|e| {
+            render_export_inner(req, None).await.unwrap_or_else(|e| {
                 panic!("render_export failed for ({:?}, {}): {:?}", aspect, mode, e)
             });
 

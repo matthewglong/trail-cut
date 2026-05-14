@@ -26,9 +26,20 @@ pub struct Viewport {
 /// `CompiledTimeline` (the TS-only output of `compileTimeline`) would force
 /// a second source of truth that drifts whenever camera intent evolves.
 /// Pass-through is correct: Rust enforces only the wrapping shape.
+///
+/// `css_viewport` is the CSS-pixel viewport size the renderer page is laid
+/// out at (matches `canonicalMapCssWidth(aspect)` on the W axis). `framebuffer`
+/// is the actual pixel buffer the worker writes back — equal to the map slot
+/// pixel dims. `pixel_ratio = framebuffer.w / css_viewport.w` (a float;
+/// < 1 for downscaled insets, > 1 for high-res exports).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupPayload {
-    pub viewport: Viewport,
+    #[serde(rename = "cssViewport")]
+    pub css_viewport: Viewport,
+    #[serde(rename = "framebuffer")]
+    pub framebuffer: Viewport,
+    #[serde(rename = "pixelRatio")]
+    pub pixel_ratio: f64,
     pub fps: u32,
     #[serde(flatten)]
     pub project_state: Value,
@@ -37,7 +48,12 @@ pub struct SetupPayload {
 #[derive(Serialize)]
 struct SetupWire<'a> {
     cmd: &'static str,
-    viewport: Viewport,
+    #[serde(rename = "cssViewport")]
+    css_viewport: Viewport,
+    #[serde(rename = "framebuffer")]
+    framebuffer: Viewport,
+    #[serde(rename = "pixelRatio")]
+    pixel_ratio: f64,
     fps: u32,
     #[serde(flatten)]
     project_state: &'a Value,
@@ -54,7 +70,9 @@ struct RenderWire {
 pub fn setup_line(payload: &SetupPayload) -> serde_json::Result<String> {
     let mut s = serde_json::to_string(&SetupWire {
         cmd: "setup",
-        viewport: payload.viewport,
+        css_viewport: payload.css_viewport,
+        framebuffer: payload.framebuffer,
+        pixel_ratio: payload.pixel_ratio,
         fps: payload.fps,
         project_state: &payload.project_state,
     })?;
@@ -202,7 +220,9 @@ mod tests {
     #[test]
     fn setup_line_includes_cmd_and_flattens_state() {
         let payload = SetupPayload {
-            viewport: Viewport { w: 100, h: 200 },
+            css_viewport: Viewport { w: 200, h: 400 },
+            framebuffer: Viewport { w: 100, h: 200 },
+            pixel_ratio: 0.5,
             fps: 30,
             project_state: serde_json::json!({
                 "timeline": { "clipSpans": [] },
@@ -215,8 +235,14 @@ mod tests {
         assert!(line.ends_with('\n'));
         let parsed: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(parsed["cmd"], "setup");
-        assert_eq!(parsed["viewport"]["w"], 100);
-        assert_eq!(parsed["viewport"]["h"], 200);
+        // New shape: cssViewport, framebuffer, pixelRatio. Old `viewport` key
+        // must be entirely absent so a stale page-side reader fails loudly.
+        assert!(parsed.get("viewport").is_none(), "stale 'viewport' key in wire output");
+        assert_eq!(parsed["cssViewport"]["w"], 200);
+        assert_eq!(parsed["cssViewport"]["h"], 400);
+        assert_eq!(parsed["framebuffer"]["w"], 100);
+        assert_eq!(parsed["framebuffer"]["h"], 200);
+        assert_eq!(parsed["pixelRatio"], 0.5);
         assert_eq!(parsed["fps"], 30);
         assert_eq!(parsed["mapSettings"]["map_style"], "default");
         assert!(parsed["timeline"].is_object());

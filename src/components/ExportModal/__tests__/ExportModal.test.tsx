@@ -33,6 +33,9 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+  Channel: class<T> {
+    onmessage: ((ev: T) => void) | null = null;
+  },
 }));
 
 vi.mock('@tauri-apps/plugin-opener', () => ({

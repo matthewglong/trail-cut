@@ -180,10 +180,18 @@ const mapSettings = {
 // Wire shape — matches what the chromium worker's setup handler reads.
 // The Rust integration test loads this file, parses it as JSON, and feeds
 // it into RenderExportRequest.project_state via #[serde(flatten)] (cmd,
-// viewport, fps stripped first since they're re-injected by render_export).
+// cssViewport, framebuffer, pixelRatio, fps stripped first since they're
+// re-injected by render_export).
+//
+// 9_16 aspect at 540×960 framebuffer → canonical CSS width 1080, so
+// pixelRatio = 540/1080 = 0.5, cssViewport.h = 960/0.5 = 1920.
+const CANONICAL_CSS_W = 1080;
+const PIXEL_RATIO = VIEWPORT_W / CANONICAL_CSS_W;
 const setup = {
   cmd: 'setup',
-  viewport: { w: VIEWPORT_W, h: VIEWPORT_H },
+  cssViewport: { w: CANONICAL_CSS_W, h: Math.round(VIEWPORT_H / PIXEL_RATIO) },
+  framebuffer: { w: VIEWPORT_W, h: VIEWPORT_H },
+  pixelRatio: PIXEL_RATIO,
   fps: FPS,
   timeline,
   route,

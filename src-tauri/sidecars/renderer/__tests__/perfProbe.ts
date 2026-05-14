@@ -82,8 +82,8 @@ async function main(): Promise<void> {
   console.error(`[perfProbe] transport=${TRANSPORT} frames=${FRAMES} viewport=${VIEWPORT_W}x${VIEWPORT_H} verbose=${VERBOSE}`);
 
   const setup = buildSetupPayload({
-    viewportW: VIEWPORT_W,
-    viewportH: VIEWPORT_H,
+    framebufferW: VIEWPORT_W,
+    framebufferH: VIEWPORT_H,
     fps: 30,
   });
 

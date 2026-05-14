@@ -12,6 +12,11 @@
 // integration tests (Channel A composite) drive a real `compileTimeline`
 // against custom clip paths/durations rather than stubbing the timeline.
 
+import {
+  canonicalMapViewport,
+  type AspectRatio,
+  type OutputResolution,
+} from '../../../../src/lib/layout';
 import { compileTimeline } from '../../../../src/lib/cameraIntent';
 import { indexRoute } from '../../../../src/lib/routeLocation';
 import {
@@ -22,9 +27,20 @@ import {
 } from '../../../../src/types';
 
 export interface SetupFixtureOptions {
-  viewportW?: number;
-  viewportH?: number;
+  /** Export aspect — drives `canonicalMapViewport`, which yields the
+   *  cssViewport dims and pixelRatio under the lever model. Defaults to
+   *  '9_16'. */
+  aspect?: AspectRatio;
+  /** Framebuffer width — the actual pixel buffer the worker reads back.
+   *  Defaults to 540 (matches the protocol/golden-frame fixtures' 540×960
+   *  map slot). */
+  framebufferW?: number;
+  /** Framebuffer height. Defaults to 960. */
+  framebufferH?: number;
   fps?: number;
+  /** Export output resolution. Defaults to '1080p'. Drives `pixelRatio` via
+   *  `canonicalMapViewport`'s multiplier model. */
+  outputResolution?: OutputResolution;
   /** Override the default 1-clip array. When supplied, `compileTimeline`
    *  runs against this list instead of the synthetic clip-a. */
   clips?: Clip[];
@@ -61,9 +77,27 @@ const DEFAULT_ROUTE: Route = {
 };
 
 export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
-  const viewportW = opts.viewportW ?? 540;
-  const viewportH = opts.viewportH ?? 960;
+  const aspect: AspectRatio = opts.aspect ?? '9_16';
+  const framebufferW = opts.framebufferW ?? 540;
+  const framebufferH = opts.framebufferH ?? 960;
   const fps = opts.fps ?? 30;
+  const outputResolution: OutputResolution = opts.outputResolution ?? '1080p';
+
+  // Under the lever model, `canonicalMapViewport` derives cssViewport dims
+  // and pixelRatio from (aspect, slot pixel dims, outputResolution). The
+  // cssViewport's aspect matches the slot's aspect; pixelRatio is the
+  // output-resolution multiplier (1.0 @ 1080p, 4/3 @ 1440p, 2.0 @ 2160p).
+  // See `MAP_RENDERING_PLAN.md` §"The lever model" and
+  // `src/lib/layout.ts:canonicalMapViewport`.
+  const canonical = canonicalMapViewport(
+    aspect,
+    framebufferW,
+    framebufferH,
+    outputResolution,
+  );
+  const pixelRatio = canonical.pixelRatio;
+  const cssViewportW = canonical.cssW;
+  const cssViewportH = canonical.cssH;
 
   const clips: Clip[] = opts.clips ?? [DEFAULT_CLIP];
   const route: Route | null = opts.route === undefined ? DEFAULT_ROUTE : opts.route;
@@ -81,7 +115,9 @@ export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
 
   return {
     cmd: 'setup' as const,
-    viewport: { w: viewportW, h: viewportH },
+    cssViewport: { w: cssViewportW, h: cssViewportH },
+    framebuffer: { w: framebufferW, h: framebufferH },
+    pixelRatio,
     fps,
     timeline,
     route,

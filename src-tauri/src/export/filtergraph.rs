@@ -162,8 +162,9 @@ pub struct VisibleClipInput {
 /// - per-clip audio sub-graph: `atrim → asetpts → atempo*[aN]`, or, if
 ///   the source has no audio stream, `aevalsrc=0:duration=...[aN]` so the
 ///   audio-side `concat` filter's `n` count matches the video side,
-/// - a video `concat=n=N:v=1:a=0[vc]` and a parallel audio
-///   `concat=n=N:v=0:a=1[aout]`,
+/// - a video `concat=n=N:v=1:a=0,fps={fps}[vc]` (fps normalization keeps
+///   the export rate decoupled from the clips' native rates) and a parallel
+///   audio `concat=n=N:v=0:a=1[aout]`,
 /// - optional `alphamerge` pass with a corner-mask PNG (when the layout
 ///   has a non-zero corner radius and the radius applies to the *video*
 ///   slot, mirroring Channel B's behavior on the map slot),
@@ -262,9 +263,13 @@ fn build_video_only_filter_complex(
         parts.push(build_clip_video_subgraph(&inputs)?);
     }
 
-    // Video-side concat: [v0][v1]...concat=n=N:v=1:a=0[vc].
+    // Video-side concat, then normalize to export fps. Per-clip subgraphs
+    // preserve native source rates; without `fps={fps}` an export of N
+    // seconds of 30-fps source content at `req.fps == 24` produces 30·N
+    // output frames (longer-than-expected duration). Mirrors Channel A's
+    // normalization for the same reason.
     let video_inputs: String = (0..n).map(|i| format!("[v{}]", i)).collect::<Vec<_>>().join("");
-    parts.push(format!("{video_inputs}concat=n={n}:v=1:a=0[vc]"));
+    parts.push(format!("{video_inputs}concat=n={n}:v=1:a=0,fps={fps}[vc]"));
 
     // Optional alphamerge with the corner mask. Mask input index == n.
     // `shortest=1` ends the alphamerge filter when [vc] (the finite-duration
@@ -360,7 +365,12 @@ pub enum CompositeMode {
 ///   scale → format=yuva444p10le[v{i}]`),
 /// - per-clip audio sub-graph from `clip_chain` (`atrim → asetpts →
 ///   atempo*[a{i}]`), or `aevalsrc=0` silence for clips without audio,
-/// - a video `concat=n=N:v=1:a=0[vc]` and an audio `concat=…[aout]`,
+/// - a video `concat=n=N:v=1:a=0,fps={fps}[vc]` (fps normalization is
+///   load-bearing: `overlay`'s output rate equals its first input's rate,
+///   so a clip-native `[vc]` would push the composite output off the
+///   `-frames:v` cap's rhythm and slam the rawvideo stdin shut early —
+///   see Channel A regression test `composite_fps_normalizes_concat_to_export_rate`)
+///   and an audio `concat=…[aout]`,
 /// - mode-specific compositing:
 ///     * `PipMapInset`: `[vc][map]overlay=map_slot.x:map_slot.y` —
 ///       optionally with `[map][mask]alphamerge` first when masked.
@@ -518,9 +528,18 @@ fn build_composite_filter_complex(
         parts.push(build_clip_video_subgraph(&inputs)?);
     }
 
-    // Video-side concat: `[v0][v1]...concat=n=N:v=1:a=0[vc]`.
+    // Video-side concat, then normalize to export fps. The trailing
+    // `fps={fps}` is load-bearing: per-clip subgraphs preserve each source's
+    // native frame rate (typically 30 for iPhone), and `overlay`'s output
+    // rate equals its first input's rate. For PipMapInset (`[vc][map]overlay`)
+    // a mismatch between `[vc]`'s clip-native rate and the rawvideo input's
+    // `-r {fps}` causes overlay to duplicate rawvideo frames, the `-frames:v`
+    // cap to fire off-rhythm at `cap / clip_fps` seconds instead of
+    // `cap / export_fps`, FFmpeg to close stdin, and the orchestrator's next
+    // sink write to fail with `Broken pipe`. Normalizing here keeps `[vc]`,
+    // `[map]`, and the cap on the same clock.
     let video_inputs: String = (0..n).map(|i| format!("[v{}]", i)).collect::<Vec<_>>().join("");
-    parts.push(format!("{video_inputs}concat=n={n}:v=1:a=0[vc]"));
+    parts.push(format!("{video_inputs}concat=n={n}:v=1:a=0,fps={fps}[vc]"));
 
     // Map stream — rawvideo input at index N. Promote to yuva444p10le
     // so `alphamerge` (when masked) and `overlay` see uniform pix_fmts.
@@ -976,7 +995,7 @@ mod tests {
             .map(|i| &plan.argv[i + 1])
             .expect("filter_complex argument");
         assert!(fc.contains("[v0]"), "fc: {}", fc);
-        assert!(fc.contains("concat=n=1:v=1:a=0[vc]"), "fc: {}", fc);
+        assert!(fc.contains("concat=n=1:v=1:a=0,fps=30[vc]"), "fc: {}", fc);
         assert!(!fc.contains("alphamerge"), "single-clip no-mask should not alphamerge");
         assert!(fc.contains("pad=1080:1920:0:0:color=#00000000[vout]"), "fc: {}", fc);
         // Audio side
@@ -1016,7 +1035,7 @@ mod tests {
             .unwrap();
         assert!(fc.contains("[v0]"));
         assert!(fc.contains("[v1]"));
-        assert!(fc.contains("[v0][v1]concat=n=2:v=1:a=0[vc]"), "fc: {}", fc);
+        assert!(fc.contains("[v0][v1]concat=n=2:v=1:a=0,fps=30[vc]"), "fc: {}", fc);
         assert!(fc.contains("[a0][a1]concat=n=2:v=0:a=1[aout]"), "fc: {}", fc);
         assert!(!fc.contains("alphamerge"));
         assert!(!fc.contains("aevalsrc"));
@@ -1236,7 +1255,7 @@ mod tests {
 
         // filter_complex assertions.
         let fc = fc_of(&plan);
-        assert!(fc.contains("concat=n=2:v=1:a=0[vc]"), "fc: {}", fc);
+        assert!(fc.contains("concat=n=2:v=1:a=0,fps=30[vc]"), "fc: {}", fc);
         assert!(
             fc.contains("[2:v]format=yuva444p10le[map]"),
             "fc: {}",
@@ -1597,5 +1616,97 @@ mod tests {
             "per-clip scale should use video_slot, not map_slot; fc: {}",
             fc,
         );
+    }
+
+    #[test]
+    fn composite_fps_normalizes_concat_to_export_rate() {
+        // Regression: an export at fps=24 of 30-fps iPhone source clips
+        // produced a 30-fps composite output (overlay inherits its first
+        // input's rate; `[vc]` carries clip-native rate without
+        // normalization). The `-frames:v` cap is computed at the export
+        // fps, so output reached the cap at `cap/30` seconds — earlier than
+        // `cap/24` — FFmpeg closed stdin, and the orchestrator's next sink
+        // write failed with `Broken pipe (os error 32)`. The `fps={fps}`
+        // splice after `concat` keeps `[vc]` on the same clock as the
+        // rawvideo input (`-r {fps}`) and the cap.
+        //
+        // Cover every CompositeMode + both fps tiers we expose (24 and 30)
+        // so a future refactor that reorders the filter chain can't drop
+        // the normalization for one mode while preserving it for another.
+        for mode in [
+            CompositeMode::PipMapInset,
+            CompositeMode::PipVideoInset,
+            CompositeMode::Split,
+        ] {
+            for fps in [24u32, 30u32] {
+                let inputs = vec![vc("a", 2000, true)];
+                let map_slot = PixelRect { x: 0, y: 0, w: 1080, h: 1080 };
+                let video_slot = PixelRect { x: 0, y: 1080, w: 1080, h: 840 };
+                let output = OutputDimensions { w: 1080, h: 1920 };
+                let plan = build_composite_filtergraph(
+                    &inputs,
+                    map_slot,
+                    video_slot,
+                    output,
+                    mode,
+                    None,
+                    fps,
+                    fps * 2,
+                    &hevc_choice(),
+                    DEFAULT_AUDIO_KBPS,
+                    out_path(),
+                )
+                .unwrap();
+                let fc = fc_of(&plan);
+                let needle = format!("concat=n=1:v=1:a=0,fps={fps}[vc]");
+                assert!(
+                    fc.contains(&needle),
+                    "mode={:?} fps={}: expected `{}` in filter_complex; fc: {}",
+                    mode, fps, needle, fc,
+                );
+                // Negative form: the un-normalized concat (the pre-fix
+                // shape) must not appear. Catches a regression that emits
+                // both forms or accidentally double-labels `[vc]`.
+                assert!(
+                    !fc.contains("concat=n=1:v=1:a=0[vc]"),
+                    "mode={:?} fps={}: un-normalized concat must not appear; fc: {}",
+                    mode, fps, fc,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn video_only_fps_normalizes_concat_to_export_rate() {
+        // Channel C variant of the same bug. video_only has no rawvideo
+        // input and no `-frames:v` cap, so the symptom is silent rather
+        // than a Broken pipe: an N-second export at fps=24 of 30-fps source
+        // clips produces 30·N output frames (1.25× expected duration).
+        // Same fix — `fps={fps}` after the video concat — for the same
+        // reason.
+        let slot = PixelRect { x: 0, y: 0, w: 1080, h: 1920 };
+        let output = OutputDimensions { w: 1080, h: 1920 };
+        for fps in [24u32, 30u32, 60u32] {
+            let inputs = vec![vc("a", 2000, true)];
+            let plan = build_video_only_filtergraph(
+                &inputs,
+                slot,
+                output,
+                None,
+                fps,
+                &prores_choice(),
+                &["-c:a", "pcm_s16le"],
+                out_path(),
+            )
+            .unwrap();
+            let fc = fc_of(&plan);
+            let needle = format!("concat=n=1:v=1:a=0,fps={fps}[vc]");
+            assert!(fc.contains(&needle), "fps={}: expected `{}`; fc: {}", fps, needle, fc);
+            assert!(
+                !fc.contains("concat=n=1:v=1:a=0[vc]"),
+                "fps={}: un-normalized concat must not appear; fc: {}",
+                fps, fc,
+            );
+        }
     }
 }

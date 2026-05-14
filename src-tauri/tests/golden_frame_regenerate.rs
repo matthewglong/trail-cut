@@ -28,7 +28,8 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use trail_cut_lib::export::{
-    render_map_frames, FrameSink, OrchestratorConfig, SetupPayload, SinkError, Viewport,
+    canonical_map_viewport, render_map_frames, AspectRatio, FrameSink, OrchestratorConfig,
+    OutputResolution, SetupPayload, SinkError, Viewport,
 };
 
 const GOLDEN_FRAME_INDICES: &[u32] = &[0, 30, 60, 120];
@@ -85,14 +86,21 @@ fn load_setup_payload() -> SetupPayload {
         .unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
     if let Some(obj) = value.as_object_mut() {
         obj.remove("cmd");
-        obj.remove("viewport");
+        obj.remove("cssViewport");
+        obj.remove("framebuffer");
+        obj.remove("pixelRatio");
         obj.remove("fps");
     }
+    let aspect = AspectRatio::NineSixteen;
+    let framebuffer = Viewport { w: VIEWPORT_W, h: VIEWPORT_H };
+    let canonical =
+        canonical_map_viewport(aspect, framebuffer.w, framebuffer.h, OutputResolution::P1080);
+    let css_viewport = Viewport { w: canonical.css_w, h: canonical.css_h };
+    let pixel_ratio = canonical.pixel_ratio;
     SetupPayload {
-        viewport: Viewport {
-            w: VIEWPORT_W,
-            h: VIEWPORT_H,
-        },
+        css_viewport,
+        framebuffer,
+        pixel_ratio,
         fps: FPS,
         project_state: value,
     }
@@ -162,6 +170,7 @@ async fn regenerate_golden_frames() {
         TOTAL_FRAMES,
         OrchestratorConfig::default(),
         Box::new(sink),
+        None,
     )
     .await
     .expect("render_map_frames");

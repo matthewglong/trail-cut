@@ -53,6 +53,67 @@ export const OUTPUT_DIMS: Record<AspectRatio, OutputDimensions> = {
   '16_9': outputDims('16_9', '1080p'),
 };
 
+/** The CSS width at which `mapSettings.zoom` is calibrated in the preview UI.
+ *  1080 for 9_16 / 4_5, 1920 for 16_9. The preview's `MapView` compensates a
+ *  pane that is not this width by `+ log2(paneCssWidth / canonicalMapCssWidth)`
+ *  so the framing matches what the 1080p export of that aspect produces — see
+ *  `src/components/MapView.tsx` (the `displayZoom` write near the per-frame
+ *  loop). The renderer worker no longer lays the map out at this width; under
+ *  the lever model (see `canonicalMapViewport`) the renderer's cssViewport
+ *  matches the slot shape, and the resolution shift rides on `pixelRatio`.
+ *  Mirror of `canonical_map_css_width` in `src-tauri/src/export/layout.rs`. */
+export function canonicalMapCssWidth(aspect: AspectRatio): number {
+  // 1080p is the canonical map zoom reference resolution.
+  return outputDims(aspect, '1080p').w;
+}
+
+/** Result of `canonicalMapViewport`. `cssW`/`cssH` are integer CSS-pixel dims
+ *  the renderer page lays the map container out at; `pixelRatio` is the float
+ *  scaling factor MapLibre applies to produce a `cssW*pixelRatio × cssH*pixelRatio`
+ *  framebuffer that matches the export's `map_slot` pixel dims. */
+export interface CanonicalMapViewport {
+  cssW: number;
+  cssH: number;
+  pixelRatio: number;
+}
+
+/** Pure math for the renderer worker's three viewport-shape fields given the
+ *  export aspect, the map slot's pixel dims, and the export resolution. The
+ *  lever model — see `MAP_RENDERING_PLAN.md` §"The lever model":
+ *
+ *  - `multiplier = outputDims(aspect, outputRes).w / outputDims(aspect, '1080p').w`
+ *    — the output resolution lever. 1.0 at 1080p, 4/3 at 1440p, 2.0 at 2160p
+ *    (Decision 1: no sub-1080p; 720p deliverables go through 1080p render +
+ *    FFmpeg downsample, so `multiplier >= 1` always).
+ *  - `cssW = round(mapSlotW / multiplier)` — the CSS-pixel width MapLibre
+ *    lays the world out at. The cssViewport's aspect matches the slot's
+ *    aspect; the renderer never lays out at the per-aspect canonical width
+ *    anymore.
+ *  - `cssH = round(mapSlotH / multiplier)` — same on the H axis.
+ *  - `pixelRatio = multiplier` — the framebuffer density lever. Crisp at
+ *    1080p (1.0), fractional but well-defined at 1440p (4/3), sharper at
+ *    2160p (2.0).
+ *
+ *  At fixed `pixelRatio`, fixed MapLibre zoom Z gives fixed meters-per-CSS-
+ *  pixel. Same Z across exports = same scale. Resolution change shifts only
+ *  `pixelRatio`; cssViewport is identical across resolutions (modulo the
+ *  rounding behavior). Mirror of `canonical_map_viewport` in
+ *  `src-tauri/src/export/layout.rs`; `build_setup_payload` (in
+ *  `src-tauri/src/export/mod.rs`) and the renderer worker both rely on this
+ *  single derivation so geographic framing stays identical across export
+ *  resolutions. */
+export function canonicalMapViewport(
+  aspect: AspectRatio,
+  mapSlotW: number,
+  mapSlotH: number,
+  outputRes: OutputResolution,
+): CanonicalMapViewport {
+  const multiplier = outputDims(aspect, outputRes).w / outputDims(aspect, '1080p').w;
+  const cssW = Math.round(mapSlotW / multiplier);
+  const cssH = Math.round(mapSlotH / multiplier);
+  return { cssW, cssH, pixelRatio: multiplier };
+}
+
 /** Normalized rect — frame is `(0,0)..(1,1)` regardless of aspect. */
 export interface NormalizedRect {
   x: number;

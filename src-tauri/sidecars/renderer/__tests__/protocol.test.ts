@@ -176,7 +176,7 @@ describe('renderer worker protocol', () => {
       const stderrOnFail = () => `\nchild stderr:\n${stderr.join('') || '<empty>'}`;
 
       // ---- setup ----
-      send(child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
+      send(child, buildSetupPayload({ framebufferW: VIEWPORT_W, framebufferH: VIEWPORT_H, fps: 30 }));
       const ready1 = await withTimeout(
         reader.readLine(),
         FIRST_FRAME_TIMEOUT_MS,
@@ -240,7 +240,7 @@ describe('renderer worker protocol', () => {
       active = child;
       const stderrOnFail = () => `\nchild stderr:\n${stderr.join('') || '<empty>'}`;
 
-      send(child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
+      send(child, buildSetupPayload({ framebufferW: VIEWPORT_W, framebufferH: VIEWPORT_H, fps: 30 }));
       const ready = await withTimeout(reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'ready');
       expect(ready, stderrOnFail()).toBe('{"ready":true}');
 
@@ -274,7 +274,7 @@ describe('renderer worker protocol', () => {
       active = a.child;
       const stderrA = () => `\nworker A stderr:\n${a.stderr.join('') || '<empty>'}`;
 
-      send(a.child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
+      send(a.child, buildSetupPayload({ framebufferW: VIEWPORT_W, framebufferH: VIEWPORT_H, fps: 30 }));
       const readyA = await withTimeout(
         a.reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'A ready',
       ).catch((e) => { throw new Error(e.message + stderrA()); });
@@ -314,7 +314,7 @@ describe('renderer worker protocol', () => {
       active = b.child;
       const stderrB = () => `\nworker B stderr:\n${b.stderr.join('') || '<empty>'}`;
 
-      send(b.child, buildSetupPayload({ viewportW: VIEWPORT_W, viewportH: VIEWPORT_H, fps: 30 }));
+      send(b.child, buildSetupPayload({ framebufferW: VIEWPORT_W, framebufferH: VIEWPORT_H, fps: 30 }));
       const readyB = await withTimeout(
         b.reader.readLine(), FIRST_FRAME_TIMEOUT_MS, 'B ready',
       ).catch((e) => { throw new Error(e.message + stderrB()); });

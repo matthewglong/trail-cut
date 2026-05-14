@@ -26,7 +26,7 @@ use std::process::Command;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
-    default_layout, default_pip_layout, default_split_layout, output_dims, render_export,
+    default_layout, default_pip_layout, default_split_layout, output_dims, render_export_inner,
     resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, NormalizedRect,
     OutputResolution, PipInsetSource, RenderExportRequest,
 };
@@ -254,7 +254,7 @@ async fn video_only_full_bleed_default_layout() {
         0.012,
     );
 
-    let summary = render_export(req).await.expect("render_export should succeed");
+    let summary = render_export_inner(req, None).await.expect("render_export should succeed");
     // total_frames is computed from the timeline's totalDurationMs (1334ms)
     // × 30fps = 40 frames (with rounding). The test verifies via ffprobe
     // that FFmpeg's actual frame count agrees with the duration math
@@ -343,7 +343,7 @@ async fn video_only_inset_alpha_outside_is_zero() {
     );
     let resolved = req.layout.resolved.clone();
 
-    render_export(req).await.expect("render_export should succeed");
+    render_export_inner(req, None).await.expect("render_export should succeed");
 
     let frame = extract_rgba_frame(&output_path, 5, 1080, 1920);
     // Pixel (10, 10) — outside the inset rect — must have alpha=0.
@@ -392,7 +392,7 @@ async fn video_only_inset_with_corner_radius_antialiased() {
     let resolved = req.layout.resolved.clone();
     assert!(resolved.corner_radius_px > 0, "corner_radius_px should be positive");
 
-    render_export(req).await.expect("render_export should succeed");
+    render_export_inner(req, None).await.expect("render_export should succeed");
 
     let frame = extract_rgba_frame(&output_path, 5, 1080, 1920);
 
@@ -510,7 +510,7 @@ async fn channel_c_full_matrix() {
                 layout,
             );
 
-            render_export(req).await.unwrap_or_else(|e| {
+            render_export_inner(req, None).await.unwrap_or_else(|e| {
                 panic!("render_export failed for ({:?}, {}): {:?}", aspect, mode, e)
             });
 

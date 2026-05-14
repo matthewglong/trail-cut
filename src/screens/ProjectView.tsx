@@ -14,7 +14,26 @@ import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
 import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportGrid } from '../types';
 import { resolveMapSettings } from '../types';
+import type { AspectRatio } from '../lib/layout';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
+
+/** Map the preview-toolbar's aspect string (`'16:9' | '9:16' | '1:1' | '4:5'`)
+ *  onto the export `AspectRatio` enum. `'1:1'` is preview-only — it isn't a
+ *  valid export aspect, so we fall back to `'4_5'` (closest portrait crop)
+ *  for the purposes of MapView's canonical-CSS-width computation. */
+function previewAspectToAspectRatio(previewAspect: string): AspectRatio {
+  switch (previewAspect) {
+    case '9:16':
+      return '9_16';
+    case '4:5':
+      return '4_5';
+    case '16:9':
+      return '16_9';
+    case '1:1':
+    default:
+      return '4_5';
+  }
+}
 
 // Resizer constraints — easy to tune
 const V_SPLIT_DEFAULT = 0.65; // video takes 65% of width
@@ -615,6 +634,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
+                aspect={previewAspectToAspectRatio(previewAspect)}
                 onSelectClip={handleSelectClip}
               />
               <div

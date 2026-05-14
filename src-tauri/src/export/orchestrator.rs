@@ -213,6 +213,11 @@ fn host_target_triple() -> &'static str {
     }
 }
 
+/// Per-frame progress callback used by `render_map_frames`. Called with the
+/// running output-frame count after each frame is written to the sink.
+/// Channel-agnostic; the `render_export` command wraps a Tauri IPC channel.
+pub type FrameProgress = Arc<dyn Fn(u32) + Send + Sync>;
+
 /// Drive `config.worker_count` worker children to produce ordered RGBA frames
 /// into `sink`. Returns the number of frames written on success.
 pub async fn render_map_frames(
@@ -220,6 +225,7 @@ pub async fn render_map_frames(
     total_frames: u32,
     config: OrchestratorConfig,
     mut sink: Box<dyn FrameSink>,
+    on_progress: Option<FrameProgress>,
 ) -> Result<u32, OrchestratorError> {
     if total_frames == 0 {
         sink.finish().map_err(OrchestratorError::SinkError)?;
@@ -314,6 +320,9 @@ pub async fn render_map_frames(
                             }
                             next_to_emit += 1;
                             emitted += 1;
+                            if let Some(cb) = &on_progress {
+                                cb(emitted);
+                            }
                         }
                     }
                     None => {

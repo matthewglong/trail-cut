@@ -71,6 +71,7 @@ import {
   buildStyleSpec,
   buildStaticSourceData,
   buildPerFrameState,
+  resolveStaticPaints,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_DOT_LAYER,
@@ -94,7 +95,19 @@ import { buildBootstrapHtml } from './bootstrap.html';
 
 interface SetupCmd {
   cmd: 'setup';
-  viewport: { w: number; h: number };
+  /** CSS-pixel viewport dimensions the renderer page is laid out at. `w`
+   *  always equals `canonicalMapCssWidth(aspect)`; `h` is derived from the
+   *  framebuffer height divided by `pixelRatio` so map_slot's own aspect
+   *  (which can differ from the full export's aspect in composite layouts)
+   *  is preserved. */
+  cssViewport: { w: number; h: number };
+  /** Actual pixel buffer the renderer writes — equals the map slot pixel
+   *  dims. Readback (`gl.readPixels` / PNG decode) is sized to these. */
+  framebuffer: { w: number; h: number };
+  /** `framebuffer.w / cssViewport.w` (a float; < 1 for downscaled insets,
+   *  > 1 for high-res exports). Fed to MapLibre's `pixelRatio` constructor
+   *  arg and to `page.setViewport`'s `deviceScaleFactor`. */
+  pixelRatio: number;
   fps: number;
   timeline: CompiledTimeline;
   route: Route | null;
@@ -378,13 +391,19 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     verbose(`[renderer applySetup +${Date.now() - t0}ms] ${msg}\n`);
   };
 
-  // Match the Page's viewport to the requested map slot dims. setViewport
-  // controls the framebuffer maplibre's WebGL context will produce.
-  stamp(`before setViewport ${payload.viewport.w}x${payload.viewport.h}`);
+  // Match the Page's viewport to the requested CSS-viewport dims, with
+  // `deviceScaleFactor` set to the export's `pixelRatio`. Together these
+  // give MapLibre a framebuffer of `cssViewport.w * pixelRatio` ×
+  // `cssViewport.h * pixelRatio`, which (by construction in build_setup_payload)
+  // matches the requested map_slot pixel dims.
+  stamp(
+    `before setViewport css=${payload.cssViewport.w}x${payload.cssViewport.h} ` +
+    `dpr=${payload.pixelRatio} fb=${payload.framebuffer.w}x${payload.framebuffer.h}`,
+  );
   await p.setViewport({
-    width: payload.viewport.w,
-    height: payload.viewport.h,
-    deviceScaleFactor: 1,
+    width: payload.cssViewport.w,
+    height: payload.cssViewport.h,
+    deviceScaleFactor: payload.pixelRatio,
   });
   stamp('after setViewport');
 
@@ -434,13 +453,27 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     ['route-trail-line', payload.mapSettings.route_mode === 'visited' ? 'visible' : 'none'],
   ];
 
+  // Static paint sizing — layer specs ship placeholder `1`s for every
+  // size-based property (line-width, circle-radius, circle-stroke-width,
+  // text-size). Under the lever model the real values are
+  // `PAINT_SIZE_FRACTIONS.<name> * PAINT_REFERENCE_WIDTH` (1080 CSS px) —
+  // width-independent. The renderer's `pixelRatio` lever absorbs the
+  // resolution shift; same trail thickness in CSS px across every aspect /
+  // resolution / slot shape. The page applies these via setPaintProperty /
+  // setLayoutProperty after style.load, before the first frame.
+  const staticPaintResolution = resolveStaticPaints();
+
   const initPayload = {
     style,
-    viewport: payload.viewport,
+    cssViewport: payload.cssViewport,
+    framebuffer: payload.framebuffer,
+    pixelRatio: payload.pixelRatio,
     add3dBuildings: payload.mapSettings.map_style === '3d',
     staticSources,
     staticLayers,
     visibility,
+    staticPaints: staticPaintResolution.paints,
+    staticLayouts: staticPaintResolution.layouts,
     buildingsLayer: payload.mapSettings.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
     // Page-side opts. `verbose` gates the page's __init/__applyFrame
     // breadcrumbs and the in-flight idle-wait diagnostic. `transport`
@@ -581,10 +614,13 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
   }
   const t = cmd.project_time_ms;
   const payload = setupPayload;
+  // Camera math runs in CSS-pixel space, matching the preview MapView. dpr
+  // is the export pixelRatio so any zoom-correction helpers downstream that
+  // multiply by dpr get the framebuffer's actual scale.
   const viewport = {
-    width: payload.viewport.w,
-    height: payload.viewport.h,
-    dpr: 1,
+    width: payload.cssViewport.w,
+    height: payload.cssViewport.h,
+    dpr: payload.pixelRatio,
   };
 
   const activeClipId = activeClipIdAt(payload.timeline, t);
@@ -685,28 +721,30 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     const decodeStart = Date.now();
     rgba = Buffer.from(applyResult.rgbaB64, 'base64');
     decodeMs = Date.now() - decodeStart;
-    const expected = payload.viewport.w * payload.viewport.h * 4;
+    const expected = payload.framebuffer.w * payload.framebuffer.h * 4;
     if (rgba.length !== expected) {
       throw new Error(
-        `readpixels: got ${rgba.length}B, expected ${expected}B (${payload.viewport.w}x${payload.viewport.h}*4)`,
+        `readpixels: got ${rgba.length}B, expected ${expected}B (${payload.framebuffer.w}x${payload.framebuffer.h}*4)`,
       );
     }
     fstamp(`readpixels decode ${rgba.length}B in ${decodeMs}ms`);
   } else {
-    // Legacy PNG transport — Page.captureScreenshot then pngjs.
+    // Legacy PNG transport — Page.captureScreenshot then pngjs. The clip
+    // rect is in CSS-pixel space; Chrome's screenshot encodes at the page's
+    // device-scale-factor, so the decoded PNG is framebuffer-sized.
     const shotStart = Date.now();
     const pngBuf = (await page.screenshot({
       type: 'png',
       captureBeyondViewport: false,
       omitBackground: true,
       fullPage: false,
-      clip: { x: 0, y: 0, width: payload.viewport.w, height: payload.viewport.h },
+      clip: { x: 0, y: 0, width: payload.cssViewport.w, height: payload.cssViewport.h },
     })) as Buffer;
     shotMs = Date.now() - shotStart;
     pngBytes = pngBuf.length;
     fstamp(`screenshot ${pngBuf.length}B in ${shotMs}ms`);
     const decodeStart = Date.now();
-    rgba = await decodePngToRgba(pngBuf, payload.viewport.w, payload.viewport.h);
+    rgba = await decodePngToRgba(pngBuf, payload.framebuffer.w, payload.framebuffer.h);
     decodeMs = Date.now() - decodeStart;
     fstamp(`png decoded ${rgba.length}B in ${decodeMs}ms`);
   }
@@ -724,7 +762,10 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     ? `shot=${shotMs}ms png=${pngBytes}B`
     : `read=embedded`;
   process.stderr.write(
-    `[renderer] frame ${cmd.frame_index} t=${t}ms total=${totalMs}ms eval=${evalMs}ms ${tx} decode=${decodeMs}ms write=${writeMs}ms rgba=${rgba.length}B\n`,
+    `[renderer] frame ${cmd.frame_index} t=${t}ms total=${totalMs}ms eval=${evalMs}ms ${tx} decode=${decodeMs}ms write=${writeMs}ms rgba=${rgba.length}B ` +
+    `zoom=${state.camera.zoom.toFixed(3)} center=${state.camera.center.lng.toFixed(5)},${state.camera.center.lat.toFixed(5)} ` +
+    `bearing=${state.camera.bearing.toFixed(1)} pitch=${state.camera.pitch.toFixed(1)} ` +
+    `css=${payload.cssViewport.w}x${payload.cssViewport.h} fb=${payload.framebuffer.w}x${payload.framebuffer.h} dpr=${payload.pixelRatio}\n`,
   );
 }
 

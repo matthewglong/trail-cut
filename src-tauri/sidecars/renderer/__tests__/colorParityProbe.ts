@@ -43,8 +43,8 @@ interface FrameResult {
 // bytes. We split deterministically using known sizes.
 async function captureOneFrame(transport: 'readpixels' | 'png'): Promise<FrameResult> {
   const setup = buildSetupPayload({
-    viewportW: 540,
-    viewportH: 960,
+    framebufferW: 540,
+    framebufferH: 960,
     fps: 30,
   });
 
@@ -84,7 +84,7 @@ async function captureOneFrame(transport: 'readpixels' | 'png'): Promise<FrameRe
   child.stdin.write(JSON.stringify({ cmd: 'render', frame_index: 0, project_time_ms: 0 }) + '\n');
 
   // Wait for the frame bytes (ready line + 4 bytes length + len bytes)
-  const expectedFrameBytes = setup.viewport.w * setup.viewport.h * 4;
+  const expectedFrameBytes = setup.framebuffer.w * setup.framebuffer.h * 4;
   const frameDeadline = Date.now() + 180_000;
   while (Date.now() < frameDeadline) {
     const buf = Buffer.concat(stdoutChunks);
@@ -124,7 +124,7 @@ async function captureOneFrame(transport: 'readpixels' | 'png'): Promise<FrameRe
     throw new Error(`frame size mismatch: got ${rgba.length}, expected ${expectedFrameBytes}`);
   }
 
-  return { rgba, width: setup.viewport.w, height: setup.viewport.h };
+  return { rgba, width: setup.framebuffer.w, height: setup.framebuffer.h };
 }
 
 interface Stats {
