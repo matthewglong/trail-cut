@@ -85,7 +85,7 @@ import {
   type CompiledTimeline,
 } from '../../../src/lib/cameraIntent';
 import { indexRoute, type IndexedRoute } from '../../../src/lib/routeLocation';
-import type { Clip, Route, MapSettings } from '../../../src/types';
+import { resolveMapSettings, type Clip, type Route, type MapSettings } from '../../../src/types';
 
 import { createTileCache, defaultCacheDir, type TileCache } from './tileCache';
 import { bridgeFetchFactory } from './trailcutFetch';
@@ -456,12 +456,15 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
   // Static paint sizing — layer specs ship placeholder `1`s for every
   // size-based property (line-width, circle-radius, circle-stroke-width,
   // text-size). Under the lever model the real values are
-  // `PAINT_SIZE_FRACTIONS.<name> * PAINT_REFERENCE_WIDTH` (1080 CSS px) —
+  // `mapSettings.overlay_<name> * PAINT_REFERENCE_WIDTH` (1080 CSS px) —
   // width-independent. The renderer's `pixelRatio` lever absorbs the
   // resolution shift; same trail thickness in CSS px across every aspect /
   // resolution / slot shape. The page applies these via setPaintProperty /
-  // setLayoutProperty after style.load, before the first frame.
-  const staticPaintResolution = resolveStaticPaints();
+  // setLayoutProperty after style.load, before the first frame. This is
+  // just the *initial seed* using project defaults — per-frame the renderer
+  // re-resolves with each active clip's `map_overrides` and ships the
+  // updated values inside `frame.paints` / `frame.layouts`.
+  const staticPaintResolution = resolveStaticPaints(payload.mapSettings);
 
   const initPayload = {
     style,
@@ -624,32 +627,56 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
   };
 
   const activeClipId = activeClipIdAt(payload.timeline, t);
+
+  // Resolve the active clip's MapSettings (project defaults merged with
+  // that clip's `map_overrides`), so per-clip overlay-size variations
+  // render correctly. Outside a clip (gap, pre-roll), fall back to project
+  // defaults — those frames are typically held end-states between transitions.
+  const activeClip = activeClipId
+    ? payload.clips.find((c) => c.id === activeClipId) ?? null
+    : null;
+  const resolvedMapSettings: MapSettings = resolveMapSettings(
+    payload.mapSettings,
+    activeClip?.map_overrides,
+  );
+
   const state = buildPerFrameState(
     payload.timeline,
     t,
     activeClipId,
     indexedRoute,
     payload.clips,
-    payload.mapSettings,
+    resolvedMapSettings,
     viewport,
   );
+
+  // Re-resolve static paints from the active clip's settings. The page
+  // applies these as setPaintProperty / setLayoutProperty per frame so any
+  // per-clip overlay-size override (route line width, waypoint stroke,
+  // dot radius / stroke, label size) takes effect at the cut. Cost is
+  // ~7 setPaintProperty + 1 setLayoutProperty calls per frame; maplibre
+  // no-ops same-value writes internally.
+  const staticResolution = resolveStaticPaints(resolvedMapSettings);
 
   // Translate state.sources (Record) and state.paints (named fields) into
   // serializable arrays for the page-side __applyFrame. The wire format
   // here is JSON; tuples beat objects for compactness across page.evaluate.
   const sources: Array<[string, unknown]> = Object.entries(state.sources);
   const paints: Array<[string, string, unknown]> = [
+    ...staticResolution.paints,
     ['waypoints-circle', 'circle-radius', state.paints.waypointCircleRadius],
     ['waypoints-circle', 'circle-color', state.paints.waypointCircleColor],
     ['waypoints-circle', 'circle-stroke-color', state.paints.waypointCircleStrokeColor],
     ['live-marker-pulse', 'circle-radius', state.paints.pulseRadius],
     ['live-marker-pulse', 'circle-opacity', state.paints.pulseOpacity],
   ];
+  const layouts: Array<[string, string, unknown]> = staticResolution.layouts;
 
   const framePayload = {
     t,
     sources,
     paints,
+    layouts,
     camera: {
       center: { lng: state.camera.center.lng, lat: state.camera.center.lat },
       zoom: state.camera.zoom,

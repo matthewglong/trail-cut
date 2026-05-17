@@ -95,6 +95,21 @@ export interface MapSettings {
    *  representative bearing. The map arcs smoothly between them.
    *  1 = single fixed bearing for the whole clip. */
   bearing_stops: number;
+  /** Overlay paint sizes — fractions of the canonical paint reference width
+   *  (1080 CSS px). Effective CSS-px size = field × 1080. Each lives on
+   *  MapSettings so the same project-default + per-clip-override flow used
+   *  for route_mode / waypoints_mode / zoom etc. covers them too. */
+  overlay_route_full_width: number;
+  overlay_route_trail_width: number;
+  overlay_waypoint_circle_radius: number;
+  overlay_waypoint_active_radius: number;
+  overlay_waypoint_stroke_width: number;
+  overlay_waypoint_label_size: number;
+  overlay_live_marker_pulse_radius: number;
+  overlay_live_marker_dot_radius: number;
+  overlay_live_marker_dot_stroke_width: number;
+  overlay_pulse_start_radius: number;
+  overlay_pulse_end_radius: number;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -106,6 +121,17 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   bearing_mode: 'fixed',
   bearing_degrees: 0,
   bearing_stops: 3,
+  overlay_route_full_width: 0.004,
+  overlay_route_trail_width: 0.0055,
+  overlay_waypoint_circle_radius: 0.015,
+  overlay_waypoint_active_radius: 0.019,
+  overlay_waypoint_stroke_width: 0.003,
+  overlay_waypoint_label_size: 0.014,
+  overlay_live_marker_pulse_radius: 0.012,
+  overlay_live_marker_dot_radius: 0.013,
+  overlay_live_marker_dot_stroke_width: 0.004,
+  overlay_pulse_start_radius: 0.012,
+  overlay_pulse_end_radius: 0.033,
 };
 
 /** Merge project defaults with per-clip overrides. */

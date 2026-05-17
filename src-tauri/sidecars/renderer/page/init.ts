@@ -93,8 +93,16 @@ interface FramePayload {
   t: number;
   /** Per-frame GeoJSON updates. Replaces the existing source via setData. */
   sources: Array<[string, AnyJSON]>;
-  /** Per-frame paint property triplets [layerId, propName, value]. */
+  /** Per-frame paint property triplets [layerId, propName, value]. Includes
+   *  both the data-driven highlight/pulse paints and the re-resolved static
+   *  paints (line-width, stroke widths, dot radii) so per-clip overlay-size
+   *  overrides take effect at the cut. */
   paints: Array<[string, string, AnyJSON]>;
+  /** Per-frame layout property triplets [layerId, propName, value]. Today
+   *  this carries `waypoints-label / text-size` so per-clip overrides of
+   *  `overlay_waypoint_label_size` are picked up at the cut. Empty array
+   *  when no layout properties need updating. */
+  layouts: Array<[string, string, AnyJSON]>;
   /** Camera target. */
   camera: {
     center: { lng: number; lat: number };
@@ -383,9 +391,13 @@ window.__init = async (payload: InitPayload): Promise<void> => {
     // Static paint sizing. Layer specs ship placeholder `1`s for every
     // size-based property (line-width, circle-radius, circle-stroke-width,
     // text-size). The real values are
-    // `PAINT_SIZE_FRACTIONS.<name> * cssViewport.w` — resolved on the
-    // worker side and shipped here as ready-to-apply triplets. Skipping
-    // this would render the map with 1-pixel lines and 1-pixel circles.
+    // `mapSettings.overlay_<name> * PAINT_REFERENCE_WIDTH` — resolved on
+    // the worker side and shipped here as ready-to-apply triplets. This
+    // is the *initial seed* using the project-default `mapSettings`; the
+    // per-frame `__applyFrame` re-resolves and re-applies these so per-clip
+    // `map_overrides` of any overlay-size field take effect at the cut.
+    // Skipping this seed would render the map with 1-pixel lines and
+    // 1-pixel circles for the pre-first-frame window.
     for (const [layerId, prop, value] of payload.staticPaints) {
       map.setPaintProperty(layerId, prop, value);
       bc(`setStaticPaint ${layerId}.${prop}=${value}`);
@@ -621,6 +633,12 @@ window.__applyFrame = async (frame: FramePayload): Promise<{ rgbaB64: string | n
     for (const [layerId, prop, value] of frame.paints) {
       map.setPaintProperty(layerId, prop, value);
       bc(`setPaint ${layerId}.${prop}`);
+    }
+    if (frame.layouts) {
+      for (const [layerId, prop, value] of frame.layouts) {
+        map.setLayoutProperty(layerId, prop, value);
+        bc(`setLayout ${layerId}.${prop}`);
+      }
     }
 
     map.jumpTo({

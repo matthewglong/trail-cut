@@ -4,24 +4,27 @@
 // on this being deterministic at any sampled t.
 
 import { describe, it, expect } from 'vitest';
-import { pulseAt, pulseAtScaled, PULSE_PERIOD_MS } from '../animations';
-import { PAINT_SIZE_FRACTIONS } from '../styleSpec';
+import { pulseAt, PULSE_PERIOD_MS } from '../animations';
+import { PAINT_REFERENCE_WIDTH } from '../styleSpec';
+import { DEFAULT_MAP_SETTINGS } from '../../../types';
 
 const FLOAT_EPS = 1e-9;
-const START_R = PAINT_SIZE_FRACTIONS.pulseStartRadius * 1080;
-const END_R = PAINT_SIZE_FRACTIONS.pulseEndRadius * 1080;
+const START_R =
+  DEFAULT_MAP_SETTINGS.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH;
+const END_R =
+  DEFAULT_MAP_SETTINGS.overlay_pulse_end_radius * PAINT_REFERENCE_WIDTH;
 
 describe('pulseAt', () => {
-  it('boundary at t=0: radius=pulseStartRadius × PAINT_REFERENCE_WIDTH and opacity=0.55', () => {
-    const v = pulseAt(0);
+  it('boundary at t=0: radius=overlay_pulse_start_radius × PAINT_REFERENCE_WIDTH and opacity=0.55', () => {
+    const v = pulseAt(0, DEFAULT_MAP_SETTINGS);
     expect(Math.abs(v.radius - START_R)).toBeLessThan(FLOAT_EPS);
     expect(Math.abs(v.opacity - 0.55)).toBeLessThan(FLOAT_EPS);
   });
 
   it('periodicity: pulseAt(t) === pulseAt(t + PULSE_PERIOD_MS) for several t', () => {
     for (const t of [0, 100, 800, 1599, 12345]) {
-      const a = pulseAt(t);
-      const b = pulseAt(t + PULSE_PERIOD_MS);
+      const a = pulseAt(t, DEFAULT_MAP_SETTINGS);
+      const b = pulseAt(t + PULSE_PERIOD_MS, DEFAULT_MAP_SETTINGS);
       expect(Math.abs(a.radius - b.radius)).toBeLessThan(FLOAT_EPS);
       expect(Math.abs(a.opacity - b.opacity)).toBeLessThan(FLOAT_EPS);
     }
@@ -32,7 +35,7 @@ describe('pulseAt', () => {
     let prev = -Infinity;
     for (let i = 0; i < N; i++) {
       const t = (i / N) * PULSE_PERIOD_MS;
-      const r = pulseAt(t).radius;
+      const r = pulseAt(t, DEFAULT_MAP_SETTINGS).radius;
       expect(r).toBeGreaterThanOrEqual(prev - FLOAT_EPS);
       prev = r;
     }
@@ -43,15 +46,15 @@ describe('pulseAt', () => {
     let prev = Infinity;
     for (let i = 0; i < N; i++) {
       const t = (i / N) * PULSE_PERIOD_MS;
-      const o = pulseAt(t).opacity;
+      const o = pulseAt(t, DEFAULT_MAP_SETTINGS).opacity;
       expect(o).toBeLessThanOrEqual(prev + FLOAT_EPS);
       prev = o;
     }
   });
 
   it('negative t: pulseAt(-100) matches pulseAt(PULSE_PERIOD_MS - 100) and stays in valid range', () => {
-    const a = pulseAt(-100);
-    const b = pulseAt(PULSE_PERIOD_MS - 100);
+    const a = pulseAt(-100, DEFAULT_MAP_SETTINGS);
+    const b = pulseAt(PULSE_PERIOD_MS - 100, DEFAULT_MAP_SETTINGS);
     expect(Math.abs(a.radius - b.radius)).toBeLessThan(FLOAT_EPS);
     expect(Math.abs(a.opacity - b.opacity)).toBeLessThan(FLOAT_EPS);
     // Range check (radius bounded by start and end fractions × PAINT_REFERENCE_WIDTH).
@@ -61,38 +64,24 @@ describe('pulseAt', () => {
     expect(a.opacity).toBeLessThanOrEqual(0.55);
   });
 
-  it('end of period: t = PULSE_PERIOD_MS - 0.001 → radius ≈ pulseEndRadius × 1080, opacity ≈ 0', () => {
-    const v = pulseAt(PULSE_PERIOD_MS - 0.001);
+  it('end of period: t = PULSE_PERIOD_MS - 0.001 → radius ≈ overlay_pulse_end_radius × 1080, opacity ≈ 0', () => {
+    const v = pulseAt(PULSE_PERIOD_MS - 0.001, DEFAULT_MAP_SETTINGS);
     expect(Math.abs(v.radius - END_R)).toBeLessThan(0.01);
     expect(v.opacity).toBeLessThan(0.01);
   });
-});
 
-describe('pulseAtScaled', () => {
-  // Preview composition: scaled reference width drives radius linearly,
-  // opacity is invariant.
-  it('boundary at t=0 with width 540: radius=pulseStartRadius × 540', () => {
-    const v = pulseAtScaled(0, 540);
-    expect(Math.abs(v.radius - PAINT_SIZE_FRACTIONS.pulseStartRadius * 540)).toBeLessThan(
-      FLOAT_EPS,
-    );
-    expect(Math.abs(v.opacity - 0.55)).toBeLessThan(FLOAT_EPS);
-  });
-
-  it('scales linearly with the scaledRefWidth argument', () => {
-    const a = pulseAtScaled(400, 1080);
-    const b = pulseAtScaled(400, 540);
-    expect(b.radius).toBeCloseTo(a.radius * 0.5, 9);
-    // Opacity is width-independent.
-    expect(b.opacity).toBeCloseTo(a.opacity, 9);
-  });
-
-  it('at scaledRefWidth=1080 matches pulseAt() exactly', () => {
-    for (const t of [0, 250, 800, 1599]) {
-      const a = pulseAt(t);
-      const b = pulseAtScaled(t, 1080);
-      expect(Math.abs(a.radius - b.radius)).toBeLessThan(FLOAT_EPS);
-      expect(Math.abs(a.opacity - b.opacity)).toBeLessThan(FLOAT_EPS);
-    }
+  it('overridden pulse radii: a clip override changes only that clip\'s pulse', () => {
+    // Per-clip override flow: the resolved MapSettings for the active clip
+    // carries an enlarged pulse end radius; pulseAt picks it up directly.
+    const wide = {
+      ...DEFAULT_MAP_SETTINGS,
+      overlay_pulse_start_radius: 0.03,
+      overlay_pulse_end_radius: 0.08,
+    };
+    const v = pulseAt(0, wide);
+    expect(v.radius).toBeCloseTo(0.03 * PAINT_REFERENCE_WIDTH, 9);
+    // At t=0 only start radius matters; end radius gates the bound check.
+    const end = pulseAt(PULSE_PERIOD_MS - 0.001, wide);
+    expect(end.radius).toBeCloseTo(0.08 * PAINT_REFERENCE_WIDTH, 1);
   });
 });

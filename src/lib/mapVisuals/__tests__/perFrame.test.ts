@@ -8,10 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildPerFrameState } from '../perFrame';
-import {
-  PAINT_REFERENCE_WIDTH,
-  PAINT_SIZE_FRACTIONS,
-} from '../styleSpec';
+import { PAINT_REFERENCE_WIDTH } from '../styleSpec';
 import { compileTimeline, type Viewport } from '../../cameraIntent';
 import {
   DEFAULT_MAP_SETTINGS,
@@ -222,7 +219,7 @@ describe('buildPerFrameState paints', () => {
   // Under the lever model `buildPerFramePaints` is width-input-independent;
   // radii anchor to `PAINT_REFERENCE_WIDTH` (1080). Same numbers everywhere.
 
-  it('waypoint radius = waypointsCircleRadius × PAINT_REFERENCE_WIDTH (= 29.7)', () => {
+  it('waypoint radius = mapSettings.overlay_waypoint_circle_radius × PAINT_REFERENCE_WIDTH', () => {
     const { clips, timeline } = twoClipFixture();
     const state = buildPerFrameState(
       timeline,
@@ -234,13 +231,38 @@ describe('buildPerFrameState paints', () => {
       VIEWPORT,
     );
     expect(state.paints.waypointCircleRadius).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.waypointsCircleRadius * PAINT_REFERENCE_WIDTH,
+      POINT_SETTINGS.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
-    // At t=0 the pulse curve emits pulseStartRadius × PAINT_REFERENCE_WIDTH.
+    // At t=0 the pulse curve emits overlay_pulse_start_radius × PAINT_REFERENCE_WIDTH.
     expect(state.paints.pulseRadius).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.pulseStartRadius * PAINT_REFERENCE_WIDTH,
+      POINT_SETTINGS.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH,
       6,
+    );
+  });
+
+  it('per-clip overlay override changes the per-frame waypoint radius', () => {
+    // Resolves the active clip's MapSettings the way the renderer / preview
+    // do — project defaults merged with `Clip.map_overrides` — then feeds
+    // that to `buildPerFrameState`. The waypoint default radius for the
+    // active clip should track the override, leaving the seed unused.
+    const { clips, timeline } = twoClipFixture();
+    const overridden: MapSettings = {
+      ...POINT_SETTINGS,
+      overlay_waypoint_circle_radius: 0.04,
+    };
+    const state = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      null,
+      clips,
+      overridden,
+      VIEWPORT,
+    );
+    expect(state.paints.waypointCircleRadius).toBeCloseTo(
+      0.04 * PAINT_REFERENCE_WIDTH,
+      9,
     );
   });
 
@@ -289,11 +311,11 @@ describe('buildPerFrameState paints', () => {
     expect(Array.isArray(expr)).toBe(true);
     expect(expr[0]).toBe('case');
     expect(expr[2]).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.waypointsActiveRadius * PAINT_REFERENCE_WIDTH,
+      POINT_SETTINGS.overlay_waypoint_active_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(expr[3]).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.waypointsCircleRadius * PAINT_REFERENCE_WIDTH,
+      POINT_SETTINGS.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
   });

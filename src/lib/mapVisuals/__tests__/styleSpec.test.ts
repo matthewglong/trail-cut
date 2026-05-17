@@ -10,12 +10,15 @@ import {
   buildStyleSpec,
   resolveStaticPaints,
   PAINT_REFERENCE_WIDTH,
-  PAINT_SIZE_FRACTIONS,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_DOT_LAYER,
 } from '../styleSpec';
-import { DEFAULT_MAP_SETTINGS, type MapSettings } from '../../../types';
+import {
+  DEFAULT_MAP_SETTINGS,
+  resolveMapSettings,
+  type MapSettings,
+} from '../../../types';
 
 const minimal: MapSettings = DEFAULT_MAP_SETTINGS;
 
@@ -58,22 +61,23 @@ describe('BUILDINGS_LAYER_SPEC', () => {
   });
 });
 
-describe('PAINT_SIZE_FRACTIONS table', () => {
-  it('matches the canonical fraction values from the refactor spec', () => {
-    // Asserting the table verbatim so the public contract stays pinned —
-    // any deliberate change here is intentional and reviewable. Numbers
-    // are unitless ratios of map-region CSS width.
-    expect(PAINT_SIZE_FRACTIONS.routeFullLineWidth).toBe(0.0075);
-    expect(PAINT_SIZE_FRACTIONS.routeTrailLineWidth).toBe(0.01);
-    expect(PAINT_SIZE_FRACTIONS.waypointsCircleRadius).toBe(0.0275);
-    expect(PAINT_SIZE_FRACTIONS.waypointsActiveRadius).toBe(0.035);
-    expect(PAINT_SIZE_FRACTIONS.waypointsCircleStrokeWidth).toBe(0.005);
-    expect(PAINT_SIZE_FRACTIONS.waypointsLabelTextSize).toBe(0.0275);
-    expect(PAINT_SIZE_FRACTIONS.liveMarkerPulseCircleRadius).toBe(0.02);
-    expect(PAINT_SIZE_FRACTIONS.liveMarkerDotCircleRadius).toBe(0.0225);
-    expect(PAINT_SIZE_FRACTIONS.liveMarkerDotCircleStrokeWidth).toBe(0.0075);
-    expect(PAINT_SIZE_FRACTIONS.pulseStartRadius).toBe(0.02);
-    expect(PAINT_SIZE_FRACTIONS.pulseEndRadius).toBe(0.055);
+describe('DEFAULT_MAP_SETTINGS overlay seeds', () => {
+  it('matches the lowered defaults from the refactor spec', () => {
+    // Pin the seeded fractions verbatim so a deliberate change is reviewable.
+    // Numbers are unitless ratios of `PAINT_REFERENCE_WIDTH` (1080 CSS px).
+    expect(DEFAULT_MAP_SETTINGS.overlay_route_full_width).toBe(0.004);
+    expect(DEFAULT_MAP_SETTINGS.overlay_route_trail_width).toBe(0.0055);
+    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_circle_radius).toBe(0.015);
+    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_active_radius).toBe(0.019);
+    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_stroke_width).toBe(0.003);
+    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_label_size).toBe(0.014);
+    expect(DEFAULT_MAP_SETTINGS.overlay_live_marker_pulse_radius).toBe(0.012);
+    expect(DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_radius).toBe(0.013);
+    expect(DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_stroke_width).toBe(
+      0.004,
+    );
+    expect(DEFAULT_MAP_SETTINGS.overlay_pulse_start_radius).toBe(0.012);
+    expect(DEFAULT_MAP_SETTINGS.overlay_pulse_end_radius).toBe(0.033);
   });
 });
 
@@ -94,48 +98,125 @@ describe('resolveStaticPaints', () => {
 
   it('returns canonical values anchored to PAINT_REFERENCE_WIDTH=1080', () => {
     // Under the lever model the renderer-side resolver is width-input-
-    // independent: every value equals `fraction × PAINT_REFERENCE_WIDTH`.
-    // Trail @ fraction 0.01 → 10.8 CSS px everywhere.
-    const resolved = resolveStaticPaints();
+    // independent: every value equals `mapSettings.overlay_<name> ×
+    // PAINT_REFERENCE_WIDTH`.
+    const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
     const { paintBy, layoutBy } = buildMap(resolved);
     expect(PAINT_REFERENCE_WIDTH).toBe(1080);
     expect(paintBy.get('route-full-line/line-width')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.routeFullLineWidth * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_route_full_width * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('route-trail-line/line-width')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.routeTrailLineWidth * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_route_trail_width * PAINT_REFERENCE_WIDTH,
       9,
     );
-    expect(paintBy.get('route-trail-line/line-width')).toBeCloseTo(10.8, 9);
     expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.waypointsCircleRadius * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_waypoint_circle_radius *
+        PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('waypoints-circle/circle-stroke-width')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.waypointsCircleStrokeWidth * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_waypoint_stroke_width * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('live-marker-dot/circle-radius')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.liveMarkerDotCircleRadius * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_radius *
+        PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('live-marker-dot/circle-stroke-width')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.liveMarkerDotCircleStrokeWidth * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_stroke_width *
+        PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('live-marker-pulse/circle-radius')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.liveMarkerPulseCircleRadius * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_live_marker_pulse_radius *
+        PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(layoutBy.get('waypoints-label/text-size')).toBeCloseTo(
-      PAINT_SIZE_FRACTIONS.waypointsLabelTextSize * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.overlay_waypoint_label_size * PAINT_REFERENCE_WIDTH,
       9,
     );
   });
 
-  it('takes no argument and returns the descriptor shape', () => {
-    const resolved = resolveStaticPaints();
+  it('passing overlay_route_trail_width: 0.02 yields route-trail-line line-width of 21.6', () => {
+    // Pinned arithmetic — confirms the fraction × PAINT_REFERENCE_WIDTH
+    // contract end-to-end. 0.02 × 1080 = 21.6.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      overlay_route_trail_width: 0.02,
+    };
+    const { paintBy } = buildMap(resolveStaticPaints(settings));
+    expect(paintBy.get('route-trail-line/line-width')).toBeCloseTo(21.6, 9);
+  });
+
+  it('project-level edit: a non-default overlay_waypoint_circle_radius flows through', () => {
+    // The renderer must surface a project's overlay-size edits (not just
+    // the seeded constants). 0.04 × 1080 = 43.2 — a value far from any seed
+    // so the test fails noisily if the resolver ever ignores the input.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      overlay_waypoint_circle_radius: 0.04,
+    };
+    const { paintBy } = buildMap(resolveStaticPaints(settings));
+    expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
+      0.04 * PAINT_REFERENCE_WIDTH,
+      9,
+    );
+    // Sanity: the seeded default would have been 0.015 × 1080 = 16.2, far
+    // from 43.2 — proves we picked up the override, not the seed.
+    expect(paintBy.get('waypoints-circle/circle-radius')).not.toBeCloseTo(
+      DEFAULT_MAP_SETTINGS.overlay_waypoint_circle_radius *
+        PAINT_REFERENCE_WIDTH,
+      3,
+    );
+  });
+
+  it('clip-level override: resolveMapSettings merge applies overlay fields', () => {
+    // The new overlay_* fields are flat MapSettings fields, so they inherit
+    // the existing resolveMapSettings(projectDefaults, clipOverrides) merge
+    // for free. Confirm: a single override changes only that field; siblings
+    // stay on the project default.
+    const projectDefaults = DEFAULT_MAP_SETTINGS;
+    const resolved = resolveMapSettings(projectDefaults, {
+      overlay_waypoint_circle_radius: 0.02,
+    });
+    expect(resolved.overlay_waypoint_circle_radius).toBe(0.02);
+    // Sibling overlay fields untouched.
+    expect(resolved.overlay_route_full_width).toBe(
+      projectDefaults.overlay_route_full_width,
+    );
+    expect(resolved.overlay_waypoint_active_radius).toBe(
+      projectDefaults.overlay_waypoint_active_radius,
+    );
+    expect(resolved.overlay_pulse_end_radius).toBe(
+      projectDefaults.overlay_pulse_end_radius,
+    );
+    // Non-overlay fields untouched.
+    expect(resolved.zoom).toBe(projectDefaults.zoom);
+    expect(resolved.route_mode).toBe(projectDefaults.route_mode);
+
+    // Feed the resolved settings through resolveStaticPaints — the
+    // waypoint-circle line should now reflect 0.02, not the seed.
+    const { paintBy } = (function buildMap2(
+      r: ReturnType<typeof resolveStaticPaints>,
+    ) {
+      const paintBy = new Map<string, number>();
+      for (const [layerId, prop, value] of r.paints) {
+        paintBy.set(`${layerId}/${prop}`, value);
+      }
+      return { paintBy };
+    })(resolveStaticPaints(resolved));
+    expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
+      0.02 * PAINT_REFERENCE_WIDTH,
+      9,
+    );
+  });
+
+  it('takes a MapSettings argument and returns the descriptor shape', () => {
+    const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
     expect(Array.isArray(resolved.paints)).toBe(true);
     expect(Array.isArray(resolved.layouts)).toBe(true);
     expect(resolved.paints.length).toBeGreaterThan(0);
@@ -153,7 +234,7 @@ describe('resolveStaticPaints', () => {
   });
 
   it('emits no color / opacity / stroke-color entries — only size properties', () => {
-    const resolved = resolveStaticPaints();
+    const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
     const props = [
       ...resolved.paints.map(([, p]) => p),
       ...resolved.layouts.map(([, p]) => p),
