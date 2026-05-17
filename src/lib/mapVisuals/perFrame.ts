@@ -103,8 +103,8 @@ function wallClockTrace(
  *
  *  Paints: data-driven highlight on `waypoints-circle` keyed off
  *  `activeClipId` plus pulse values for `live-marker-pulse`. Paints anchor
- *  to `PAINT_REFERENCE_WIDTH` (1080 CSS px) — no width input required. See
- *  `buildPerFramePaints` for details. */
+ *  to `PAINT_REFERENCE_WIDTH` (1080 CSS px) × the relevant `mapSettings.overlay_*`
+ *  fraction. See `buildPerFramePaints` for details. */
 export function buildPerFrameState(
   timeline: CompiledTimeline,
   projectTimeMs: number,
@@ -122,7 +122,7 @@ export function buildPerFrameState(
     mapSettings,
     viewport,
   );
-  const paints = buildPerFramePaints(activeClipId, projectTimeMs);
+  const paints = buildPerFramePaints(activeClipId, projectTimeMs, mapSettings);
   return { camera, sources, paints };
 }
 

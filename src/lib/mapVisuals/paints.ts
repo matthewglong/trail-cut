@@ -10,9 +10,10 @@ import type {
   DataDrivenPropertyValueSpecification,
   ExpressionSpecification,
 } from 'maplibre-gl';
+import type { MapSettings } from '../../types';
 import { colors } from '../../theme/tokens';
 import { pulseAt } from './animations';
-import { PAINT_REFERENCE_WIDTH, PAINT_SIZE_FRACTIONS } from './styleSpec';
+import { PAINT_REFERENCE_WIDTH } from './styleSpec';
 import type { PaintUpdates } from './types';
 
 const ACTIVE_WAYPOINT_COLOR = '#4a9eff';
@@ -26,19 +27,20 @@ const ACTIVE_STROKE_COLOR = 'rgba(255, 255, 255, 0.95)';
  *  (no feature is highlighted). Pulse always comes from `pulseAt`.
  *
  *  Both renderer and preview call this: radii anchor to
- *  `PAINT_REFERENCE_WIDTH` (1080 CSS px); the renderer's `pixelRatio` lever
- *  absorbs the export-resolution shift, and the preview consumes the same
- *  CSS-px values directly (pane-invariant). Color, stroke color, and
- *  opacity outputs are untouched. */
+ *  `PAINT_REFERENCE_WIDTH` (1080 CSS px) × the relevant `mapSettings.overlay_*`
+ *  fraction; the renderer's `pixelRatio` lever absorbs the export-resolution
+ *  shift, and the preview consumes the same CSS-px values directly
+ *  (pane-invariant). Color, stroke color, and opacity outputs are untouched. */
 export function buildPerFramePaints(
   activeClipId: string | null,
   projectTimeMs: number,
+  mapSettings: MapSettings,
 ): PaintUpdates {
-  const pulse = pulseAt(projectTimeMs);
+  const pulse = pulseAt(projectTimeMs, mapSettings);
   const defaultRadius =
-    PAINT_SIZE_FRACTIONS.waypointsCircleRadius * PAINT_REFERENCE_WIDTH;
+    mapSettings.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH;
   const activeRadius =
-    PAINT_SIZE_FRACTIONS.waypointsActiveRadius * PAINT_REFERENCE_WIDTH;
+    mapSettings.overlay_waypoint_active_radius * PAINT_REFERENCE_WIDTH;
   return composePaints(activeClipId, pulse, defaultRadius, activeRadius);
 }
 

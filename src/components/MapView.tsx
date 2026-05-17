@@ -363,15 +363,18 @@ export default function MapView({
   // ---- Apply static layer paints at the canonical 1080 anchor ----
   // Layer specs ship `circle-radius` / `line-width` / `text-size` as
   // placeholder `1`s — the real values are
-  // `PAINT_SIZE_FRACTIONS.<name> × PAINT_REFERENCE_WIDTH`. Same call the
+  // `mapSettings.overlay_<name> × PAINT_REFERENCE_WIDTH`. Same call the
   // renderer worker makes after style.load; the preview pane's size has no
-  // bearing on the values, so this effect only re-runs when a style swap
-  // drops and recreates the layers (`styleVersion`).
+  // bearing on the values. Re-runs on style swap (`styleVersion`) and on
+  // any `mapSettings` change — including the swap from one clip's resolved
+  // settings to another when the active clip changes (the prop already
+  // arrives resolved — `Project.map_settings` merged with the active clip's
+  // `map_overrides` — so this effect picks up per-clip overlay-size edits).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
-      const resolved = resolveStaticPaints();
+      const resolved = resolveStaticPaints(mapSettings);
       for (const [layerId, prop, value] of resolved.paints) {
         if (!map.getLayer(layerId)) continue;
         map.setPaintProperty(layerId, prop, value);
@@ -382,7 +385,7 @@ export default function MapView({
       }
     };
     if (styleReadyRef.current) apply();
-  }, [styleVersion]);
+  }, [styleVersion, mapSettings]);
 
   // ---- Update route-line visibility based on route_mode ----
   useEffect(() => {

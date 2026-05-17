@@ -140,6 +140,31 @@ pub struct MapSettings {
     pub bearing_degrees: f64,
     #[serde(default = "default_bearing_stops")]
     pub bearing_stops: u32,
+    /// Overlay paint sizes — fractions of the canonical paint reference width
+    /// (1080 CSS px). Effective CSS-px size = field × 1080. Legacy bundles
+    /// without these fields adopt the lowered defaults via serde.
+    #[serde(default = "default_overlay_route_full_width")]
+    pub overlay_route_full_width: f64,
+    #[serde(default = "default_overlay_route_trail_width")]
+    pub overlay_route_trail_width: f64,
+    #[serde(default = "default_overlay_waypoint_circle_radius")]
+    pub overlay_waypoint_circle_radius: f64,
+    #[serde(default = "default_overlay_waypoint_active_radius")]
+    pub overlay_waypoint_active_radius: f64,
+    #[serde(default = "default_overlay_waypoint_stroke_width")]
+    pub overlay_waypoint_stroke_width: f64,
+    #[serde(default = "default_overlay_waypoint_label_size")]
+    pub overlay_waypoint_label_size: f64,
+    #[serde(default = "default_overlay_live_marker_pulse_radius")]
+    pub overlay_live_marker_pulse_radius: f64,
+    #[serde(default = "default_overlay_live_marker_dot_radius")]
+    pub overlay_live_marker_dot_radius: f64,
+    #[serde(default = "default_overlay_live_marker_dot_stroke_width")]
+    pub overlay_live_marker_dot_stroke_width: f64,
+    #[serde(default = "default_overlay_pulse_start_radius")]
+    pub overlay_pulse_start_radius: f64,
+    #[serde(default = "default_overlay_pulse_end_radius")]
+    pub overlay_pulse_end_radius: f64,
 }
 
 fn default_full() -> String {
@@ -170,6 +195,40 @@ fn default_bearing_stops() -> u32 {
     3
 }
 
+fn default_overlay_route_full_width() -> f64 {
+    0.004
+}
+fn default_overlay_route_trail_width() -> f64 {
+    0.0055
+}
+fn default_overlay_waypoint_circle_radius() -> f64 {
+    0.015
+}
+fn default_overlay_waypoint_active_radius() -> f64 {
+    0.019
+}
+fn default_overlay_waypoint_stroke_width() -> f64 {
+    0.003
+}
+fn default_overlay_waypoint_label_size() -> f64 {
+    0.014
+}
+fn default_overlay_live_marker_pulse_radius() -> f64 {
+    0.012
+}
+fn default_overlay_live_marker_dot_radius() -> f64 {
+    0.013
+}
+fn default_overlay_live_marker_dot_stroke_width() -> f64 {
+    0.004
+}
+fn default_overlay_pulse_start_radius() -> f64 {
+    0.012
+}
+fn default_overlay_pulse_end_radius() -> f64 {
+    0.033
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,6 +247,28 @@ pub struct MapOverrides {
     pub bearing_degrees: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bearing_stops: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_route_full_width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_route_trail_width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_waypoint_circle_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_waypoint_active_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_waypoint_stroke_width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_waypoint_label_size: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_live_marker_pulse_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_live_marker_dot_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_live_marker_dot_stroke_width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_pulse_start_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay_pulse_end_radius: Option<f64>,
 }
 
 /// Project-level "transition feel" knob. Drives the duration multiplier for
@@ -314,9 +395,21 @@ impl Default for MapSettings {
             bearing_mode: default_bearing_mode(),
             bearing_degrees: default_bearing_degrees(),
             bearing_stops: default_bearing_stops(),
+            overlay_route_full_width: default_overlay_route_full_width(),
+            overlay_route_trail_width: default_overlay_route_trail_width(),
+            overlay_waypoint_circle_radius: default_overlay_waypoint_circle_radius(),
+            overlay_waypoint_active_radius: default_overlay_waypoint_active_radius(),
+            overlay_waypoint_stroke_width: default_overlay_waypoint_stroke_width(),
+            overlay_waypoint_label_size: default_overlay_waypoint_label_size(),
+            overlay_live_marker_pulse_radius: default_overlay_live_marker_pulse_radius(),
+            overlay_live_marker_dot_radius: default_overlay_live_marker_dot_radius(),
+            overlay_live_marker_dot_stroke_width: default_overlay_live_marker_dot_stroke_width(),
+            overlay_pulse_start_radius: default_overlay_pulse_start_radius(),
+            overlay_pulse_end_radius: default_overlay_pulse_end_radius(),
         }
     }
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {

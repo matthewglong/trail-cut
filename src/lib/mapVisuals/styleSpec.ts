@@ -7,16 +7,17 @@
 // remote OpenFreeMap liberty style), so the consistent pattern is "consumer
 // owns addLayer; this module owns the spec."
 //
-// Paint sizing is expressed as DIMENSIONLESS FRACTIONS, anchored at runtime
-// to `PAINT_REFERENCE_WIDTH` (1080 CSS px). The renderer multiplies the
-// fraction by the constant — every aspect, every resolution, every slot
-// shape gets the same CSS-px size. Aspect / resolution / slot shape are
+// Paint sizing is expressed as DIMENSIONLESS FRACTIONS stored directly on
+// `MapSettings` (one `overlay_*` field per paint property). The renderer
+// multiplies each fraction by `PAINT_REFERENCE_WIDTH` (1080 CSS px) — every
+// aspect, every resolution, every slot shape gets the same CSS-px size for
+// a given resolved `MapSettings`. Aspect / resolution / slot shape are
 // absorbed by the renderer's lever model: cssViewport matches the slot
 // shape and `pixelRatio` carries the output-resolution delta. The preview
-// uses the same `resolveStaticPaints()` call: paint sizes are pane-
-// invariant, and the preview is pixel-identical to the 1080p export only
-// when the pane equals the aspect's canonical width. See
-// `MAP_RENDERING_PLAN.md` for the derivation.
+// uses the same `resolveStaticPaints(mapSettings)` call. Per-clip overrides
+// fall out of `Clip.map_overrides` (a `Partial<MapSettings>`) via the
+// existing `resolveMapSettings` merge. See `MAP_RENDERING_PLAN.md` for the
+// derivation.
 
 import type {
   StyleSpecification,
@@ -29,38 +30,11 @@ import type { StyleSpecResult } from './types';
 const TRAIL_COLOR = colors.accent;
 const FULL_ROUTE_COLOR = colors.accent;
 
-/** Paint size fractions — unitless ratios of `PAINT_REFERENCE_WIDTH` (1080
- *  CSS px). Both renderer and preview multiply each fraction by the
- *  constant — paint sizes do not track pane width, slot shape, or output
- *  resolution.
- *
- *  Reference @ PAINT_REFERENCE_WIDTH = 1080 CSS px:
- *    0.0075 → 8.1 px line
- *    0.01   → 10.8 px line (trail target: ~1% of width)
- *    0.0275 → 29.7 px circle radius
- *    0.035  → 37.8 px circle radius (active)
- *
- *  Only LENGTH/SIZE properties are listed here; colors, opacities, and
- *  fill-extrusion meters (which are geographic, not CSS-px) stay in their
- *  layer specs unscaled. */
-export const PAINT_SIZE_FRACTIONS = {
-  routeFullLineWidth: 0.0075,
-  routeTrailLineWidth: 0.01,
-  waypointsCircleRadius: 0.0275,
-  waypointsActiveRadius: 0.035,
-  waypointsCircleStrokeWidth: 0.005,
-  waypointsLabelTextSize: 0.0275,
-  liveMarkerPulseCircleRadius: 0.02,
-  liveMarkerDotCircleRadius: 0.0225,
-  liveMarkerDotCircleStrokeWidth: 0.0075,
-  pulseStartRadius: 0.02,
-  pulseEndRadius: 0.055,
-} as const;
-
-/** Anchor for paint sizing. Trail @ fraction 0.01 → 10.8 CSS px everywhere
- *  — every aspect, every resolution, every slot shape, every preview pane
- *  width. Both renderer and preview pass this through `resolveStaticPaints()`.
- *  See `MAP_RENDERING_PLAN.md` §"Paint sizes as fixed CSS-px constants". */
+/** Anchor for paint sizing. Trail @ fraction 0.0055 → ~5.94 CSS px at the
+ *  seeded default, scaled identically across every aspect, every resolution,
+ *  every slot shape, every preview pane width. Both renderer and preview
+ *  pass `MapSettings` through `resolveStaticPaints()`. See
+ *  `MAP_RENDERING_PLAN.md` §"Paint sizes as fixed CSS-px constants". */
 export const PAINT_REFERENCE_WIDTH = 1080;
 
 /** OpenFreeMap "liberty" vector style. Used for both `default` and `3d`
@@ -123,9 +97,10 @@ export const BUILDINGS_LAYER_SPEC: LayerSpecification = {
  *  `mapSettings.route_mode === 'full'`. Source: `route-full`.
  *
  *  `line-width` is a PLACEHOLDER (1) — the real value is
- *  `PAINT_SIZE_FRACTIONS.routeFullLineWidth × PAINT_REFERENCE_WIDTH`. The
- *  renderer calls `resolveStaticPaints()` after style.load; the preview
- *  calls `resolveStaticPaintsForPreview(paneCssWidth, aspect)`. */
+ *  `mapSettings.overlay_route_full_width × PAINT_REFERENCE_WIDTH`. Both
+ *  renderer and preview call `resolveStaticPaints(mapSettings)` after
+ *  style.load (and again when any overlay-size or active-clip override
+ *  changes) to seed the value. */
 export const ROUTE_FULL_LAYER: LayerSpecification = {
   id: 'route-full-line',
   type: 'line',
@@ -251,7 +226,7 @@ export function buildStyleSpec(mapSettings: MapSettings): StyleSpecResult {
 }
 
 /** Resolved-static-paints descriptor. Pure: each value is
- *  `PAINT_SIZE_FRACTIONS.<name> × PAINT_REFERENCE_WIDTH`. Both renderer and
+ *  `mapSettings.overlay_<name> × PAINT_REFERENCE_WIDTH`. Both renderer and
  *  preview consume this same result; there is no pane-reshape variant.
  *
  *  This is the "static defaults" surface — the values the consumer should
@@ -272,37 +247,39 @@ export interface ResolvedStaticPaints {
   layouts: Array<[string, string, number]>;
 }
 
-/** Build the static-paint descriptor at the fixed `PAINT_REFERENCE_WIDTH`
- *  (1080 CSS px). Pure function; both the renderer worker and the preview
- *  `MapView` call this after style.load — the layer specs ship placeholder
- *  `1`s, so this seeding step is mandatory for visible output. */
-export function resolveStaticPaints(): ResolvedStaticPaints {
+/** Build the static-paint descriptor for a given `MapSettings`. Pure
+ *  function; both the renderer worker and the preview `MapView` call this
+ *  after style.load (and again whenever any overlay field — project default
+ *  or per-clip override — changes). The layer specs ship placeholder `1`s,
+ *  so this seeding step is mandatory for visible output. */
+export function resolveStaticPaints(
+  mapSettings: MapSettings,
+): ResolvedStaticPaints {
   const w = PAINT_REFERENCE_WIDTH;
-  const f = PAINT_SIZE_FRACTIONS;
   return {
     paints: [
-      ['route-full-line', 'line-width', f.routeFullLineWidth * w],
-      ['route-trail-line', 'line-width', f.routeTrailLineWidth * w],
+      ['route-full-line', 'line-width', mapSettings.overlay_route_full_width * w],
+      ['route-trail-line', 'line-width', mapSettings.overlay_route_trail_width * w],
       // waypoints-circle: circle-radius and circle-stroke-width. The radius
       // is also overridden per-frame by `buildPerFramePaints` (data-driven
       // case expression) — that per-frame write is the one that wins, but
       // we still seed the static default here so pre-first-frame state is
       // correct. circle-stroke-width is only ever set here.
-      ['waypoints-circle', 'circle-radius', f.waypointsCircleRadius * w],
+      ['waypoints-circle', 'circle-radius', mapSettings.overlay_waypoint_circle_radius * w],
       [
         'waypoints-circle',
         'circle-stroke-width',
-        f.waypointsCircleStrokeWidth * w,
+        mapSettings.overlay_waypoint_stroke_width * w,
       ],
       [
         'live-marker-dot',
         'circle-radius',
-        f.liveMarkerDotCircleRadius * w,
+        mapSettings.overlay_live_marker_dot_radius * w,
       ],
       [
         'live-marker-dot',
         'circle-stroke-width',
-        f.liveMarkerDotCircleStrokeWidth * w,
+        mapSettings.overlay_live_marker_dot_stroke_width * w,
       ],
       // live-marker-pulse: initial radius. Per-frame builder overrides this
       // every frame via `pulseAt`, but seeding it gives a sensible value
@@ -310,11 +287,11 @@ export function resolveStaticPaints(): ResolvedStaticPaints {
       [
         'live-marker-pulse',
         'circle-radius',
-        f.liveMarkerPulseCircleRadius * w,
+        mapSettings.overlay_live_marker_pulse_radius * w,
       ],
     ],
     layouts: [
-      ['waypoints-label', 'text-size', f.waypointsLabelTextSize * w],
+      ['waypoints-label', 'text-size', mapSettings.overlay_waypoint_label_size * w],
     ],
   };
 }
