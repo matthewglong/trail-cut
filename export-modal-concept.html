@@ -1,0 +1,1437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>TrailCut · Export modal redesign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0e1416;
+    --surface: #141b1d;
+    --surface-raised: #1a2122;
+    --surface-deep: #232c2d;
+    --surface-pressed: #2c3738;
+    --border: #2c3738;
+    --border-strong: #4c5b5c;
+    --border-soft: rgba(76, 91, 92, 0.22);
+    --fg: #e6ecec;
+    --fg-muted: #8a9697;
+    --fg-dim: #5a6868;
+    --fg-faint: #34403f;
+    --accent: #bced09;
+    --accent-cold: #2f52e0;
+    --accent-warm: #ff715b;
+    --accent-tint: rgba(188, 237, 9, 0.10);
+    --accent-glow: rgba(188, 237, 9, 0.18);
+    --overlay: rgba(8, 12, 13, 0.78);
+
+    --r-sm: 2px; --r-base: 3px; --r-lg: 6px;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #07090a; color: var(--fg); font-family: "Manrope", sans-serif; font-size: 13.5px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+
+  .canvas {
+    min-height: 100vh;
+    padding: 48px 32px 96px;
+    background:
+      radial-gradient(ellipse 900px 500px at 50% 0%, rgba(188, 237, 9, 0.03), transparent 70%),
+      #07090a;
+    position: relative;
+  }
+
+  /* state nav */
+  .switcher {
+    max-width: 720px;
+    margin: 0 auto 24px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .switcher .brand {
+    font-family: "JetBrains Mono", monospace;
+    color: var(--fg-muted);
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    font-size: 10.5px;
+  }
+  .switcher .brand .dot { color: var(--accent); margin: 0 6px; }
+  .switcher nav { display: flex; gap: 2px; margin-left: auto; padding: 3px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-base); }
+  .switcher nav a {
+    text-decoration: none;
+    color: var(--fg-muted);
+    padding: 6px 12px;
+    border-radius: 2px;
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    font-weight: 600;
+    text-transform: uppercase;
+    transition: color 120ms ease, background-color 120ms ease;
+  }
+  .switcher nav a.active { color: var(--accent); background: var(--accent-tint); }
+  .switcher nav a:hover:not(.active) { color: var(--fg); }
+
+  /* modal shell */
+  .modal {
+    width: 720px;
+    max-width: calc(100vw - 64px);
+    margin: 0 auto 56px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  .modal::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+    pointer-events: none;
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-raised);
+    gap: 16px;
+  }
+  .modal-title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .modal-title .sep { color: var(--fg-faint); font-weight: 400; }
+  .modal-title .crumb {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+  }
+  .modal-title .crumb.live { color: var(--accent); }
+
+  .icon-btn {
+    width: 28px; height: 28px;
+    margin-left: auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-base);
+    color: var(--fg-muted);
+    cursor: pointer;
+    transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  }
+  .icon-btn:hover { color: var(--fg); background: var(--surface-pressed); border-color: var(--border); }
+  .icon-btn svg { width: 14px; height: 14px; }
+
+  .modal-body {
+    background: var(--surface);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* section label */
+  .field-label {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .field-label .k {
+    font-size: 10.5px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--fg-muted);
+  }
+  .field-label .rule {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--border) 0%, transparent 90%);
+  }
+  .field-label .hint {
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.04em;
+  }
+
+  /* ============ ORDER FORM ============ */
+  .order {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    overflow: visible;
+  }
+  .order-head { border-radius: var(--r-base) var(--r-base) 0 0; }
+  .order-row:last-child .ratio-cell { border-bottom-left-radius: var(--r-base); }
+  .order-head {
+    display: grid;
+    grid-template-columns: 90px 1fr 1fr 1fr;
+    gap: 0;
+    background: var(--surface-deep);
+    border-bottom: 1px solid var(--border);
+  }
+  .order-head .cell {
+    padding: 10px 14px;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--fg-dim);
+    font-weight: 700;
+    text-align: center;
+  }
+  .order-head .cell + .cell { border-left: 1px solid var(--border); }
+
+  .order-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 1fr 1fr;
+    gap: 0;
+    border-top: 1px solid var(--border);
+  }
+  .order-row:first-of-type { border-top: 0; }
+  .order-row .ratio-cell {
+    display: flex;
+    align-items: center;
+    padding: 14px 14px;
+    background: var(--surface-deep);
+    border-right: 1px solid var(--border);
+  }
+  .order-row .ratio {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: 0.06em;
+  }
+  .order-row .check-cell {
+    display: flex;
+    align-items: stretch;
+    border-right: 1px solid var(--border);
+  }
+  .order-row .check-cell:last-child { border-right: 0; }
+  .check {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px;
+    background: transparent;
+    min-height: 52px;
+  }
+
+  /* + add icon */
+  .add {
+    flex-shrink: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+    color: var(--fg-dim);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, border-style 120ms ease, background-color 120ms ease;
+  }
+  .add:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    border-style: solid;
+    background: rgba(188, 237, 9, 0.06);
+  }
+  .add svg { width: 11px; height: 11px; }
+  .add.hidden { display: none; }
+
+  /* quality chip (acts as dropdown) */
+  .chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    font-weight: 700;
+    padding: 5px 8px 5px 10px;
+    border-radius: 2px;
+    border: 1px solid rgba(188, 237, 9, 0.55);
+    background: rgba(188, 237, 9, 0.14);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(188, 237, 9, 0.18) inset;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    text-transform: uppercase;
+    line-height: 1;
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
+  .chip:hover { border-color: var(--accent); }
+  .chip .caret {
+    width: 8px; height: 8px;
+    opacity: 0.7;
+    transition: transform 140ms ease, opacity 120ms ease;
+  }
+  .chip:hover .caret { opacity: 1; }
+  .chip.open .caret { transform: rotate(180deg); }
+
+  /* hover-X to remove a chip */
+  .chip .x {
+    position: absolute;
+    top: -6px; right: -6px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    color: var(--fg-muted);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
+  }
+  .chip:hover .x,
+  .chip.demo-x .x { display: inline-flex; }
+  .chip .x:hover {
+    color: var(--accent-warm);
+    border-color: var(--accent-warm);
+    transform: scale(1.08);
+  }
+  .chip .x svg { width: 7px; height: 7px; }
+
+  /* chip dropdown menu */
+  .chip-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 96px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-base);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    display: none;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .chip.open .chip-menu { display: block; }
+  .chip-menu .opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px 6px 6px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip-menu .opt:hover { background: var(--surface-pressed); color: var(--fg); }
+  .chip-menu .opt.current { color: var(--accent); }
+  .chip-menu .opt .tick {
+    flex-shrink: 0;
+    width: 10px; height: 10px;
+    opacity: 0;
+  }
+  .chip-menu .opt.current .tick { opacity: 1; }
+
+  /* ============ FILENAME ============ */
+  .name-input {
+    display: flex;
+    align-items: stretch;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    overflow: hidden;
+    transition: border-color 140ms ease;
+  }
+  .name-input:focus-within { border-color: var(--accent); }
+  .name-input input {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    outline: none;
+    padding: 10px 12px;
+    color: var(--fg);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.01em;
+  }
+  .name-input .ext {
+    padding: 0 12px;
+    display: inline-flex; align-items: center;
+    background: var(--surface-deep);
+    color: var(--fg-muted);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    border-left: 1px solid var(--border);
+  }
+  .name-help {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.02em;
+  }
+  .name-help .tok { color: var(--accent); }
+
+  /* ============ FOLDER ============ */
+  .folder-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    padding: 6px 6px 6px 12px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+  }
+  .folder-row .crumbs { flex: 1; color: var(--fg-muted); display: flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folder-row .crumbs .sep { color: var(--fg-faint); }
+  .folder-row .crumbs .leaf { color: var(--fg); font-weight: 500; }
+  .folder-row .crumbs .stamp {
+    color: var(--fg);
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 2px;
+    background: var(--accent-tint);
+    border: 1px solid rgba(188, 237, 9, 0.20);
+    font-size: 11.5px;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .folder-row .crumbs .stamp .seq {
+    color: var(--accent);
+    font-weight: 700;
+    margin-left: 2px;
+  }
+  .folder-row .crumbs .stamp svg { width: 10px; height: 10px; opacity: 0.7; color: var(--accent); }
+  .folder-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .folder-hint .swatch {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent); opacity: 0.6;
+  }
+
+  /* ============ BUTTONS ============ */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: "Manrope", sans-serif;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    padding: 7px 12px;
+    border-radius: var(--r-base);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-raised);
+    color: var(--fg);
+    cursor: pointer;
+    transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+  }
+  .btn:hover { border-color: var(--fg-muted); background: var(--surface-deep); }
+  .btn-ghost {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--fg-muted);
+  }
+  .btn-ghost:hover { color: var(--fg); background: var(--surface-deep); }
+  .btn-primary {
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: #0e1416;
+    padding: 9px 18px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+  }
+  .btn-primary:hover { background: #d0ff14; }
+  .btn-primary:disabled, .btn-primary.disabled {
+    background: var(--surface-pressed);
+    border-color: var(--border);
+    color: var(--fg-dim);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+  .btn-danger {
+    border: 1px solid var(--accent-warm);
+    background: var(--accent-warm);
+    color: #1a0908;
+    padding: 9px 18px;
+    font-weight: 700;
+  }
+
+  /* ============ FOOTER ============ */
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    gap: 12px;
+    background: var(--surface-raised);
+    border-top: 1px solid var(--border);
+  }
+  .modal-footer .summary {
+    margin-right: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .modal-footer .summary .l1 {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+  }
+  .modal-footer .summary .l1 strong { color: var(--accent); font-weight: 700; }
+  .modal-footer .summary .l2 {
+    font-size: 11px;
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    letter-spacing: 0.04em;
+  }
+  .modal-footer .summary .l2 .sep { color: var(--fg-faint); margin: 0 6px; }
+
+  /* ============ JOB LIST (render + done) ============ */
+  .job-list {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--r-base);
+    overflow: hidden;
+  }
+  .job {
+    display: grid;
+    grid-template-columns: 28px 1fr 110px 90px;
+    gap: 14px;
+    align-items: center;
+    padding: 11px 14px;
+    border-top: 1px solid var(--border);
+    transition: background-color 140ms ease;
+  }
+  .job:first-of-type { border-top: 0; }
+  .job:hover { background: var(--surface-deep); }
+  .job .status {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px;
+    color: var(--fg-dim);
+  }
+  .job.queued .status svg { color: var(--fg-dim); }
+  .job.running .status {
+    color: var(--accent);
+  }
+  .job.running .status .spin {
+    animation: spin 1.4s linear infinite;
+    transform-origin: 50% 50%;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .job.done .status {
+    color: #0e1416;
+    background: var(--accent);
+    border-radius: 50%;
+  }
+  .job .name {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .job.queued .name { color: var(--fg-muted); }
+  .job .name .ext { color: var(--fg-dim); }
+  .job .name .ch-tag {
+    font-size: 9.5px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 2px;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    background: var(--accent-tint);
+    margin-right: 6px;
+    text-transform: uppercase;
+  }
+  .job .name .ch-tag.m { color: var(--accent-cold); background: rgba(47, 82, 224, 0.10); }
+  .job .name .ch-tag.v { color: var(--accent-warm); background: rgba(255, 113, 91, 0.10); }
+  .job .bar-cell {
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .job .bar { height: 3px; background: var(--surface-deep); border-radius: 2px; overflow: hidden; }
+  .job .bar .fill { height: 100%; background: var(--accent); border-radius: 2px; }
+  .job.queued .bar .fill { background: var(--fg-faint); }
+  .job.done .bar .fill { width: 100% !important; }
+  .job .pct {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    color: var(--fg-dim);
+    letter-spacing: 0.02em;
+  }
+  .job .eta {
+    text-align: right;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+  .job.done .eta { color: var(--accent); }
+
+  /* render banner */
+  .render-summary {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px;
+    border-radius: var(--r-base);
+    background: linear-gradient(90deg, var(--accent-tint), transparent 70%), var(--surface-raised);
+    border: 1px solid var(--accent-tint);
+  }
+  .render-summary .pulse {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(188, 237, 9, 0.5);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(188, 237, 9, 0.5); }
+    50% { box-shadow: 0 0 0 6px rgba(188, 237, 9, 0); }
+  }
+  .render-summary .label {
+    font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700;
+  }
+  .render-summary .main {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12.5px;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+  }
+  .render-summary .main strong { color: var(--accent); font-weight: 700; }
+  .render-summary .meta {
+    margin-left: auto;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+  .render-summary .meta .k { color: var(--fg-dim); margin-right: 4px; }
+  .render-summary .meta .sep { color: var(--fg-faint); margin: 0 8px; }
+
+  /* done banner */
+  .done-summary {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px;
+    border-radius: var(--r-base);
+    background: linear-gradient(90deg, rgba(188, 237, 9, 0.10), transparent 60%), var(--surface-raised);
+    border: 1px solid rgba(188, 237, 9, 0.30);
+  }
+  .done-summary .check {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #0e1416;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .done-summary .title {
+    font-size: 13.5px; font-weight: 700; color: var(--fg);
+  }
+  .done-summary .sub {
+    margin-top: 2px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+  .done-summary .sub strong { color: var(--accent); }
+  .done-summary .right { margin-left: auto; }
+
+  /* design note */
+  .note {
+    max-width: 720px;
+    margin: -40px auto 32px;
+    padding: 12px 16px;
+    background: var(--surface-raised);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-base);
+    color: var(--fg-muted);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+  .note .k {
+    color: var(--accent);
+    font-family: "JetBrains Mono", monospace;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-size: 10px;
+    margin-right: 6px;
+  }
+
+  /* ============ SECONDARY (CONFIG) MODAL ============ */
+  .modal.compact { width: 480px; }
+
+  .opt-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .opt-row button {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 8px 14px;
+    border-radius: var(--r-base);
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--fg-muted);
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    text-transform: uppercase;
+    line-height: 1;
+    transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .opt-row button:hover { color: var(--fg); border-color: var(--fg-muted); }
+  .opt-row button.on {
+    color: var(--accent);
+    background: rgba(188, 237, 9, 0.14);
+    border-color: rgba(188, 237, 9, 0.55);
+    box-shadow: 0 0 0 1px rgba(188, 237, 9, 0.18) inset;
+  }
+  .opt-row button.on:hover { border-color: var(--accent); }
+  .opt-row button:disabled,
+  .opt-row button.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .opt-meta {
+    margin-top: 10px;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-dim);
+    letter-spacing: 0.04em;
+  }
+  .opt-meta .src { color: var(--fg-muted); }
+  .opt-meta .sep { color: var(--fg-faint); margin: 0 6px; }
+
+  /* future-options placeholder */
+  .future {
+    padding: 12px 14px;
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-base);
+    color: var(--fg-dim);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    line-height: 1.7;
+  }
+  .future .k {
+    display: inline-block;
+    color: var(--fg-muted);
+    font-weight: 700;
+    margin-right: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 9.5px;
+  }
+  .future .item {
+    display: inline-block;
+    margin-right: 12px;
+    color: var(--fg-muted);
+  }
+  .future .item::before {
+    content: "·";
+    color: var(--fg-faint);
+    margin-right: 6px;
+  }
+  .future .item:first-of-type::before { content: ""; margin-right: 0; }
+
+  /* floating overlay form of the secondary modal */
+  .config-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 100;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 80px 32px 32px;
+    overflow: auto;
+  }
+  .config-overlay.open { display: flex; }
+  .config-overlay .modal { margin: 0; }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <!-- STATE NAV -->
+  <div class="switcher">
+    <span class="brand">TRAILCUT<span class="dot">●</span>EXPORT</span>
+    <nav>
+      <a href="#state-selection" class="active">01 · Configure</a>
+      <a href="#state-edit">02 · Edit export</a>
+      <a href="#state-rendering">03 · Rendering</a>
+      <a href="#state-done">04 · Complete</a>
+    </nav>
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 1 — CONFIGURE ============= -->
+  <!-- ============================================== -->
+  <section id="state-selection" class="modal" aria-label="Export — configure">
+    <header class="modal-header">
+      <h2 class="modal-title">Export</h2>
+      <button class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <!-- ORDER FORM -->
+      <div>
+        <div class="order">
+          <div class="order-head">
+            <span class="cell">Aspect</span>
+            <span class="cell">Composite</span>
+            <span class="cell">Map only</span>
+            <span class="cell">Video only</span>
+          </div>
+
+          <div class="order-row">
+            <div class="ratio-cell"><span class="ratio">16:9</span></div>
+            <div class="check-cell">
+              <div class="check" aria-label="16:9 composite">
+                <div class="chip" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <div class="chip" data-q="4k" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 4K at 30 fps">
+                  <span class="lbl">4K·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+            <div class="check-cell">
+              <div class="check" aria-label="16:9 map only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+            <div class="check-cell">
+              <div class="check" aria-label="16:9 video only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="order-row">
+            <div class="ratio-cell"><span class="ratio">4:5</span></div>
+            <div class="check-cell">
+              <div class="check" aria-label="4:5 composite">
+                <div class="chip" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+            <div class="check-cell">
+              <div class="check" aria-label="4:5 map only">
+                <div class="chip demo-x" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+            <div class="check-cell">
+              <div class="check" aria-label="4:5 video only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="order-row">
+            <div class="ratio-cell"><span class="ratio">9:16</span></div>
+            <div class="check-cell">
+              <div class="check" aria-label="9:16 composite">
+                <div class="chip" data-q="1080" data-fps="30" role="button" tabindex="0" aria-label="Edit export — 1080 at 30 fps">
+                  <span class="lbl">1080·30</span>
+                  <button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>
+                </div>
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+            <div class="check-cell">
+              <div class="check" aria-label="9:16 map only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+            <div class="check-cell">
+              <div class="check" aria-label="9:16 video only">
+                <button class="add" aria-label="Add export"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 4v8M4 8h8"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- OUTPUT FOLDER -->
+      <div>
+        <div class="field-label">
+          <span class="k">Output folder</span>
+          <span class="rule"></span>
+        </div>
+        <div class="folder-row">
+          <span class="crumbs">
+            <span>~</span><span class="sep">/</span>
+            <span>Movies</span><span class="sep">/</span>
+            <span>TrailCut</span><span class="sep">/</span>
+            <span class="stamp">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 5h4l1.5-1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><path d="M11 8v3M9.5 9.5h3"/></svg>
+              Cascade Pass Traverse<span class="seq">2</span>
+            </span>
+          </span>
+          <button class="btn" title="Reveal in Finder" style="padding: 6px 8px;">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" width="13" height="13"><path d="M3 6h4l1.5-2H13v8H3z"/></svg>
+          </button>
+          <button class="btn">Choose…</button>
+        </div>
+        <div class="folder-hint">
+          <span class="swatch"></span>
+          Folder name matches the project — auto-numbered (<span style="color: var(--fg-muted);">Cascade Pass Traverse 1</span>, <span style="color: var(--fg);">Cascade Pass Traverse 2</span>, …) when the name already exists
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>5 files</strong> · ≈ 528 MB <span style="color: var(--fg-faint);">·</span> <span style="color: var(--fg-muted);">4× 1080</span> <span style="color: var(--fg-faint);">·</span> <span style="color: var(--fg-muted);">1× 4K</span></div>
+        <div class="l2">Estimated render ≈ 5 min 56 s</div>
+      </div>
+      <button class="btn btn-ghost">Cancel</button>
+      <button class="btn btn-primary">Render 5 files</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">IA</span>
+    Empty cells show a dashed <span style="color: var(--accent);">+</span> — click it to open the secondary config modal scoped to that aspect × channel slot. Each export lives as a chip summarising its key settings (here, <code style="color: var(--accent);">quality·fps</code>). Clicking a chip reopens that same modal in edit mode; hovering reveals a small <span style="color: var(--accent-warm);">✕</span> to delete. The grid stays a clean overview matrix while per-export depth lives one layer in.
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 1B — EDIT EXPORT ========== -->
+  <!-- ============================================== -->
+  <section id="state-edit" class="modal compact" aria-label="Configure export">
+    <header class="modal-header">
+      <h2 class="modal-title">
+        Configure export
+        <span class="sep">/</span>
+        <span class="crumb">16:9 · Video only</span>
+      </h2>
+      <button class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <div>
+        <div class="field-label">
+          <span class="k">Quality</span>
+          <span class="rule"></span>
+        </div>
+        <div class="opt-row" data-field="quality">
+          <button class="on" data-v="1080">1080</button>
+          <button data-v="4k">4K</button>
+        </div>
+        <div class="opt-meta">Source <span class="src">3840×2160</span><span class="sep">·</span>downsample on export</div>
+      </div>
+
+      <div>
+        <div class="field-label">
+          <span class="k">Frame rate</span>
+          <span class="rule"></span>
+        </div>
+        <div class="opt-row" data-field="fps">
+          <button data-v="24">24</button>
+          <button class="on" data-v="30">30</button>
+          <button data-v="60">60</button>
+        </div>
+        <div class="opt-meta">Source <span class="src">30 fps</span><span class="sep">·</span>no resampling at 30</div>
+      </div>
+
+      <div>
+        <div class="field-label">
+          <span class="k">Coming later</span>
+          <span class="rule"></span>
+        </div>
+        <div class="future">
+          <span class="k">soon</span>
+          <span class="item">codec</span>
+          <span class="item">color profile</span>
+          <span class="item">bitrate</span>
+          <span class="item">HDR</span>
+          <span class="item">stabilization passthrough</span>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>1080 · 30 fps</strong> · ProRes 4444</div>
+        <div class="l2">≈ 54 MB<span class="sep">·</span>est 0:38 render</div>
+      </div>
+      <button class="btn btn-ghost">Cancel</button>
+      <button class="btn btn-primary">Add export</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">Edit</span>
+    Scoped to one cell. Opens via <span style="color: var(--accent);">+</span> (create — "Add export" CTA) or by clicking an existing chip (edit — CTA becomes "Save changes"). Source-resolution and source-framerate hints sit beneath each option row so the user can pick informed defaults. New configuration axes (codec, color profile, bitrate, HDR…) slot into this same body without disturbing the configure-grid IA.
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 2 — RENDERING ============= -->
+  <!-- ============================================== -->
+  <section id="state-rendering" class="modal" aria-label="Export — rendering">
+    <header class="modal-header">
+      <h2 class="modal-title">Export</h2>
+      <button class="icon-btn" aria-label="Hide — render continues in background">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 8h10"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <div class="render-summary">
+        <span class="pulse"></span>
+        <div>
+          <div class="label">Rendering</div>
+          <div class="main">Job <strong>2 of 5</strong> · 16:9 composite <span style="color: var(--fg-muted);">·</span> <span style="color: var(--accent);">1080</span></div>
+        </div>
+        <div class="meta">
+          <span class="k">elapsed</span><span>00:54</span>
+          <span class="sep">·</span>
+          <span class="k">eta</span><span>5:02</span>
+        </div>
+      </div>
+
+      <div class="job-list">
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__1080__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">100% · 34.1 s</span>
+          </div>
+          <span class="eta">53.2 MB</span>
+        </div>
+
+        <div class="job running">
+          <span class="status">
+            <svg class="spin" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <circle cx="8" cy="8" r="5.5" stroke-opacity="0.25"/>
+              <path d="M13.5 8a5.5 5.5 0 0 0-5.5-5.5" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__1080__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 42%;"></div></div>
+            <span class="pct">42% · 412 / 980 frames</span>
+          </div>
+          <span class="eta">eta 1:24</span>
+        </div>
+
+        <div class="job queued">
+          <span class="status">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__1080__map-only<span class="ext">.mov</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 0%;"></div></div>
+            <span class="pct">queued</span>
+          </div>
+          <span class="eta">est 0:38</span>
+        </div>
+
+        <div class="job queued">
+          <span class="status">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__1080__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 0%;"></div></div>
+            <span class="pct">queued</span>
+          </div>
+          <span class="eta">est 0:42</span>
+        </div>
+
+        <div class="job queued">
+          <span class="status">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__4k__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 0%;"></div></div>
+            <span class="pct">queued</span>
+          </div>
+          <span class="eta">est 3:00</span>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>1 done</strong> · 1 rendering · 3 queued</div>
+        <div class="l2">Elapsed 00:54<span class="sep">·</span>Total ETA ≈ 5:56</div>
+      </div>
+      <button class="btn btn-ghost">Hide</button>
+      <button class="btn btn-danger">Cancel render</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">Render</span>
+    Job order: 1080 passes first in cell-order, then 4K passes (smaller/faster jobs first so the user gets feedback early). The banner names the file currently encoding, including its resolution. Each pill in the configure grid produced one row here.
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ============ STATE 3 — COMPLETE ============= -->
+  <!-- ============================================== -->
+  <section id="state-done" class="modal" aria-label="Export — complete">
+    <header class="modal-header">
+      <h2 class="modal-title">Export</h2>
+      <button class="icon-btn" aria-label="Close">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+    </header>
+
+    <div class="modal-body">
+
+      <div class="done-summary">
+        <span class="check">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+        </span>
+        <div>
+          <div class="title">5 files exported</div>
+          <div class="sub">to <strong>~/Movies/TrailCut/Cascade Pass Traverse 2</strong> · <strong>525.0 MB</strong> · 05:55 total</div>
+        </div>
+        <div class="right">
+          <button class="btn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" width="13" height="13"><path d="M3 6h4l1.5-2H13v8H3z"/></svg>
+            Reveal folder
+          </button>
+        </div>
+      </div>
+
+      <div class="job-list">
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__4x5__1080__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">34.1 s · HEVC</span>
+          </div>
+          <span class="eta">53.2 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__1080__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">58.4 s · HEVC</span>
+          </div>
+          <span class="eta">71.8 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag m">M</span>cascade-pass-traverse__4x5__1080__map-only<span class="ext">.mov</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">38.2 s · ProRes</span>
+          </div>
+          <span class="eta">54.0 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__9x16__1080__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">46.3 s · HEVC</span>
+          </div>
+          <span class="eta">59.0 MB</span>
+        </div>
+        <div class="job done">
+          <span class="status">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M3 8l3.5 3.5L13 5"/></svg>
+          </span>
+          <span class="name"><span class="ch-tag">C</span>cascade-pass-traverse__16x9__4k__composite<span class="ext">.mp4</span></span>
+          <div class="bar-cell">
+            <div class="bar"><div class="fill" style="width: 100%;"></div></div>
+            <span class="pct">2:58 · HEVC</span>
+          </div>
+          <span class="eta">287.0 MB</span>
+        </div>
+      </div>
+
+    </div>
+
+    <footer class="modal-footer">
+      <div class="summary">
+        <div class="l1"><strong>5 files</strong> · 525.0 MB · 05:55 total</div>
+        <div class="l2">~/Movies/TrailCut/Cascade Pass Traverse 2</div>
+      </div>
+      <button class="btn btn-ghost">Render again</button>
+      <button class="btn btn-primary">Done</button>
+    </footer>
+  </section>
+
+  <div class="note">
+    <span class="k">Done</span>
+    Same form factor — banner up top, results list below. The folder-level reveal button is the primary affordance; per-file actions stay implicit (the row stays click-targetable for reveal-this-file).
+  </div>
+
+  <!-- ============================================== -->
+  <!-- ===== INTERACTIVE OVERLAY (LIVE PROTOTYPE) === -->
+  <!-- ============================================== -->
+  <div class="config-overlay" aria-hidden="true">
+    <section class="modal compact" aria-label="Configure export">
+      <header class="modal-header">
+        <h2 class="modal-title">
+          Configure export
+          <span class="sep">/</span>
+          <span class="crumb">16:9 · Composite</span>
+        </h2>
+        <button class="icon-btn" data-act="close" aria-label="Close">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+        </button>
+      </header>
+
+      <div class="modal-body">
+        <div>
+          <div class="field-label">
+            <span class="k">Quality</span>
+            <span class="rule"></span>
+          </div>
+          <div class="opt-row" data-field="quality">
+            <button class="on" data-v="1080">1080</button>
+            <button data-v="4k">4K</button>
+          </div>
+          <div class="opt-meta">Source <span class="src">3840×2160</span><span class="sep">·</span>downsample on export</div>
+        </div>
+
+        <div>
+          <div class="field-label">
+            <span class="k">Frame rate</span>
+            <span class="rule"></span>
+          </div>
+          <div class="opt-row" data-field="fps">
+            <button data-v="24">24</button>
+            <button class="on" data-v="30">30</button>
+            <button data-v="60">60</button>
+          </div>
+          <div class="opt-meta">Source <span class="src">30 fps</span><span class="sep">·</span>no resampling at 30</div>
+        </div>
+
+        <div>
+          <div class="field-label">
+            <span class="k">Coming later</span>
+            <span class="rule"></span>
+          </div>
+          <div class="future">
+            <span class="k">soon</span>
+            <span class="item">codec</span>
+            <span class="item">color profile</span>
+            <span class="item">bitrate</span>
+            <span class="item">HDR</span>
+            <span class="item">stabilization passthrough</span>
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <div class="summary">
+          <div class="l1"><strong>1080 · 30 fps</strong> · HEVC</div>
+          <div class="l2">≈ 72 MB<span class="sep">·</span>est 0:58 render</div>
+        </div>
+        <button class="btn btn-ghost" data-act="cancel">Cancel</button>
+        <button class="btn btn-primary" data-act="save">Add export</button>
+      </footer>
+    </section>
+  </div>
+
+  <script>
+    // state nav scrolls smoothly to anchors
+    const navLinks = document.querySelectorAll('.switcher nav a');
+    navLinks.forEach(link => {
+      link.addEventListener('click', () => {
+        navLinks.forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      });
+    });
+
+    // ---------- secondary (config) modal ----------
+    const overlay = document.querySelector('.config-overlay');
+    const overlayCrumb = overlay.querySelector('.crumb');
+    const overlaySave = overlay.querySelector('[data-act="save"]');
+    let editingChip = null;
+
+    const qLabel = (q) => (q === '4k' ? '4K' : '1080');
+
+    const humanizeCell = (label) => {
+      if (!label) return '';
+      const m = label.match(/^(\S+)\s+(.+)$/);
+      if (!m) return label;
+      const ch = m[2].charAt(0).toUpperCase() + m[2].slice(1);
+      return `${m[1]} · ${ch}`;
+    };
+
+    const readOverlayValues = () => ({
+      quality: overlay.querySelector('.opt-row[data-field="quality"] button.on')?.dataset.v || '1080',
+      fps:     overlay.querySelector('.opt-row[data-field="fps"] button.on')?.dataset.v || '30',
+    });
+
+    const setOverlayValues = ({ quality, fps }) => {
+      overlay.querySelectorAll('.opt-row[data-field="quality"] button').forEach(b => b.classList.toggle('on', b.dataset.v === quality));
+      overlay.querySelectorAll('.opt-row[data-field="fps"] button').forEach(b => b.classList.toggle('on', b.dataset.v === fps));
+      updateSummary();
+    };
+
+    const updateSummary = () => {
+      const { quality, fps } = readOverlayValues();
+      const cellLabel = overlay.dataset.cellLabel || '';
+      const codec = cellLabel.includes('composite') ? 'HEVC' : 'ProRes 4444';
+      const l1 = overlay.querySelector('.modal-footer .summary .l1');
+      if (l1) l1.innerHTML = `<strong>${qLabel(quality)} · ${fps} fps</strong> · ${codec}`;
+    };
+
+    const openOverlayForAdd = (check) => {
+      editingChip = null;
+      overlay.dataset.cellLabel = check.getAttribute('aria-label');
+      overlayCrumb.textContent = humanizeCell(check.getAttribute('aria-label'));
+      overlaySave.textContent = 'Add export';
+      setOverlayValues({ quality: '1080', fps: '30' });
+      overlay.classList.add('open');
+    };
+
+    const openOverlayForEdit = (chip) => {
+      editingChip = chip;
+      const check = chip.closest('.check');
+      overlay.dataset.cellLabel = check.getAttribute('aria-label');
+      overlayCrumb.textContent = humanizeCell(check.getAttribute('aria-label'));
+      overlaySave.textContent = 'Save changes';
+      setOverlayValues({ quality: chip.dataset.q, fps: chip.dataset.fps || '30' });
+      overlay.classList.add('open');
+    };
+
+    const closeOverlay = () => {
+      overlay.classList.remove('open');
+      editingChip = null;
+    };
+
+    // pill rows act as radios
+    overlay.querySelectorAll('.opt-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (!btn || btn.disabled || btn.classList.contains('disabled')) return;
+        row.querySelectorAll('button').forEach(b => b.classList.remove('on'));
+        btn.classList.add('on');
+        updateSummary();
+      });
+    });
+
+    // save commits the chip
+    overlaySave.addEventListener('click', () => {
+      const { quality, fps } = readOverlayValues();
+      const label = `${qLabel(quality)}·${fps}`;
+      if (editingChip) {
+        editingChip.dataset.q = quality;
+        editingChip.dataset.fps = fps;
+        editingChip.querySelector('.lbl').textContent = label;
+        editingChip.setAttribute('aria-label', `Edit export — ${qLabel(quality)} at ${fps} fps`);
+      } else {
+        const cellLabel = overlay.dataset.cellLabel;
+        const check = [...document.querySelectorAll('#state-selection .check')]
+          .find(c => c.getAttribute('aria-label') === cellLabel);
+        if (check) {
+          const add = check.querySelector(':scope > .add');
+          add.insertAdjacentHTML('beforebegin',
+            `<div class="chip" data-q="${quality}" data-fps="${fps}" role="button" tabindex="0" aria-label="Edit export — ${qLabel(quality)} at ${fps} fps">` +
+            `<span class="lbl">${label}</span>` +
+            `<button class="x" aria-label="Remove export"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 3l6 6M9 3l-6 6"/></svg></button>` +
+            `</div>`
+          );
+        }
+      }
+      closeOverlay();
+    });
+
+    overlay.querySelector('[data-act="cancel"]').addEventListener('click', closeOverlay);
+    overlay.querySelector('[data-act="close"]').addEventListener('click', closeOverlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.classList.contains('open')) closeOverlay();
+    });
+
+    // ---------- configure-grid interactions ----------
+    const grid = document.querySelector('#state-selection .order');
+    grid.addEventListener('click', (e) => {
+      const addBtn = e.target.closest('.add');
+      if (addBtn) {
+        openOverlayForAdd(addBtn.closest('.check'));
+        return;
+      }
+      const xBtn = e.target.closest('.chip .x');
+      if (xBtn) {
+        e.stopPropagation();
+        xBtn.closest('.chip').remove();
+        return;
+      }
+      const chip = e.target.closest('.chip');
+      if (chip) openOverlayForEdit(chip);
+    });
+  </script>
+</div>
+</body>
+</html>

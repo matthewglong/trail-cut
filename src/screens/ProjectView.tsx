@@ -5,13 +5,35 @@ import MapToolbar from '../components/MapToolbar/MapToolbar';
 import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
+import { MapPositioningModal } from '../components/MapPositioningModal';
+import { ExportModal } from '../components/ExportModal';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, TransitionFeel } from '../types';
+import { livePlayheadMs } from '../lib/livePlayhead';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportGrid } from '../types';
 import { resolveMapSettings } from '../types';
+import type { AspectRatio } from '../lib/layout';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
+
+/** Map the preview-toolbar's aspect string (`'16:9' | '9:16' | '1:1' | '4:5'`)
+ *  onto the export `AspectRatio` enum. `'1:1'` is preview-only — it isn't a
+ *  valid export aspect, so we fall back to `'4_5'` (closest portrait crop)
+ *  for the purposes of MapView's canonical-CSS-width computation. */
+function previewAspectToAspectRatio(previewAspect: string): AspectRatio {
+  switch (previewAspect) {
+    case '9:16':
+      return '9_16';
+    case '4:5':
+      return '4_5';
+    case '16:9':
+      return '16_9';
+    case '1:1':
+    default:
+      return '4_5';
+  }
+}
 
 // Resizer constraints — easy to tune
 const V_SPLIT_DEFAULT = 0.65; // video takes 65% of width
@@ -22,6 +44,7 @@ const H_CLIPS_MAX_RATIO = 0.50; // clips can't exceed 50% of height
 const H_CLIPS_DEFAULT_PX = 140;
 
 interface ProjectViewProps {
+  projectDir: string | null;
   projectName: string;
   setProjectName: (name: string) => void;
   editingName: boolean;
@@ -36,10 +59,14 @@ interface ProjectViewProps {
   mapSettings: MapSettings;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   transitionFeel: TransitionFeel | undefined;
-  /** Project-level default for the live preview camera's per-tick easing
-   *  duration (ms). Forwarded to `MapView`'s ease loop; undefined falls
-   *  back to MapView's internal baseline. */
-  defaultEaseDurationMs: number | undefined;
+  projectLayouts: ProjectLayouts;
+  setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
+  /** Last user-confirmed Export modal selection (task 280). The Export
+   *  modal prefills aspects/channels/output folder from this on open;
+   *  `null` means "no prior export — start clean". App-level state owns the
+   *  value so it travels through `useAutoSave` to disk. */
+  lastExportSelection: ExportGrid | null;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -59,6 +86,7 @@ interface ProjectViewProps {
 }
 
 export default function ProjectView({
+  projectDir,
   projectName,
   setProjectName,
   editingName,
@@ -73,7 +101,10 @@ export default function ProjectView({
   mapSettings,
   setMapSettings,
   transitionFeel,
-  defaultEaseDurationMs,
+  projectLayouts,
+  setProjectLayouts,
+  lastExportSelection,
+  setLastExportSelection,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -93,6 +124,11 @@ export default function ProjectView({
 }: ProjectViewProps) {
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [showGpxMenu, setShowGpxMenu] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSelection, setExportSelection] = useState<ExportGrid>({
+    cells: {},
+    output_dir: null,
+  });
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
   const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
@@ -100,6 +136,8 @@ export default function ProjectView({
   const [resetPillHover, setResetPillHover] = useState(false);
   const isPlayingRef = useRef(false);
   const needsRewindRef = useRef(false);
+
+  const [positioningModalOpen, setPositioningModalOpen] = useState(false);
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -139,14 +177,11 @@ export default function ProjectView({
       setMapSettings(next);
     } else if (selectedClipId) {
       // Compute overrides: only store fields that differ from project defaults
-      const overrides: MapOverrides = {};
-      let hasOverrides = false;
-      for (const key of Object.keys(next) as (keyof MapSettings)[]) {
-        if (next[key] !== mapSettings[key]) {
-          (overrides as any)[key] = next[key];
-          hasOverrides = true;
-        }
-      }
+      const entries = (Object.keys(next) as (keyof MapSettings)[])
+        .filter((key) => next[key] !== mapSettings[key])
+        .map((key) => [key, next[key]] as const);
+      const overrides = Object.fromEntries(entries) as MapOverrides;
+      const hasOverrides = entries.length > 0;
       setClips((prev) => prev.map((c) =>
         c.id === selectedClipId
           ? { ...c, map_overrides: hasOverrides ? overrides : null }
@@ -298,6 +333,44 @@ export default function ProjectView({
     onSplitClip(playheadSecRef.current);
   }, [onSplitClip]);
 
+  // Refs for the synchronous live-playhead callback below. The callback runs
+  // inside the video preview's rAF tick (one frame ahead of any React commit),
+  // so it must read the latest span without depending on render-time props.
+  // Identity is kept stable so VideoPreview's effect chain doesn't churn.
+  const selectedClipSpanRef = useRef(selectedClipSpan);
+  useEffect(() => { selectedClipSpanRef.current = selectedClipSpan; }, [selectedClipSpan]);
+
+  // Invalidate the live-playhead ref when the selected clip changes. The rAF
+  // callback only writes while playing, so without this the map's render loop
+  // would keep reading the previous clip's last project-time when the user
+  // clicks a different clip without pressing play. Clearing forces MapView's
+  // fallback chain (currentProjectMsRef → canonicalSeekMs) to take over.
+  useEffect(() => {
+    livePlayheadMs.current = null;
+  }, [selectedClipId]);
+
+  // Synchronous per-frame bridge: clip-local media-seconds → project-time-ms
+  // → livePlayheadMs. Mirrors the translation in onPlayheadChange below, but
+  // bypasses React state so MapView's render loop reads the freshest value
+  // within the same frame instead of two commits later. The slower
+  // setPlayheadMs path is kept for the timeline scrubber UI.
+  const handleLivePlayheadSeconds = useCallback((s: number) => {
+    const span = selectedClipSpanRef.current;
+    if (!span) {
+      livePlayheadMs.current = null;
+      return;
+    }
+    const raw = s * 1000;
+    const clipLocalMs =
+      raw < span.mediaInMs
+        ? span.mediaInMs
+        : raw > span.mediaOutMs
+          ? span.mediaOutMs
+          : raw;
+    livePlayheadMs.current =
+      span.startMs + (clipLocalMs - span.mediaInMs) / span.speed;
+  }, []);
+
   useEditorShortcuts({
     selectedClip,
     clips,
@@ -412,6 +485,14 @@ export default function ProjectView({
               </div>
             )}
           </div>
+          <button
+            onClick={() => setExportModalOpen(true)}
+            disabled={clips.length === 0}
+            style={styles.button}
+            data-testid="open-export-modal"
+          >
+            Export
+          </button>
           <div style={styles.gpxChipWrapper}>
             <div
               style={route ? styles.gpxChipLoaded : styles.gpxChipEmpty}
@@ -489,6 +570,7 @@ export default function ProjectView({
                 autoPlayToken={autoPlayToken}
                 onPlayingChange={handlePlayingChange}
                 onPlayIntent={handlePlayIntent}
+                onLivePlayheadSeconds={handleLivePlayheadSeconds}
                 onPlayheadChange={(s) => {
                   playheadSecRef.current = s;
                   if (!selectedClipSpan) {
@@ -541,6 +623,7 @@ export default function ProjectView({
               scope={mapScope}
               onScopeChange={setMapScope}
               overriddenKeys={overriddenKeys}
+              onOpenPositioning={() => setPositioningModalOpen(true)}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
@@ -551,7 +634,7 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
-                defaultEaseDurationMs={defaultEaseDurationMs}
+                aspect={previewAspectToAspectRatio(previewAspect)}
                 onSelectClip={handleSelectClip}
               />
               <div
@@ -601,6 +684,28 @@ export default function ProjectView({
           />
         </div>
       </div>
+      <MapPositioningModal
+        open={positioningModalOpen}
+        onClose={() => setPositioningModalOpen(false)}
+        layouts={projectLayouts}
+        onLayoutChange={(aspect, next) =>
+          setProjectLayouts((prev) => ({ ...prev, [aspect]: next }))
+        }
+      />
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        selection={exportSelection}
+        onSelectionChange={setExportSelection}
+        lastExportSelection={lastExportSelection}
+        onSelectionPersist={setLastExportSelection}
+        projectName={projectName}
+        clips={clips}
+        route={route}
+        mapSettings={mapSettings}
+        transitionFeel={transitionFeel}
+        projectLayouts={projectLayouts}
+      />
     </div>
   );
 }

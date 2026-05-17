@@ -1,0 +1,1246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TRAILCUT — Map Positioning · Spacing Studies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@200;300;400;500;600;700;800&display=swap" rel="stylesheet" />
+
+<style>
+/* ════════════════════════════════════════════════════════════
+   MAP POSITIONING · SPACING STUDIES                     v02.00
+   Three treatments aimed at the "sparse triptych" problem:
+   the current modal wastes ~40% of its surface on padding
+   because three different aspect ratios share a fixed row.
+   Each concept starts from a different fix.
+   ════════════════════════════════════════════════════════════ */
+
+:root {
+  /* RAW BRAND TOKENS — same set the app uses */
+  --canvas:     #0e1416;
+  --surface-1:  #141b1d;
+  --surface-2:  #1a2122;
+  --surface-3:  #232c2d;
+  --surface-4:  #2c3738;
+  --granite:    #4c5b5c;
+  --coral:      #ff715b;
+  --pollen:     #f9cb40;
+  --chartreuse: #bced09;
+  --azure:      #2f52e0;
+  --text:       #e6ecec;
+  --text-mid:   #8a9697;
+  --text-dim:   #5a6868;
+  --text-faint: #34403f;
+  --wire:       #2c3738;
+  --wire-mid:   #4c5b5c;
+
+  --color-bg:                var(--canvas);
+  --color-surface:           var(--surface-1);
+  --color-surface-raised:    var(--surface-2);
+  --color-surface-deep:      var(--surface-3);
+  --color-surface-pressed:   var(--surface-4);
+  --color-border:            var(--wire);
+  --color-border-strong:     var(--wire-mid);
+  --color-border-soft:       rgba(76, 91, 92, 0.22);
+  --color-fg:                var(--text);
+  --color-fg-muted:          var(--text-mid);
+  --color-fg-dim:            var(--text-dim);
+  --color-fg-faint:          var(--text-faint);
+  --color-accent:            var(--chartreuse);
+  --color-accent-cold:       var(--azure);
+  --color-accent-warm:       var(--coral);
+  --color-accent-tint:       rgba(188, 237, 9, 0.10);
+  --color-accent-glow:       rgba(188, 237, 9, 0.18);
+  --color-cold-tint:         rgba(47, 82, 224, 0.10);
+  --color-overlay:           rgba(8, 12, 13, 0.78);
+
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+  --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+
+  --r:    3px;
+  --r-lg: 6px;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--color-fg);
+  background-color: var(--color-bg);
+  background-image:
+    radial-gradient(ellipse 60% 40% at 100% 0%, var(--color-cold-tint), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 0% 100%, var(--color-accent-tint), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(230,236,236,0.04) 1px, transparent 1.5px);
+  background-size: auto, auto, 22px 22px;
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+}
+button { background: none; border: none; padding: 0; cursor: pointer; font: inherit; color: inherit; }
+::selection { background: var(--color-accent); color: var(--color-bg); }
+
+/* ─── PAGE CHROME ─────────────────────────────────────────── */
+.page { max-width: 1640px; margin: 0 auto; padding: 56px clamp(20px, 3vw, 56px) 96px; }
+
+.page__header {
+  display: grid; grid-template-columns: 1fr auto;
+  align-items: end; gap: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 24px;
+}
+.page__title {
+  display: flex; align-items: baseline; gap: 12px;
+  font-family: var(--font-mono); font-weight: 700;
+  font-size: 20px; letter-spacing: -0.01em;
+  margin: 0 0 6px;
+}
+.page__title .slash { color: var(--color-accent); font-weight: 200; }
+.page__title .doc { font-family: var(--font-sans); font-weight: 300; color: var(--color-fg-muted); font-size: 17px; }
+.page__meta {
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--color-fg-muted);
+  display: flex; gap: 16px; align-items: center;
+}
+.page__meta .dot {
+  width: 6px; height: 6px; background: var(--color-accent);
+  box-shadow: 0 0 8px var(--color-accent-glow);
+  border-radius: 50%; animation: pulse 2.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.7); }
+}
+.page__meta .sep { color: var(--color-fg-faint); }
+.page__lede {
+  font-size: 15.5px; font-weight: 300;
+  color: var(--color-fg); max-width: 72ch;
+  margin: 0 0 32px; letter-spacing: -0.005em;
+}
+.page__lede em { font-style: normal; color: var(--color-fg-muted); }
+
+/* ─── CONCEPT WRAPPER ─────────────────────────────────────── */
+.concept { margin-bottom: 80px; }
+.concept__head {
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: end; gap: 20px;
+  padding: 12px 0 16px;
+}
+.concept__num {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.22em; color: var(--color-accent);
+  border: 1px solid var(--color-accent); padding: 2px 8px;
+  background: var(--color-accent-tint);
+  align-self: end;
+}
+.concept__name {
+  margin: 0; font-family: var(--font-mono);
+  font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
+}
+.concept__name em {
+  font-style: normal; font-weight: 300;
+  font-family: var(--font-sans); font-size: 18px;
+  color: var(--color-fg-muted); margin-left: 14px;
+}
+.concept__tag {
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--color-fg-muted); display: flex; align-items: center; gap: 8px;
+}
+.concept__tag .pill {
+  padding: 3px 8px; border: 1px solid var(--color-border-strong);
+  color: var(--color-fg); background: var(--color-surface-deep);
+}
+.concept__lede {
+  max-width: 78ch; color: var(--color-fg-muted);
+  font-size: 14px; font-weight: 300;
+  margin: 0 0 24px;
+}
+.concept__lede strong { color: var(--color-fg); font-weight: 500; }
+
+/* ════════════════════════════════════════════════════════════
+   SHARED MODAL FRAME (the simulated app viewport)
+   ════════════════════════════════════════════════════════════ */
+.app-viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;        /* mimic the app window aspect */
+  background:
+    radial-gradient(circle at 30% 40%, rgba(47,82,224,0.06), transparent 50%),
+    radial-gradient(circle at 70% 80%, rgba(188,237,9,0.04), transparent 50%),
+    var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.4);
+}
+/* dim app-behind-the-modal hint */
+.app-viewport::before {
+  content: '';
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(120deg, rgba(255,113,91,0.04), transparent 40%),
+    repeating-linear-gradient(0deg, transparent 0 78px, rgba(76,91,92,0.06) 78px 79px);
+  pointer-events: none;
+}
+
+/* the modal itself, dropped into the viewport */
+.modal {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 80px rgba(0,0,0,0.55);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  overflow: hidden;
+}
+
+/* ─── frame brackets used across concepts ────────────────── */
+.bracket {
+  position: absolute; width: 14px; height: 14px;
+  pointer-events: none;
+  border-color: var(--color-fg-faint);
+  border-style: solid;
+}
+.bracket.tl { top: 0; left: 0; border-width: 1.5px 0 0 1.5px; }
+.bracket.tr { top: 0; right: 0; border-width: 1.5px 1.5px 0 0; }
+.bracket.bl { bottom: 0; left: 0; border-width: 0 0 1.5px 1.5px; }
+.bracket.br { bottom: 0; right: 0; border-width: 0 1.5px 1.5px 0; }
+
+/* ─── shared close button ────────────────────────────────── */
+.close-x {
+  position: absolute;
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--color-fg-muted);
+  font-size: 18px; line-height: 1; border-radius: var(--r);
+  transition: color 120ms, background-color 120ms;
+}
+.close-x:hover { color: var(--color-fg); background: var(--color-surface-raised); }
+
+/* ─── shared icon button ─────────────────────────────────── */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  background: rgba(0,0,0,0.32);
+  border: 1px solid var(--color-border-soft);
+  color: var(--color-fg-muted);
+  border-radius: var(--r);
+  transition: color 120ms, border-color 120ms, background-color 120ms;
+}
+.icon-btn:hover { color: var(--color-fg); border-color: var(--color-border-strong); }
+.icon-btn svg { width: 14px; height: 14px; }
+
+/* ─── mode pill (mini-segmented control) ─────────────────── */
+.mode-pill {
+  display: inline-flex; align-items: stretch;
+  background: rgba(0,0,0,0.32);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--r); padding: 1px;
+}
+.mode-pill__seg {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 24px;
+  color: var(--color-fg-muted); border-radius: 2px;
+  transition: color 120ms, background-color 120ms;
+}
+.mode-pill__seg.is-active {
+  background: var(--color-accent-tint);
+  color: var(--color-accent);
+}
+.mode-pill__div {
+  width: 1px; align-self: stretch;
+  background: var(--color-border-soft);
+  margin: 2px 0;
+}
+.mode-pill__seg svg { width: 22px; height: 16px; }
+
+/* ─── ratio label (corner chip / tag) ────────────────────── */
+.ratio-chip {
+  display: inline-flex; align-items: center;
+  font-family: var(--font-mono); font-weight: 700;
+  font-size: 12.5px; letter-spacing: 0.04em;
+  color: var(--color-fg);
+}
+.ratio-chip .px {
+  font-weight: 400; font-size: 9.5px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--color-fg-dim); margin-left: 8px;
+}
+
+/* ════════════════════════════════════════════════════════════
+   CONCEPT 01 · WORKBENCH
+   Three frames pack edge-to-edge against a shared baseline.
+   No header band; no footer. Ratio + controls live INSIDE the
+   bracket corners of each frame so the only "chrome" you see
+   is the frames themselves.
+   ════════════════════════════════════════════════════════════ */
+.wb-modal {
+  display: flex;
+  align-items: stretch;
+  width: max-content;
+  max-width: 96%;
+  height: auto;
+  background: var(--color-surface);
+}
+.wb-modal .close-x { top: 6px; right: 8px; z-index: 3; }
+
+.wb-cell {
+  position: relative;
+  padding: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid var(--color-border);
+}
+.wb-cell:last-child { border-right: none; }
+
+/* Frame height drives everything. Width is derived from aspect-ratio,
+   so 16:9, 4:5, 9:16 all render at the same effective scale — the
+   cells inherit their widths from the frames, and the modal inherits
+   its width from the row. No fixed-modal-dimension distortion. */
+.wb-frame {
+  position: relative;
+  height: clamp(320px, 46vh, 440px);
+  width: auto;
+  background: var(--color-surface-deep);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+/* inner scene fills the frame */
+.wb-frame .scene { position: absolute; inset: 0; }
+
+/* corner overlays */
+.wb-tag-tl {
+  position: absolute; top: 14px; left: 14px;
+  z-index: 2; pointer-events: none;
+}
+.wb-tools-tr {
+  position: absolute; top: 12px; right: 12px;
+  z-index: 2; display: inline-flex; gap: 6px;
+}
+.wb-tools-br {
+  position: absolute; bottom: 12px; right: 12px;
+  z-index: 2;
+}
+
+/* ─── PiP inset overlay shown inside the 4:5 and 9:16 frames ─ */
+.pip-inset {
+  position: absolute;
+  border: 1.5px solid var(--color-accent-cold);
+  box-shadow: 0 0 0 1px rgba(8,12,13,0.5) inset;
+  cursor: move;
+}
+.pip-inset .scene { position: absolute; inset: 0; }
+.pip-inset .handle {
+  position: absolute;
+  width: 12px; height: 12px;
+  background: var(--color-accent-cold);
+  border: 1.5px solid var(--color-surface);
+  border-radius: 50%;
+}
+.pip-inset .handle.tl { top: -7px; left: -7px; }
+.pip-inset .handle.tr { top: -7px; right: -7px; }
+.pip-inset .handle.bl { bottom: -7px; left: -7px; }
+.pip-inset .handle.br { bottom: -7px; right: -7px; }
+.pip-inset .swap-chip {
+  position: absolute; top: 50%; left: -16px;
+  transform: translate(-100%, -50%);
+  width: 28px; height: 28px;
+  background: var(--color-accent-cold);
+  color: var(--color-bg); border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pip-inset .swap-chip svg { width: 14px; height: 14px; }
+
+/* ─── split overlay inside the 16:9 frame ────────────────── */
+.split-line {
+  position: absolute; top: 0; bottom: 0;
+  width: 2px; background: var(--color-accent-cold);
+  cursor: ew-resize;
+}
+.split-line .handle {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px; height: 44px;
+  background: var(--color-accent-cold); border-radius: 6px;
+  border: 2px solid var(--color-surface);
+}
+.split-line .swap-chip {
+  position: absolute; bottom: 28%; left: 50%;
+  transform: translate(-50%, 0);
+  width: 28px; height: 28px;
+  background: var(--color-accent-cold); color: var(--color-bg);
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.split-line .swap-chip svg { width: 14px; height: 14px; }
+
+/* tiny brand sigil top-left of the workbench */
+.wb-sigil {
+  position: absolute; top: 10px; left: 12px;
+  font-family: var(--font-mono); font-size: 9.5px;
+  letter-spacing: 0.24em; color: var(--color-fg-faint);
+  display: inline-flex; align-items: center; gap: 6px;
+  z-index: 3;
+}
+.wb-sigil .slash { color: var(--color-accent); font-weight: 600; }
+
+/* ════════════════════════════════════════════════════════════
+   CONCEPT 02 · SPOTLIGHT
+   One frame at a time, oversized and centered. The other two
+   ratios persist as small previews on the left so the user
+   never loses context. Switching ratios is a click.
+   ════════════════════════════════════════════════════════════ */
+.sp-modal {
+  width: 86%;
+  max-width: 1280px;
+  height: 84%;
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  grid-template-rows: 1fr;
+}
+.sp-modal .close-x { position: absolute; top: 10px; right: 12px; z-index: 5; }
+
+.sp-rail {
+  display: flex; flex-direction: column;
+  padding: 24px 14px;
+  gap: 14px;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+}
+.sp-rail__head {
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--color-fg-dim);
+  display: flex; justify-content: space-between; align-items: center;
+  padding-right: 4px;
+  margin-bottom: 4px;
+}
+.sp-thumb {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-deep);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.sp-thumb:hover { border-color: var(--color-border-strong); }
+.sp-thumb.is-active {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent-tint), 0 0 16px rgba(188,237,9,0.15);
+}
+.sp-thumb__scene { position: absolute; inset: 0; }
+.sp-thumb__label {
+  position: absolute; top: 6px; left: 8px;
+  font-family: var(--font-mono); font-size: 10px;
+  font-weight: 700; color: var(--color-fg);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  letter-spacing: 0.04em;
+}
+.sp-thumb__check {
+  position: absolute; top: 6px; right: 6px;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-surface-raised);
+  opacity: 0;
+}
+.sp-thumb.is-active .sp-thumb__check { opacity: 1; }
+
+.sp-stage {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  padding: 18px 28px 22px;
+  gap: 14px;
+  min-height: 0;
+}
+.sp-stage__head {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.sp-stage__title {
+  display: inline-flex; align-items: baseline; gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 22px; font-weight: 700;
+  color: var(--color-fg);
+}
+.sp-stage__title .px {
+  font-weight: 400; font-size: 10.5px;
+  letter-spacing: 0.22em; color: var(--color-fg-dim);
+  text-transform: uppercase;
+}
+.sp-stage__controls {
+  display: inline-flex; align-items: center; gap: 10px;
+}
+.sp-stage__frame-wrap {
+  position: relative;
+  display: grid; place-items: center;
+  min-height: 0;
+}
+.sp-stage__frame {
+  position: relative;
+  height: 100%; max-width: 100%;
+  background: var(--color-surface-deep);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+.sp-stage__foot {
+  display: flex; justify-content: space-between; align-items: center;
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--color-fg-dim);
+}
+.sp-stage__foot .kbd {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.sp-stage__foot kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 20px;
+  padding: 0 6px;
+  background: var(--color-surface-deep);
+  border: 1px solid var(--color-border-soft);
+  border-radius: 2px;
+  font-family: inherit; font-size: 10px;
+  color: var(--color-fg-muted);
+  letter-spacing: 0;
+}
+
+/* ════════════════════════════════════════════════════════════
+   CONCEPT 03 · ATLAS
+   The modal disappears. You enter a full-bleed "positioning
+   mode" where the three crop frames float above the actual
+   project map. Controls are floating chips next to each frame.
+   ════════════════════════════════════════════════════════════ */
+.at-modal {
+  position: absolute; inset: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+}
+.at-modal::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: var(--color-overlay);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+/* mock the map that's "behind" the positioning mode */
+.at-map {
+  position: absolute; inset: 0;
+  background: #0a1418;
+  overflow: hidden;
+}
+.at-map svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.at-toolbar {
+  position: absolute;
+  top: 18px; left: 50%; transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex; align-items: center; gap: 14px;
+  padding: 8px 12px 8px 16px;
+  background: rgba(20, 27, 29, 0.92);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+}
+.at-toolbar__brand {
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.22em; color: var(--color-fg);
+  text-transform: uppercase;
+}
+.at-toolbar__brand .accent { color: var(--color-accent); }
+.at-toolbar__sep {
+  width: 1px; height: 16px; background: var(--color-border-strong);
+}
+.at-toolbar__ratios {
+  display: inline-flex; gap: 4px;
+  font-family: var(--font-mono);
+}
+.at-toolbar__ratio {
+  padding: 5px 10px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.04em; color: var(--color-fg-muted);
+  border-radius: 999px;
+}
+.at-toolbar__ratio.is-focus {
+  color: var(--color-bg); background: var(--color-accent);
+}
+.at-toolbar__esc {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--color-fg-dim); padding-left: 6px;
+}
+.at-toolbar__esc kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 18px; padding: 0 5px;
+  background: rgba(0,0,0,0.4); border: 1px solid var(--color-border-soft);
+  border-radius: 2px; font-size: 10px;
+}
+
+/* the three floating frames */
+.at-frames {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  gap: 28px; padding: 100px 60px 60px;
+  z-index: 2;
+}
+.at-frame {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  box-shadow: 0 16px 50px rgba(0,0,0,0.55);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.at-frame .scene { position: absolute; inset: 0; }
+.at-frame.is-focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent-tint), 0 16px 50px rgba(0,0,0,0.55), 0 0 28px rgba(188,237,9,0.10);
+}
+
+/* the floating chip attached above each frame */
+.at-chip {
+  position: absolute;
+  top: -34px; left: 0;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 4px 8px 4px 10px;
+  background: rgba(20, 27, 29, 0.92);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.04em; color: var(--color-fg);
+  backdrop-filter: blur(6px);
+}
+.at-chip .ratio { font-weight: 700; }
+.at-chip .sep { color: var(--color-border-strong); }
+.at-chip .mode {
+  color: var(--color-fg-muted);
+  font-size: 9.5px; letter-spacing: 0.22em; text-transform: uppercase;
+}
+.at-chip .icon-btn {
+  width: 22px; height: 22px;
+  background: transparent; border: none;
+}
+.at-chip .icon-btn:hover { background: var(--color-surface-deep); }
+.at-chip.is-focus { border-color: var(--color-accent); }
+.at-chip.is-focus .ratio { color: var(--color-accent); }
+
+/* mini glyph for mode in chip */
+.glyph-mode { display: inline-flex; }
+.glyph-mode svg { width: 18px; height: 12px; color: var(--color-fg-muted); }
+.is-focus .glyph-mode svg { color: var(--color-accent); }
+
+/* ─── concept notes panel under each treatment ───────────── */
+.concept__notes {
+  margin-top: 24px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--color-border);
+  border: 1px solid var(--color-border);
+}
+.note {
+  background: var(--color-surface);
+  padding: 16px 18px;
+}
+.note__head {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--color-fg-dim);
+  margin-bottom: 8px;
+}
+.note__body {
+  font-size: 13px; color: var(--color-fg-muted);
+  font-weight: 300; line-height: 1.6;
+}
+.note__body strong { color: var(--color-fg); font-weight: 500; }
+
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     SHARED SVG SYMBOLS
+     ═══════════════════════════════════════════════════════════ -->
+<svg width="0" height="0" style="position:absolute;overflow:hidden" aria-hidden="true">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#1c2e44"/>
+      <stop offset="35%"  stop-color="#3a4a5a"/>
+      <stop offset="55%"  stop-color="#a08a5a"/>
+      <stop offset="75%"  stop-color="#7a4a30"/>
+      <stop offset="100%" stop-color="#221008"/>
+    </linearGradient>
+
+    <symbol id="mtn-scene" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice">
+      <rect width="400" height="300" fill="url(#sky)"/>
+      <rect width="400" height="300" fill="#000" opacity="0.05"/>
+      <path d="M0,170 L40,150 L90,158 L140,135 L195,150 L240,128 L290,145 L340,118 L400,138 L400,300 L0,300 Z" fill="#293a4a" opacity="0.85"/>
+      <path d="M0,210 L60,180 L120,205 L180,170 L240,200 L290,175 L350,195 L400,175 L400,300 L0,300 Z" fill="#1c2838"/>
+      <path d="M0,255 L70,235 L140,250 L210,232 L280,248 L350,238 L400,255 L400,300 L0,300 Z" fill="#0a1418"/>
+      <rect x="195" y="230" width="2" height="6" fill="#0a0808"/>
+      <circle cx="196" cy="228" r="1.2" fill="#0a0808"/>
+      <circle cx="320" cy="120" r="32" fill="#f9cb40" opacity="0.10"/>
+      <circle cx="320" cy="120" r="14" fill="#f9cb40" opacity="0.20"/>
+    </symbol>
+
+    <symbol id="topo" viewBox="0 0 400 300" preserveAspectRatio="xMidYMid slice">
+      <rect width="400" height="300" fill="#0f1716"/>
+      <g stroke="#1f2c2b" fill="none" stroke-width="0.8" opacity="0.9">
+        <path d="M-20,180 Q60,150 140,165 Q220,180 300,150 Q380,120 420,140"/>
+        <path d="M-20,200 Q60,170 140,185 Q220,200 300,170 Q380,140 420,160"/>
+        <path d="M-20,160 Q60,130 140,145 Q220,160 300,130 Q380,100 420,120"/>
+        <path d="M-20,140 Q60,110 140,125 Q220,140 300,110 Q380,80 420,100"/>
+        <path d="M-20,220 Q60,195 140,210 Q220,220 300,195 Q380,170 420,190"/>
+      </g>
+      <g stroke="#293a39" fill="none" stroke-width="0.6" opacity="0.95">
+        <ellipse cx="280" cy="100" rx="55" ry="22"/>
+        <ellipse cx="280" cy="100" rx="38" ry="14"/>
+        <ellipse cx="280" cy="100" rx="22" ry="8"/>
+        <ellipse cx="280" cy="100" rx="10" ry="3"/>
+      </g>
+      <path d="M40,260 C100,240 130,210 160,200 S210,170 240,160 280,140 290,120 285,98 280,100"
+            stroke="#bced09" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"
+            stroke-dasharray="0.1 4" />
+      <circle cx="40" cy="260" r="3" fill="#ff715b"/>
+      <circle cx="40" cy="260" r="6" fill="none" stroke="#ff715b" opacity="0.5"/>
+      <circle cx="200" cy="180" r="4" fill="#bced09"/>
+      <circle cx="200" cy="180" r="9" fill="none" stroke="#bced09" opacity="0.45"/>
+      <circle cx="280" cy="100" r="3" fill="#2f52e0"/>
+      <circle cx="280" cy="100" r="6" fill="none" stroke="#2f52e0" opacity="0.5"/>
+    </symbol>
+
+    <!-- map for the Atlas background -->
+    <symbol id="big-map" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+      <rect width="1600" height="900" fill="#0a1418"/>
+      <g stroke="#1f2c2b" fill="none" stroke-width="0.7" opacity="0.55">
+        <path d="M-50,420 Q220,360 480,400 Q740,440 1000,380 Q1260,320 1660,360"/>
+        <path d="M-50,500 Q220,450 480,480 Q740,520 1000,460 Q1260,400 1660,440"/>
+        <path d="M-50,340 Q220,290 480,320 Q740,360 1000,300 Q1260,240 1660,280"/>
+        <path d="M-50,580 Q220,540 480,560 Q740,600 1000,540 Q1260,480 1660,520"/>
+        <path d="M-50,260 Q220,210 480,240 Q740,280 1000,220 Q1260,160 1660,200"/>
+        <path d="M-50,660 Q220,620 480,640 Q740,680 1000,620 Q1260,560 1660,600"/>
+      </g>
+      <g stroke="#2c3e3d" fill="none" stroke-width="0.6" opacity="0.7">
+        <ellipse cx="1080" cy="280" rx="180" ry="70"/>
+        <ellipse cx="1080" cy="280" rx="120" ry="45"/>
+        <ellipse cx="1080" cy="280" rx="70" ry="28"/>
+        <ellipse cx="1080" cy="280" rx="30" ry="10"/>
+        <ellipse cx="380" cy="220" rx="100" ry="40"/>
+        <ellipse cx="380" cy="220" rx="60" ry="22"/>
+        <ellipse cx="380" cy="220" rx="28" ry="10"/>
+      </g>
+      <path d="M120,720 C260,640 380,500 540,460 S780,360 920,360 1060,330 1080,280"
+            stroke="#bced09" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"
+            stroke-dasharray="0.1 6" />
+      <circle cx="120" cy="720" r="6" fill="#ff715b"/>
+      <circle cx="120" cy="720" r="12" fill="none" stroke="#ff715b" opacity="0.4"/>
+      <circle cx="540" cy="460" r="6" fill="#bced09"/>
+      <circle cx="540" cy="460" r="14" fill="none" stroke="#bced09" opacity="0.4"/>
+      <circle cx="1080" cy="280" r="6" fill="#2f52e0"/>
+      <circle cx="1080" cy="280" r="12" fill="none" stroke="#2f52e0" opacity="0.4"/>
+    </symbol>
+
+    <symbol id="g-pip" viewBox="0 0 22 16">
+      <rect x="1" y="1" width="20" height="14" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <rect x="12" y="8.5" width="7" height="5" fill="currentColor" fill-opacity="0.28" stroke="currentColor" stroke-width="1.1"/>
+    </symbol>
+    <symbol id="g-split" viewBox="0 0 22 16">
+      <rect x="1" y="1" width="20" height="14" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      <line x1="11" y1="1" x2="11" y2="15" stroke="currentColor" stroke-width="1.3"/>
+      <rect x="1" y="1" width="10" height="14" fill="currentColor" fill-opacity="0.18"/>
+    </symbol>
+    <symbol id="g-reset" viewBox="0 0 14 14">
+      <path d="M3.2 4.3a4.2 4.2 0 1 1-.7 4.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      <polyline points="1.5 1.5 3.4 4.4 6.3 3.0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="g-swap" viewBox="0 0 16 16">
+      <path d="M2 5 L11 5 L9 3 M11 5 L9 7 M14 11 L5 11 L7 9 M5 11 L7 13" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="g-close" viewBox="0 0 16 16">
+      <path d="M3 3 L13 13 M13 3 L3 13" stroke="currentColor" stroke-width="1.2" fill="none"/>
+    </symbol>
+  </defs>
+</svg>
+
+
+<div class="page">
+
+  <header class="page__header">
+    <div>
+      <h1 class="page__title">
+        TRAILCUT<span class="slash">/</span><span class="doc">Map Positioning · Spacing Studies</span>
+      </h1>
+      <p class="page__lede">
+        The current modal centers three frames inside a row that's dictated by the widest aspect.
+        The other two columns inherit dead air. <em>Three premises for fixing it — each starts by
+        questioning a different assumption: that the modal needs a header band, that it needs
+        chrome at all, or that all three frames need to be visible at once.</em>
+      </p>
+    </div>
+    <div class="page__meta">
+      <span class="dot"></span>
+      <span>v02.00</span>
+      <span class="sep">·</span>
+      <span>03 studies</span>
+    </div>
+  </header>
+
+  <!-- ════════════════════════════════════════════════════════
+       01 · WORKBENCH
+       ════════════════════════════════════════════════════════ -->
+  <section class="concept" id="workbench">
+    <header class="concept__head">
+      <span class="concept__num">01</span>
+      <h2 class="concept__name">Workbench<em>· frames are the surface</em></h2>
+      <span class="concept__tag">Pattern <span class="pill">Chromeless triptych</span></span>
+    </header>
+    <p class="concept__lede">
+      Strip the header band. Strip the footer. Strip every internal margin. Each column's width
+      is proportional to its aspect ratio, so all three frames render at the <strong>same effective scale</strong>
+      and the dead air collapses. The only chrome is brand-stamp top-left, close top-right, and per-frame
+      controls tucked into the bracket corners.
+    </p>
+
+    <div class="app-viewport">
+      <div class="modal wb-modal">
+        <!-- minimal brand stamp -->
+        <div class="wb-sigil">
+          <span>TRAILCUT</span><span class="slash">/</span><span>MAP POSITIONING</span>
+        </div>
+        <button class="close-x" aria-label="Close"><svg width="14" height="14"><use href="#g-close"/></svg></button>
+
+        <!-- 16:9 cell -->
+        <div class="wb-cell">
+          <div class="wb-frame" style="aspect-ratio: 16 / 9;">
+            <!-- the underlying video scene -->
+            <svg class="scene" viewBox="0 0 400 225" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <!-- split overlay: video left, map right -->
+            <div style="position:absolute; inset: 0 0 0 50%;">
+              <svg viewBox="0 0 200 225" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+            </div>
+            <div class="split-line" style="left: 50%;">
+              <div class="handle"></div>
+              <div class="swap-chip"><svg><use href="#g-swap"/></svg></div>
+            </div>
+
+            <span class="bracket tl"></span>
+            <span class="bracket tr"></span>
+            <span class="bracket bl"></span>
+            <span class="bracket br"></span>
+
+            <span class="wb-tag-tl">
+              <span class="ratio-chip">16:9</span>
+            </span>
+            <span class="wb-tools-tr">
+              <span class="mode-pill">
+                <button class="mode-pill__seg" aria-label="PiP"><svg><use href="#g-pip"/></svg></button>
+                <span class="mode-pill__div"></span>
+                <button class="mode-pill__seg is-active" aria-label="Split"><svg><use href="#g-split"/></svg></button>
+              </span>
+            </span>
+            <span class="wb-tools-br">
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </span>
+          </div>
+        </div>
+
+        <!-- 4:5 cell -->
+        <div class="wb-cell">
+          <div class="wb-frame" style="aspect-ratio: 4 / 5;">
+            <svg class="scene" viewBox="0 0 400 500" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <!-- pip inset bottom-right -->
+            <div class="pip-inset" style="left: 22%; bottom: 8%; width: 70%; height: 32%;">
+              <svg viewBox="0 0 400 200" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+              <span class="handle tl"></span>
+              <span class="handle tr"></span>
+              <span class="handle bl"></span>
+              <span class="handle br"></span>
+              <span class="swap-chip"><svg><use href="#g-swap"/></svg></span>
+            </div>
+
+            <span class="bracket tl"></span>
+            <span class="bracket tr"></span>
+            <span class="bracket bl"></span>
+            <span class="bracket br"></span>
+
+            <span class="wb-tag-tl"><span class="ratio-chip">4:5</span></span>
+            <span class="wb-tools-tr">
+              <span class="mode-pill">
+                <button class="mode-pill__seg is-active" aria-label="PiP"><svg><use href="#g-pip"/></svg></button>
+                <span class="mode-pill__div"></span>
+                <button class="mode-pill__seg" aria-label="Split"><svg><use href="#g-split"/></svg></button>
+              </span>
+            </span>
+            <span class="wb-tools-br">
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </span>
+          </div>
+        </div>
+
+        <!-- 9:16 cell -->
+        <div class="wb-cell">
+          <div class="wb-frame" style="aspect-ratio: 9 / 16;">
+            <svg class="scene" viewBox="0 0 225 400" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div class="pip-inset" style="left: 32%; bottom: 6%; width: 60%; height: 22%;">
+              <svg viewBox="0 0 300 200" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+              <span class="handle tl"></span>
+              <span class="handle tr"></span>
+              <span class="handle bl"></span>
+              <span class="handle br"></span>
+              <span class="swap-chip"><svg><use href="#g-swap"/></svg></span>
+            </div>
+
+            <span class="bracket tl"></span>
+            <span class="bracket tr"></span>
+            <span class="bracket bl"></span>
+            <span class="bracket br"></span>
+
+            <span class="wb-tag-tl"><span class="ratio-chip">9:16</span></span>
+            <span class="wb-tools-tr">
+              <span class="mode-pill">
+                <button class="mode-pill__seg is-active" aria-label="PiP"><svg><use href="#g-pip"/></svg></button>
+                <span class="mode-pill__div"></span>
+                <button class="mode-pill__seg" aria-label="Split"><svg><use href="#g-split"/></svg></button>
+              </span>
+            </span>
+            <span class="wb-tools-br">
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="concept__notes">
+      <div class="note">
+        <div class="note__head">The trick</div>
+        <div class="note__body">
+          Column widths are <strong>proportional to aspect ratio</strong> (1.78 : 0.80 : 0.56).
+          Each frame fills its column edge-to-edge. The three frames render at identical pixel-per-output-pixel
+          scale, which kills the wasted negative space without resorting to letterboxing.
+        </div>
+      </div>
+      <div class="note">
+        <div class="note__head">Chrome budget</div>
+        <div class="note__body">
+          One brand stamp, one close button. Per-frame: <strong>ratio label, mode pill, reset</strong> — each parked
+          inside a bracket corner so it reads as part of the lens, not a toolbar. No header band, no footer.
+        </div>
+      </div>
+      <div class="note">
+        <div class="note__head">Cost</div>
+        <div class="note__body">
+          The 9:16 column is narrow at small window widths. We could either set a minWidth of 1100 on the modal,
+          or let the row scroll horizontally below that threshold. The latter feels right for a creative tool.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════════════════
+       02 · SPOTLIGHT
+       ════════════════════════════════════════════════════════ -->
+  <section class="concept" id="spotlight">
+    <header class="concept__head">
+      <span class="concept__num">02</span>
+      <h2 class="concept__name">Spotlight<em>· one frame at a time, others in your peripheral vision</em></h2>
+      <span class="concept__tag">Pattern <span class="pill">Focus + thumbnails</span></span>
+    </header>
+    <p class="concept__lede">
+      Admit that you can only really evaluate <em>one</em> crop at a time. Promote the active ratio to the full canvas;
+      keep the other two as live thumbnails on the left so they're never out of sight. The header becomes
+      the ratio's <strong>own title</strong>, which means no wasted top band — it's pulling its weight.
+    </p>
+
+    <div class="app-viewport">
+      <div class="modal sp-modal">
+        <button class="close-x" aria-label="Close"><svg width="14" height="14"><use href="#g-close"/></svg></button>
+
+        <aside class="sp-rail">
+          <div class="sp-rail__head">
+            <span>Ratios</span>
+            <span style="color: var(--color-accent-cold)">3 active</span>
+          </div>
+
+          <button class="sp-thumb is-active" style="aspect-ratio: 16 / 9;" aria-pressed="true">
+            <svg class="sp-thumb__scene" viewBox="0 0 400 225" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div style="position:absolute; inset: 0 0 0 50%;">
+              <svg viewBox="0 0 200 225" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+            </div>
+            <div style="position:absolute; top: 0; bottom: 0; left: 50%; width: 1.5px; background: var(--color-accent-cold)"></div>
+            <span class="sp-thumb__label">16:9</span>
+            <span class="sp-thumb__check"></span>
+          </button>
+
+          <button class="sp-thumb" style="aspect-ratio: 4 / 5;">
+            <svg class="sp-thumb__scene" viewBox="0 0 400 500" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div style="position:absolute; left: 30%; bottom: 8%; width: 64%; height: 28%; border: 1.2px solid var(--color-accent-cold);">
+              <svg viewBox="0 0 400 200" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+            </div>
+            <span class="sp-thumb__label">4:5</span>
+          </button>
+
+          <button class="sp-thumb" style="aspect-ratio: 9 / 16;">
+            <svg class="sp-thumb__scene" viewBox="0 0 225 400" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div style="position:absolute; left: 35%; bottom: 6%; width: 58%; height: 22%; border: 1.2px solid var(--color-accent-cold);">
+              <svg viewBox="0 0 300 200" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+            </div>
+            <span class="sp-thumb__label">9:16</span>
+          </button>
+        </aside>
+
+        <section class="sp-stage">
+          <header class="sp-stage__head">
+            <div class="sp-stage__title">
+              <span>16:9</span>
+              <span class="px">1920 × 1080 · LANDSCAPE</span>
+            </div>
+            <div class="sp-stage__controls">
+              <span class="mode-pill">
+                <button class="mode-pill__seg" aria-label="PiP"><svg><use href="#g-pip"/></svg></button>
+                <span class="mode-pill__div"></span>
+                <button class="mode-pill__seg is-active" aria-label="Split"><svg><use href="#g-split"/></svg></button>
+              </span>
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </div>
+          </header>
+
+          <div class="sp-stage__frame-wrap">
+            <div class="sp-stage__frame" style="aspect-ratio: 16 / 9;">
+              <svg class="scene" style="position:absolute; inset: 0;" viewBox="0 0 400 225" preserveAspectRatio="xMidYMid slice">
+                <use href="#mtn-scene"/>
+              </svg>
+              <div style="position:absolute; inset: 0 0 0 50%;">
+                <svg viewBox="0 0 200 225" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                  <use href="#topo"/>
+                </svg>
+              </div>
+              <div class="split-line" style="left: 50%;">
+                <div class="handle"></div>
+                <div class="swap-chip"><svg><use href="#g-swap"/></svg></div>
+              </div>
+              <span class="bracket tl"></span>
+              <span class="bracket tr"></span>
+              <span class="bracket bl"></span>
+              <span class="bracket br"></span>
+            </div>
+          </div>
+
+          <footer class="sp-stage__foot">
+            <span class="kbd">
+              <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> ratio · <kbd>P</kbd> pip · <kbd>S</kbd> split · <kbd>R</kbd> reset
+            </span>
+            <span>16:9 · Split · video left / map right</span>
+          </footer>
+        </section>
+      </div>
+    </div>
+
+    <div class="concept__notes">
+      <div class="note">
+        <div class="note__head">The trick</div>
+        <div class="note__body">
+          The current modal asks you to <em>compare</em> three crops; in practice users <em>tweak</em> one at a time.
+          Promote the act of tweaking. The thumbnails on the rail are <strong>live</strong> — every drag in the
+          spotlight propagates so the other crops never go stale.
+        </div>
+      </div>
+      <div class="note">
+        <div class="note__head">Chrome budget</div>
+        <div class="note__body">
+          The "header band" earns its keep because it's the active ratio's <strong>own identity</strong> —
+          replacing what was a generic title. Mode/reset controls sit beside it. The footer is keyboard hints
+          (optional; can hide on hover).
+        </div>
+      </div>
+      <div class="note">
+        <div class="note__head">Cost</div>
+        <div class="note__body">
+          Loses true side-by-side. If a user wants to A/B 16:9 vs 9:16 they can do it through the thumbnails,
+          but the comparison is unequal-scale. <strong>Not ideal if "compare" is the primary job.</strong>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════════════════════════════════
+       03 · ATLAS
+       ════════════════════════════════════════════════════════ -->
+  <section class="concept" id="atlas">
+    <header class="concept__head">
+      <span class="concept__num">03</span>
+      <h2 class="concept__name">Atlas<em>· not a modal — a positioning mode</em></h2>
+      <span class="concept__tag">Pattern <span class="pill">Full-bleed editing mode</span></span>
+    </header>
+    <p class="concept__lede">
+      Stop pretending this is a dialog. The user wants to position frames against a <strong>map</strong>; show them the map.
+      Three frames float over the project's actual route view; controls live in floating chips attached to each.
+      Enter with a button, leave with <kbd style="font-family:var(--font-mono);padding:1px 5px;border:1px solid var(--color-border-soft);border-radius:2px;font-size:11px;background:var(--color-surface-deep)">esc</kbd>.
+      The "wasted space" problem doesn't exist because there's no card to waste space inside.
+    </p>
+
+    <div class="app-viewport">
+      <div class="modal at-modal">
+        <div class="at-map">
+          <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice"><use href="#big-map"/></svg>
+        </div>
+
+        <div class="at-toolbar">
+          <span class="at-toolbar__brand"><span class="accent">/</span>POSITIONING</span>
+          <span class="at-toolbar__sep"></span>
+          <div class="at-toolbar__ratios">
+            <button class="at-toolbar__ratio is-focus">16:9</button>
+            <button class="at-toolbar__ratio">4:5</button>
+            <button class="at-toolbar__ratio">9:16</button>
+          </div>
+          <span class="at-toolbar__sep"></span>
+          <span class="at-toolbar__esc"><kbd>esc</kbd> close</span>
+        </div>
+
+        <div class="at-frames">
+          <!-- 16:9 (focus) -->
+          <div class="at-frame is-focus" style="height: 56%; aspect-ratio: 16 / 9;">
+            <svg class="scene" viewBox="0 0 400 225" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div style="position:absolute; inset: 0 0 0 50%;">
+              <svg viewBox="0 0 200 225" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+            </div>
+            <div class="split-line" style="left: 50%;">
+              <div class="handle"></div>
+              <div class="swap-chip"><svg><use href="#g-swap"/></svg></div>
+            </div>
+            <span class="bracket tl"></span><span class="bracket tr"></span>
+            <span class="bracket bl"></span><span class="bracket br"></span>
+            <span class="at-chip is-focus">
+              <span class="ratio">16:9</span>
+              <span class="sep">·</span>
+              <span class="glyph-mode"><svg><use href="#g-split"/></svg></span>
+              <span class="mode">Split</span>
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </span>
+          </div>
+
+          <!-- 4:5 -->
+          <div class="at-frame" style="height: 56%; aspect-ratio: 4 / 5;">
+            <svg class="scene" viewBox="0 0 400 500" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div class="pip-inset" style="left: 22%; bottom: 8%; width: 70%; height: 30%;">
+              <svg viewBox="0 0 400 200" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+              <span class="handle tl"></span><span class="handle tr"></span>
+              <span class="handle bl"></span><span class="handle br"></span>
+              <span class="swap-chip"><svg><use href="#g-swap"/></svg></span>
+            </div>
+            <span class="bracket tl"></span><span class="bracket tr"></span>
+            <span class="bracket bl"></span><span class="bracket br"></span>
+            <span class="at-chip">
+              <span class="ratio">4:5</span>
+              <span class="sep">·</span>
+              <span class="glyph-mode"><svg><use href="#g-pip"/></svg></span>
+              <span class="mode">PiP</span>
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </span>
+          </div>
+
+          <!-- 9:16 -->
+          <div class="at-frame" style="height: 56%; aspect-ratio: 9 / 16;">
+            <svg class="scene" viewBox="0 0 225 400" preserveAspectRatio="xMidYMid slice">
+              <use href="#mtn-scene"/>
+            </svg>
+            <div class="pip-inset" style="left: 32%; bottom: 6%; width: 60%; height: 20%;">
+              <svg viewBox="0 0 300 200" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;display:block;">
+                <use href="#topo"/>
+              </svg>
+              <span class="handle tl"></span><span class="handle tr"></span>
+              <span class="handle bl"></span><span class="handle br"></span>
+              <span class="swap-chip"><svg><use href="#g-swap"/></svg></span>
+            </div>
+            <span class="bracket tl"></span><span class="bracket tr"></span>
+            <span class="bracket bl"></span><span class="bracket br"></span>
+            <span class="at-chip">
+              <span class="ratio">9:16</span>
+              <span class="sep">·</span>
+              <span class="glyph-mode"><svg><use href="#g-pip"/></svg></span>
+              <span class="mode">PiP</span>
+              <button class="icon-btn" title="Reset"><svg><use href="#g-reset"/></svg></button>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="concept__notes">
+      <div class="note">
+        <div class="note__head">The trick</div>
+        <div class="note__body">
+          Reframe the task as a <strong>mode</strong>, not a dialog. The app's main canvas becomes the substrate;
+          the three frames levitate over it. There's no rectangle to fight against, so the question of
+          "is the modal too sparse" never comes up.
+        </div>
+      </div>
+      <div class="note">
+        <div class="note__head">Chrome budget</div>
+        <div class="note__body">
+          A single floating toolbar pill at the top: brand stamp, ratio tabs, esc hint. Each frame carries its
+          own floating <strong>chip</strong> with ratio, mode, reset. Chrome is dissolved into the canvas.
+        </div>
+      </div>
+      <div class="note">
+        <div class="note__head">Cost</div>
+        <div class="note__body">
+          Heaviest implementation — needs a "positioning mode" state in the app shell, not just a portal modal.
+          Also: showing the actual map behind requires the map view to be the literal background of the editor
+          when entering this mode.
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>

@@ -17,8 +17,28 @@ tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 roxmltree = "0.20"
 chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["process", "io-util", "sync", "rt-multi-thread", "macros", "time"] }
+thiserror = "2"
+png = "0.17"
+tempfile = "3"
+
+[features]
+# Gates the heavy end-to-end export integration test (real FFmpeg + Node + maplibre-native).
+# See src-tauri/tests/render_export_map_only.rs.
+integration_export = []
+# Task 100: gates the full (mode × aspect × channel) export matrix — 18 cells
+# total (PiP, Split) × (9:16, 4:5, 16:9) × (A, B, C). Implies
+# `integration_export`. Each cell spawns FFmpeg + the renderer worker, so the
+# matrix runs in 60–120s; gated separately so routine `cargo test` and the
+# baseline 9:16 PiP smoke tests stay fast. Used in nightly CI / pre-release.
+integration_export_matrix = ["integration_export"]
+# Task 100: gates the cross-channel compositing-parity sub-test at one
+# non-9:16 aspect (B+C externally vs A directly). Catches aspect-specific
+# drift in `overlay` coordinate math. Implies `integration_export`.
+integration_export_parity = ["integration_export"]

@@ -1,4 +1,5 @@
 mod commands;
+pub mod export;
 mod models;
 mod util;
 
@@ -11,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             commands::scan_directory,
             commands::import_media,
@@ -25,6 +27,9 @@ pub fn run() {
             commands::register_recent_project,
             commands::rename_project,
             commands::delete_project,
+            commands::resolve_output_dir,
+            commands::probe_encoders,
+            export::render_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

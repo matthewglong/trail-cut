@@ -1,0 +1,3096 @@
+{
+  "cmd": "setup",
+  "cssViewport": {
+    "w": 1080,
+    "h": 1920
+  },
+  "framebuffer": {
+    "w": 540,
+    "h": 960
+  },
+  "pixelRatio": 0.5,
+  "fps": 30,
+  "timeline": {
+    "clipSpans": [
+      {
+        "clipId": "frame-0000",
+        "startMs": 0,
+        "endMs": 33.333333333333336,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333336,
+        "canonicalSeekMs": 0,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400000,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.582,
+            "lat": 48.1351
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0001",
+        "startMs": 33.333333333333336,
+        "endMs": 66.66666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333336,
+        "canonicalSeekMs": 33.333333333333336,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400033.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581973154362418,
+            "lat": 48.135092617449665
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0002",
+        "startMs": 66.66666666666667,
+        "endMs": 100,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333333,
+        "canonicalSeekMs": 66.66666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400066.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581946308724833,
+            "lat": 48.13508523489933
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0003",
+        "startMs": 100,
+        "endMs": 133.33333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333334,
+        "canonicalSeekMs": 100,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400100,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58191946308725,
+            "lat": 48.13507785234899
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0004",
+        "startMs": 133.33333333333334,
+        "endMs": 166.66666666666669,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333334,
+        "canonicalSeekMs": 133.33333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400133.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581892617449665,
+            "lat": 48.135070469798656
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0005",
+        "startMs": 166.66666666666669,
+        "endMs": 200,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333314,
+        "canonicalSeekMs": 166.66666666666669,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400166.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581865771812081,
+            "lat": 48.13506308724833
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0006",
+        "startMs": 200,
+        "endMs": 233.33333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333334,
+        "canonicalSeekMs": 200,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400200,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581838926174497,
+            "lat": 48.13505570469799
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0007",
+        "startMs": 233.33333333333334,
+        "endMs": 266.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333334,
+        "canonicalSeekMs": 233.33333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400233.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581812080536913,
+            "lat": 48.135048322147654
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0008",
+        "startMs": 266.6666666666667,
+        "endMs": 300,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333314,
+        "canonicalSeekMs": 266.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400266.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58178523489933,
+            "lat": 48.13504093959732
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0009",
+        "startMs": 300,
+        "endMs": 333.33333333333337,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 300,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400300,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581758389261745,
+            "lat": 48.13503355704698
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0010",
+        "startMs": 333.33333333333337,
+        "endMs": 366.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333314,
+        "canonicalSeekMs": 333.33333333333337,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400333.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581731543624162,
+            "lat": 48.135026174496645
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0011",
+        "startMs": 366.6666666666667,
+        "endMs": 400,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333314,
+        "canonicalSeekMs": 366.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400366.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581704697986577,
+            "lat": 48.13501879194631
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0012",
+        "startMs": 400,
+        "endMs": 433.33333333333337,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 400,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400400,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581677852348994,
+            "lat": 48.13501140939597
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0013",
+        "startMs": 433.33333333333337,
+        "endMs": 466.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333314,
+        "canonicalSeekMs": 433.33333333333337,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400433.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581651006711411,
+            "lat": 48.135004026845635
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0014",
+        "startMs": 466.6666666666667,
+        "endMs": 500.00000000000006,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 466.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400466.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581624161073826,
+            "lat": 48.134996644295306
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0015",
+        "startMs": 500.00000000000006,
+        "endMs": 533.3333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333314,
+        "canonicalSeekMs": 500.00000000000006,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400500,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581597315436243,
+            "lat": 48.13498926174497
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0016",
+        "startMs": 533.3333333333334,
+        "endMs": 566.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 533.3333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400533.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581570469798658,
+            "lat": 48.13498187919463
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0017",
+        "startMs": 566.6666666666667,
+        "endMs": 600,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 566.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400566.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581543624161075,
+            "lat": 48.1349744966443
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0018",
+        "startMs": 600,
+        "endMs": 633.3333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 600,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400600,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58151677852349,
+            "lat": 48.13496711409396
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0019",
+        "startMs": 633.3333333333334,
+        "endMs": 666.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 633.3333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400633.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581489932885907,
+            "lat": 48.134959731543624
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0020",
+        "startMs": 666.6666666666667,
+        "endMs": 700,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 666.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400666.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581463087248324,
+            "lat": 48.13495234899329
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0021",
+        "startMs": 700,
+        "endMs": 733.3333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 700,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400700,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581436241610739,
+            "lat": 48.13494496644295
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0022",
+        "startMs": 733.3333333333334,
+        "endMs": 766.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 733.3333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400733.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581409395973155,
+            "lat": 48.13493758389262
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0023",
+        "startMs": 766.6666666666667,
+        "endMs": 800,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 766.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400766.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58138255033557,
+            "lat": 48.134930201342286
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0024",
+        "startMs": 800,
+        "endMs": 833.3333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 800,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400800,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581355704697987,
+            "lat": 48.13492281879195
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0025",
+        "startMs": 833.3333333333334,
+        "endMs": 866.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 833.3333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400833.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581328859060402,
+            "lat": 48.13491543624161
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0026",
+        "startMs": 866.6666666666667,
+        "endMs": 900.0000000000001,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 866.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400866.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58130201342282,
+            "lat": 48.13490805369128
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0027",
+        "startMs": 900.0000000000001,
+        "endMs": 933.3333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 900.0000000000001,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400900,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581275167785236,
+            "lat": 48.13490067114094
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0028",
+        "startMs": 933.3333333333334,
+        "endMs": 966.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 933.3333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400933.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581248322147651,
+            "lat": 48.134893288590604
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0029",
+        "startMs": 966.6666666666667,
+        "endMs": 1000.0000000000001,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 966.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268400966.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581221476510068,
+            "lat": 48.13488590604027
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0030",
+        "startMs": 1000.0000000000001,
+        "endMs": 1033.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333337,
+        "canonicalSeekMs": 1000.0000000000001,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401000,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581194630872483,
+            "lat": 48.13487852348993
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0031",
+        "startMs": 1033.3333333333335,
+        "endMs": 1066.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1033.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401033.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.5811677852349,
+            "lat": 48.1348711409396
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0032",
+        "startMs": 1066.6666666666667,
+        "endMs": 1100,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1066.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401066.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581140939597315,
+            "lat": 48.134863758389265
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0033",
+        "startMs": 1100,
+        "endMs": 1133.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1100,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401100,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581114093959732,
+            "lat": 48.13485637583893
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0034",
+        "startMs": 1133.3333333333335,
+        "endMs": 1166.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1133.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401133.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581087248322149,
+            "lat": 48.13484899328859
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0035",
+        "startMs": 1166.6666666666667,
+        "endMs": 1200,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1166.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401166.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581060402684564,
+            "lat": 48.134841610738256
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0036",
+        "startMs": 1200,
+        "endMs": 1233.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1200,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401200,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58103355704698,
+            "lat": 48.13483422818792
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0037",
+        "startMs": 1233.3333333333335,
+        "endMs": 1266.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1233.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401233.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.581006711409396,
+            "lat": 48.13482684563758
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0038",
+        "startMs": 1266.6666666666667,
+        "endMs": 1300,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1266.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401266.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580979865771813,
+            "lat": 48.13481946308725
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0039",
+        "startMs": 1300,
+        "endMs": 1333.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1300,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401300,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58095302013423,
+            "lat": 48.13481208053691
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0040",
+        "startMs": 1333.3333333333335,
+        "endMs": 1366.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1333.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401333.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580926174496645,
+            "lat": 48.13480469798658
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0041",
+        "startMs": 1366.6666666666667,
+        "endMs": 1400,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1366.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401366.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580899328859061,
+            "lat": 48.134797315436245
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0042",
+        "startMs": 1400,
+        "endMs": 1433.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1400,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401400,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580872483221476,
+            "lat": 48.13478993288591
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0043",
+        "startMs": 1433.3333333333335,
+        "endMs": 1466.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1433.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401433.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580845637583893,
+            "lat": 48.13478255033557
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0044",
+        "startMs": 1466.6666666666667,
+        "endMs": 1500,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1466.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401466.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580818791946308,
+            "lat": 48.134775167785236
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0045",
+        "startMs": 1500,
+        "endMs": 1533.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1500,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401500,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580791946308725,
+            "lat": 48.1347677852349
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0046",
+        "startMs": 1533.3333333333335,
+        "endMs": 1566.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1533.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401533.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580765100671142,
+            "lat": 48.13476040268456
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0047",
+        "startMs": 1566.6666666666667,
+        "endMs": 1600,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1566.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401566.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580738255033557,
+            "lat": 48.13475302013423
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0048",
+        "startMs": 1600,
+        "endMs": 1633.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1600,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401600,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580711409395974,
+            "lat": 48.13474563758389
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0049",
+        "startMs": 1633.3333333333335,
+        "endMs": 1666.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1633.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401633.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580684563758389,
+            "lat": 48.13473825503356
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0050",
+        "startMs": 1666.6666666666667,
+        "endMs": 1700.0000000000002,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1666.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401666.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580657718120806,
+            "lat": 48.134730872483225
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0051",
+        "startMs": 1700.0000000000002,
+        "endMs": 1733.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1700.0000000000002,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401700,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580630872483221,
+            "lat": 48.13472348993289
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0052",
+        "startMs": 1733.3333333333335,
+        "endMs": 1766.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1733.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401733.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580604026845638,
+            "lat": 48.13471610738255
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0053",
+        "startMs": 1766.6666666666667,
+        "endMs": 1800.0000000000002,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1766.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401766.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580577181208055,
+            "lat": 48.134708724832215
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0054",
+        "startMs": 1800.0000000000002,
+        "endMs": 1833.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1800.0000000000002,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401800,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58055033557047,
+            "lat": 48.13470134228188
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0055",
+        "startMs": 1833.3333333333335,
+        "endMs": 1866.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1833.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401833.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580523489932887,
+            "lat": 48.13469395973154
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0056",
+        "startMs": 1866.6666666666667,
+        "endMs": 1900.0000000000002,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1866.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401866.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580496644295302,
+            "lat": 48.134686577181206
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0057",
+        "startMs": 1900.0000000000002,
+        "endMs": 1933.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1900.0000000000002,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401900,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580469798657719,
+            "lat": 48.13467919463088
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0058",
+        "startMs": 1933.3333333333335,
+        "endMs": 1966.6666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 1933.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401933.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580442953020134,
+            "lat": 48.13467181208054
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0059",
+        "startMs": 1966.6666666666667,
+        "endMs": 2000.0000000000002,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 1966.6666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268401966.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58041610738255,
+            "lat": 48.134664429530204
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0060",
+        "startMs": 2000.0000000000002,
+        "endMs": 2033.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333326,
+        "canonicalSeekMs": 2000.0000000000002,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402000,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580389261744967,
+            "lat": 48.13465704697987
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0061",
+        "startMs": 2033.3333333333335,
+        "endMs": 2066.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2033.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402033.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580362416107382,
+            "lat": 48.13464966442953
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0062",
+        "startMs": 2066.666666666667,
+        "endMs": 2100,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2066.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402066.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.5803355704698,
+            "lat": 48.134642281879195
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0063",
+        "startMs": 2100,
+        "endMs": 2133.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2100,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402100,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580308724832214,
+            "lat": 48.13463489932886
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0064",
+        "startMs": 2133.3333333333335,
+        "endMs": 2166.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2133.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402133.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580281879194631,
+            "lat": 48.13462751677852
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0065",
+        "startMs": 2166.666666666667,
+        "endMs": 2200,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2166.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402166.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580255033557048,
+            "lat": 48.134620134228186
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0066",
+        "startMs": 2200,
+        "endMs": 2233.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2200,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402200,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580228187919463,
+            "lat": 48.13461275167786
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0067",
+        "startMs": 2233.3333333333335,
+        "endMs": 2266.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2233.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402233.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58020134228188,
+            "lat": 48.13460536912752
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0068",
+        "startMs": 2266.666666666667,
+        "endMs": 2300,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2266.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402266.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580174496644295,
+            "lat": 48.134597986577184
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0069",
+        "startMs": 2300,
+        "endMs": 2333.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2300,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402300,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580147651006712,
+            "lat": 48.13459060402685
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0070",
+        "startMs": 2333.3333333333335,
+        "endMs": 2366.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2333.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402333.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580120805369127,
+            "lat": 48.13458322147651
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0071",
+        "startMs": 2366.666666666667,
+        "endMs": 2400,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2366.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402366.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580093959731544,
+            "lat": 48.134575838926175
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0072",
+        "startMs": 2400,
+        "endMs": 2433.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2400,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402400,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.58006711409396,
+            "lat": 48.13456845637584
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0073",
+        "startMs": 2433.3333333333335,
+        "endMs": 2466.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2433.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402433.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580040268456376,
+            "lat": 48.1345610738255
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0074",
+        "startMs": 2466.666666666667,
+        "endMs": 2500,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2466.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402466.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.580013422818793,
+            "lat": 48.134553691275165
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0075",
+        "startMs": 2500,
+        "endMs": 2533.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2500,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402500,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579986577181208,
+            "lat": 48.134546308724836
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0076",
+        "startMs": 2533.3333333333335,
+        "endMs": 2566.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2533.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402533.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579959731543624,
+            "lat": 48.1345389261745
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0077",
+        "startMs": 2566.666666666667,
+        "endMs": 2600,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2566.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402566.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57993288590604,
+            "lat": 48.13453154362416
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0078",
+        "startMs": 2600,
+        "endMs": 2633.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2600,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402600,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579906040268456,
+            "lat": 48.13452416107383
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0079",
+        "startMs": 2633.3333333333335,
+        "endMs": 2666.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2633.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402633.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579879194630873,
+            "lat": 48.13451677852349
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0080",
+        "startMs": 2666.666666666667,
+        "endMs": 2700,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2666.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402666.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579852348993288,
+            "lat": 48.134509395973154
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0081",
+        "startMs": 2700,
+        "endMs": 2733.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2700,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402700,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579825503355705,
+            "lat": 48.13450201342282
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0082",
+        "startMs": 2733.3333333333335,
+        "endMs": 2766.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2733.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402733.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57979865771812,
+            "lat": 48.13449463087248
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0083",
+        "startMs": 2766.666666666667,
+        "endMs": 2800,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2766.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402766.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579771812080537,
+            "lat": 48.134487248322145
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0084",
+        "startMs": 2800,
+        "endMs": 2833.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2800,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402800,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579744966442952,
+            "lat": 48.134479865771816
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0085",
+        "startMs": 2833.3333333333335,
+        "endMs": 2866.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2833.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402833.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579718120805369,
+            "lat": 48.13447248322148
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0086",
+        "startMs": 2866.666666666667,
+        "endMs": 2900,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2866.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402866.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579691275167786,
+            "lat": 48.13446510067114
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0087",
+        "startMs": 2900,
+        "endMs": 2933.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2900,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402900,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579664429530201,
+            "lat": 48.13445771812081
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0088",
+        "startMs": 2933.3333333333335,
+        "endMs": 2966.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 2933.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402933.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579637583892618,
+            "lat": 48.13445033557047
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0089",
+        "startMs": 2966.666666666667,
+        "endMs": 3000,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 2966.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268402966.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579610738255033,
+            "lat": 48.134442953020134
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0090",
+        "startMs": 3000,
+        "endMs": 3033.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3000,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403000,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57958389261745,
+            "lat": 48.1344355704698
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0091",
+        "startMs": 3033.3333333333335,
+        "endMs": 3066.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3033.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403033.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579557046979867,
+            "lat": 48.13442818791946
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0092",
+        "startMs": 3066.666666666667,
+        "endMs": 3100,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3066.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403066.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579530201342282,
+            "lat": 48.134420805369125
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0093",
+        "startMs": 3100,
+        "endMs": 3133.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3100,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403100,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579503355704698,
+            "lat": 48.134413422818795
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0094",
+        "startMs": 3133.3333333333335,
+        "endMs": 3166.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3133.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403133.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579476510067114,
+            "lat": 48.13440604026846
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0095",
+        "startMs": 3166.666666666667,
+        "endMs": 3200,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3166.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403166.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57944966442953,
+            "lat": 48.13439865771812
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0096",
+        "startMs": 3200,
+        "endMs": 3233.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3200,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403200,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579422818791945,
+            "lat": 48.134391275167786
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0097",
+        "startMs": 3233.3333333333335,
+        "endMs": 3266.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3233.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403233.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579395973154362,
+            "lat": 48.13438389261745
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0098",
+        "startMs": 3266.666666666667,
+        "endMs": 3300.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3266.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403266.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57936912751678,
+            "lat": 48.13437651006711
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0099",
+        "startMs": 3300.0000000000005,
+        "endMs": 3333.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3300.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403300,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579342281879194,
+            "lat": 48.13436912751678
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0100",
+        "startMs": 3333.3333333333335,
+        "endMs": 3366.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3333.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403333.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579315436241611,
+            "lat": 48.13436174496644
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0101",
+        "startMs": 3366.666666666667,
+        "endMs": 3400.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3366.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403366.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579288590604026,
+            "lat": 48.13435436241611
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0102",
+        "startMs": 3400.0000000000005,
+        "endMs": 3433.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3400.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403400,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579261744966443,
+            "lat": 48.134346979865775
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0103",
+        "startMs": 3433.3333333333335,
+        "endMs": 3466.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3433.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403433.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579234899328858,
+            "lat": 48.13433959731544
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0104",
+        "startMs": 3466.666666666667,
+        "endMs": 3500.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3466.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403466.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579208053691275,
+            "lat": 48.1343322147651
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0105",
+        "startMs": 3500.0000000000005,
+        "endMs": 3533.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3500.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403500,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579181208053692,
+            "lat": 48.134324832214766
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0106",
+        "startMs": 3533.3333333333335,
+        "endMs": 3566.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3533.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403533.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579154362416107,
+            "lat": 48.13431744966443
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0107",
+        "startMs": 3566.666666666667,
+        "endMs": 3600.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3566.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403566.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579127516778524,
+            "lat": 48.13431006711409
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0108",
+        "startMs": 3600.0000000000005,
+        "endMs": 3633.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3600.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403600,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579100671140939,
+            "lat": 48.13430268456376
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0109",
+        "startMs": 3633.3333333333335,
+        "endMs": 3666.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3633.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403633.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579073825503356,
+            "lat": 48.13429530201342
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0110",
+        "startMs": 3666.666666666667,
+        "endMs": 3700.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3666.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403666.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57904697986577,
+            "lat": 48.13428791946309
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0111",
+        "startMs": 3700.0000000000005,
+        "endMs": 3733.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3700.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403700,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.579020134228188,
+            "lat": 48.134280536912755
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0112",
+        "startMs": 3733.3333333333335,
+        "endMs": 3766.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3733.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403733.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578993288590604,
+            "lat": 48.13427315436242
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0113",
+        "startMs": 3766.666666666667,
+        "endMs": 3800.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3766.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403766.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57896644295302,
+            "lat": 48.13426577181208
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0114",
+        "startMs": 3800.0000000000005,
+        "endMs": 3833.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3800.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403800,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578939597315436,
+            "lat": 48.134258389261745
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0115",
+        "startMs": 3833.3333333333335,
+        "endMs": 3866.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3833.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403833.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578912751677851,
+            "lat": 48.13425100671141
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0116",
+        "startMs": 3866.666666666667,
+        "endMs": 3900.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3866.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403866.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578885906040268,
+            "lat": 48.13424362416107
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0117",
+        "startMs": 3900.0000000000005,
+        "endMs": 3933.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 3900.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403900,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578859060402685,
+            "lat": 48.134236241610736
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0118",
+        "startMs": 3933.3333333333335,
+        "endMs": 3966.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3933.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403933.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.5788322147651,
+            "lat": 48.1342288590604
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0119",
+        "startMs": 3966.666666666667,
+        "endMs": 4000.0000000000005,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 3966.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268403966.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578805369127517,
+            "lat": 48.13422147651007
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0120",
+        "startMs": 4000.0000000000005,
+        "endMs": 4033.3333333333335,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4000.0000000000005,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404000,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578778523489932,
+            "lat": 48.134214093959734
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0121",
+        "startMs": 4033.3333333333335,
+        "endMs": 4066.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.333333333333485,
+        "canonicalSeekMs": 4033.3333333333335,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404033.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578751677852349,
+            "lat": 48.1342067114094
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0122",
+        "startMs": 4066.666666666667,
+        "endMs": 4100,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4066.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404066.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578724832214764,
+            "lat": 48.13419932885906
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0123",
+        "startMs": 4100,
+        "endMs": 4133.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4100,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404100,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57869798657718,
+            "lat": 48.134191946308725
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0124",
+        "startMs": 4133.333333333334,
+        "endMs": 4166.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4133.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404133.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578671140939598,
+            "lat": 48.13418456375839
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0125",
+        "startMs": 4166.666666666667,
+        "endMs": 4200,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4166.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404166.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578644295302013,
+            "lat": 48.13417718120805
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0126",
+        "startMs": 4200,
+        "endMs": 4233.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4200,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404200,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57861744966443,
+            "lat": 48.134169798657716
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0127",
+        "startMs": 4233.333333333334,
+        "endMs": 4266.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4233.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404233.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578590604026845,
+            "lat": 48.13416241610738
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0128",
+        "startMs": 4266.666666666667,
+        "endMs": 4300,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4266.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404266.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578563758389262,
+            "lat": 48.13415503355705
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0129",
+        "startMs": 4300,
+        "endMs": 4333.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4300,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404300,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578536912751677,
+            "lat": 48.134147651006714
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0130",
+        "startMs": 4333.333333333334,
+        "endMs": 4366.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4333.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404333.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578510067114093,
+            "lat": 48.13414026845638
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0131",
+        "startMs": 4366.666666666667,
+        "endMs": 4400,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4366.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404366.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57848322147651,
+            "lat": 48.13413288590604
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0132",
+        "startMs": 4400,
+        "endMs": 4433.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4400,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404400,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578456375838925,
+            "lat": 48.134125503355705
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0133",
+        "startMs": 4433.333333333334,
+        "endMs": 4466.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4433.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404433.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578429530201342,
+            "lat": 48.13411812080537
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0134",
+        "startMs": 4466.666666666667,
+        "endMs": 4500,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4466.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404466.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578402684563757,
+            "lat": 48.13411073825503
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0135",
+        "startMs": 4500,
+        "endMs": 4533.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4500,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404500,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578375838926174,
+            "lat": 48.134103355704696
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0136",
+        "startMs": 4533.333333333334,
+        "endMs": 4566.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4533.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404533.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57834899328859,
+            "lat": 48.134095973154366
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0137",
+        "startMs": 4566.666666666667,
+        "endMs": 4600,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4566.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404566.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578322147651006,
+            "lat": 48.13408859060403
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0138",
+        "startMs": 4600,
+        "endMs": 4633.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4600,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404600,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578295302013423,
+            "lat": 48.13408120805369
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0139",
+        "startMs": 4633.333333333334,
+        "endMs": 4666.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4633.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404633.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578268456375838,
+            "lat": 48.13407382550336
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0140",
+        "startMs": 4666.666666666667,
+        "endMs": 4700,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4666.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404666.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578241610738255,
+            "lat": 48.13406644295302
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0141",
+        "startMs": 4700,
+        "endMs": 4733.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4700,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404700,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57821476510067,
+            "lat": 48.134059060402684
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0142",
+        "startMs": 4733.333333333334,
+        "endMs": 4766.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4733.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404733.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578187919463087,
+            "lat": 48.13405167785235
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0143",
+        "startMs": 4766.666666666667,
+        "endMs": 4800,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4766.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404766.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578161073825504,
+            "lat": 48.13404429530201
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0144",
+        "startMs": 4800,
+        "endMs": 4833.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4800,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404800,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578134228187919,
+            "lat": 48.134036912751675
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0145",
+        "startMs": 4833.333333333334,
+        "endMs": 4866.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4833.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404833.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578107382550336,
+            "lat": 48.134029530201346
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0146",
+        "startMs": 4866.666666666667,
+        "endMs": 4900,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4866.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404866.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.57808053691275,
+            "lat": 48.13402214765101
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0147",
+        "startMs": 4900,
+        "endMs": 4933.333333333334,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333394,
+        "canonicalSeekMs": 4900,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404900,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578053691275167,
+            "lat": 48.13401476510067
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0148",
+        "startMs": 4933.333333333334,
+        "endMs": 4966.666666666667,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4933.333333333334,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404933.3333,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578026845637583,
+            "lat": 48.13400738255034
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      },
+      {
+        "clipId": "frame-0149",
+        "startMs": 4966.666666666667,
+        "endMs": 5000,
+        "mediaInMs": 0,
+        "mediaOutMs": 33.33333333333303,
+        "canonicalSeekMs": 4966.666666666667,
+        "speed": 1,
+        "wallClockBaseMs": 1717268404966.6667,
+        "intent": {
+          "kind": "point",
+          "center": {
+            "lng": 11.578,
+            "lat": 48.134
+          },
+          "zoom": 16,
+          "bearing": 0,
+          "pitch": 0
+        }
+      }
+    ],
+    "transitionSpans": [],
+    "totalDurationMs": 5000,
+    "startCamera": {
+      "center": {
+        "lng": 11.582,
+        "lat": 48.1351
+      },
+      "zoom": 16,
+      "bearing": 0,
+      "pitch": 0
+    },
+    "transitionFeel": "natural"
+  },
+  "route": {
+    "source_path": "/dev/null/route.gpx",
+    "format": "gpx",
+    "trackpoints": [
+      {
+        "lat": 48.1351,
+        "lng": 11.582,
+        "elevation": 520,
+        "timestamp": "2024-06-01T19:00:00.000Z"
+      },
+      {
+        "lat": 48.134550000000004,
+        "lng": 11.58,
+        "elevation": 520,
+        "timestamp": "2024-06-01T19:00:02.500Z"
+      },
+      {
+        "lat": 48.134,
+        "lng": 11.578,
+        "elevation": 520,
+        "timestamp": "2024-06-01T19:00:05.000Z"
+      }
+    ]
+  },
+  "clips": [
+    {
+      "id": "frame-0000",
+      "path": "/dev/null/clip-a.mov",
+      "filename": "clip-a.mov",
+      "created_at": "2024-06-01T12:00:00.000-07:00",
+      "duration_ms": 5000,
+      "gps": {
+        "lat": 48.1351,
+        "lng": 11.582
+      },
+      "resolution": "1920x1080",
+      "frame_rate": 30,
+      "trim": {
+        "in_ms": 0,
+        "out_ms": 5000
+      },
+      "focal_point": {
+        "x": 0.5,
+        "y": 0.5,
+        "zoom": 1
+      },
+      "effects": {
+        "stabilize": {
+          "enabled": false,
+          "shakiness": 0
+        },
+        "speed": 1
+      },
+      "visible": true,
+      "map_overrides": null
+    }
+  ],
+  "mapSettings": {
+    "route_mode": "full",
+    "waypoints_mode": "full",
+    "follow_playhead": true,
+    "map_style": "default",
+    "zoom": 16,
+    "bearing_mode": "fixed",
+    "bearing_degrees": 0,
+    "bearing_stops": 3
+  }
+}

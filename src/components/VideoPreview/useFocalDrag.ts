@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type React from 'react';
 import type { Clip, FocalPoint } from '../../types';
 
@@ -24,7 +24,13 @@ export function useFocalDrag({
 }: UseFocalDragOptions): FocalDragState {
   const [draggingFocal, setDraggingFocal] = useState(false);
 
-  const getVideoRect = useCallback(() => {
+  // Mirror non-ref reactive inputs onto a ref so the drag effect can subscribe
+  // only to `draggingFocal` and still read the freshest clip / callback when
+  // mousemove fires.
+  const latestRef = useRef({ clip, onUpdateFocalPoint });
+  latestRef.current = { clip, onUpdateFocalPoint };
+
+  function getVideoRect() {
     const container = videoContainerRef.current;
     const video = videoRef.current;
     if (!container || !video) return null;
@@ -45,26 +51,27 @@ export function useFocalDrag({
       videoTop = rect.top + (rect.height - videoH) / 2;
     }
     return { videoLeft, videoTop, videoW, videoH };
-  }, []);
+  }
 
-  function focalFromMouse(e: MouseEvent | React.MouseEvent) {
+  function applyFocalAt(clientX: number, clientY: number) {
+    const { clip: c, onUpdateFocalPoint: cb } = latestRef.current;
     const vr = getVideoRect();
-    if (!vr || !onUpdateFocalPoint || !clip) return;
-    const x = Math.max(0, Math.min(1, (e.clientX - vr.videoLeft) / vr.videoW));
-    const y = Math.max(0, Math.min(1, (e.clientY - vr.videoTop) / vr.videoH));
-    onUpdateFocalPoint({ x, y, zoom: clip.focal_point.zoom });
+    if (!vr || !cb || !c) return;
+    const x = Math.max(0, Math.min(1, (clientX - vr.videoLeft) / vr.videoW));
+    const y = Math.max(0, Math.min(1, (clientY - vr.videoTop) / vr.videoH));
+    cb({ x, y, zoom: c.focal_point.zoom });
   }
 
   function handleVideoMouseDown(e: React.MouseEvent) {
     if (e.button !== 0) return;
     e.preventDefault();
     setDraggingFocal(true);
-    focalFromMouse(e);
+    applyFocalAt(e.clientX, e.clientY);
   }
 
   useEffect(() => {
     if (!draggingFocal) return;
-    function handleMouseMove(e: MouseEvent) { focalFromMouse(e); }
+    function handleMouseMove(e: MouseEvent) { applyFocalAt(e.clientX, e.clientY); }
     function handleMouseUp() { setDraggingFocal(false); }
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
@@ -72,7 +79,8 @@ export function useFocalDrag({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [draggingFocal, clip?.focal_point.zoom, onUpdateFocalPoint]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draggingFocal]);
 
   function handleWheel(e: React.WheelEvent) {
     e.preventDefault();

@@ -1,4 +1,8 @@
+use crate::export::layout::{default_split_layout, AspectRatio, ProjectLayouts};
+use crate::export::resolution::OutputResolution;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpsCoord {
@@ -119,29 +123,6 @@ pub struct Route {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportLayout {
-    pub video_pct: u8,
-    pub map_position: String,
-    pub map_visible: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportResolution {
-    pub width: u32,
-    pub height: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportConfig {
-    pub name: String,
-    pub aspect_ratio: String,
-    pub resolution: ExportResolution,
-    pub layout: ExportLayout,
-    pub codec: String,
-    pub quality: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapSettings {
     #[serde(default = "default_full")]
     pub route_mode: String, // "none" | "visited" | "full"
@@ -257,12 +238,65 @@ pub struct ClipEntryTransition {
     pub feel: Option<TransitionFeel>,
 }
 
+/// Export-pipeline channel selector. Mirrors the TypeScript `ExportChannel`
+/// union in `src/types.ts`. Used for `Project.last_export_selection` (task
+/// 280) — the persistence path. The ad-hoc `RenderExportRequest.channel`
+/// string field stays as-is; this typed enum lives only on the project file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportChannel {
+    Composite,
+    MapOnly,
+    VideoOnly,
+}
+
+/// One configured chip within a grid cell. The Export modal's secondary
+/// "Configure export" panel writes these — each holds an output resolution
+/// and frame rate. `id` is a UUID minted at chip creation time so multiple
+/// chips can coexist in the same cell without React-key collisions, even
+/// mid-edit when `(quality, fps)` values transiently overlap. Mirrors the
+/// TypeScript `ExportConfig` in `src/types.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportConfig {
+    pub id: String,
+    pub quality: OutputResolution,
+    /// 24 | 30 | 60 — narrower than the wire-level `RenderExportRequest.fps`
+    /// but stored as plain `u32` here for serde simplicity. The TS layer
+    /// constrains the literal at the type level.
+    pub fps: u32,
+}
+
+/// User's last-confirmed Export modal selection — the 3×3 cell grid plus
+/// the chosen output folder. Schema v6 replaced the prior flat
+/// `{ aspects, channels }` shape with this map; the v5→v6 migration drops
+/// any prior value rather than attempting a structural transform (the old
+/// shape conveys "all selected" intent that doesn't deterministically map
+/// to per-cell chip configs).
+///
+/// Cell keys are flat `"{aspect}-{channel}"` strings to round-trip cleanly
+/// as JSON object keys. The TS side stores them in
+/// `Partial<Record<CellKey, ExportConfig[]>>`; the on-wire shape is
+/// `HashMap<String, Vec<ExportConfig>>`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ExportGrid {
+    #[serde(default)]
+    pub cells: HashMap<String, Vec<ExportConfig>>,
+    pub output_dir: Option<PathBuf>,
+}
+
 /// Current persisted-project schema version. Bump when a field's *shape*
 /// changes (not just additive). v3 adds the compiled-timeline authored
 /// fields (`start_camera`, `default_entry_transition`, per-clip
 /// `entry_transition`) — all optional, so the v2→v3 migration is purely
-/// additive.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+/// additive. v4 drops the placeholder `exports` array (no UI ever wrote it)
+/// and adds the per-aspect `layouts` field per
+/// `docs/export/LAYOUT.md` and task 050. v5 added `last_export_selection`
+/// (per-project memory of the last successful Export modal selection) as
+/// the flat `{ aspects, channels, output_dir }` shape. v6 replaces that
+/// shape with the per-cell `ExportGrid` to support the configure-grid
+/// redesign — the migration drops the v5 value rather than transforming it
+/// (the flat shape's intent doesn't map cleanly to per-cell chip configs).
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -305,7 +339,22 @@ pub struct Project {
     /// distinguishes `null` from `undefined` at the call site.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<Route>,
-    pub exports: Vec<ExportConfig>,
+    /// Per-aspect layout configuration (v4+). Always populated post-100 —
+    /// fresh projects ship with all three aspects seeded; the load path
+    /// backfills pre-080 bundles where the field was absent or null. Each
+    /// aspect entry stays `Option` so a user can explicitly clear an aspect
+    /// via the configurator (110) — that null is preserved on subsequent
+    /// loads. See `docs/export/LAYOUT.md` §4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layouts: Option<ProjectLayouts>,
+    /// Aspect that the export pipeline targets (v4 + 100). Creative-content
+    /// state — travels with the project bundle so opening a `.trailcut`
+    /// preserves "this video is for Reels (9:16)" vs "for IG feed (4:5)". The
+    /// serde default handles pre-100 bundles (field absent → 9:16); a future
+    /// aspect-picker UI mutates this; the export handlers in `ProjectView`
+    /// read it.
+    #[serde(default = "default_selected_aspect")]
+    pub selected_export_aspect: AspectRatio,
     #[serde(default)]
     pub map_settings: Option<MapSettings>,
     /// `None` on disk for v1 projects pre-dating the camera migration. The
@@ -323,14 +372,12 @@ pub struct Project {
     /// clip's own `entry_transition` overrides individual fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_entry_transition: Option<ClipEntryTransition>,
-    /// Project-level default for the live preview camera's per-tick
-    /// easing duration (ms). Frontend's `MapView` ease loop reads this
-    /// to size both `easeTo`'s `duration` argument and its lookahead
-    /// (so the camera's arrival point lines up with the playhead at
-    /// easing completion). Absent on disk for projects pre-dating this
-    /// field; the frontend falls back to a 50 ms baseline.
+    /// Last user-confirmed Export modal selection (schema v6: the 3×3 cell
+    /// grid replaces the prior `{ aspects, channels }` shape). `None` until
+    /// the user completes their first export; the modal prefills from this
+    /// on subsequent opens. The v5→v6 migration drops any prior flat value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_ease_duration_ms: Option<u64>,
+    pub last_export_selection: Option<ExportGrid>,
 }
 
 impl Default for Project {
@@ -342,14 +389,38 @@ impl Default for Project {
             thumbnail: None,
             clips: Vec::new(),
             route: None,
-            exports: Vec::new(),
+            // Seed all three aspects (task 100). 080's "9:16 only on creation"
+            // rule retired now that the export matrix is paved end-to-end and
+            // the configurator (110) lets users mutate any aspect — the
+            // starter is no longer "aesthetic imposition" but "the value the
+            // configurator opens with."
+            layouts: Some(seeded_layouts()),
+            selected_export_aspect: default_selected_aspect(),
             map_settings: None,
             transition_feel: None,
             start_camera: None,
             default_entry_transition: None,
-            default_ease_duration_ms: None,
+            last_export_selection: None,
         }
     }
+}
+
+/// First-contact `ProjectLayouts` shape: all three aspects seeded with
+/// `default_split_layout`. Used by `Project::default` (new projects) and
+/// `load_project`'s backfill paths.
+pub fn seeded_layouts() -> ProjectLayouts {
+    ProjectLayouts {
+        aspect_9_16: Some(default_split_layout(AspectRatio::NineSixteen)),
+        aspect_4_5: Some(default_split_layout(AspectRatio::FourFive)),
+        aspect_16_9: Some(default_split_layout(AspectRatio::SixteenNine)),
+    }
+}
+
+/// Default for `selected_export_aspect` (task 100). Pre-100 projects lack
+/// the field; serde supplies this on deserialize. New projects also pick
+/// `9_16` via `Project::default`.
+pub fn default_selected_aspect() -> AspectRatio {
+    AspectRatio::NineSixteen
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -362,4 +433,130 @@ pub struct RecentProject {
     pub thumbnail: Option<String>,
     #[serde(default)]
     pub first_clip_date: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_channel_serializes_as_snake_case() {
+        // The TS `ExportChannel` union is `'composite' | 'map_only' |
+        // 'video_only'`. The Rust enum's snake_case rename must match so
+        // round-tripping `last_export_selection` between TS and Rust is
+        // wire-stable.
+        let composite = serde_json::to_string(&ExportChannel::Composite).unwrap();
+        let map_only = serde_json::to_string(&ExportChannel::MapOnly).unwrap();
+        let video_only = serde_json::to_string(&ExportChannel::VideoOnly).unwrap();
+        assert_eq!(composite, "\"composite\"");
+        assert_eq!(map_only, "\"map_only\"");
+        assert_eq!(video_only, "\"video_only\"");
+    }
+
+    #[test]
+    fn export_grid_round_trips_through_serde() {
+        let mut cells = HashMap::new();
+        cells.insert(
+            "9_16-composite".to_string(),
+            vec![
+                ExportConfig {
+                    id: "cfg-a".to_string(),
+                    quality: OutputResolution::P1080,
+                    fps: 30,
+                },
+                ExportConfig {
+                    id: "cfg-b".to_string(),
+                    quality: OutputResolution::P2160,
+                    fps: 60,
+                },
+            ],
+        );
+        cells.insert(
+            "4_5-map_only".to_string(),
+            vec![ExportConfig {
+                id: "cfg-c".to_string(),
+                quality: OutputResolution::P1080,
+                fps: 30,
+            }],
+        );
+        let grid = ExportGrid {
+            cells,
+            output_dir: Some(PathBuf::from("/Users/u/Movies/Hike2026")),
+        };
+        let json = serde_json::to_string(&grid).unwrap();
+        let parsed: ExportGrid = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.output_dir, grid.output_dir);
+        assert_eq!(parsed.cells.len(), 2);
+        assert_eq!(
+            parsed.cells.get("9_16-composite").map(|v| v.len()),
+            Some(2),
+        );
+        assert_eq!(
+            parsed.cells.get("4_5-map_only").map(|v| v.len()),
+            Some(1),
+        );
+    }
+
+    #[test]
+    fn export_grid_round_trips_with_null_output_dir() {
+        // The persistence layer treats `None` output_dir as legal even
+        // though the modal blocks Render until a folder is chosen.
+        let grid = ExportGrid {
+            cells: HashMap::new(),
+            output_dir: None,
+        };
+        let json = serde_json::to_string(&grid).unwrap();
+        let parsed: ExportGrid = serde_json::from_str(&json).unwrap();
+        assert!(parsed.output_dir.is_none());
+        assert!(parsed.cells.is_empty());
+    }
+
+    #[test]
+    fn project_loads_without_last_export_selection_field() {
+        // Backward-compat for v4 (and earlier-migrated) bundles: the field
+        // didn't exist before v5. `#[serde(default)]` must supply `None` on
+        // deserialize without erroring. The v5→v6 migration in
+        // `commands/project.rs` handles the case where a v5 file *does*
+        // carry an incompatible value.
+        let raw = r#"{
+            "schema_version": 4,
+            "version": 1,
+            "name": "Pre-grid Project",
+            "thumbnail": null,
+            "clips": [],
+            "map_settings": null
+        }"#;
+        let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
+        assert!(parsed.last_export_selection.is_none());
+    }
+
+    #[test]
+    fn project_round_trips_with_last_export_selection() {
+        // Full save/load round-trip: write a Project with a populated
+        // `last_export_selection` (grid shape), parse back, confirm every
+        // field survives. The modal relies on this on prefill.
+        let mut cells = HashMap::new();
+        cells.insert(
+            "9_16-composite".to_string(),
+            vec![ExportConfig {
+                id: "cfg-1".to_string(),
+                quality: OutputResolution::P1080,
+                fps: 30,
+            }],
+        );
+        let project = Project {
+            last_export_selection: Some(ExportGrid {
+                cells,
+                output_dir: Some(PathBuf::from("/tmp/exports")),
+            }),
+            ..Project::default()
+        };
+        let json = serde_json::to_string(&project).unwrap();
+        let parsed: Project = serde_json::from_str(&json).unwrap();
+        let sel = parsed
+            .last_export_selection
+            .expect("last_export_selection must round-trip");
+        assert_eq!(sel.output_dir, Some(PathBuf::from("/tmp/exports")));
+        assert_eq!(sel.cells.get("9_16-composite").map(|v| v.len()), Some(1));
+    }
 }

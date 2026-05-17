@@ -1,7 +1,7 @@
 import { ZoomIn, Gauge, Crop } from 'lucide-react';
 import type { Clip, FocalPoint, Effects } from '../../types';
 import NumberStepper from '../NumberStepper';
-import CollapsibleToolbar from '../CollapsibleToolbar';
+import Toolbar from '../Toolbar';
 import ModePicker from '../ModePicker';
 import { styles } from './styles';
 
@@ -33,18 +33,8 @@ export default function EditToolbar({
   const zoom = clip.focal_point.zoom;
   const speed = clip.effects.speed;
 
-  const collapsedContent = (
-    <div style={styles.chipRow}>
-      <span style={styles.chip}>{zoom.toFixed(1)}x zoom</span>
-      <span style={styles.divider} />
-      <span style={styles.chip}>{speed}x speed</span>
-      <span style={styles.divider} />
-      <span style={styles.chipAccent}>{previewAspect}</span>
-    </div>
-  );
-
   return (
-    <CollapsibleToolbar collapsedContent={collapsedContent}>
+    <Toolbar>
       {/* Zoom */}
       <div style={styles.group}>
         <span style={styles.groupLabel} title="Zoom">
@@ -104,6 +94,6 @@ export default function EditToolbar({
           minWidth={56}
         />
       </div>
-    </CollapsibleToolbar>
+    </Toolbar>
   );
 }

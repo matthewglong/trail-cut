@@ -86,7 +86,7 @@ export function useTrimDrag({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragging, duration, trimInSec, trimOutSec, clip?.trim, onUpdateTrim]);
+  }, [dragging, duration, trimInSec, trimOutSec, clip?.trim, onUpdateTrim, seekBarRef, setCurrentTime, setDragging, videoRef]);
 
   return {
     handleSeekBarMouseDown,

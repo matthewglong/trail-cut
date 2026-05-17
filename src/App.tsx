@@ -5,8 +5,22 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { Clip, Route, MapSettings, TransitionFeel } from './types';
+import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
+import { defaultSplitLayout } from './lib/layout';
+
+/** First-contact `ProjectLayouts` shape: all three aspects seeded with the
+ *  Split default. Used as the initial state and as the defensive fallback
+ *  for projects whose Rust backfill didn't populate the field (hand-edited
+ *  bundles, races). Mirrors the Rust `seeded_layouts()` in
+ *  `src-tauri/src/models.rs`. */
+function makeSeededLayouts(): ProjectLayouts {
+  return {
+    '9_16': defaultSplitLayout('9_16'),
+    '4_5': defaultSplitLayout('4_5'),
+    '16_9': defaultSplitLayout('16_9'),
+  };
+}
 
 export default function App() {
   // Shared state lifted here to break the circular dependency
@@ -17,7 +31,9 @@ export default function App() {
   const [route, setRoute] = useState<Route | null>(null);
   const [mapSettings, setMapSettings] = useState<MapSettings>(DEFAULT_MAP_SETTINGS);
   const [transitionFeel, setTransitionFeel] = useState<TransitionFeel | undefined>(undefined);
-  const [defaultEaseDurationMs, setDefaultEaseDurationMs] = useState<number | undefined>(undefined);
+  const [projectLayouts, setProjectLayouts] = useState<ProjectLayouts>(makeSeededLayouts);
+  const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
+  const [lastExportSelection, setLastExportSelection] = useState<ExportGrid | null>(null);
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
@@ -40,7 +56,9 @@ export default function App() {
     setRoute,
     setMapSettings,
     setTransitionFeel,
-    setDefaultEaseDurationMs,
+    setProjectLayouts,
+    setSelectedExportAspect,
+    setLastExportSelection,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -56,17 +74,21 @@ export default function App() {
     projectThumbnail: project.projectThumbnail,
     mapSettings,
     transitionFeel,
-    defaultEaseDurationMs,
+    projectLayouts,
+    selectedExportAspect,
+    lastExportSelection,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
+  const { projectThumbnail, setProjectThumbnail } = project;
+  const { thumbnails } = media;
   useEffect(() => {
-    if (project.projectThumbnail) return;
+    if (projectThumbnail) return;
     const firstClip = clips[0];
-    if (firstClip && media.thumbnails[firstClip.id]) {
-      project.setProjectThumbnail(media.thumbnails[firstClip.id]);
+    if (firstClip && thumbnails[firstClip.id]) {
+      setProjectThumbnail(thumbnails[firstClip.id]);
     }
-  }, [clips, media.thumbnails, project.projectThumbnail]);
+  }, [clips, thumbnails, projectThumbnail, setProjectThumbnail]);
 
   const selectedClip = clips.find((c) => c.id === selectedClipId) ?? null;
   const hasProject = projectDir !== null;
@@ -104,6 +126,7 @@ export default function App() {
 
   return (
     <ProjectView
+      projectDir={projectDir}
       projectName={project.projectName}
       setProjectName={project.setProjectName}
       editingName={project.editingName}
@@ -118,7 +141,10 @@ export default function App() {
       mapSettings={mapSettings}
       setMapSettings={setMapSettings}
       transitionFeel={transitionFeel}
-      defaultEaseDurationMs={defaultEaseDurationMs}
+      projectLayouts={projectLayouts}
+      setProjectLayouts={setProjectLayouts}
+      lastExportSelection={lastExportSelection}
+      setLastExportSelection={setLastExportSelection}
       playheadMs={playheadMs}
       setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}

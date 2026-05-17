@@ -15,6 +15,10 @@ dist-ssr
 # Rust / Tauri
 src-tauri/target
 src-tauri/gen
+# Chrome binaries are downloaded at build time by
+# src-tauri/sidecars/renderer/build.mjs (~170 MB per arch on macOS),
+# not committed.
+src-tauri/binaries/
 
 # Editor directories and files
 .vscode/*
@@ -26,3 +30,5 @@ src-tauri/gen
 *.njsproj
 *.sln
 *.sw?
+
+.playwright-mcp

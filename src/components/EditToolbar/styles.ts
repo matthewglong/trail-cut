@@ -1,29 +1,6 @@
 import { colors } from '../../theme/tokens';
 
 export const styles: Record<string, React.CSSProperties> = {
-  // Collapsed summary chips
-  chipRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-  },
-  chip: {
-    fontSize: '11px',
-    color: '#999',
-    fontVariantNumeric: 'tabular-nums',
-  },
-  divider: {
-    width: '1px',
-    height: '12px',
-    backgroundColor: '#333',
-  },
-  chipAccent: {
-    fontSize: '11px',
-    color: colors.accent,
-    fontVariantNumeric: 'tabular-nums',
-  },
-
-  // Expanded controls
   group: {
     display: 'flex',
     alignItems: 'center',

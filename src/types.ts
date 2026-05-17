@@ -114,25 +114,64 @@ export function resolveMapSettings(defaults: MapSettings, overrides: MapOverride
   return { ...defaults, ...overrides };
 }
 
-export interface ExportLayout {
-  video_pct: number;
-  map_position: string;
-  map_visible: string;
-}
+/** Re-exported from `lib/layout.ts` so `types.ts` stays the single import
+ *  surface for project-shape types. The `Project.layouts` field below stores
+ *  one optional layout per output aspect (task 050). */
+export type {
+  AspectRatio,
+  LayoutConfig,
+  PipLayout,
+  SplitLayout,
+  ProjectLayouts,
+  SlotResolution,
+  PixelRect,
+  OutputDimensions,
+  LayoutDescriptor,
+  NormalizedRect,
+  OutputResolution,
+} from './lib/layout';
 
-export interface ExportResolution {
-  width: number;
-  height: number;
-}
+import type { AspectRatio, ProjectLayouts, OutputResolution } from './lib/layout';
 
+/** Channel selector for the export pipeline. Mirrors the Rust enum-by-string
+ *  in `RenderExportRequest.channel` and the union already exported from
+ *  `lib/exportRequest.ts`; redeclared here so the export-modal UI can depend
+ *  on `types.ts` without pulling in the request builder. */
+export type ExportChannel = 'composite' | 'map_only' | 'video_only';
+
+/** Frame rates surfaced by the Export modal's secondary "configure export"
+ *  panel. The wire-level `RenderExportRequest.fps` is a `number`; this
+ *  narrower union is the set the UI exposes. */
+export type ExportFps = 24 | 30 | 60;
+
+/** A single configured export within a grid cell. The user can add multiple
+ *  of these to one cell to render the same (aspect × channel) at several
+ *  quality/fps combinations in one queue. `id` is a UUID minted at chip
+ *  creation time so React keys, edit-target lookup, and queue-job ids stay
+ *  collision-free even when two configs share `(quality, fps)` mid-edit. */
 export interface ExportConfig {
-  name: string;
-  aspect_ratio: string;
-  resolution: ExportResolution;
-  layout: ExportLayout;
-  codec: string;
-  quality: string;
+  id: string;
+  quality: OutputResolution;
+  fps: ExportFps;
 }
+
+/** Grid cell key: `"{aspect}-{channel}"`. The flat-string form serializes
+ *  cleanly through Rust serde as a HashMap key, works as a React key without
+ *  joining at the call site, and avoids the nested-record gymnastics that a
+ *  `Record<AspectRatio, Record<ExportChannel, ...>>` would force. */
+export type CellKey = `${AspectRatio}-${ExportChannel}`;
+
+/** User's pending (or last-confirmed) Export modal selection. The 3×3 grid
+ *  (aspect × channel) is stored as a sparse map: only occupied cells appear
+ *  in `cells`; each entry holds the chips the user has added. `output_dir`
+ *  is snake_case to match the Rust serde wire format. Persisted per project
+ *  as `Project.last_export_selection` (schema v6) so reopening the modal
+ *  prefills the prior choice. */
+export interface ExportGrid {
+  cells: Partial<Record<CellKey, ExportConfig[]>>;
+  output_dir: string | null;
+}
+
 
 /** Project-level "transition feel" knob. Drives the duration multiplier for
  *  cross-anchor Van Wijk arcs. Mirrors the union in cameraIntent.ts;
@@ -183,7 +222,18 @@ export interface Project {
   thumbnail: string | null;
   clips: Clip[];
   route: Route | null;
-  exports: ExportConfig[];
+  /** Per-aspect layout configuration (v4+). Always populated post-100:
+   *  fresh projects ship with all three aspects seeded by
+   *  `defaultPipLayout(aspect)`. Each entry stays nullable so the
+   *  configurator (110) can express "the user has explicitly cleared this
+   *  aspect" — the Rust `load_project` backfill respects post-100 nulls but
+   *  re-seeds them for pre-100 bundles. */
+  layouts: ProjectLayouts;
+  /** Aspect that the export pipeline targets (task 100). Creative-content
+   *  state — travels with the project bundle. The Rust side guarantees this
+   *  field is populated on every load (serde default for pre-100 bundles
+   *  fills `'9_16'`); the TS type is non-optional. */
+  selected_export_aspect: AspectRatio;
   map_settings?: MapSettings;
   /** Optional: defaults to 'natural' at the consumer. Pre-task-350 projects
    *  on disk lack this field; Rust serde fills in `None` and the frontend
@@ -196,17 +246,13 @@ export interface Project {
   /** Project-level defaults for every clip's entry transition. Each clip's
    *  own `entry_transition` overrides individual fields. */
   default_entry_transition?: ClipEntryTransition;
-  /** Project-level default for the live preview camera's per-tick easing
-   *  duration (ms). Sized in the same regime as the ease loop's tick
-   *  cadence — a larger value smooths the camera (each tick interrupts a
-   *  longer in-flight easeTo with a fresh target), a smaller value snaps
-   *  it. Lookahead in the ease loop tracks this value so the camera's
-   *  arrival point coincides with the playhead at easing completion.
-   *  When absent, the consumer falls back to a 50ms baseline. Reserved
-   *  for future distance-driven dynamics — `pickEaseDurationMs` may
-   *  later compute a per-tick duration from this baseline plus the
-   *  inter-tick camera distance. */
-  default_ease_duration_ms?: number;
+  /** Last user-confirmed Export modal selection. `null` until the user
+   *  completes their first successful export; set on `queueState === 'done'`
+   *  with at least one done job. The Export modal prefills the grid + output
+   *  folder from this on subsequent opens. Schema v6 replaced the flat
+   *  `{aspects, channels}` shape with the 3×3 cell map; the v5→v6 migration
+   *  drops any prior value rather than attempting a structural transform. */
+  last_export_selection: ExportGrid | null;
 }
 
 export interface RecentProject {

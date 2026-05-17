@@ -1,0 +1,6 @@
+- generic [ref=e4]:
+  - heading "TrailCut" [level=1] [ref=e5]
+  - paragraph [ref=e6]: Turn hiking videos into map-integrated stories
+  - generic [ref=e7]:
+    - button "New Project" [ref=e8] [cursor=pointer]
+    - button "Open Project" [ref=e9] [cursor=pointer]

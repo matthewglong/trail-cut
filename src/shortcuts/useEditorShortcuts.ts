@@ -94,8 +94,11 @@ export function useEditorShortcuts(params: UseEditorShortcutsParams) {
   });
 
   // Latest props mirror — lets the (single, attach-once) effect read fresh
-  // values without having to re-run on every prop change.
+  // values without having to re-run on every prop change. Assigning to a ref
+  // during render is the documented "latest ref" pattern; the lint rule
+  // can't tell it's idempotent.
   const latestRef = useRef(params);
+  // eslint-disable-next-line react-hooks/refs
   latestRef.current = params;
 
   // Game loop: drives focal point while T + arrows are held
@@ -321,6 +324,5 @@ export function useEditorShortcuts(params: UseEditorShortcutsParams) {
       window.removeEventListener('blur', onBlur);
     };
     // Empty deps: the effect attaches once. Fresh values come from latestRef.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

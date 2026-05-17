@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { Clip, Project, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
+import { defaultPipLayout } from '../lib/layout';
 
 /** Minimum gap (ms) required between the playhead and either trim edge for a
  *  split to be accepted. Below this the split is a no-op, so we never create
@@ -20,12 +21,28 @@ interface UseProjectParams {
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   setTransitionFeel: React.Dispatch<React.SetStateAction<TransitionFeel | undefined>>;
-  setDefaultEaseDurationMs: React.Dispatch<React.SetStateAction<number | undefined>>;
+  setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
+  setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
+  setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setImportError: (err: string | null) => void;
   loadRecentProjects: () => Promise<void>;
+}
+
+/** Defensive backfill mirroring the Rust `seeded_layouts()` (task 080 / 100).
+ *  The Rust load path already populates `layouts` for every project; this
+ *  TS-side guard handles the (theoretical) case where Rust hands us a missing
+ *  field — hand-edited bundles, IPC bugs, future Rust regressions — so the
+ *  editor always has a real value to render and persist. 100 expanded the
+ *  seeded shape to all three aspects. */
+function seededLayouts(): ProjectLayouts {
+  return {
+    '9_16': defaultPipLayout('9_16'),
+    '4_5': defaultPipLayout('4_5'),
+    '16_9': defaultPipLayout('16_9'),
+  };
 }
 
 export function useProject({
@@ -39,7 +56,9 @@ export function useProject({
   setRoute,
   setMapSettings,
   setTransitionFeel,
-  setDefaultEaseDurationMs,
+  setProjectLayouts,
+  setSelectedExportAspect,
+  setLastExportSelection,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -66,7 +85,18 @@ export function useProject({
       setRoute(project.route);
       setMapSettings({ ...DEFAULT_MAP_SETTINGS, ...project.map_settings });
       setTransitionFeel(project.transition_feel);
-      setDefaultEaseDurationMs(project.default_ease_duration_ms);
+      // Rust's load_project backfills `layouts` when the bundle has it
+      // unset; this guard covers the edge case where the IPC payload still
+      // arrives without it (older Rust binaries, hand-edited bundles).
+      setProjectLayouts(project.layouts ?? seededLayouts());
+      // selected_export_aspect is supplied by serde's default annotation on
+      // pre-100 bundles; the `?? '9_16'` covers the same edge cases as the
+      // layouts fallback above.
+      setSelectedExportAspect(project.selected_export_aspect ?? '9_16');
+      // Pre-280 bundles lack `last_export_selection`; the Rust serde default
+      // surfaces `null`. Either way, hydrating App-level state here is the
+      // sole load-time entry point — the modal reads from this on open.
+      setLastExportSelection(project.last_export_selection ?? null);
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -98,7 +128,10 @@ export function useProject({
       setRoute(null);
       setMapSettings(DEFAULT_MAP_SETTINGS);
       setTransitionFeel(undefined);
-      setDefaultEaseDurationMs(undefined);
+      // Mirror the Rust-side `Project::default()` seed — task 080 / 100.
+      setProjectLayouts(seededLayouts());
+      setSelectedExportAspect('9_16');
+      setLastExportSelection(null);
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -133,7 +166,9 @@ export function useProject({
     setRoute(null);
     setMapSettings(DEFAULT_MAP_SETTINGS);
     setTransitionFeel(undefined);
-    setDefaultEaseDurationMs(undefined);
+    setProjectLayouts(seededLayouts());
+    setSelectedExportAspect('9_16');
+    setLastExportSelection(null);
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);
