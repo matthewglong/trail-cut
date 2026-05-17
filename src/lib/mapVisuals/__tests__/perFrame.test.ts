@@ -7,16 +7,12 @@
 // is purity / shape / null-safety.
 
 import { describe, it, expect } from 'vitest';
-import {
-  buildPerFrameState,
-  buildPerFrameStateForPreview,
-} from '../perFrame';
+import { buildPerFrameState } from '../perFrame';
 import {
   PAINT_REFERENCE_WIDTH,
   PAINT_SIZE_FRACTIONS,
 } from '../styleSpec';
 import { compileTimeline, type Viewport } from '../../cameraIntent';
-import { canonicalMapCssWidth, type AspectRatio } from '../../layout';
 import {
   DEFAULT_MAP_SETTINGS,
   type Clip,
@@ -300,112 +296,6 @@ describe('buildPerFrameState paints', () => {
       PAINT_SIZE_FRACTIONS.waypointsCircleRadius * PAINT_REFERENCE_WIDTH,
       9,
     );
-  });
-});
-
-describe('buildPerFrameStateForPreview paints', () => {
-  // Preview variant scales paints by `paneCssWidth / canonicalMapCssWidth(aspect)`
-  // so the per-frame paints compose with the pane reshape factor.
-  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
-
-  for (const aspect of aspects) {
-    it(`${aspect}: at pane=canonicalMapCssWidth(aspect) paints match buildPerFrameState`, () => {
-      const { clips, timeline } = twoClipFixture();
-      const canonical = buildPerFrameState(
-        timeline,
-        0,
-        null,
-        null,
-        clips,
-        POINT_SETTINGS,
-        VIEWPORT,
-      );
-      const preview = buildPerFrameStateForPreview(
-        timeline,
-        0,
-        null,
-        null,
-        clips,
-        POINT_SETTINGS,
-        VIEWPORT,
-        canonicalMapCssWidth(aspect),
-        aspect,
-      );
-      expect(preview.paints.waypointCircleRadius).toEqual(
-        canonical.paints.waypointCircleRadius,
-      );
-      expect(preview.paints.pulseRadius).toBeCloseTo(
-        canonical.paints.pulseRadius,
-        9,
-      );
-    });
-  }
-
-  for (const aspect of aspects) {
-    it(`${aspect}: halving the pane halves both the default waypoint radius and the pulse radius`, () => {
-      const { clips, timeline } = twoClipFixture();
-      const w = canonicalMapCssWidth(aspect);
-      const full = buildPerFrameStateForPreview(
-        timeline,
-        0,
-        null,
-        null,
-        clips,
-        POINT_SETTINGS,
-        VIEWPORT,
-        w,
-        aspect,
-      );
-      const half = buildPerFrameStateForPreview(
-        timeline,
-        0,
-        null,
-        null,
-        clips,
-        POINT_SETTINGS,
-        VIEWPORT,
-        w / 2,
-        aspect,
-      );
-      expect(half.paints.waypointCircleRadius).toBeCloseTo(
-        (full.paints.waypointCircleRadius as number) * 0.5,
-        9,
-      );
-      expect(half.paints.pulseRadius).toBeCloseTo(
-        full.paints.pulseRadius * 0.5,
-        9,
-      );
-    });
-  }
-
-  it('aspect switch at canonical pane width produces identical paints — no aspect-driven doubling', () => {
-    const { clips, timeline } = twoClipFixture();
-    const at916 = buildPerFrameStateForPreview(
-      timeline,
-      0,
-      null,
-      null,
-      clips,
-      POINT_SETTINGS,
-      VIEWPORT,
-      canonicalMapCssWidth('9_16'),
-      '9_16',
-    );
-    const at169 = buildPerFrameStateForPreview(
-      timeline,
-      0,
-      null,
-      null,
-      clips,
-      POINT_SETTINGS,
-      VIEWPORT,
-      canonicalMapCssWidth('16_9'),
-      '16_9',
-    );
-    expect(at916.paints.waypointCircleRadius).toEqual(
-      at169.paints.waypointCircleRadius,
-    );
-    expect(at916.paints.pulseRadius).toBeCloseTo(at169.paints.pulseRadius, 9);
   });
 });
 

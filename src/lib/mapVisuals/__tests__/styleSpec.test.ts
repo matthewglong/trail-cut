@@ -9,14 +9,12 @@ import { describe, it, expect } from 'vitest';
 import {
   buildStyleSpec,
   resolveStaticPaints,
-  resolveStaticPaintsForPreview,
   PAINT_REFERENCE_WIDTH,
   PAINT_SIZE_FRACTIONS,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_DOT_LAYER,
 } from '../styleSpec';
-import { canonicalMapCssWidth, type AspectRatio } from '../../layout';
 import { DEFAULT_MAP_SETTINGS, type MapSettings } from '../../../types';
 
 const minimal: MapSettings = DEFAULT_MAP_SETTINGS;
@@ -164,83 +162,6 @@ describe('resolveStaticPaints', () => {
       expect(p).not.toMatch(/color/);
       expect(p).not.toMatch(/opacity/);
     }
-  });
-});
-
-describe('resolveStaticPaintsForPreview', () => {
-  function buildMap(
-    resolved: ReturnType<typeof resolveStaticPaintsForPreview>,
-  ): { paintBy: Map<string, number>; layoutBy: Map<string, number> } {
-    const paintBy = new Map<string, number>();
-    for (const [layerId, prop, value] of resolved.paints) {
-      paintBy.set(`${layerId}/${prop}`, value);
-    }
-    const layoutBy = new Map<string, number>();
-    for (const [layerId, prop, value] of resolved.layouts) {
-      layoutBy.set(`${layerId}/${prop}`, value);
-    }
-    return { paintBy, layoutBy };
-  }
-
-  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
-
-  for (const aspect of aspects) {
-    it(`${aspect}: at pane=canonicalMapCssWidth(aspect) values equal resolveStaticPaints()`, () => {
-      const canonical = resolveStaticPaints();
-      const preview = resolveStaticPaintsForPreview(
-        canonicalMapCssWidth(aspect),
-        aspect,
-      );
-      const canonicalMap = buildMap(canonical);
-      const previewMap = buildMap(preview);
-      for (const [k, v] of canonicalMap.paintBy) {
-        expect(previewMap.paintBy.get(k)).toBeCloseTo(v, 9);
-      }
-      for (const [k, v] of canonicalMap.layoutBy) {
-        expect(previewMap.layoutBy.get(k)).toBeCloseTo(v, 9);
-      }
-    });
-  }
-
-  for (const aspect of aspects) {
-    it(`${aspect}: halving the pane halves the values`, () => {
-      const w = canonicalMapCssWidth(aspect);
-      const full = resolveStaticPaintsForPreview(w, aspect);
-      const half = resolveStaticPaintsForPreview(w / 2, aspect);
-      const fullMap = buildMap(full);
-      const halfMap = buildMap(half);
-      for (const [k, v] of fullMap.paintBy) {
-        expect(halfMap.paintBy.get(k)).toBeCloseTo(v * 0.5, 9);
-      }
-      for (const [k, v] of fullMap.layoutBy) {
-        expect(halfMap.layoutBy.get(k)).toBeCloseTo(v * 0.5, 9);
-      }
-    });
-  }
-
-  it('aspect switch at canonical pane width produces identical trail width — no 10.8 → 19.2 doubling', () => {
-    // The product-owner spec invariant: switching from 9:16 to 16:9 at the
-    // pane's canonical width must NOT change overlay thickness. Pre-refactor
-    // this doubled the trail width (10.8 → 19.2 CSS px) because paints
-    // tracked the per-aspect canonical CSS width.
-    const at916 = resolveStaticPaintsForPreview(
-      canonicalMapCssWidth('9_16'),
-      '9_16',
-    );
-    const at169 = resolveStaticPaintsForPreview(
-      canonicalMapCssWidth('16_9'),
-      '16_9',
-    );
-    const m916 = buildMap(at916);
-    const m169 = buildMap(at169);
-    expect(m916.paintBy.get('route-trail-line/line-width')).toBeCloseTo(
-      m169.paintBy.get('route-trail-line/line-width') as number,
-      9,
-    );
-    expect(m916.paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
-      m169.paintBy.get('waypoints-circle/circle-radius') as number,
-      9,
-    );
   });
 });
 

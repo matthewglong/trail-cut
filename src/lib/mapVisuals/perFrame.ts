@@ -18,13 +18,9 @@ import {
   type CompiledTimeline,
   type Viewport,
 } from '../cameraIntent';
-import type { AspectRatio } from '../layout';
 import type { IndexedRoute } from '../routeLocation';
 import { buildPerFrameSourceData, type WallClockTrace } from './sources';
-import {
-  buildPerFramePaints,
-  buildPerFramePaintsForPreview,
-} from './paints';
+import { buildPerFramePaints } from './paints';
 import type { PerFrameState } from './types';
 
 /** Project-time → wall-clock translation for the live marker and slime
@@ -94,9 +90,9 @@ function wallClockTrace(
   return null;
 }
 
-/** Compose a single per-frame snapshot. The export worker calls this
- *  per-frame; the preview's render loop calls `buildPerFrameStateForPreview`
- *  so the paints compose with the pane reshape factor.
+/** Compose a single per-frame snapshot. Both renderer and preview call
+ *  this — the preview consumes the result directly since paints are
+ *  pane-invariant.
  *
  *  Camera: `cameraAt(timeline, projectTimeMs)` → `resolveIntent(intent,
  *  viewport)`.
@@ -106,10 +102,9 @@ function wallClockTrace(
  *  visibility predicate.
  *
  *  Paints: data-driven highlight on `waypoints-circle` keyed off
- *  `activeClipId` plus pulse values for `live-marker-pulse`. Under the lever
- *  model the renderer-side paints anchor to `PAINT_REFERENCE_WIDTH` (1080
- *  CSS px) — no width input is required here. See `buildPerFramePaints` for
- *  details. */
+ *  `activeClipId` plus pulse values for `live-marker-pulse`. Paints anchor
+ *  to `PAINT_REFERENCE_WIDTH` (1080 CSS px) — no width input required. See
+ *  `buildPerFramePaints` for details. */
 export function buildPerFrameState(
   timeline: CompiledTimeline,
   projectTimeMs: number,
@@ -128,40 +123,6 @@ export function buildPerFrameState(
     viewport,
   );
   const paints = buildPerFramePaints(activeClipId, projectTimeMs);
-  return { camera, sources, paints };
-}
-
-/** Preview variant of `buildPerFrameState`. Same camera + sources as the
- *  renderer-side call; paints scale with `paneCssWidth /
- *  canonicalMapCssWidth(aspect)` via `buildPerFramePaintsForPreview` so the
- *  per-frame paints compose with the pane reshape factor exactly like the
- *  static paints from `resolveStaticPaintsForPreview`. See
- *  `MAP_RENDERING_PLAN.md` §"Preview behavior". */
-export function buildPerFrameStateForPreview(
-  timeline: CompiledTimeline,
-  projectTimeMs: number,
-  activeClipId: string | null,
-  indexedRoute: IndexedRoute | null,
-  clips: Clip[],
-  mapSettings: MapSettings,
-  viewport: Viewport,
-  paneCssWidth: number,
-  aspect: AspectRatio,
-): PerFrameState {
-  const { camera, sources } = composeCameraAndSources(
-    timeline,
-    projectTimeMs,
-    indexedRoute,
-    clips,
-    mapSettings,
-    viewport,
-  );
-  const paints = buildPerFramePaintsForPreview(
-    activeClipId,
-    projectTimeMs,
-    paneCssWidth,
-    aspect,
-  );
   return { camera, sources, paints };
 }
 

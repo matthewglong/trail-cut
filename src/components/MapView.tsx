@@ -8,7 +8,6 @@ import {
   type Viewport,
 } from '../lib/cameraIntent';
 import {
-  canonicalMapCssWidth,
   outputDims,
   type AspectRatio,
 } from '../lib/layout';
@@ -17,8 +16,8 @@ import { livePlayheadMs } from '../lib/livePlayhead';
 import {
   buildStyleSpec,
   buildStaticSourceData,
-  resolveStaticPaintsForPreview,
-  buildPerFrameStateForPreview,
+  resolveStaticPaints,
+  buildPerFrameState,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_DOT_LAYER,
@@ -58,10 +57,12 @@ interface MapViewProps {
    *  spans but not embedded GPS, so we still need the clip list here. */
   clips: Clip[];
   /** Selected export aspect — drives the *canonical* CSS viewport that
-   *  `mapSettings.zoom` is interpreted against. The preview pane's actual
-   *  CSS width differs from canonical, so the final write to MapLibre below
-   *  compensates with `+ log2(paneCssWidth / canonicalMapCssWidth(aspect))`
-   *  to keep the geographic framing identical regardless of pane size. */
+   *  `mapSettings.zoom` is interpreted against. The preview applies that
+   *  zoom directly (no pane-reshape compensation); making the pane wider or
+   *  narrower reveals more / crops geography rather than scaling it, so
+   *  overlay sizes and meters-per-CSS-pixel stay invariant. The preview is
+   *  pixel-identical to the 1080p export only when the pane equals the
+   *  aspect's canonical width. */
   aspect: AspectRatio;
   onSelectClip?: (clipId: string) => void;
 }
@@ -85,16 +86,6 @@ export default function MapView({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
   const [styleVersion, setStyleVersion] = useState(0);
-  // Live CSS-pixel width of the preview's map container. Multiplied against
-  // the dimensionless fractions in `PAINT_SIZE_FRACTIONS` to produce paint
-  // values for the size-based overlays (line widths, circle radii, text
-  // size). Same multiplication the renderer does against `cssViewport.w`,
-  // so preview and export render at the same proportional size. Updated by
-  // the ResizeObserver installed in the init effect. Starts at the canonical
-  // width so the first render before observe() fires produces sane sizes.
-  const [paneCssWidth, setPaneCssWidth] = useState<number>(() =>
-    canonicalMapCssWidth(aspect),
-  );
   const mapStyleId = mapSettings.map_style;
 
   // Tracks the last route reference we framed via the region-intent jumpTo
@@ -110,7 +101,6 @@ export default function MapView({
   const routeRef = useRef(route);
   const activeClipIdRef = useRef(activeClipId);
   const aspectRef = useRef(aspect);
-  const paneCssWidthRef = useRef(0);
   const currentProjectMsRef = useRef<number | null>(null);
   useEffect(() => {
     mapSettingsRef.current = mapSettings;
@@ -181,30 +171,15 @@ export default function MapView({
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
 
+    // Notify MapLibre when the container's CSS box changes so its internal
+    // transform width/height stay in sync. Paint sizes and camera zoom are
+    // both pane-invariant under the current model (anchored at the
+    // canonical 1080), so this observer no longer needs to publish width
+    // anywhere — it's purely a MapLibre housekeeping signal.
     const resizeObserver = new ResizeObserver(() => {
       map.resize();
-      // Pane size drives paint sizing — re-publish whenever the container's
-      // CSS width changes. The state write below triggers the static-paint
-      // re-apply effect (line/circle sizes via setPaintProperty); the ref
-      // write feeds the per-frame loop so it can scale per-frame paints
-      // (waypoint radii, pulse radius) without re-subscribing on every
-      // resize.
-      const w = containerRef.current?.clientWidth ?? 0;
-      if (w > 0) {
-        paneCssWidthRef.current = w;
-        setPaneCssWidth(w);
-      }
     });
     resizeObserver.observe(containerRef.current);
-    // Seed once for the initial mount — clientWidth is non-zero by the time
-    // the container has been laid out, but ResizeObserver only fires on
-    // change. Without this, the first read would be the canonical default
-    // until the user resizes anything.
-    const initialWidth = containerRef.current.clientWidth;
-    if (initialWidth > 0) {
-      paneCssWidthRef.current = initialWidth;
-      setPaneCssWidth(initialWidth);
-    }
     mapRef.current = map;
 
     const emptyLine: GeoJSON.Feature<GeoJSON.LineString> = {
@@ -349,22 +324,16 @@ export default function MapView({
         // — `cameraForBounds` would return -Infinity zoom on a zero span.
         if (Number.isFinite(minLng) && maxLng > minLng && maxLat > minLat) {
           // Resolve the region intent against the *canonical* CSS viewport
-          // for the selected export aspect, NOT the preview pane. This
-          // decouples `mapSettings.zoom` (and the region-fit zoom) from the
-          // pane's actual pixel size: zooms always mean "MapLibre zoom at
-          // 1080p canonical width."
+          // for the selected export aspect — same viewport the renderer
+          // uses. `mapSettings.zoom` (and the region-fit zoom) mean
+          // "MapLibre zoom at the 1080p canonical width," applied verbatim
+          // without pane-reshape compensation.
           const canonical1080 = outputDims(aspect, '1080p');
           const canonicalCssViewport: Viewport = {
-            width: canonical1080.w, // === canonicalMapCssWidth(aspect)
+            width: canonical1080.w,
             height: canonical1080.h,
             dpr: 1,
           };
-          // CSS width of the rendered map region. Preview is always
-          // full-frame today, so this is the preview pane's clientWidth.
-          // For a future inset preview, this would be the inset element's
-          // measured width.
-          const container = map.getContainer();
-          const mapSubregionCssWidth = container.clientWidth;
           const target = resolveIntent(
             {
               kind: 'region',
@@ -378,14 +347,9 @@ export default function MapView({
             },
             canonicalCssViewport,
           );
-          // Compensate the canonical zoom for the pane's actual CSS width
-          // so the geographic framing matches what 1080p export will see.
-          const displayZoom =
-            target.zoom +
-            Math.log2(mapSubregionCssWidth / canonicalMapCssWidth(aspect));
           map.jumpTo({
             center: [target.center.lng, target.center.lat],
-            zoom: displayZoom,
+            zoom: target.zoom,
             bearing: target.bearing,
             pitch: target.pitch,
           });
@@ -396,24 +360,18 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [route, clips, mapSettings, styleVersion, aspect]);
 
-  // ---- Apply static layer paints sized to the pane's CSS width ----
+  // ---- Apply static layer paints at the canonical 1080 anchor ----
   // Layer specs ship `circle-radius` / `line-width` / `text-size` as
   // placeholder `1`s — the real values are
-  // `PAINT_SIZE_FRACTIONS.<name> × paneCssWidth`. This effect runs after
-  // style.load and on every pane resize, pushing the resolved paints via
-  // setPaintProperty / setLayoutProperty. Same operation the renderer
-  // worker performs (with `cssViewport.w` instead of `paneCssWidth`), so
-  // preview and export render at the same proportional size.
+  // `PAINT_SIZE_FRACTIONS.<name> × PAINT_REFERENCE_WIDTH`. Same call the
+  // renderer worker makes after style.load; the preview pane's size has no
+  // bearing on the values, so this effect only re-runs when a style swap
+  // drops and recreates the layers (`styleVersion`).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
-      // Preview variant: scales by `paneCssWidth / canonicalMapCssWidth(aspect)`
-      // so paints at the canonical pane width equal the 1080p export's
-      // paints (WYSIWYG). Aspect-switching at the canonical pane width gives
-      // the same numeric value on both sides — no aspect-driven doubling of
-      // overlay thickness. See `MAP_RENDERING_PLAN.md` §"Preview behavior".
-      const resolved = resolveStaticPaintsForPreview(paneCssWidth, aspect);
+      const resolved = resolveStaticPaints();
       for (const [layerId, prop, value] of resolved.paints) {
         if (!map.getLayer(layerId)) continue;
         map.setPaintProperty(layerId, prop, value);
@@ -424,7 +382,7 @@ export default function MapView({
       }
     };
     if (styleReadyRef.current) apply();
-  }, [paneCssWidth, aspect, styleVersion]);
+  }, [styleVersion]);
 
   // ---- Update route-line visibility based on route_mode ----
   useEffect(() => {
@@ -500,23 +458,19 @@ export default function MapView({
       const projectTimeMs =
         livePlayheadMs.current ?? currentProjectMsRef.current ?? 0;
       // Resolve intents against the *canonical* CSS viewport for the
-      // selected export aspect, NOT the pane. `mapSettings.zoom` means
-      // "MapLibre zoom at the 1080p canonical CSS width for this aspect."
+      // selected export aspect — same viewport the renderer uses.
+      // `mapSettings.zoom` means "MapLibre zoom at the 1080p canonical CSS
+      // width for this aspect," applied verbatim to the preview. Pane
+      // reshape reveals/crops geography rather than scaling it, so
+      // meters-per-CSS-pixel stays constant.
       const currentAspect = aspectRef.current;
       const canonical1080 = outputDims(currentAspect, '1080p');
       const canonicalCssViewport: Viewport = {
-        width: canonical1080.w, // === canonicalMapCssWidth(currentAspect)
+        width: canonical1080.w,
         height: canonical1080.h,
         dpr: 1,
       };
-      // CSS width of the rendered map region. Preview is always full-frame
-      // today, so this is the preview pane's clientWidth. For a future inset
-      // preview, this would be the inset element's measured width. The ref
-      // is written from the ResizeObserver in the init effect; falling back
-      // to clientWidth covers the first tick before observe() has fired.
-      const container = map.getContainer();
-      const mapSubregionCssWidth = container.clientWidth;
-      const state = buildPerFrameStateForPreview(
+      const state = buildPerFrameState(
         timeline,
         projectTimeMs,
         activeClipIdRef.current,
@@ -524,20 +478,11 @@ export default function MapView({
         clipsRef.current,
         mapSettingsRef.current,
         canonicalCssViewport,
-        mapSubregionCssWidth,
-        currentAspect,
       );
-
-      // Compensate the canonical zoom for the pane's actual CSS width so
-      // the geographic framing matches the 1080p export's framing
-      // regardless of how big/small the preview pane currently is.
-      const displayZoom =
-        state.camera.zoom +
-        Math.log2(mapSubregionCssWidth / canonicalMapCssWidth(currentAspect));
 
       map.jumpTo({
         center: [state.camera.center.lng, state.camera.center.lat],
-        zoom: displayZoom,
+        zoom: state.camera.zoom,
         bearing: state.camera.bearing,
         pitch: state.camera.pitch,
       });

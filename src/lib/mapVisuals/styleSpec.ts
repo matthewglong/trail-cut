@@ -13,17 +13,16 @@
 // shape gets the same CSS-px size. Aspect / resolution / slot shape are
 // absorbed by the renderer's lever model: cssViewport matches the slot
 // shape and `pixelRatio` carries the output-resolution delta. The preview
-// uses `resolveStaticPaintsForPreview` to compose this with the pane
-// reshape factor so the preview at canonical pane width matches the 1080p
-// export of that aspect exactly. See `MAP_RENDERING_PLAN.md` for the
-// derivation.
+// uses the same `resolveStaticPaints()` call: paint sizes are pane-
+// invariant, and the preview is pixel-identical to the 1080p export only
+// when the pane equals the aspect's canonical width. See
+// `MAP_RENDERING_PLAN.md` for the derivation.
 
 import type {
   StyleSpecification,
   LayerSpecification,
 } from 'maplibre-gl';
 import type { MapSettings } from '../../types';
-import { canonicalMapCssWidth, type AspectRatio } from '../layout';
 import { colors } from '../../theme/tokens';
 import type { StyleSpecResult } from './types';
 
@@ -31,9 +30,9 @@ const TRAIL_COLOR = colors.accent;
 const FULL_ROUTE_COLOR = colors.accent;
 
 /** Paint size fractions — unitless ratios of `PAINT_REFERENCE_WIDTH` (1080
- *  CSS px). The renderer multiplies each fraction by the constant; the
- *  preview multiplies by `PAINT_REFERENCE_WIDTH × paneCssWidth /
- *  canonicalMapCssWidth(aspect)` to compose with the pane reshape factor.
+ *  CSS px). Both renderer and preview multiply each fraction by the
+ *  constant — paint sizes do not track pane width, slot shape, or output
+ *  resolution.
  *
  *  Reference @ PAINT_REFERENCE_WIDTH = 1080 CSS px:
  *    0.0075 → 8.1 px line
@@ -58,15 +57,10 @@ export const PAINT_SIZE_FRACTIONS = {
   pulseEndRadius: 0.055,
 } as const;
 
-/** Anchor for export-path paint sizing. Trail @ fraction 0.01 → 10.8 CSS px
- *  everywhere — every aspect, every resolution, every slot shape. Replaces
- *  the old per-call `mapRegionCssWidth` argument: paints no longer track the
- *  cssViewport width. The preview's `resolveStaticPaintsForPreview` /
- *  `buildPerFramePaintsForPreview` separately scale this constant by
- *  `paneCssWidth / canonicalMapCssWidth(aspect)` to compose with the pane-
- *  reshape factor, so the preview at the canonical pane width matches the
- *  1080p export of that aspect exactly (WYSIWYG). See
- *  `MAP_RENDERING_PLAN.md` §"Paint sizes as fixed CSS-px constants". */
+/** Anchor for paint sizing. Trail @ fraction 0.01 → 10.8 CSS px everywhere
+ *  — every aspect, every resolution, every slot shape, every preview pane
+ *  width. Both renderer and preview pass this through `resolveStaticPaints()`.
+ *  See `MAP_RENDERING_PLAN.md` §"Paint sizes as fixed CSS-px constants". */
 export const PAINT_REFERENCE_WIDTH = 1080;
 
 /** OpenFreeMap "liberty" vector style. Used for both `default` and `3d`
@@ -257,15 +251,13 @@ export function buildStyleSpec(mapSettings: MapSettings): StyleSpecResult {
 }
 
 /** Resolved-static-paints descriptor. Pure: each value is
- *  `PAINT_SIZE_FRACTIONS.<name> × PAINT_REFERENCE_WIDTH` (renderer) or
- *  scaled by `paneCssWidth / canonicalMapCssWidth(aspect)` on top of that
- *  (preview, via `resolveStaticPaintsForPreview`).
+ *  `PAINT_SIZE_FRACTIONS.<name> × PAINT_REFERENCE_WIDTH`. Both renderer and
+ *  preview consume this same result; there is no pane-reshape variant.
  *
  *  This is the "static defaults" surface — the values the consumer should
  *  push to MapLibre via `setPaintProperty` / `setLayoutProperty` after the
- *  style loads (and re-push when the pane width or aspect changes in the
- *  preview). The per-frame builder (`buildPerFramePaints`) separately
- *  scales the `waypoints-circle` `circle-radius` per frame, and the
+ *  style loads. The per-frame builder (`buildPerFramePaints`) separately
+ *  overrides the `waypoints-circle` `circle-radius` per frame, and the
  *  `live-marker-pulse` `circle-radius`; this helper covers the layers
  *  whose size-based paints aren't otherwise touched per-frame
  *  (`route-full-line`, `route-trail-line`, `live-marker-dot`, the
@@ -281,37 +273,11 @@ export interface ResolvedStaticPaints {
 }
 
 /** Build the static-paint descriptor at the fixed `PAINT_REFERENCE_WIDTH`
- *  (1080 CSS px). Pure function; the renderer worker calls this after
- *  style.load — the layer specs ship placeholder `1`s, so this seeding step
- *  is mandatory for visible output. The preview's `MapView` uses
- *  `resolveStaticPaintsForPreview` instead so the values compose with the
- *  preview's reshape factor. */
+ *  (1080 CSS px). Pure function; both the renderer worker and the preview
+ *  `MapView` call this after style.load — the layer specs ship placeholder
+ *  `1`s, so this seeding step is mandatory for visible output. */
 export function resolveStaticPaints(): ResolvedStaticPaints {
-  return resolveStaticPaintsAtWidth(PAINT_REFERENCE_WIDTH);
-}
-
-/** Build the static-paint descriptor for the preview pane. Scales each
- *  paint by `paneCssWidth / canonicalMapCssWidth(aspect)` so that:
- *
- *  - At `pane === canonicalMapCssWidth(aspect)` the values equal
- *    `resolveStaticPaints()` (WYSIWYG with the 1080p export of that aspect).
- *  - Aspect switch at the same canonical pane width produces the same value
- *    on both sides — no 10.8 → 19.2 doubling on aspect switch.
- *  - Pane reshape (resize) scales linearly with pane width; combined with
- *    the preview's `+ log2(paneCssWidth / canonicalMapCssWidth(aspect))`
- *    zoom compensation, framing and overlay-in-meters stay constant.
- *
- *  See `MAP_RENDERING_PLAN.md` §"Preview behavior". */
-export function resolveStaticPaintsForPreview(
-  paneCssWidth: number,
-  aspect: AspectRatio,
-): ResolvedStaticPaints {
-  const effectiveWidth =
-    PAINT_REFERENCE_WIDTH * (paneCssWidth / canonicalMapCssWidth(aspect));
-  return resolveStaticPaintsAtWidth(effectiveWidth);
-}
-
-function resolveStaticPaintsAtWidth(w: number): ResolvedStaticPaints {
+  const w = PAINT_REFERENCE_WIDTH;
   const f = PAINT_SIZE_FRACTIONS;
   return {
     paints: [

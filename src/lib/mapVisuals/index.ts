@@ -6,7 +6,6 @@
 export {
   buildStyleSpec,
   resolveStaticPaints,
-  resolveStaticPaintsForPreview,
   PAINT_SIZE_FRACTIONS,
   PAINT_REFERENCE_WIDTH,
 } from './styleSpec';
@@ -22,10 +21,7 @@ export {
 
 export { buildStaticSourceData } from './sources';
 
-export {
-  buildPerFrameState,
-  buildPerFrameStateForPreview,
-} from './perFrame';
+export { buildPerFrameState } from './perFrame';
 
 export { pulseAt, pulseAtScaled, PULSE_PERIOD_MS } from './animations';
 
