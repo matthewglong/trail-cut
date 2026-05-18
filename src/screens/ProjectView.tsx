@@ -6,13 +6,14 @@ import type { MapToolbarScope } from '../components/MapToolbar/MapToolbar';
 import EditToolbar from '../components/EditToolbar';
 import VideoPreview from '../components/VideoPreview';
 import { MapPositioningModal } from '../components/MapPositioningModal';
+import { WaypointsPanel } from '../components/WaypointsPanel';
 import { ExportModal } from '../components/ExportModal';
 import { useEditorShortcuts } from '../shortcuts/useEditorShortcuts';
 import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportGrid } from '../types';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint } from '../types';
 import { resolveMapSettings } from '../types';
 import type { AspectRatio } from '../lib/layout';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
@@ -67,6 +68,12 @@ interface ProjectViewProps {
    *  value so it travels through `useAutoSave` to disk. */
   lastExportSelection: ExportGrid | null;
   setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
+  /** First-class waypoints (schema v7). Drives the `waypoints` map source
+   *  (replaces the old clip-derived list). The list panel mutates this via
+   *  `setWaypoints` for rename/delete; clip lifecycle hooks in useProject
+   *  keep clip-sourced entries in sync. */
+  waypoints: Waypoint[];
+  setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -105,6 +112,8 @@ export default function ProjectView({
   setProjectLayouts,
   lastExportSelection,
   setLastExportSelection,
+  waypoints,
+  setWaypoints,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -138,6 +147,23 @@ export default function ProjectView({
   const needsRewindRef = useRef(false);
 
   const [positioningModalOpen, setPositioningModalOpen] = useState(false);
+  const [waypointsPanelOpen, setWaypointsPanelOpen] = useState(false);
+
+  const handleRenameWaypoint = useCallback(
+    (id: string, label: string) => {
+      setWaypoints((prev) =>
+        prev.map((w) => (w.id === id ? { ...w, label } : w)),
+      );
+    },
+    [setWaypoints],
+  );
+
+  const handleDeleteWaypoint = useCallback(
+    (id: string) => {
+      setWaypoints((prev) => prev.filter((w) => w.id !== id));
+    },
+    [setWaypoints],
+  );
 
   // Map toolbar scope — auto-reverts to 'clip' when the selected clip changes
   const [mapScope, setMapScope] = useState<MapToolbarScope>('project');
@@ -624,11 +650,13 @@ export default function ProjectView({
               onScopeChange={setMapScope}
               overriddenKeys={overriddenKeys}
               onOpenPositioning={() => setPositioningModalOpen(true)}
+              onOpenWaypointsPanel={() => setWaypointsPanelOpen(true)}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
                 timeline={timeline}
                 clips={clips}
+                waypoints={waypoints}
                 selectedClipId={selectedClipId}
                 activeClipId={activeClipId}
                 route={route}
@@ -692,6 +720,13 @@ export default function ProjectView({
           setProjectLayouts((prev) => ({ ...prev, [aspect]: next }))
         }
       />
+      <WaypointsPanel
+        open={waypointsPanelOpen}
+        onClose={() => setWaypointsPanelOpen(false)}
+        waypoints={waypoints}
+        onRename={handleRenameWaypoint}
+        onDelete={handleDeleteWaypoint}
+      />
       <ExportModal
         open={exportModalOpen}
         onClose={() => setExportModalOpen(false)}
@@ -703,6 +738,7 @@ export default function ProjectView({
         clips={clips}
         route={route}
         mapSettings={mapSettings}
+        waypoints={waypoints}
         transitionFeel={transitionFeel}
         projectLayouts={projectLayouts}
       />

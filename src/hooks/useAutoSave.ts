@@ -9,6 +9,7 @@ import type {
   ProjectLayouts,
   MapSettings,
   TransitionFeel,
+  Waypoint,
 } from '../types';
 import { defaultPipLayout } from '../lib/layout';
 
@@ -34,6 +35,10 @@ interface AutoSaveParams {
    *  lands here on the next auto-save cycle. Schema v6 uses the grid shape
    *  (3×3 cells × N configs each) — see `ExportGrid` in `types.ts`. */
   lastExportSelection: ExportGrid | null;
+  /** First-class waypoints (schema v7). Always populated — App-level state
+   *  initializes to `[]` and the load path seeds from clips when the bundle
+   *  lacks the field. */
+  waypoints: Waypoint[];
 }
 
 /** Defensive backfill mirroring `useProject`'s + Rust's `seeded_layouts()`.
@@ -63,6 +68,7 @@ export function useAutoSave({
   projectLayouts,
   selectedExportAspect,
   lastExportSelection,
+  waypoints,
 }: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,6 +88,7 @@ export function useAutoSave({
         map_settings: mapSettings,
         transition_feel: transitionFeel,
         last_export_selection: lastExportSelection,
+        waypoints,
       };
       invoke('save_project', { project, projectDir }).catch(() => {});
       invoke('register_recent_project', { projectDir }).catch(() => {});
@@ -101,5 +108,6 @@ export function useAutoSave({
     projectLayouts,
     selectedExportAspect,
     lastExportSelection,
+    waypoints,
   ]);
 }

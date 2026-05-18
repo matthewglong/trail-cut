@@ -76,6 +76,46 @@ export type MapStyleId = 'default' | '3d' | 'satellite';
 
 export type BearingMode = 'auto' | 'fixed';
 
+/** Render mode for the `waypoints-label` symbol layer. `numbered` writes the
+ *  waypoint's 1-based index; `labeled` writes its `label` text (empty → blank,
+ *  which MapLibre renders as no glyphs). Per-frame swap is via
+ *  `setLayoutProperty('waypoints-label', 'text-field', expr)`. */
+export type WaypointLabelMode = 'numbered' | 'labeled';
+
+/** Strategy for picking which waypoint (if any) is rendered at the "active"
+ *  radius/colors per frame. `'none'` disables the highlight entirely;
+ *  `'latest_passed'` picks the wall-clock-anchored waypoint with the largest
+ *  anchor still ≤ the current marker's wall-clock. Fixed-position waypoints
+ *  never participate in the latest-passed comparison in v1. */
+export type ActiveWaypointMode = 'none' | 'latest_passed';
+
+/** Position anchor for a `Waypoint`. Discriminated by `kind`:
+ *
+ *  - `wall_clock_ms` — anchored to the GPX timeline. Renders at the
+ *    interpolated route position for `ms`. `fallback_gps` is the position
+ *    used when GPX is missing or `ms` falls outside the route's covered
+ *    range — mirrors the legacy clip→waypoint behavior where embedded clip
+ *    GPS picked up wherever the GPX gap was.
+ *  - `fixed` — pinned to a literal lat/lng. Does not participate in
+ *    visited/latest-passed comparisons in v1. */
+export type WaypointPosition =
+  | { kind: 'wall_clock_ms'; ms: number; fallback_gps?: GpsCoord }
+  | { kind: 'fixed'; lat: number; lng: number };
+
+/** First-class waypoint. Owned by the project (not derived from clips at
+ *  render time). `source` tracks provenance; `clip_id` is set when
+ *  `source === 'clip'` so the sync helper in `src/lib/waypoints.ts` can find
+ *  and re-anchor (or drop) the waypoint when the underlying clip is trimmed
+ *  or removed. Deletion is sticky — re-trimming a clip whose waypoint was
+ *  manually removed does NOT resurrect it. */
+export interface Waypoint {
+  id: string;
+  position: WaypointPosition;
+  label: string;
+  source: 'clip' | 'gpx' | 'manual';
+  clip_id?: string;
+}
+
 export interface MapSettings {
   route_mode: TriMode;
   waypoints_mode: TriMode;
@@ -110,6 +150,10 @@ export interface MapSettings {
   overlay_live_marker_dot_stroke_width: number;
   overlay_pulse_start_radius: number;
   overlay_pulse_end_radius: number;
+  /** Render mode for waypoint labels. See `WaypointLabelMode`. */
+  label_mode: WaypointLabelMode;
+  /** Active-waypoint highlight strategy. See `ActiveWaypointMode`. */
+  active_waypoint_mode: ActiveWaypointMode;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -132,6 +176,8 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   overlay_live_marker_dot_stroke_width: 0.004,
   overlay_pulse_start_radius: 0.012,
   overlay_pulse_end_radius: 0.033,
+  label_mode: 'numbered',
+  active_waypoint_mode: 'latest_passed',
 };
 
 /** Merge project defaults with per-clip overrides. */
@@ -279,6 +325,12 @@ export interface Project {
    *  `{aspects, channels}` shape with the 3×3 cell map; the v5→v6 migration
    *  drops any prior value rather than attempting a structural transform. */
   last_export_selection: ExportGrid | null;
+  /** First-class waypoints (schema v7). One entry per visible map waypoint;
+   *  clip-sourced entries are kept in sync with `clips` via the helpers in
+   *  `src/lib/waypoints.ts`. Empty array (not `undefined`) for projects with
+   *  no waypoints. Legacy bundles arrive with `[]` from Rust; the load path
+   *  seeds from clips before first use. */
+  waypoints: Waypoint[];
 }
 
 export interface RecentProject {

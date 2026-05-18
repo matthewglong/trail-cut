@@ -1,9 +1,15 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel } from '../types';
+import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 import { defaultPipLayout } from '../lib/layout';
+import {
+  appendClipWaypoints,
+  removeClipWaypoints,
+  seedWaypointsFromClips,
+  syncClipWaypointTrim,
+} from '../lib/waypoints';
 
 /** Minimum gap (ms) required between the playhead and either trim edge for a
  *  split to be accepted. Below this the split is a no-op, so we never create
@@ -24,6 +30,7 @@ interface UseProjectParams {
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
+  setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -59,6 +66,7 @@ export function useProject({
   setProjectLayouts,
   setSelectedExportAspect,
   setLastExportSelection,
+  setWaypoints,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -97,6 +105,15 @@ export function useProject({
       // surfaces `null`. Either way, hydrating App-level state here is the
       // sole load-time entry point — the modal reads from this on open.
       setLastExportSelection(project.last_export_selection ?? null);
+      // v7 waypoints. Legacy bundles arrive with `waypoints: []` from Rust
+      // (serde default on a missing field); seed from clips so the user
+      // doesn't open a project and find every map waypoint missing. The
+      // first auto-save persists the seeded list.
+      setWaypoints(
+        project.waypoints && project.waypoints.length > 0
+          ? project.waypoints
+          : seedWaypointsFromClips(project.clips),
+      );
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -132,6 +149,7 @@ export function useProject({
       setProjectLayouts(seededLayouts());
       setSelectedExportAspect('9_16');
       setLastExportSelection(null);
+      setWaypoints([]);
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -169,6 +187,7 @@ export function useProject({
     setProjectLayouts(seededLayouts());
     setSelectedExportAspect('9_16');
     setLastExportSelection(null);
+    setWaypoints([]);
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);
@@ -179,6 +198,7 @@ export function useProject({
 
   function handleRemoveClip(clipId: string) {
     setClips((prev) => prev.filter((c) => c.id !== clipId));
+    setWaypoints((prev) => removeClipWaypoints(prev, clipId));
     setSelectedClipId((prev) => {
       if (prev !== clipId) return prev;
       const remaining = clips.filter((c) => c.id !== clipId);
@@ -195,6 +215,17 @@ export function useProject({
 
   function handleUpdateTrim(trim: TrimRange) {
     updateSelectedClip({ trim });
+    // Re-anchor any clip-sourced waypoint whose wall-clock derives from the
+    // clip's trim.in_ms. Sticky-deletion: if the user removed the waypoint,
+    // it stays gone — `syncClipWaypointTrim` only mutates existing entries.
+    if (selectedClipId) {
+      const target = clips.find((c) => c.id === selectedClipId);
+      if (target) {
+        setWaypoints((prev) =>
+          syncClipWaypointTrim(prev, { ...target, trim }),
+        );
+      }
+    }
   }
 
   function handleUpdateFocalPoint(focal_point: FocalPoint) {
@@ -214,7 +245,14 @@ export function useProject({
     const clip = clips.find((c) => c.id === selectedClipId);
     if (!clip || !clip.trim) return;
 
-    const splitMs = playheadSec * 1000;
+    // Round to whole ms — Rust's TrimRange is u64 on both fields, and a
+    // fractional value (playheadSec comes from video.currentTime, which has
+    // sub-frame precision) fails serde's u64 deserialize. That break is
+    // silent on save (useAutoSave swallows the IPC error) and loud on
+    // render_export (extract_clips bubbles "invalid type: floating point …"
+    // back to the queue). It also drifts compileTimeline's totalDurationMs
+    // off the integer-ms grid, which propagates to a sub-frame fps error.
+    const splitMs = Math.round(playheadSec * 1000);
     if (splitMs <= clip.trim.in_ms + SPLIT_MIN_GAP_MS) return;
     if (splitMs >= clip.trim.out_ms - SPLIT_MIN_GAP_MS) return;
 
@@ -248,6 +286,13 @@ export function useProject({
       next.splice(idx, 1, leftHalf, rightHalf);
       return next;
     });
+    // The right half is a brand-new clip from the waypoint model's
+    // perspective: append a waypoint for it. The left half keeps its
+    // existing waypoint (its trim.in_ms is unchanged so the anchor is
+    // already correct). If the user manually deleted the left half's
+    // waypoint earlier, splitting still only adds the right-half waypoint
+    // — the left stays absent. Sticky-deletion preserved.
+    setWaypoints((prev) => appendClipWaypoints(prev, [rightHalf]));
     setSelectedClipId(newId);
 
     // The new segment shares the same source video, so it can reuse the
@@ -264,7 +309,7 @@ export function useProject({
     if (projectDir) {
       invoke<string>('generate_thumbnail_at', {
         sourcePath: clip.path,
-        atMs: Math.round(splitMs),
+        atMs: splitMs,
         projectDir,
       })
         .then((thumbPath) => {

@@ -64,16 +64,18 @@ interface InitPayload {
   staticSources: Array<[string, AnyJSON]>;
   /** Layer specs to add post-style-load, in stacking order. */
   staticLayers: AnyJSON[];
-  /** [layerId, visibility] one-shot at init time. */
-  visibility: Array<[string, 'visible' | 'none']>;
   /** Resolved static paint values — applied via setPaintProperty after the
    *  static layers are added. The layer specs ship placeholder `1`s for
    *  every size-based property, so these MUST be applied before the first
    *  frame or the map will render with 1-pixel lines and 1-pixel circles. */
   staticPaints: Array<[string, string, number]>;
-  /** Resolved static layout values (text-size on waypoints-label). Same
-   *  contract as staticPaints — applied via setLayoutProperty. */
-  staticLayouts: Array<[string, string, number]>;
+  /** Resolved static layout values — text-size (number), visibility ('visible'
+   *  | 'none'), text-field (ExpressionSpecification). Same contract as
+   *  staticPaints — applied via setLayoutProperty. Includes route-line
+   *  visibility (was its own array pre-unification) so per-clip `route_mode`
+   *  / `label_mode` overrides can flow through the per-frame `frame.layouts`
+   *  channel using the same wire shape. */
+  staticLayouts: Array<[string, string, AnyJSON]>;
   /** Just the BUILDINGS_LAYER_SPEC if add3dBuildings; null otherwise. */
   buildingsLayer: AnyJSON | null;
   /** When true, page-side __init/__applyFrame log diagnostic breadcrumbs
@@ -98,10 +100,11 @@ interface FramePayload {
    *  paints (line-width, stroke widths, dot radii) so per-clip overlay-size
    *  overrides take effect at the cut. */
   paints: Array<[string, string, AnyJSON]>;
-  /** Per-frame layout property triplets [layerId, propName, value]. Today
-   *  this carries `waypoints-label / text-size` so per-clip overrides of
-   *  `overlay_waypoint_label_size` are picked up at the cut. Empty array
-   *  when no layout properties need updating. */
+  /** Per-frame layout property triplets [layerId, propName, value]. Carries
+   *  the full `resolveStaticPaints().layouts` output re-resolved against
+   *  the active clip's merged `mapSettings`, so per-clip overrides of
+   *  `overlay_waypoint_label_size` (text-size), `label_mode` (text-field),
+   *  and `route_mode` (visibility) all take effect at the cut. */
   layouts: Array<[string, string, AnyJSON]>;
   /** Camera target. */
   camera: {
@@ -383,21 +386,17 @@ window.__init = async (payload: InitPayload): Promise<void> => {
       map.addLayer(layer as AnyJSON);
       bc(`addLayer ${layerId}`);
     }
-    for (const [layerId, vis] of payload.visibility) {
-      map.setLayoutProperty(layerId, 'visibility', vis);
-      bc(`setVisibility ${layerId}=${vis}`);
-    }
 
-    // Static paint sizing. Layer specs ship placeholder `1`s for every
-    // size-based property (line-width, circle-radius, circle-stroke-width,
-    // text-size). The real values are
-    // `mapSettings.overlay_<name> * PAINT_REFERENCE_WIDTH` — resolved on
-    // the worker side and shipped here as ready-to-apply triplets. This
-    // is the *initial seed* using the project-default `mapSettings`; the
-    // per-frame `__applyFrame` re-resolves and re-applies these so per-clip
-    // `map_overrides` of any overlay-size field take effect at the cut.
-    // Skipping this seed would render the map with 1-pixel lines and
-    // 1-pixel circles for the pre-first-frame window.
+    // Static paint + layout seeding. Layer specs ship placeholder values
+    // for every property derived from `mapSettings` (placeholder `1`s for
+    // sizes, `''` for the label text-field). Real values come from
+    // `resolveStaticPaints(mapSettings)` on the worker, shipped here as
+    // ready-to-apply triplets — the same tuples MapView.tsx iterates
+    // preview-side. This is the *initial seed* using project defaults; the
+    // per-frame `__applyFrame` re-resolves and re-applies so per-clip
+    // `map_overrides` of any field (overlay sizes, route_mode, label_mode,
+    // etc.) take effect at the cut. Skipping the seed would render with
+    // 1-pixel everything and blank labels for the pre-first-frame window.
     for (const [layerId, prop, value] of payload.staticPaints) {
       map.setPaintProperty(layerId, prop, value);
       bc(`setStaticPaint ${layerId}.${prop}=${value}`);

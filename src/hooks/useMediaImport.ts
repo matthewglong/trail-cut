@@ -1,8 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { ClipMetadata, Clip, Route } from '../types';
+import type { ClipMetadata, Clip, Route, Waypoint } from '../types';
 import { mergeClips, newClipFromMetadata } from '../utils/clips';
+import { appendClipWaypoints } from '../lib/waypoints';
 
 export type ProxyMap = Record<string, string | 'generating' | null>;
 export type ThumbnailMap = Record<string, string>;
@@ -12,9 +13,10 @@ interface UseMediaImportParams {
   setClips: React.Dispatch<React.SetStateAction<Clip[]>>;
   setSelectedClipId: React.Dispatch<React.SetStateAction<string | null>>;
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
+  setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
 }
 
-export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRoute }: UseMediaImportParams) {
+export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRoute, setWaypoints }: UseMediaImportParams) {
   const [proxies, setProxies] = useState<ProxyMap>({});
   const [thumbnails, setThumbnails] = useState<ThumbnailMap>({});
   const [loading, setLoading] = useState(false);
@@ -61,9 +63,15 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
       setClips((prev) => mergeClips(prev, result));
       setSelectedClipId((prev) => prev ?? result[0]?.id ?? null);
 
-      // Generate proxies/thumbnails OUTSIDE the state updater
+      // Seed clip-sourced waypoints for genuinely new clips only. Re-imports
+      // of existing clips (same path → same id via `newResults` filter
+      // above) update metadata but do NOT create or resurrect waypoints —
+      // that's the sticky-deletion contract.
       if (newResults.length > 0) {
-        generateProxiesAndThumbnails(newResults.map(newClipFromMetadata), dir);
+        const newClips = newResults.map(newClipFromMetadata);
+        setWaypoints((prev) => appendClipWaypoints(prev, newClips));
+        // Generate proxies/thumbnails OUTSIDE the state updater
+        generateProxiesAndThumbnails(newClips, dir);
       }
     } catch (err) {
       setError(String(err));

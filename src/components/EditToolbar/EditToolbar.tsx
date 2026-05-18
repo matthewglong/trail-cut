@@ -59,7 +59,7 @@ export default function EditToolbar({
         <NumberStepper
           value={speed}
           min={0.25}
-          max={4.0}
+          max={100.0}
           step={0.25}
           onChange={(v) => onUpdateEffects({ ...clip.effects, speed: v })}
         />

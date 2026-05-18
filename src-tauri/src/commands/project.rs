@@ -68,36 +68,44 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 
     let mut project = match version {
         1 => {
-            // Chain v1 → v2 → v3 → v4 → v5 → v6. Each step is value-level
+            // Chain v1 → v2 → v3 → v4 → v5 → v6 → v7. Each step is value-level
             // until the final `from_value` so a partially-migrated bundle
             // (e.g. an interrupted save) reads through cleanly.
             let v2 = migrate_v1_to_v2_value(raw)?;
             let v3 = migrate_v2_to_v3_value(v2)?;
             let v4 = migrate_v3_to_v4_value(v3)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
-            migrate_v5_to_v6(v5)?
+            let v6 = migrate_v5_to_v6_value(v5)?;
+            migrate_v6_to_v7(v6)?
         }
         2 => {
             let v3 = migrate_v2_to_v3_value(raw)?;
             let v4 = migrate_v3_to_v4_value(v3)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
-            migrate_v5_to_v6(v5)?
+            let v6 = migrate_v5_to_v6_value(v5)?;
+            migrate_v6_to_v7(v6)?
         }
         3 => {
             let v4 = migrate_v3_to_v4_value(raw)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
-            migrate_v5_to_v6(v5)?
+            let v6 = migrate_v5_to_v6_value(v5)?;
+            migrate_v6_to_v7(v6)?
         }
         4 => {
             let v5 = migrate_v4_to_v5_value(raw)?;
-            migrate_v5_to_v6(v5)?
+            let v6 = migrate_v5_to_v6_value(v5)?;
+            migrate_v6_to_v7(v6)?
         }
-        5 => migrate_v5_to_v6(raw)?,
-        6 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v6 project: {}", e))?,
+        5 => {
+            let v6 = migrate_v5_to_v6_value(raw)?;
+            migrate_v6_to_v7(v6)?
+        }
+        6 => migrate_v6_to_v7(raw)?,
+        7 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v7 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1–v6)",
+                "Unknown project schema version {} (this app supports v1–v7)",
                 version
             ));
         }
@@ -261,30 +269,52 @@ fn migrate_v4_to_v5(raw: serde_json::Value) -> Result<Project, String> {
     Ok(project)
 }
 
-/// v5 → v6 migration. v6 replaces the flat `last_export_selection` shape
-/// (`{ aspects, channels, output_dir }`) with the per-cell `ExportGrid`
-/// (`{ cells, output_dir }`). The two shapes are structurally incompatible:
-/// the flat selection conveys "every aspect × every channel is enabled"
-/// without per-cell chip configuration (`quality`, `fps`), and there's no
-/// deterministic way to invent chip configs that match the user's intent.
-/// So this migration **drops** any v5 `last_export_selection` value rather
-/// than transforming it — users re-configure their grid on first open
-/// post-upgrade. The cost is minor (a few seconds re-clicking); the
-/// alternative would carry a versioning-shim type that lingers indefinitely.
-fn migrate_v5_to_v6(mut raw: serde_json::Value) -> Result<Project, String> {
+/// v5 → v6 migration (value-form). v6 replaces the flat
+/// `last_export_selection` shape with the per-cell `ExportGrid`; the two
+/// shapes are structurally incompatible, so this step **drops** any v5
+/// `last_export_selection` value rather than transforming it. Stamps
+/// `schema_version: 6`. Returns a `Value` so the v6→v7 step can chain
+/// without a deserialize round-trip — the value-form became necessary once
+/// a later schema (v7) was added on top.
+fn migrate_v5_to_v6_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Some(obj) = raw.as_object_mut() {
-        // Drop the v5 flat shape — incompatible with the v6 grid type and
-        // not safely transformable.
         obj.remove("last_export_selection");
+        obj.insert("schema_version".into(), serde_json::Value::from(6u32));
+    } else {
+        return Err("v5 project root is not a JSON object".into());
+    }
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v5 → v6 migration that returns a parsed
+/// Project. Wraps `migrate_v5_to_v6_value` and finalizes via serde, stamping
+/// `schema_version: 6` (NOT `CURRENT_SCHEMA_VERSION`) so the per-step tests
+/// see the per-step bump.
+#[cfg(test)]
+fn migrate_v5_to_v6(raw: serde_json::Value) -> Result<Project, String> {
+    let v6 = migrate_v5_to_v6_value(raw)?;
+    let mut project: Project = serde_json::from_value(v6)
+        .map_err(|e| format!("Failed to parse v5 project during v6 migration: {}", e))?;
+    project.schema_version = 6;
+    Ok(project)
+}
+
+/// v6 → v7 migration. v7 promotes waypoints to a first-class project entity.
+/// Purely additive: the `waypoints` field defaults to `Vec::new()` on v6
+/// bundles. The frontend's `load_project` consumer seeds it from the clip
+/// list when the field deserializes empty (legacy behavior parity), so the
+/// migration itself is just a version stamp.
+fn migrate_v6_to_v7(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
         obj.insert(
             "schema_version".into(),
             serde_json::Value::from(CURRENT_SCHEMA_VERSION),
         );
     } else {
-        return Err("v5 project root is not a JSON object".into());
+        return Err("v6 project root is not a JSON object".into());
     }
     let mut project: Project = serde_json::from_value(raw)
-        .map_err(|e| format!("Failed to parse v5 project during v6 migration: {}", e))?;
+        .map_err(|e| format!("Failed to parse v6 project during v7 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
@@ -1097,11 +1127,101 @@ mod tests {
         });
         let project = migrate_v5_to_v6(v5_with_flat_selection)
             .expect("v5 → v6 migration must succeed when flat selection is present");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        // Per-step helper stamps v6 specifically; the chained load_project
+        // path walks the rest of the way to CURRENT.
+        assert_eq!(project.schema_version, 6);
         assert!(
             project.last_export_selection.is_none(),
             "v5 → v6 must drop the incompatible flat last_export_selection value"
         );
+    }
+
+    #[test]
+    fn migrate_v6_to_v7_is_purely_additive() {
+        // v7 promotes waypoints to first-class state. The migration just
+        // stamps the version; the `waypoints` field defaults to an empty
+        // Vec via `#[serde(default)]`, and the frontend seeds it from clips
+        // on load when empty.
+        let v6 = serde_json::json!({
+            "schema_version": 6,
+            "version": 1,
+            "name": "v6 Project",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": null
+        });
+        let project = migrate_v6_to_v7(v6).expect("v6 → v7 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(
+            project.waypoints.is_empty(),
+            "v6 → v7 must default `waypoints` to an empty Vec"
+        );
+    }
+
+    #[test]
+    fn v7_round_trips_waypoints() {
+        // A v7 project written with a populated `waypoints` array must
+        // round-trip through save → load with every field intact.
+        use std::path::PathBuf;
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-v7waypoints",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let project = Project {
+            waypoints: vec![
+                Waypoint {
+                    id: "wp-a".into(),
+                    position: WaypointPosition::WallClockMs {
+                        ms: 1_700_000_000_000.0,
+                        fallback_gps: Some(GpsCoord {
+                            lat: 37.0,
+                            lng: -122.0,
+                        }),
+                    },
+                    label: String::new(),
+                    source: "clip".into(),
+                    clip_id: Some("clip-a".into()),
+                },
+                Waypoint {
+                    id: "wp-b".into(),
+                    position: WaypointPosition::Fixed {
+                        lat: 47.5,
+                        lng: -121.7,
+                    },
+                    label: "Summit".into(),
+                    source: "manual".into(),
+                    clip_id: None,
+                },
+            ],
+            ..Project::default()
+        };
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        save_project(project, dir_str.clone()).expect("save must succeed");
+        let reloaded = load_project(dir_str).expect("reload must succeed");
+        assert_eq!(reloaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(reloaded.waypoints.len(), 2);
+        assert_eq!(reloaded.waypoints[0].id, "wp-a");
+        assert!(matches!(
+            reloaded.waypoints[0].position,
+            WaypointPosition::WallClockMs { .. }
+        ));
+        assert_eq!(reloaded.waypoints[1].label, "Summit");
+        assert!(matches!(
+            reloaded.waypoints[1].position,
+            WaypointPosition::Fixed { lat, lng } if (lat - 47.5).abs() < 1e-9 && (lng - -121.7).abs() < 1e-9
+        ));
+
+        // unused-suppression
+        let _: PathBuf = dir.clone();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

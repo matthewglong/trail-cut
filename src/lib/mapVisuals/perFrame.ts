@@ -11,7 +11,7 @@
 // Any time-based curve (e.g. transition arcs) lives inside `cameraAt`
 // itself, where both pipelines see it.
 
-import type { Clip, MapSettings } from '../../types';
+import type { Clip, MapSettings, Waypoint } from '../../types';
 import {
   cameraAt,
   resolveIntent,
@@ -19,7 +19,11 @@ import {
   type Viewport,
 } from '../cameraIntent';
 import type { IndexedRoute } from '../routeLocation';
-import { buildPerFrameSourceData, type WallClockTrace } from './sources';
+import {
+  buildPerFrameSourceData,
+  pickActiveWaypoint,
+  type WallClockTrace,
+} from './sources';
 import { buildPerFramePaints } from './paints';
 import type { PerFrameState } from './types';
 
@@ -108,32 +112,12 @@ function wallClockTrace(
 export function buildPerFrameState(
   timeline: CompiledTimeline,
   projectTimeMs: number,
-  activeClipId: string | null,
   indexedRoute: IndexedRoute | null,
   clips: Clip[],
+  waypoints: Waypoint[],
   mapSettings: MapSettings,
   viewport: Viewport,
 ): PerFrameState {
-  const { camera, sources } = composeCameraAndSources(
-    timeline,
-    projectTimeMs,
-    indexedRoute,
-    clips,
-    mapSettings,
-    viewport,
-  );
-  const paints = buildPerFramePaints(activeClipId, projectTimeMs, mapSettings);
-  return { camera, sources, paints };
-}
-
-function composeCameraAndSources(
-  timeline: CompiledTimeline,
-  projectTimeMs: number,
-  indexedRoute: IndexedRoute | null,
-  clips: Clip[],
-  mapSettings: MapSettings,
-  viewport: Viewport,
-): Pick<PerFrameState, 'camera' | 'sources'> {
   const intent = cameraAt(timeline, projectTimeMs);
   const camera = resolveIntent(intent, viewport);
 
@@ -143,10 +127,18 @@ function composeCameraAndSources(
     markerTrace: trace,
     indexedRoute,
     clips,
+    waypoints,
     mapSettings,
     timeline,
     projectTimeMs,
   });
 
-  return { camera, sources };
+  // Active waypoint is now derived from the marker trace + the
+  // `active_waypoint_mode` setting (replaces the prior `activeClipId` →
+  // waypoint mapping). When mode is 'none' or no waypoint has been passed
+  // yet, this is null and `buildPerFramePaints` returns scalar defaults.
+  const activeWaypointId = pickActiveWaypoint(waypoints, trace, mapSettings);
+  const paints = buildPerFramePaints(activeWaypointId, projectTimeMs, mapSettings);
+
+  return { camera, sources, paints };
 }

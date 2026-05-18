@@ -14,11 +14,20 @@ import {
   ZoomIn,
   Compass,
   LayoutPanelTop,
+  Tag,
+  Crosshair,
+  ListChecks,
 } from 'lucide-react';
 import Toolbar from '../Toolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
-import type { MapSettings, MapStyleId, TriMode } from '../../types';
+import type {
+  ActiveWaypointMode,
+  MapSettings,
+  MapStyleId,
+  TriMode,
+  WaypointLabelMode,
+} from '../../types';
 import { colors } from '../../theme/tokens';
 import { styles } from './styles';
 
@@ -44,6 +53,10 @@ interface MapToolbarProps {
   overriddenKeys: Set<keyof MapSettings> | null;
   /** Opens the Map Positioning modal. */
   onOpenPositioning: () => void;
+  /** Opens the Waypoints list/edit panel. v7 affordance — rename and delete
+   *  individual waypoints (clip-sourced ones, manual ones once we add the
+   *  add-affordance). */
+  onOpenWaypointsPanel: () => void;
 }
 
 const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
@@ -56,6 +69,16 @@ const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
   { value: 'default', label: 'Default', short: 'D' },
   { value: '3d', label: '3D', short: '3D' },
   { value: 'satellite', label: 'Satellite', short: 'S' },
+];
+
+const LABEL_MODE_OPTIONS: { value: WaypointLabelMode; label: string; short: string }[] = [
+  { value: 'numbered', label: 'Numbered', short: '#' },
+  { value: 'labeled', label: 'Labeled', short: 'A' },
+];
+
+const ACTIVE_WAYPOINT_OPTIONS: { value: ActiveWaypointMode; label: string; short: string }[] = [
+  { value: 'none', label: 'None', short: 'N' },
+  { value: 'latest_passed', label: 'Latest', short: 'L' },
 ];
 
 type Item = {
@@ -75,6 +98,7 @@ export default function MapToolbar({
   onScopeChange,
   overriddenKeys,
   onOpenPositioning,
+  onOpenWaypointsPanel,
 }: MapToolbarProps) {
   const followOn = settings.follow_playhead;
   const bearingAuto = settings.bearing_mode === 'auto';
@@ -188,6 +212,54 @@ export default function MapToolbar({
           variant="minimal"
           iconColor={overrideColor('waypoints_mode')}
         />
+      ),
+    },
+    {
+      id: 'label_mode',
+      menuLabel: 'Label',
+      node: (
+        <ModePicker<WaypointLabelMode>
+          value={settings.label_mode}
+          options={LABEL_MODE_OPTIONS}
+          onChange={(v) => onChange({ ...settings, label_mode: v })}
+          title="Waypoint label mode (numbered vs. user-set label)"
+          minWidth={76}
+          icon={<Tag size={15} strokeWidth={2} />}
+          variant="minimal"
+          iconColor={overrideColor('label_mode')}
+        />
+      ),
+    },
+    {
+      id: 'active_waypoint',
+      menuLabel: 'Active',
+      node: (
+        <ModePicker<ActiveWaypointMode>
+          value={settings.active_waypoint_mode}
+          options={ACTIVE_WAYPOINT_OPTIONS}
+          onChange={(v) => onChange({ ...settings, active_waypoint_mode: v })}
+          title="Active-waypoint highlight (none, or the latest waypoint the marker has passed)"
+          minWidth={72}
+          icon={<Crosshair size={15} strokeWidth={2} />}
+          variant="minimal"
+          iconColor={overrideColor('active_waypoint_mode')}
+        />
+      ),
+    },
+    {
+      id: 'waypoints_manage',
+      menuLabel: 'Manage waypoints',
+      node: (
+        <button
+          type="button"
+          onClick={onOpenWaypointsPanel}
+          title="Manage waypoints (rename, delete)"
+          aria-label="Manage waypoints"
+          style={positioningButtonStyle}
+          data-testid="map-toolbar-waypoints-manage"
+        >
+          <ListChecks size={15} strokeWidth={2} />
+        </button>
       ),
     },
     {

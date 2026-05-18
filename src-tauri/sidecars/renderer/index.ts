@@ -85,7 +85,7 @@ import {
   type CompiledTimeline,
 } from '../../../src/lib/cameraIntent';
 import { indexRoute, type IndexedRoute } from '../../../src/lib/routeLocation';
-import { resolveMapSettings, type Clip, type Route, type MapSettings } from '../../../src/types';
+import { resolveMapSettings, type Clip, type Route, type MapSettings, type Waypoint } from '../../../src/types';
 
 import { createTileCache, defaultCacheDir, type TileCache } from './tileCache';
 import { bridgeFetchFactory } from './trailcutFetch';
@@ -113,6 +113,11 @@ interface SetupCmd {
   route: Route | null;
   clips: Clip[];
   mapSettings: MapSettings;
+  /** First-class waypoints (schema v7). Drives the `waypoints` GeoJSON
+   *  source; replaces the pre-v7 clip-derived list. Always present (`[]`
+   *  when the project has none) so the worker doesn't need to handle a
+   *  missing field. */
+  waypoints: Waypoint[];
 }
 interface RenderCmd {
   cmd: 'render';
@@ -411,7 +416,7 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
 
   const staticData = buildStaticSourceData({
     route: payload.route,
-    clips: payload.clips,
+    waypoints: payload.waypoints,
     mapSettings: payload.mapSettings,
   });
   stamp('static source data built');
@@ -443,27 +448,18 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     LIVE_MARKER_DOT_LAYER,
   ];
 
-  // Visibility — mirrors MapView.tsx's route-mode effect. Only route-full
-  // sets explicitly here; route-trail's visibility is implicit in whether
-  // we feed it data (visited mode) or empty (every other mode), but maplibre
-  // would still attempt to render an empty LineString — so we set its
-  // visibility too. Other layers stay 'visible'.
-  const visibility: Array<[string, 'visible' | 'none']> = [
-    ['route-full-line', payload.mapSettings.route_mode === 'full' ? 'visible' : 'none'],
-    ['route-trail-line', payload.mapSettings.route_mode === 'visited' ? 'visible' : 'none'],
-  ];
-
-  // Static paint sizing — layer specs ship placeholder `1`s for every
-  // size-based property (line-width, circle-radius, circle-stroke-width,
-  // text-size). Under the lever model the real values are
-  // `mapSettings.overlay_<name> * PAINT_REFERENCE_WIDTH` (1080 CSS px) —
-  // width-independent. The renderer's `pixelRatio` lever absorbs the
-  // resolution shift; same trail thickness in CSS px across every aspect /
-  // resolution / slot shape. The page applies these via setPaintProperty /
-  // setLayoutProperty after style.load, before the first frame. This is
-  // just the *initial seed* using project defaults — per-frame the renderer
-  // re-resolves with each active clip's `map_overrides` and ships the
-  // updated values inside `frame.paints` / `frame.layouts`.
+  // Static paint sizing + layouts — layer specs ship placeholder values for
+  // every paint/layout property that derives from `mapSettings`
+  // (placeholder `1`s for sizes, `''` for the label text-field). Real
+  // values come from `resolveStaticPaints(mapSettings)`, which is the
+  // single source of truth shared with MapView.tsx; the page applies the
+  // returned tuples via setPaintProperty / setLayoutProperty after
+  // style.load, before the first frame. This is the *initial seed* using
+  // project defaults — per-frame the renderer re-resolves with each active
+  // clip's `map_overrides` and ships the updated values inside
+  // `frame.paints` / `frame.layouts`, so per-clip overrides of any field
+  // (overlay sizes, route_mode visibility, label_mode expression, etc.)
+  // take effect at the cut.
   const staticPaintResolution = resolveStaticPaints(payload.mapSettings);
 
   const initPayload = {
@@ -474,7 +470,6 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     add3dBuildings: payload.mapSettings.map_style === '3d',
     staticSources,
     staticLayers,
-    visibility,
     staticPaints: staticPaintResolution.paints,
     staticLayouts: staticPaintResolution.layouts,
     buildingsLayer: payload.mapSettings.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
@@ -507,7 +502,9 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
   stamp(
     `initPayload built: total=${initPayloadJson.length}B ` +
     `style=${styleBytes}B route-full=${routeFullBytes}B routeCoords=${routeCoordCount} ` +
-    `staticLayers=${staticLayers.length} visibility=${visibility.length}`,
+    `staticLayers=${staticLayers.length} ` +
+    `staticPaints=${staticPaintResolution.paints.length} ` +
+    `staticLayouts=${staticPaintResolution.layouts.length}`,
   );
 
   // Set up the signal-based handshake BEFORE kicking off __init so we
@@ -643,12 +640,19 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
   const state = buildPerFrameState(
     payload.timeline,
     t,
-    activeClipId,
     indexedRoute,
     payload.clips,
+    payload.waypoints,
     resolvedMapSettings,
     viewport,
   );
+
+  // `activeClipId` was the pre-v7 selector for the waypoint highlight; the
+  // active-waypoint highlight is now driven inside `buildPerFrameState` via
+  // the marker's wall-clock comparison + `active_waypoint_mode`. Keep the
+  // local resolved here for the existing per-clip `map_overrides` lookup
+  // above; nothing else reads it.
+  void activeClipId;
 
   // Re-resolve static paints from the active clip's settings. The page
   // applies these as setPaintProperty / setLayoutProperty per frame so any

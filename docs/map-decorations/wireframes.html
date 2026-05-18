@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Map Decoration Panels</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&family=Manrope:wght@200..800&display=swap" rel="stylesheet" />
+
+<style>
+:root {
+  --canvas:     #0e1416;
+  --surface-1:  #141b1d;
+  --surface-2:  #1a2122;
+  --surface-3:  #232c2d;
+
+  --granite:    #4c5b5c;
+  --coral:      #ff715b;
+  --pollen:     #f9cb40;
+  --chartreuse: #bced09;
+  --azure:      #2f52e0;
+
+  --text:       #e6ecec;
+  --text-mid:   #8a9697;
+  --text-dim:   #5a6868;
+  --text-faint: #34403f;
+
+  --wire:       #2c3738;
+  --wire-mid:   #4c5b5c;
+
+  --mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+  --sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  font-family: var(--sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background:
+    radial-gradient(ellipse 60% 40% at 100% 0%, rgba(47, 82, 224, 0.05), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 0% 100%, rgba(188, 237, 9, 0.04), transparent 70%),
+    radial-gradient(circle at 1px 1px, rgba(230, 236, 236, 0.04) 1px, transparent 1.5px) 0 0 / 22px 22px,
+    var(--canvas);
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  padding: 88px 64px 120px;
+}
+
+/* doc shell */
+.doc { max-width: 1200px; margin: 0 auto; }
+
+.doc__head {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--wire);
+  margin-bottom: 88px;
+}
+.doc__eyebrow {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--text-mid);
+}
+.doc__title {
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 24px;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin: 0;
+  text-transform: uppercase;
+}
+.doc__title .slash { color: var(--chartreuse); font-weight: 300; margin: 0 0.06em; }
+
+/* per-decoration section */
+.deco { margin-bottom: 96px; }
+.deco:last-child { margin-bottom: 0; }
+
+.deco__label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  color: var(--text-mid);
+  text-transform: uppercase;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.deco__label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--wire);
+}
+
+.deco__stage {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+/* faux toolbar */
+.frame {
+  background: var(--canvas);
+  border: 1px solid var(--wire);
+  position: relative;
+}
+.frame::before, .frame::after {
+  content: '';
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--wire-mid);
+  pointer-events: none;
+}
+.frame::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.frame::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--wire);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-mid);
+  text-transform: uppercase;
+}
+.toolbar__scope {
+  width: 18px;
+  height: 14px;
+  background:
+    linear-gradient(90deg, transparent 0 5px, var(--granite) 5px 9px, transparent 9px 100%),
+    var(--surface-3);
+  border-radius: 2px;
+  margin-right: 6px;
+}
+.toolbar__scope--clip {
+  background:
+    radial-gradient(circle at 50% 50%, var(--coral) 0 3px, transparent 4px),
+    var(--surface-3);
+}
+.toolbar__item {
+  padding: 4px 7px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.toolbar__item--active {
+  background: var(--surface-3);
+  color: var(--text);
+  outline: 1px solid var(--wire-mid);
+}
+.toolbar__chev::after {
+  content: '▾';
+  font-size: 9px;
+  color: var(--text-mid);
+  margin-left: 2px;
+}
+.toolbar__sep {
+  width: 1px;
+  height: 11px;
+  background: var(--wire);
+  margin: 0 2px;
+}
+
+/* panel */
+.panel {
+  background: var(--surface-1);
+  position: relative;
+}
+.panel::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  width: 10px;
+  height: 10px;
+  background: var(--surface-1);
+  border-left: 1px solid var(--wire);
+  border-top: 1px solid var(--wire);
+  transform: rotate(45deg) translate(-3px, -3px);
+}
+.panel--route::before     { left: 76px; }
+.panel--waypoints::before { left: 124px; }
+.panel--pov::before       { left: 188px; }
+
+.panel__inner {
+  padding: 16px 18px;
+}
+
+/* section */
+.section {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 14px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--wire);
+}
+.section:first-child { padding-top: 4px; }
+.section:last-child { border-bottom: 0; padding-bottom: 4px; }
+
+.section__label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  padding-top: 5px;
+}
+
+.section__body { display: flex; flex-direction: column; gap: 10px; }
+
+/* tri-mode segmented */
+.trimode {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(54px, 1fr));
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.trimode > div {
+  padding: 6px 10px;
+  text-align: center;
+  color: var(--text-mid);
+  border-right: 1px solid var(--wire);
+}
+.trimode > div:last-child { border-right: 0; }
+.trimode > div.is-on {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* color mode toggle */
+.cmode {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(70px, 1fr));
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.cmode > div {
+  padding: 6px 10px;
+  text-align: center;
+  color: var(--text-mid);
+  border-right: 1px solid var(--wire);
+}
+.cmode > div:last-child { border-right: 0; }
+.cmode > div.is-on {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* swatches */
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.swatch.is-selected {
+  outline: 1.5px solid var(--chartreuse);
+  outline-offset: 1px;
+}
+.swatch--coral      { background: var(--coral); }
+.swatch--pollen     { background: var(--pollen); }
+.swatch--chartreuse { background: var(--chartreuse); }
+.swatch--azure      { background: var(--azure); }
+.swatch--white      { background: var(--text); }
+.swatch--custom {
+  background: conic-gradient(from 0deg, #ff715b, #f9cb40, #bced09, #2f52e0, #ff715b);
+  border-style: dashed;
+}
+
+/* hex */
+.hex {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  background: var(--canvas);
+  min-width: 86px;
+}
+.hex::before { content: '#'; color: var(--text-dim); margin-right: 4px; }
+
+/* gradient strip & stops */
+.gradstrip {
+  height: 18px;
+  border-radius: 2px;
+  border: 1px solid var(--wire);
+  background: linear-gradient(90deg, var(--azure) 0%, var(--chartreuse) 50%, var(--coral) 100%);
+}
+.stops {
+  position: relative;
+  height: 26px;
+  margin-top: 4px;
+  border-top: 1px dashed var(--wire);
+}
+.stop {
+  position: absolute;
+  top: -8px;
+  width: 14px;
+  height: 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--text);
+  border-radius: 50%;
+}
+.stop.is-selected { outline: 1.5px solid var(--chartreuse); outline-offset: 1px; }
+.stop__num {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+/* sliders */
+.sliders { display: grid; gap: 8px; }
+.slider {
+  display: grid;
+  grid-template-columns: 96px 1fr 44px;
+  gap: 10px;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-mid);
+}
+.slider__name { text-transform: lowercase; }
+.slider__track {
+  height: 6px;
+  background: var(--surface-3);
+  border-radius: 3px;
+  position: relative;
+}
+.slider__fill {
+  position: absolute;
+  inset: 0 60% 0 0;
+  background: var(--text-mid);
+  border-radius: 3px;
+}
+.slider__thumb {
+  position: absolute;
+  top: 50%;
+  left: 40%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text);
+  transform: translate(-50%, -50%);
+}
+.slider__val {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text);
+  text-align: right;
+}
+
+/* shapes */
+.shapes {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+}
+.shape {
+  aspect-ratio: 1;
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  background: var(--canvas);
+  display: grid;
+  place-items: center;
+}
+.shape.is-selected {
+  border-color: var(--chartreuse);
+  background: rgba(188, 237, 9, 0.06);
+}
+.shape svg { width: 60%; height: 60%; display: block; }
+
+/* pulse cards */
+.pulse-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.pulse-card {
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  padding: 10px 6px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.pulse-card.is-selected {
+  border-color: var(--chartreuse);
+  background: rgba(188, 237, 9, 0.06);
+}
+.pulse-card__viz { width: 28px; height: 28px; }
+.pulse-card__viz svg { width: 100%; height: 100%; display: block; }
+.pulse-card__name {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-mid);
+  text-transform: uppercase;
+}
+.pulse-card.is-selected .pulse-card__name { color: var(--text); }
+
+/* buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--wire);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-mid);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+/* override pill */
+.override {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--coral);
+  background: rgba(255, 113, 91, 0.06);
+  color: var(--coral);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  border-radius: 2px;
+}
+.override::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  background: var(--coral);
+  border-radius: 50%;
+}
+
+/* dim for clip-mode non-overridable */
+.dim { opacity: 0.32; pointer-events: none; }
+
+/* row helpers */
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.row--between { justify-content: space-between; }
+
+/* clip-mode header */
+.clip-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0 12px;
+  border-bottom: 1px dashed var(--wire);
+  margin-bottom: 4px;
+}
+</style>
+</head>
+<body>
+
+<div class="doc">
+
+  <header class="doc__head">
+    <span class="doc__eyebrow">trailcut / map decorations</span>
+    <h1 class="doc__title">Panels<span class="slash">/</span>v0.2</h1>
+  </header>
+
+  <!-- ROUTE -->
+  <section class="deco">
+    <div class="deco__label">Route</div>
+    <div class="deco__stage">
+      <div class="frame">
+        <div class="toolbar">
+          <span class="toolbar__scope"></span>
+          <span class="toolbar__item">Style</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__item--active toolbar__chev">Route</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">Waypoints</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">POV</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item">Zoom</span>
+        </div>
+        <div class="panel panel--route" style="width: 340px;">
+          <div class="panel__inner">
+
+            <div class="section">
+              <div class="section__label">Show</div>
+              <div class="section__body">
+                <div class="trimode">
+                  <div>None</div>
+                  <div class="is-on">Visited</div>
+                  <div>Full</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Color</div>
+              <div class="section__body">
+                <div class="cmode">
+                  <div>Solid</div>
+                  <div class="is-on">Gradient</div>
+                </div>
+                <div class="gradstrip"></div>
+                <div class="stops">
+                  <div class="stop" style="left: 0%; background: var(--azure);"><span class="stop__num">A</span></div>
+                  <div class="stop is-selected" style="left: 50%; background: var(--chartreuse);"><span class="stop__num">2</span></div>
+                  <div class="stop" style="left: 100%; background: var(--coral);"><span class="stop__num">B</span></div>
+                </div>
+                <div class="row row--between">
+                  <div class="swatches">
+                    <span class="swatch swatch--azure"></span>
+                    <span class="swatch swatch--chartreuse is-selected"></span>
+                    <span class="swatch swatch--pollen"></span>
+                    <span class="swatch swatch--coral"></span>
+                    <span class="swatch swatch--custom"></span>
+                  </div>
+                  <span class="hex">BCED09</span>
+                </div>
+                <div class="row row--between">
+                  <span class="btn">+ Stop</span>
+                  <span class="btn">Copy to Waypoints</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Size</div>
+              <div class="section__body">
+                <div class="sliders">
+                  <div class="slider">
+                    <span class="slider__name">full</span>
+                    <span class="slider__track"><span class="slider__fill"></span><span class="slider__thumb"></span></span>
+                    <span class="slider__val">0.40</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">trail</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 35% 0 0;"></span><span class="slider__thumb" style="left: 65%;"></span></span>
+                    <span class="slider__val">0.55</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WAYPOINTS -->
+  <section class="deco">
+    <div class="deco__label">Waypoints</div>
+    <div class="deco__stage">
+
+      <!-- project -->
+      <div class="frame">
+        <div class="toolbar">
+          <span class="toolbar__scope"></span>
+          <span class="toolbar__item">Style</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">Route</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__item--active toolbar__chev">Waypoints</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">POV</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item">Zoom</span>
+        </div>
+        <div class="panel panel--waypoints" style="width: 340px;">
+          <div class="panel__inner">
+
+            <div class="section">
+              <div class="section__label">Show</div>
+              <div class="section__body">
+                <div class="trimode">
+                  <div>None</div>
+                  <div>Visited</div>
+                  <div class="is-on">Full</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Color</div>
+              <div class="section__body">
+                <div class="cmode">
+                  <div class="is-on">Solid</div>
+                  <div>Gradient</div>
+                </div>
+                <div class="row row--between">
+                  <div class="swatches">
+                    <span class="swatch swatch--coral"></span>
+                    <span class="swatch swatch--pollen is-selected"></span>
+                    <span class="swatch swatch--chartreuse"></span>
+                    <span class="swatch swatch--azure"></span>
+                    <span class="swatch swatch--white"></span>
+                    <span class="swatch swatch--custom"></span>
+                  </div>
+                  <span class="hex">F9CB40</span>
+                </div>
+                <div class="row">
+                  <span class="btn">Copy from Route</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Shape</div>
+              <div class="section__body">
+                <div class="shapes">
+                  <div class="shape is-selected">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#f9cb40" stroke="#0e1416" stroke-width="1.5"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><path d="M12 3 C7 3, 4 7, 4 11 C4 16, 12 22, 12 22 C12 22, 20 16, 20 11 C20 7, 17 3, 12 3 Z" fill="none" stroke="#e6ecec" stroke-width="1.5"/><circle cx="12" cy="11" r="2.5" fill="#e6ecec"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="#e6ecec" stroke-width="2.5"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="none" stroke="#e6ecec" stroke-width="1.5"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><path d="M12 3 L21 12 L12 21 L3 12 Z" fill="none" stroke="#e6ecec" stroke-width="1.5"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="#e6ecec" stroke-width="1.5"/><text x="12" y="15.5" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#e6ecec">3</text></svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Size</div>
+              <div class="section__body">
+                <div class="sliders">
+                  <div class="slider">
+                    <span class="slider__name">radius</span>
+                    <span class="slider__track"><span class="slider__fill"></span><span class="slider__thumb"></span></span>
+                    <span class="slider__val">1.50</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">active</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 30% 0 0;"></span><span class="slider__thumb" style="left: 70%;"></span></span>
+                    <span class="slider__val">1.90</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">stroke</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 75% 0 0;"></span><span class="slider__thumb" style="left: 25%;"></span></span>
+                    <span class="slider__val">0.30</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">label</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 55% 0 0;"></span><span class="slider__thumb" style="left: 45%;"></span></span>
+                    <span class="slider__val">1.40</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- clip -->
+      <div class="frame">
+        <div class="toolbar">
+          <span class="toolbar__scope toolbar__scope--clip"></span>
+          <span class="toolbar__item">Style</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">Route</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__item--active toolbar__chev">Waypoints</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">POV</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item">Zoom</span>
+        </div>
+        <div class="panel panel--waypoints" style="width: 340px;">
+          <div class="panel__inner">
+
+            <div class="clip-head">
+              <span class="override">Clip 03 · override</span>
+              <span class="btn">Reset</span>
+            </div>
+
+            <div class="section dim">
+              <div class="section__label">Show</div>
+              <div class="section__body">
+                <div class="trimode">
+                  <div>None</div>
+                  <div>Visited</div>
+                  <div class="is-on">Full</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Color</div>
+              <div class="section__body">
+                <div class="row row--between">
+                  <div class="swatches">
+                    <span class="swatch swatch--coral"></span>
+                    <span class="swatch swatch--pollen is-selected"></span>
+                    <span class="swatch swatch--chartreuse"></span>
+                    <span class="swatch swatch--azure"></span>
+                    <span class="swatch swatch--white"></span>
+                    <span class="swatch swatch--custom"></span>
+                  </div>
+                  <span class="hex">F9CB40</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section dim">
+              <div class="section__label">Shape</div>
+              <div class="section__body">
+                <div class="shapes">
+                  <div class="shape is-selected">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="#f9cb40" stroke="#0e1416" stroke-width="1.5"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="#e6ecec" stroke-width="2.5"/></svg>
+                  </div>
+                  <div class="shape">
+                    <svg viewBox="0 0 24 24"><path d="M12 3 L21 12 L12 21 L3 12 Z" fill="none" stroke="#e6ecec" stroke-width="1.5"/></svg>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section dim">
+              <div class="section__label">Size</div>
+              <div class="section__body">
+                <div class="sliders">
+                  <div class="slider">
+                    <span class="slider__name">radius</span>
+                    <span class="slider__track"><span class="slider__fill"></span><span class="slider__thumb"></span></span>
+                    <span class="slider__val">1.50</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- POV -->
+  <section class="deco">
+    <div class="deco__label">POV</div>
+    <div class="deco__stage">
+      <div class="frame">
+        <div class="toolbar">
+          <span class="toolbar__scope"></span>
+          <span class="toolbar__item">Style</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">Route</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__chev">Waypoints</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item toolbar__item--active toolbar__chev">POV</span>
+          <span class="toolbar__sep"></span>
+          <span class="toolbar__item">Zoom</span>
+        </div>
+        <div class="panel panel--pov" style="width: 340px;">
+          <div class="panel__inner">
+
+            <div class="section">
+              <div class="section__label">Color</div>
+              <div class="section__body">
+                <div class="row row--between">
+                  <div class="swatches">
+                    <span class="swatch swatch--coral is-selected"></span>
+                    <span class="swatch swatch--pollen"></span>
+                    <span class="swatch swatch--chartreuse"></span>
+                    <span class="swatch swatch--azure"></span>
+                    <span class="swatch swatch--white"></span>
+                    <span class="swatch swatch--custom"></span>
+                  </div>
+                  <span class="hex">FF715B</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Pulse</div>
+              <div class="section__body">
+                <div class="pulse-row">
+                  <div class="pulse-card">
+                    <div class="pulse-card__viz">
+                      <svg viewBox="0 0 28 28"><circle cx="14" cy="14" r="4" fill="#ff715b"/></svg>
+                    </div>
+                    <span class="pulse-card__name">None</span>
+                  </div>
+                  <div class="pulse-card is-selected">
+                    <div class="pulse-card__viz">
+                      <svg viewBox="0 0 28 28">
+                        <circle cx="14" cy="14" r="10" fill="none" stroke="#ff715b" stroke-width="1" opacity="0.3"/>
+                        <circle cx="14" cy="14" r="4" fill="#ff715b"/>
+                      </svg>
+                    </div>
+                    <span class="pulse-card__name">Steady</span>
+                  </div>
+                  <div class="pulse-card">
+                    <div class="pulse-card__viz">
+                      <svg viewBox="0 0 28 28">
+                        <circle cx="14" cy="14" r="8" fill="none" stroke="#ff715b" stroke-width="1" opacity="0.6"/>
+                        <circle cx="14" cy="14" r="11" fill="none" stroke="#ff715b" stroke-width="1" opacity="0.25"/>
+                        <circle cx="14" cy="14" r="4" fill="#ff715b"/>
+                      </svg>
+                    </div>
+                    <span class="pulse-card__name">Throb</span>
+                  </div>
+                  <div class="pulse-card">
+                    <div class="pulse-card__viz">
+                      <svg viewBox="0 0 28 28">
+                        <circle cx="14" cy="14" r="6" fill="none" stroke="#ff715b" stroke-width="1" opacity="0.8"/>
+                        <circle cx="14" cy="14" r="9" fill="none" stroke="#ff715b" stroke-width="1" opacity="0.5"/>
+                        <circle cx="14" cy="14" r="12" fill="none" stroke="#ff715b" stroke-width="1" opacity="0.2"/>
+                        <circle cx="14" cy="14" r="3.5" fill="#ff715b"/>
+                      </svg>
+                    </div>
+                    <span class="pulse-card__name">Sonar</span>
+                  </div>
+                </div>
+                <div class="sliders">
+                  <div class="slider">
+                    <span class="slider__name">rate</span>
+                    <span class="slider__track"><span class="slider__fill"></span><span class="slider__thumb"></span></span>
+                    <span class="slider__val">1.0 s</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section__label">Size</div>
+              <div class="section__body">
+                <div class="sliders">
+                  <div class="slider">
+                    <span class="slider__name">dot</span>
+                    <span class="slider__track"><span class="slider__fill"></span><span class="slider__thumb"></span></span>
+                    <span class="slider__val">1.30</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">stroke</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 60% 0 0;"></span><span class="slider__thumb" style="left: 40%;"></span></span>
+                    <span class="slider__val">0.40</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">pulse start</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 70% 0 0;"></span><span class="slider__thumb" style="left: 30%;"></span></span>
+                    <span class="slider__val">1.20</span>
+                  </div>
+                  <div class="slider">
+                    <span class="slider__name">pulse end</span>
+                    <span class="slider__track"><span class="slider__fill" style="inset: 0 20% 0 0;"></span><span class="slider__thumb" style="left: 80%;"></span></span>
+                    <span class="slider__val">3.30</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+</body>
+</html>

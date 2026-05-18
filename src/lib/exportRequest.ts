@@ -23,6 +23,7 @@ import type {
   Project,
   Route,
   TransitionFeel,
+  Waypoint,
 } from '../types';
 import type { ExportJob } from './exportFilenames';
 
@@ -66,6 +67,7 @@ export interface ExportRequestInputs {
   clips: Clip[];
   route: Route | null;
   mapSettings: MapSettings;
+  waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   /** Per-aspect layout configuration, typically `project.layouts`. When the
    *  entry for `aspect` is absent or null, `defaultLayout(aspect)` is used. */
@@ -109,6 +111,11 @@ export interface RenderExportRequest {
   route: Route | null;
   clips: Clip[];
   mapSettings: MapSettings;
+  /** First-class waypoints (schema v7). The renderer worker iterates this
+   *  for the `waypoints` GeoJSON source, replacing the old clip-derived
+   *  list. Always present (`[]` when the project has none) so the worker
+   *  doesn't need a back-compat branch. */
+  waypoints: Waypoint[];
 }
 
 /** Resolve a `FrameRateChoice` to a concrete output fps against the project's
@@ -221,6 +228,7 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     route: inputs.route,
     clips: inputs.clips,
     mapSettings: inputs.mapSettings,
+    waypoints: inputs.waypoints,
   };
 }
 
@@ -234,6 +242,7 @@ export interface ExportRequestContext {
   clips: Clip[];
   route: Route | null;
   mapSettings: MapSettings;
+  waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   layouts?: Project['layouts'];
 }
@@ -255,6 +264,7 @@ export function buildJobRequest(
     clips: context.clips,
     route: context.route,
     mapSettings: context.mapSettings,
+    waypoints: context.waypoints,
     transitionFeel: context.transitionFeel,
     layouts: context.layouts,
     resolution: job.quality,

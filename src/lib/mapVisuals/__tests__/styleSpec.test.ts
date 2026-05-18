@@ -84,12 +84,15 @@ describe('DEFAULT_MAP_SETTINGS overlay seeds', () => {
 describe('resolveStaticPaints', () => {
   function buildMap(
     resolved: ReturnType<typeof resolveStaticPaints>,
-  ): { paintBy: Map<string, number>; layoutBy: Map<string, number> } {
+  ): {
+    paintBy: Map<string, number>;
+    layoutBy: Map<string, number | string | unknown>;
+  } {
     const paintBy = new Map<string, number>();
     for (const [layerId, prop, value] of resolved.paints) {
       paintBy.set(`${layerId}/${prop}`, value);
     }
-    const layoutBy = new Map<string, number>();
+    const layoutBy = new Map<string, number | string | unknown>();
     for (const [layerId, prop, value] of resolved.layouts) {
       layoutBy.set(`${layerId}/${prop}`, value);
     }
@@ -221,28 +224,68 @@ describe('resolveStaticPaints', () => {
     expect(Array.isArray(resolved.layouts)).toBe(true);
     expect(resolved.paints.length).toBeGreaterThan(0);
     expect(resolved.layouts.length).toBeGreaterThan(0);
+    // Paints stay scalar — all numeric size properties.
     for (const entry of resolved.paints) {
       expect(entry).toHaveLength(3);
       expect(typeof entry[0]).toBe('string');
       expect(typeof entry[1]).toBe('string');
       expect(typeof entry[2]).toBe('number');
     }
+    // Layouts are heterogeneous (text-size: number, visibility: string,
+    // text-field: ExpressionSpecification array). Only enforce the tuple
+    // shape; per-property value-shape lives in dedicated tests below.
     for (const entry of resolved.layouts) {
       expect(entry).toHaveLength(3);
-      expect(typeof entry[2]).toBe('number');
+      expect(typeof entry[0]).toBe('string');
+      expect(typeof entry[1]).toBe('string');
     }
   });
 
-  it('emits no color / opacity / stroke-color entries — only size properties', () => {
+  it('paints never carry color / opacity / stroke-color entries — only size properties', () => {
+    // Property-name guard for the paints bucket: catches a future drift
+    // where a colour ends up in resolveStaticPaints (it should live in
+    // buildPerFramePaints or the static layer-spec instead).
     const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
-    const props = [
-      ...resolved.paints.map(([, p]) => p),
-      ...resolved.layouts.map(([, p]) => p),
-    ];
-    for (const p of props) {
+    for (const [, p] of resolved.paints) {
       expect(p).not.toMatch(/color/);
       expect(p).not.toMatch(/opacity/);
     }
+  });
+
+  it('layouts include route visibility derived from route_mode', () => {
+    // route_mode='full' → route-full visible, route-trail none.
+    const full = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, route_mode: 'full' });
+    const fullBy = new Map(full.layouts.map(([l, p, v]) => [`${l}/${p}`, v]));
+    expect(fullBy.get('route-full-line/visibility')).toBe('visible');
+    expect(fullBy.get('route-trail-line/visibility')).toBe('none');
+
+    // route_mode='visited' → swapped.
+    const visited = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, route_mode: 'visited' });
+    const visitedBy = new Map(visited.layouts.map(([l, p, v]) => [`${l}/${p}`, v]));
+    expect(visitedBy.get('route-full-line/visibility')).toBe('none');
+    expect(visitedBy.get('route-trail-line/visibility')).toBe('visible');
+
+    // route_mode='none' → both layers hidden.
+    const none = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, route_mode: 'none' });
+    const noneBy = new Map(none.layouts.map(([l, p, v]) => [`${l}/${p}`, v]));
+    expect(noneBy.get('route-full-line/visibility')).toBe('none');
+    expect(noneBy.get('route-trail-line/visibility')).toBe('none');
+  });
+
+  it('layouts include the waypoint label expression derived from label_mode', () => {
+    // 'numbered' → 1-based index expression.
+    const numbered = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, label_mode: 'numbered' });
+    const numberedExpr = numbered.layouts.find(
+      ([l, p]) => l === 'waypoints-label' && p === 'text-field',
+    )?.[2];
+    expect(numberedExpr).toEqual(['to-string', ['+', ['get', 'index'], 1]]);
+
+    // 'labeled' → feature.label string verbatim.
+    const labeled = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, label_mode: 'labeled' });
+    const labeledExpr = labeled.layouts.find(
+      ([l, p]) => l === 'waypoints-label' && p === 'text-field',
+    )?.[2];
+    expect(labeledExpr).toEqual(['to-string', ['get', 'label']]);
   });
 });
 

@@ -12,7 +12,7 @@ const DEFAULT_ZOOM = 1.0;
 
 const SPEED_STEP = 0.25;
 const SPEED_MIN = 0.25;
-const SPEED_MAX = 4.0;
+const SPEED_MAX = 100.0;
 const DEFAULT_SPEED = 1.0;
 
 const ASPECTS = ['16:9', '9:16', '1:1', '4:5'] as const;

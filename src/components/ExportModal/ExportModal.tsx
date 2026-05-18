@@ -36,6 +36,7 @@ import type {
   ProjectLayouts,
   Route,
   TransitionFeel,
+  Waypoint,
 } from '../../types';
 
 const DISABLED_RENDER_TOOLTIP =
@@ -72,6 +73,9 @@ export interface ExportModalProps {
   clips: Clip[];
   route: Route | null;
   mapSettings: MapSettings;
+  /** First-class waypoints (schema v7). Forwarded into every job request via
+   *  `buildJobRequest` → `RenderExportRequest.waypoints`. */
+  waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   projectLayouts: ProjectLayouts;
 }
@@ -149,6 +153,7 @@ export function ExportModal({
   clips,
   route,
   mapSettings,
+  waypoints,
   transitionFeel,
   projectLayouts,
 }: ExportModalProps) {
@@ -463,6 +468,7 @@ export function ExportModal({
       clips,
       route,
       mapSettings,
+      waypoints,
       transitionFeel,
       layouts: projectLayouts,
     };

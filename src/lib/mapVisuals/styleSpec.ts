@@ -22,6 +22,7 @@
 import type {
   StyleSpecification,
   LayerSpecification,
+  ExpressionSpecification,
 } from 'maplibre-gl';
 import type { MapSettings } from '../../types';
 import { colors } from '../../theme/tokens';
@@ -148,17 +149,19 @@ export const WAYPOINTS_CIRCLE_LAYER: LayerSpecification = {
   },
 };
 
-/** Numeric label centered on each waypoint circle. `index + 1` so the user
- *  sees 1-based clip ordinals. Source: `waypoints` (same source as the
- *  circle layer).
- *
- *  `text-size` is a PLACEHOLDER — see resolveStaticPaints. */
+/** Label centered on each waypoint circle. `text-field` and `text-size` are
+ *  both PLACEHOLDERS — `resolveStaticPaints` overrides them. `text-field`
+ *  deliberately ships as an empty string so a missed seed fails loudly
+ *  (blank labels) rather than silently rendering one of the real modes; the
+ *  prior numbered-by-default expression masked the export's missing
+ *  `label_mode` plumbing as "labeled mode falls back to numbered." Source:
+ *  `waypoints` (same source as the circle layer). */
 export const WAYPOINTS_LABEL_LAYER: LayerSpecification = {
   id: 'waypoints-label',
   type: 'symbol',
   source: 'waypoints',
   layout: {
-    'text-field': ['to-string', ['+', ['get', 'index'], 1]],
+    'text-field': '',
     'text-font': ['Noto Sans Bold'],
     'text-size': 1,
     'text-allow-overlap': true,
@@ -225,26 +228,38 @@ export function buildStyleSpec(mapSettings: MapSettings): StyleSpecResult {
   };
 }
 
-/** Resolved-static-paints descriptor. Pure: each value is
- *  `mapSettings.overlay_<name> × PAINT_REFERENCE_WIDTH`. Both renderer and
- *  preview consume this same result; there is no pane-reshape variant.
+/** Resolved-static-paints descriptor. Pure function of `MapSettings`. Both
+ *  renderer and preview consume this same result and apply it identically;
+ *  there is no pane-reshape variant.
  *
- *  This is the "static defaults" surface — the values the consumer should
- *  push to MapLibre via `setPaintProperty` / `setLayoutProperty` after the
- *  style loads. The per-frame builder (`buildPerFramePaints`) separately
- *  overrides the `waypoints-circle` `circle-radius` per frame, and the
- *  `live-marker-pulse` `circle-radius`; this helper covers the layers
- *  whose size-based paints aren't otherwise touched per-frame
- *  (`route-full-line`, `route-trail-line`, `live-marker-dot`, the
- *  `circle-stroke-width` on `waypoints-circle`, and the `text-size` layout
- *  on `waypoints-label`). */
+ *  This is the "anything derivable from `MapSettings`" surface — every
+ *  property MapLibre needs that depends on a user-editable setting. The
+ *  consumer's apply loop is the only correct place to set these on the map;
+ *  no other code in either pipeline should be touching `setPaintProperty`
+ *  / `setLayoutProperty` for properties that derive from `MapSettings`,
+ *  because doing so creates a preview-only or export-only branch that the
+ *  other side can't see.
+ *
+ *  Today's tuples:
+ *   - `paints`: size-based numeric properties (line-widths, stroke widths,
+ *     circle radii, etc.). The per-frame builder (`buildPerFramePaints`)
+ *     separately overrides `waypoints-circle.circle-radius` and
+ *     `live-marker-pulse.circle-radius` per frame; the others are only ever
+ *     set from here.
+ *   - `layouts`: every `setLayoutProperty`-able value, including
+ *     `visibility` (mode strings), `text-size` (numbers), and `text-field`
+ *     (expressions). Values are heterogeneous because MapLibre's layout
+ *     surface itself is heterogeneous; the consumer just iterates and
+ *     forwards each tuple to `setLayoutProperty`. */
 export interface ResolvedStaticPaints {
-  /** [layerId, propertyName, value] — for `setPaintProperty`. */
+  /** [layerId, propertyName, value] — for `setPaintProperty`. Values are
+   *  always numeric (size-based properties). */
   paints: Array<[string, string, number]>;
-  /** [layerId, propertyName, value] — for `setLayoutProperty`. text-size is
-   *  a layout property, not a paint property, so it ships in its own bucket
-   *  to keep the consumer's apply loop straight-forward. */
-  layouts: Array<[string, string, number]>;
+  /** [layerId, propertyName, value] — for `setLayoutProperty`. Values are
+   *  heterogeneous: numeric (text-size), string (visibility), or an
+   *  ExpressionSpecification (text-field). The consumer's apply loop forwards
+   *  each tuple verbatim; MapLibre validates the value against the property. */
+  layouts: Array<[string, string, number | string | ExpressionSpecification]>;
 }
 
 /** Build the static-paint descriptor for a given `MapSettings`. Pure
@@ -256,6 +271,15 @@ export function resolveStaticPaints(
   mapSettings: MapSettings,
 ): ResolvedStaticPaints {
   const w = PAINT_REFERENCE_WIDTH;
+  // Waypoint label expression. 'numbered' renders the 1-based index;
+  // 'labeled' renders the feature's `label` string verbatim (empty labels
+  // render nothing — the "sparse map" semantic). Both sides resolve through
+  // this single tuple so a future mode lands automatically in preview AND
+  // export.
+  const labelExpr: ExpressionSpecification =
+    mapSettings.label_mode === 'labeled'
+      ? ['to-string', ['get', 'label']]
+      : ['to-string', ['+', ['get', 'index'], 1]];
   return {
     paints: [
       ['route-full-line', 'line-width', mapSettings.overlay_route_full_width * w],
@@ -292,6 +316,13 @@ export function resolveStaticPaints(
     ],
     layouts: [
       ['waypoints-label', 'text-size', mapSettings.overlay_waypoint_label_size * w],
+      ['waypoints-label', 'text-field', labelExpr],
+      // Route visibility flows through layouts so per-clip `map_overrides`
+      // of `route_mode` switch automatically at the cut (the renderer
+      // re-resolves per-frame). Maplibre no-ops same-value writes, so the
+      // steady-state cost is one map lookup per frame per tuple.
+      ['route-full-line', 'visibility', mapSettings.route_mode === 'full' ? 'visible' : 'none'],
+      ['route-trail-line', 'visibility', mapSettings.route_mode === 'visited' ? 'visible' : 'none'],
     ],
   };
 }

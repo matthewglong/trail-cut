@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { Clip, Route, MapSettings } from '../types';
+import type { Clip, Route, MapSettings, Waypoint } from '../types';
 import {
   resolveIntent,
   type CompiledTimeline,
@@ -48,14 +48,22 @@ interface MapViewProps {
   selectedClipId: string | null;
   /** The clip whose camera state is current at this moment in project-time
    *  per `activeClipIdAt`. During a transition this is the destination clip;
-   *  outside a transition it equals `selectedClipId`. Drives waypoint
-   *  highlighting only — the render loop reads project-time directly. */
+   *  outside a transition it equals `selectedClipId`. Pre-v7 this drove
+   *  waypoint highlighting; post-v7 the active-waypoint highlight is driven
+   *  by `mapSettings.active_waypoint_mode` against the marker's wall-clock,
+   *  so this prop is unused for highlighting. Kept for parity with the
+   *  caller's existing wiring; the live-marker fallback chain reads the
+   *  clip list directly. */
   activeClipId: string | null;
   route: Route | null;
-  /** Per-clip data (id, gps) for the waypoint layer's circle features and
-   *  the marker's GPS fallback. The compiled timeline carries clip ids and
-   *  spans but not embedded GPS, so we still need the clip list here. */
+  /** Per-clip data (id, gps) — used for the live-marker's GPS fallback when
+   *  GPX is missing or out of range. The waypoints themselves are now first
+   *  class (`waypoints` prop below) and carry their own fallback GPS, so
+   *  this list is no longer the waypoint source of truth. */
   clips: Clip[];
+  /** First-class waypoints (schema v7). Drives the `waypoints` GeoJSON
+   *  source — replaces the old "iterate clips at render time" model. */
+  waypoints: Waypoint[];
   /** Selected export aspect — drives the *canonical* CSS viewport that
    *  `mapSettings.zoom` is interpreted against. The preview applies that
    *  zoom directly (no pane-reshape compensation); making the pane wider or
@@ -70,6 +78,7 @@ interface MapViewProps {
 export default function MapView({
   timeline,
   clips,
+  waypoints,
   selectedClipId,
   activeClipId,
   route,
@@ -98,8 +107,8 @@ export default function MapView({
   // a passive useEffect (post-paint) so worst-case staleness is one frame.
   const mapSettingsRef = useRef(mapSettings);
   const clipsRef = useRef(clips);
+  const waypointsRef = useRef(waypoints);
   const routeRef = useRef(route);
-  const activeClipIdRef = useRef(activeClipId);
   const aspectRef = useRef(aspect);
   const currentProjectMsRef = useRef<number | null>(null);
   useEffect(() => {
@@ -109,14 +118,19 @@ export default function MapView({
     clipsRef.current = clips;
   }, [clips]);
   useEffect(() => {
+    waypointsRef.current = waypoints;
+  }, [waypoints]);
+  useEffect(() => {
     routeRef.current = route;
   }, [route]);
   useEffect(() => {
-    activeClipIdRef.current = activeClipId;
-  }, [activeClipId]);
-  useEffect(() => {
     aspectRef.current = aspect;
   }, [aspect]);
+  // `activeClipId` is no longer consumed by the render loop (v7 active-
+  // waypoint logic uses `mapSettings.active_waypoint_mode` against the
+  // marker's wall-clock instead). The prop is kept on `MapViewProps` for
+  // parity with the existing call site.
+  void activeClipId;
   // Effective project-time the render loop should target. When the video is
   // playing this mirrors the playhead. When no playhead has fired yet (e.g.
   // right after project load or a clip selection), fall back to the selected
@@ -233,7 +247,7 @@ export default function MapView({
       // this on subsequent route/clips/styleVersion changes.
       const staticData = buildStaticSourceData({
         route: routeRef.current,
-        clips: clipsRef.current,
+        waypoints: waypointsRef.current,
         mapSettings: mapSettingsRef.current,
       });
       (map.getSource('route-full') as maplibregl.GeoJSONSource | undefined)
@@ -250,8 +264,11 @@ export default function MapView({
     // at dispatch time, so they survive setStyle().
     map.on('click', 'waypoints-circle', (e) => {
       const f = e.features?.[0];
-      const id = f?.properties?.id;
-      if (typeof id === 'string') onSelectClipRef.current?.(id);
+      // The feature's `id` is the waypoint id (v7); read `clipId` (set when
+      // the waypoint is clip-sourced) to recover the clip selection.
+      // Manual or GPX-sourced waypoints have no `clipId` — clicks no-op.
+      const clipId = f?.properties?.clipId;
+      if (typeof clipId === 'string') onSelectClipRef.current?.(clipId);
     });
     map.on('mouseenter', 'waypoints-circle', () => {
       map.getCanvas().style.cursor = 'pointer';
@@ -303,7 +320,7 @@ export default function MapView({
       // Source data comes from the shared module — preserves visual parity
       // with the export renderer and keeps LineString construction in one
       // place.
-      const staticData = buildStaticSourceData({ route, clips, mapSettings });
+      const staticData = buildStaticSourceData({ route, waypoints, mapSettings });
       src.setData(staticData['route-full']);
 
       if (!route || route.trackpoints.length === 0) return;
@@ -360,16 +377,23 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [route, clips, mapSettings, styleVersion, aspect]);
 
-  // ---- Apply static layer paints at the canonical 1080 anchor ----
-  // Layer specs ship `circle-radius` / `line-width` / `text-size` as
-  // placeholder `1`s — the real values are
-  // `mapSettings.overlay_<name> × PAINT_REFERENCE_WIDTH`. Same call the
-  // renderer worker makes after style.load; the preview pane's size has no
-  // bearing on the values. Re-runs on style swap (`styleVersion`) and on
-  // any `mapSettings` change — including the swap from one clip's resolved
-  // settings to another when the active clip changes (the prop already
-  // arrives resolved — `Project.map_settings` merged with the active clip's
-  // `map_overrides` — so this effect picks up per-clip overlay-size edits).
+  // ---- Apply static layer paints + layouts ----
+  // `resolveStaticPaints(mapSettings)` is the single source of truth for
+  // every `setPaintProperty` / `setLayoutProperty` write that derives from
+  // `mapSettings` — paint sizes, label text-size, the label text-field
+  // expression (`label_mode`), and route-line `visibility` (`route_mode`).
+  // The renderer worker calls the same resolver and applies the same tuples
+  // page-side; that's how preview/export parity is guaranteed for anything
+  // tunable through `MapSettings`. If you find yourself reaching for a new
+  // `map.setPaintProperty` / `map.setLayoutProperty` call in this file,
+  // add it to `resolveStaticPaints` instead — anything that lives only
+  // here is a divergence waiting to happen.
+  //
+  // Re-runs on style swap (`styleVersion`) and on any `mapSettings` change
+  // — including the swap from one clip's resolved settings to another when
+  // the active clip changes (the prop already arrives resolved —
+  // `Project.map_settings` merged with the active clip's `map_overrides` —
+  // so this effect picks up per-clip overrides automatically).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -387,30 +411,8 @@ export default function MapView({
     if (styleReadyRef.current) apply();
   }, [styleVersion, mapSettings]);
 
-  // ---- Update route-line visibility based on route_mode ----
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const apply = () => {
-      if (!map.getLayer('route-full-line')) return;
-      map.setLayoutProperty(
-        'route-full-line',
-        'visibility',
-        mapSettings.route_mode === 'full' ? 'visible' : 'none',
-      );
-      if (map.getLayer('route-trail-line')) {
-        map.setLayoutProperty(
-          'route-trail-line',
-          'visibility',
-          mapSettings.route_mode === 'visited' ? 'visible' : 'none',
-        );
-      }
-    };
-    if (styleReadyRef.current) apply();
-  }, [mapSettings.route_mode, styleVersion]);
-
   // ---- Waypoint static seed ----
-  // Whenever clips/route/mapSettings/styleVersion changes, push the full
+  // Whenever waypoints/route/mapSettings/styleVersion changes, push the full
   // waypoints FeatureCollection. Per-frame `visited` filtering happens in
   // the ease-loop tick automatically (the module returns a 'waypoints' key
   // in `sources` when mode is 'visited').
@@ -420,11 +422,11 @@ export default function MapView({
     const apply = () => {
       const src = map.getSource('waypoints') as maplibregl.GeoJSONSource | undefined;
       if (!src) return;
-      const staticData = buildStaticSourceData({ route, clips, mapSettings });
+      const staticData = buildStaticSourceData({ route, waypoints, mapSettings });
       src.setData(staticData.waypoints);
     };
     if (styleReadyRef.current) apply();
-  }, [clips, route, mapSettings, styleVersion]);
+  }, [waypoints, route, mapSettings, styleVersion]);
 
   // ---- Per-frame render loop ----
   // Each animation frame we compose a per-frame snapshot via
@@ -476,9 +478,9 @@ export default function MapView({
       const state = buildPerFrameState(
         timeline,
         projectTimeMs,
-        activeClipIdRef.current,
         indexRoute(routeRef.current),
         clipsRef.current,
+        waypointsRef.current,
         mapSettingsRef.current,
         canonicalCssViewport,
       );

@@ -1,8 +1,8 @@
 // Source-data builders. Two flavors:
 //
 //  - `buildStaticSourceData` is called at setup-time and on `route` /
-//    `clips` / `mapSettings` changes. Produces the full-route LineString and
-//    the full waypoints FeatureCollection. Visited-mode filtering of the
+//    `waypoints` / `mapSettings` changes. Produces the full-route LineString
+//    and the full waypoints FeatureCollection. Visited-mode filtering of the
 //    waypoints is intentionally *not* done here — that's per-frame because
 //    "visited" is a function of project-time.
 //
@@ -10,14 +10,21 @@
 //    every export frame. Produces the slime-trail LineString and the
 //    live-marker single-point FeatureCollection, plus the visited-filtered
 //    waypoints when `mapSettings.waypoints_mode === 'visited'`.
+//
+// Both builders operate on `project.waypoints: Waypoint[]` (schema v7). The
+// pre-v7 clip-derived list lived on `clips` and was rebuilt at render time;
+// v7 promotes waypoints to first-class state with their own lifecycle. The
+// `index` feature property is the waypoint's position in the
+// `project.waypoints` array, regardless of provenance — `'numbered'` label
+// mode renders `index + 1` against that.
 
-import type { Clip, Route, MapSettings } from '../../types';
+import type { Clip, MapSettings, Route, Waypoint } from '../../types';
 import {
   indexRoute,
   locationAt,
   trailUpTo,
-  clipWaypointLocation,
   type IndexedRoute,
+  type ResolvedLocation,
 } from '../routeLocation';
 import type { CompiledTimeline } from '../cameraIntent';
 import type { StaticSourceData } from './types';
@@ -34,6 +41,63 @@ function emptyLineFeature(): GeoJSON.Feature<GeoJSON.LineString> {
 /** Empty FeatureCollection of points, returned when there's no live marker. */
 function emptyPointCollection(): GeoJSON.FeatureCollection<GeoJSON.Point> {
   return { type: 'FeatureCollection', features: [] };
+}
+
+/** Resolve a `Waypoint`'s map position to lat/lng. Two branches matching
+ *  the discriminated `WaypointPosition`:
+ *
+ *  - `wall_clock_ms` — anchored to the GPX timeline; resolved via
+ *    `locationAt(ms, route, fallback)` where the fallback is the waypoint's
+ *    own `fallback_gps` (typically the clip's embedded GPS for clip-sourced
+ *    entries). Returns null when the route is missing AND no fallback is
+ *    set.
+ *  - `fixed` — pinned to a literal lat/lng. Always resolves.
+ *
+ *  Pure. Both preview and renderer call this; nothing here depends on
+ *  React or MapLibre. */
+export function waypointLocation(
+  wp: Waypoint,
+  route: IndexedRoute | null,
+): ResolvedLocation | null {
+  if (wp.position.kind === 'fixed') {
+    return { lat: wp.position.lat, lng: wp.position.lng, source: 'fallback' };
+  }
+  const fallback = wp.position.fallback_gps ?? null;
+  return locationAt(wp.position.ms, route, fallback);
+}
+
+/** Build the full waypoints FeatureCollection (one Point per waypoint
+ *  whose location can be resolved). Properties: `{ id, index, clipId? }`
+ *  where `index` is the waypoint's position in the input array — used by
+ *  the `waypoints-label` layer's `text-field` expression when
+ *  `label_mode === 'numbered'`. `clipId` is set when the waypoint was
+ *  sourced from a clip; unused by the layer today but available to future
+ *  data-driven expressions (e.g. an active-clip highlight). `label` rides
+ *  the feature too so `label_mode === 'labeled'` resolves via
+ *  `['get', 'label']`.
+ *
+ *  Visited-mode filtering is *not* applied here — that's a per-frame
+ *  concern. */
+function buildWaypointsCollection(
+  waypoints: Waypoint[],
+  indexedRoute: IndexedRoute | null,
+): GeoJSON.FeatureCollection<GeoJSON.Point> {
+  const features: GeoJSON.Feature<GeoJSON.Point>[] = [];
+  waypoints.forEach((wp, index) => {
+    const loc = waypointLocation(wp, indexedRoute);
+    if (!loc) return;
+    features.push({
+      type: 'Feature',
+      properties: {
+        id: wp.id,
+        index,
+        clipId: wp.clip_id ?? null,
+        label: wp.label,
+      },
+      geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
+    });
+  });
+  return { type: 'FeatureCollection', features };
 }
 
 /** Build full-route LineString from a `Route`'s trackpoints. Returns an
@@ -54,54 +118,26 @@ function buildFullRouteFeature(
   };
 }
 
-/** Build the full waypoints FeatureCollection (one Point per clip whose
- *  location can be resolved). Properties: `{ id, index }` where `index` is
- *  the clip's original position in the input array — used by the
- *  `waypoints-label` layer's `text-field` expression `['+', ['get', 'index'],
- *  1]` to render 1-based ordinals.
- *
- *  Visited-mode filtering is *not* applied here — that's a per-frame
- *  concern. This function returns every clip that has a resolvable
- *  position, and `buildPerFrameSourceData` filters by project-time when
- *  `waypoints_mode === 'visited'`. */
-function buildWaypointsCollection(
-  clips: Clip[],
-  indexedRoute: IndexedRoute | null,
-): GeoJSON.FeatureCollection<GeoJSON.Point> {
-  const features: GeoJSON.Feature<GeoJSON.Point>[] = [];
-  clips.forEach((clip, index) => {
-    const loc = clipWaypointLocation(clip, indexedRoute);
-    if (!loc) return;
-    features.push({
-      type: 'Feature',
-      properties: { id: clip.id, index },
-      geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
-    });
-  });
-  return { type: 'FeatureCollection', features };
-}
-
 /** Static source data — what the consumer pushes via `setData` on
- *  `route-full` and `waypoints` whenever route/clips/mapSettings change.
- *  Pure function of inputs. Builds the IndexedRoute internally via
- *  `indexRoute(route)` (also pure). */
+ *  `route-full` and `waypoints` whenever route/waypoints/mapSettings change.
+ *  Pure function of inputs. */
 export function buildStaticSourceData(args: {
   route: Route | null;
-  clips: Clip[];
+  waypoints: Waypoint[];
   mapSettings: MapSettings;
 }): StaticSourceData {
-  const { route, clips, mapSettings } = args;
+  const { route, waypoints, mapSettings } = args;
   const indexedRoute = indexRoute(route);
   // `none` hides waypoints entirely; `visited` seeds empty and the per-frame
-  // pass fills in only the visited subset; `all` (default) seeds the full
+  // pass fills in only the visited subset; `full` (default) seeds the full
   // collection.
-  const waypoints =
+  const wpCollection =
     mapSettings.waypoints_mode === 'none'
       ? emptyPointCollection()
-      : buildWaypointsCollection(clips, indexedRoute);
+      : buildWaypointsCollection(waypoints, indexedRoute);
   return {
     'route-full': buildFullRouteFeature(route),
-    waypoints,
+    waypoints: wpCollection,
   };
 }
 
@@ -112,18 +148,61 @@ export interface WallClockTrace {
   clipId: string;
 }
 
+/** Decide whether a waypoint has been "passed" by the current marker. Only
+ *  wall-clock-anchored waypoints participate — fixed-position waypoints
+ *  count as always-visible in 'visited' mode and never as "passed" in the
+ *  active-waypoint comparison (no route-distance resolution in v1). */
+function waypointPassed(wp: Waypoint, markerWallMs: number): boolean {
+  if (wp.position.kind === 'wall_clock_ms') {
+    return wp.position.ms <= markerWallMs;
+  }
+  // Fixed waypoints are always considered passed for visited-mode visibility
+  // — they exist independent of the route timeline. They're excluded from
+  // active-waypoint selection by `pickActiveWaypoint` below.
+  return true;
+}
+
+/** Pick the active waypoint per the project's `active_waypoint_mode`. Only
+ *  the `'latest_passed'` mode selects a non-null id; `'none'` always returns
+ *  null. Latest-passed compares wall-clock against `markerTrace.wallMs` and
+ *  returns the id of the wall-clock-anchored waypoint with the largest ms
+ *  still ≤ the marker. Fixed waypoints never participate. */
+export function pickActiveWaypoint(
+  waypoints: Waypoint[],
+  markerTrace: WallClockTrace | null,
+  mapSettings: MapSettings,
+): string | null {
+  if (mapSettings.active_waypoint_mode !== 'latest_passed') return null;
+  if (!markerTrace) return null;
+  const marker = markerTrace.wallMs;
+  let bestId: string | null = null;
+  let bestMs = -Infinity;
+  for (const wp of waypoints) {
+    if (wp.position.kind !== 'wall_clock_ms') continue;
+    const ms = wp.position.ms;
+    if (ms > marker) continue;
+    if (ms > bestMs) {
+      bestMs = ms;
+      bestId = wp.id;
+    }
+  }
+  return bestId;
+}
+
 /** Per-frame source data. Always returns `route-trail` and `live-marker`;
  *  conditionally includes `waypoints` (visited-filtered) when
  *  `mapSettings.waypoints_mode === 'visited'`.
  *
- *  Filtering predicate for visited waypoints mirrors MapView.tsx pre-
- *  refactor: a clip is visible if its compiled `ClipSpan.startMs <=
- *  projectTimeMs`. Clips without a span (filtered out by the compiler) are
- *  excluded outright. */
+ *  Visited predicate (v7): a wall-clock-anchored waypoint is visible once
+ *  the marker's wall-clock reaches its anchor; a fixed-position waypoint is
+ *  always visible in 'visited' mode. The pre-v7 predicate compared against
+ *  the compiled `ClipSpan.startMs`, which doesn't generalize to waypoints
+ *  decoupled from clips. */
 export function buildPerFrameSourceData(args: {
   markerTrace: WallClockTrace | null;
   indexedRoute: IndexedRoute | null;
   clips: Clip[];
+  waypoints: Waypoint[];
   mapSettings: MapSettings;
   timeline: CompiledTimeline;
   projectTimeMs: number | null;
@@ -132,9 +211,8 @@ export function buildPerFrameSourceData(args: {
     markerTrace,
     indexedRoute,
     clips,
+    waypoints,
     mapSettings,
-    timeline,
-    projectTimeMs,
   } = args;
 
   // ---- route-trail ----
@@ -189,21 +267,26 @@ export function buildPerFrameSourceData(args: {
   };
 
   // ---- waypoints (visited mode only) ----
-  // 'visited': a clip counts as visible once project-time has crossed into
-  // its compiled span. Mirrors MapView.tsx:495–509 — the predicate to
-  // *include* is `span.startMs <= projectTimeMs`, equivalent to "*exclude*
-  // when `span.startMs > projectTimeMs`."
+  // 'visited': a waypoint is included once the marker has reached its
+  // anchor (wall-clock-anchored waypoints) or unconditionally (fixed
+  // waypoints — see `waypointPassed`). Wall-clock-only filtering replaces
+  // the pre-v7 `ClipSpan.startMs` predicate, which doesn't apply to
+  // waypoints decoupled from clips.
   if (mapSettings.waypoints_mode === 'visited') {
     const features: GeoJSON.Feature<GeoJSON.Point>[] = [];
-    if (projectTimeMs != null) {
-      clips.forEach((clip, index) => {
-        const loc = clipWaypointLocation(clip, indexedRoute);
+    if (markerTrace) {
+      waypoints.forEach((wp, index) => {
+        const loc = waypointLocation(wp, indexedRoute);
         if (!loc) return;
-        const span = timeline.clipSpans.find((s) => s.clipId === clip.id);
-        if (!span || span.startMs > projectTimeMs) return;
+        if (!waypointPassed(wp, markerTrace.wallMs)) return;
         features.push({
           type: 'Feature',
-          properties: { id: clip.id, index },
+          properties: {
+            id: wp.id,
+            index,
+            clipId: wp.clip_id ?? null,
+            label: wp.label,
+          },
           geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
         });
       });

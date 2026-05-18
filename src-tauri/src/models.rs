@@ -165,6 +165,15 @@ pub struct MapSettings {
     pub overlay_pulse_start_radius: f64,
     #[serde(default = "default_overlay_pulse_end_radius")]
     pub overlay_pulse_end_radius: f64,
+    /// "numbered" — render the waypoint's 1-based ordinal as its label.
+    /// "labeled" — render its `label` text (empty string = no text).
+    #[serde(default = "default_label_mode")]
+    pub label_mode: String,
+    /// "none" — no waypoint is highlighted.
+    /// "latest_passed" — the latest waypoint whose anchor sits at or before the
+    /// current marker is rendered at the active radius.
+    #[serde(default = "default_active_waypoint_mode")]
+    pub active_waypoint_mode: String,
 }
 
 fn default_full() -> String {
@@ -228,6 +237,12 @@ fn default_overlay_pulse_start_radius() -> f64 {
 fn default_overlay_pulse_end_radius() -> f64 {
     0.033
 }
+fn default_label_mode() -> String {
+    "numbered".to_string()
+}
+fn default_active_waypoint_mode() -> String {
+    "latest_passed".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapOverrides {
@@ -269,6 +284,58 @@ pub struct MapOverrides {
     pub overlay_pulse_start_radius: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay_pulse_end_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_waypoint_mode: Option<String>,
+}
+
+/// Position anchor for a waypoint. Two variants:
+///
+/// - `WallClockMs`: anchored to a wall-clock timestamp on the GPX timeline.
+///   Resolved at render time via `locationAt(ms, route, fallback_gps)` —
+///   the fallback covers projects without a GPX route or with the
+///   waypoint's timestamp outside the route's covered range.
+/// - `Fixed`: pinned to a literal lat/lng. Doesn't move with the route
+///   timeline and doesn't participate in "visited" filtering or
+///   "latest passed" active highlighting.
+///
+/// On-disk shape uses the serde tag = "kind" convention with snake_case
+/// variants so the JSON reads as
+/// `{ "kind": "wall_clock_ms", "ms": …, "fallback_gps": {…} }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WaypointPosition {
+    WallClockMs {
+        ms: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fallback_gps: Option<GpsCoord>,
+    },
+    Fixed {
+        lat: f64,
+        lng: f64,
+    },
+}
+
+/// First-class waypoint. Decoupled from clips: every clip-sourced waypoint
+/// is seeded once on import / project-load and then survives independent of
+/// the clip's later lifecycle. Deletion is sticky (manual edits aren't
+/// undone by trims or re-imports). See `src/lib/waypoints.ts` for the
+/// frontend sync rules.
+///
+/// `source` records provenance ("clip" | "gpx" | "manual"); the renderer
+/// doesn't care which one set the position. `clip_id` is populated for
+/// `source == "clip"` waypoints so the sync helper can find and re-anchor
+/// (or drop) them when the underlying clip is trimmed or removed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Waypoint {
+    pub id: String,
+    pub position: WaypointPosition,
+    #[serde(default)]
+    pub label: String,
+    pub source: String, // "clip" | "gpx" | "manual"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip_id: Option<String>,
 }
 
 /// Project-level "transition feel" knob. Drives the duration multiplier for
@@ -377,7 +444,10 @@ pub struct ExportGrid {
 /// shape with the per-cell `ExportGrid` to support the configure-grid
 /// redesign — the migration drops the v5 value rather than transforming it
 /// (the flat shape's intent doesn't map cleanly to per-cell chip configs).
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+/// v7 promotes waypoints to a first-class project entity (was: derived from
+/// clip starts at render time). Purely additive: the v6→v7 migration stamps
+/// the version, and load_project seeds `waypoints` from clips when absent.
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -406,6 +476,8 @@ impl Default for MapSettings {
             overlay_live_marker_dot_stroke_width: default_overlay_live_marker_dot_stroke_width(),
             overlay_pulse_start_radius: default_overlay_pulse_start_radius(),
             overlay_pulse_end_radius: default_overlay_pulse_end_radius(),
+            label_mode: default_label_mode(),
+            active_waypoint_mode: default_active_waypoint_mode(),
         }
     }
 }
@@ -471,6 +543,14 @@ pub struct Project {
     /// on subsequent opens. The v5→v6 migration drops any prior flat value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_export_selection: Option<ExportGrid>,
+    /// First-class waypoints (schema v7). Each waypoint carries a position,
+    /// label, source provenance, and an optional `clip_id` linking it back to
+    /// the clip whose creation seeded it. Default is `[]`. Legacy bundles
+    /// (pre-v7) lack the field; `load_project` seeds it from `clips` so the
+    /// first save round-trips the populated list. See `src/lib/waypoints.ts`
+    /// for the sync rules on the frontend side.
+    #[serde(default)]
+    pub waypoints: Vec<Waypoint>,
 }
 
 impl Default for Project {
@@ -494,6 +574,7 @@ impl Default for Project {
             start_camera: None,
             default_entry_transition: None,
             last_export_selection: None,
+            waypoints: Vec::new(),
         }
     }
 }

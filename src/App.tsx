@@ -5,7 +5,7 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, ProjectLayouts, TransitionFeel } from './types';
+import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, ProjectLayouts, TransitionFeel, Waypoint } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
 import { defaultSplitLayout } from './lib/layout';
 
@@ -34,6 +34,7 @@ export default function App() {
   const [projectLayouts, setProjectLayouts] = useState<ProjectLayouts>(makeSeededLayouts);
   const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
   const [lastExportSelection, setLastExportSelection] = useState<ExportGrid | null>(null);
+  const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
@@ -43,6 +44,7 @@ export default function App() {
     setClips,
     setSelectedClipId,
     setRoute,
+    setWaypoints,
   });
 
   const project = useProject({
@@ -59,6 +61,7 @@ export default function App() {
     setProjectLayouts,
     setSelectedExportAspect,
     setLastExportSelection,
+    setWaypoints,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -77,6 +80,7 @@ export default function App() {
     projectLayouts,
     selectedExportAspect,
     lastExportSelection,
+    waypoints,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
@@ -145,6 +149,8 @@ export default function App() {
       setProjectLayouts={setProjectLayouts}
       lastExportSelection={lastExportSelection}
       setLastExportSelection={setLastExportSelection}
+      waypoints={waypoints}
+      setWaypoints={setWaypoints}
       playheadMs={playheadMs}
       setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}

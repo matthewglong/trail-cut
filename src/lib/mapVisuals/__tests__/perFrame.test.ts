@@ -14,7 +14,9 @@ import {
   DEFAULT_MAP_SETTINGS,
   type Clip,
   type MapSettings,
+  type Waypoint,
 } from '../../../types';
+import { seedWaypointsFromClips } from '../../waypoints';
 
 const VIEWPORT: Viewport = { width: 800, height: 600, dpr: 1 };
 
@@ -47,7 +49,10 @@ function mkClip(overrides: Partial<Clip> = {}): Clip {
 }
 
 /** Two-clip fixture: clip 1 occupies project-time [0, 5000), clip 2 occupies
- *  [5000, 15000). Disabled entry transitions so the spans tile exactly. */
+ *  [5000, 15000). Disabled entry transitions so the spans tile exactly.
+ *  Waypoints seeded from clips so v7 visited-mode tests have something to
+ *  filter — they share each clip's `created_at + trim.in_ms` anchor and the
+ *  embedded GPS as fallback. */
 function twoClipFixture() {
   const clips: Clip[] = [
     mkClip({
@@ -66,28 +71,29 @@ function twoClipFixture() {
     }),
   ];
   const timeline = compileTimeline(clips, null, POINT_SETTINGS, {});
-  return { clips, timeline };
+  const waypoints: Waypoint[] = seedWaypointsFromClips(clips);
+  return { clips, waypoints, timeline };
 }
 
 describe('buildPerFrameState purity', () => {
   it('two identical calls produce a deeply-equal result', () => {
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     const t = 1234;
     const a = buildPerFrameState(
       timeline,
       t,
-      'a',
       null,
       clips,
+      waypoints,
       POINT_SETTINGS,
       VIEWPORT,
     );
     const b = buildPerFrameState(
       timeline,
       t,
-      'a',
       null,
       clips,
+      waypoints,
       POINT_SETTINGS,
       VIEWPORT,
     );
@@ -95,15 +101,15 @@ describe('buildPerFrameState purity', () => {
   });
 
   it('determinism: 5 calls all deeply-equal each other', () => {
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     const t = 7777;
     const results = Array.from({ length: 5 }, () =>
       buildPerFrameState(
         timeline,
         t,
-        'b',
         null,
         clips,
+        waypoints,
         POINT_SETTINGS,
         VIEWPORT,
       ),
@@ -146,13 +152,14 @@ describe('buildPerFrameState camera at sampled t', () => {
       ? (trans.startMs + trans.endMs) / 2
       : timeline.totalDurationMs / 2;
 
+    const waypoints = seedWaypointsFromClips(clips);
     for (const t of [0, midClip, midTrans]) {
       const state = buildPerFrameState(
         timeline,
         t,
         null,
-        null,
         clips,
+        waypoints,
         POINT_SETTINGS,
         VIEWPORT,
       );
@@ -176,15 +183,15 @@ describe('buildPerFrameState live-marker', () => {
     // case is `t < 0` (no trace). Test both behaviors here so the harness
     // matches what the consumer can observe.
 
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
 
     // t < 0 → wallClockTrace returns null → live-marker is empty regardless.
     const negState = buildPerFrameState(
       timeline,
       -1,
       null,
-      null,
       clips,
+      waypoints,
       POINT_SETTINGS,
       VIEWPORT,
     );
@@ -198,14 +205,14 @@ describe('buildPerFrameState live-marker', () => {
 
 describe('buildPerFrameState slime-trail', () => {
   it('empty when route_mode !== "visited"', () => {
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     const settings: MapSettings = { ...POINT_SETTINGS, route_mode: 'full' };
     const state = buildPerFrameState(
       timeline,
       1_000,
-      'a',
       null,
       clips,
+      waypoints,
       settings,
       VIEWPORT,
     );
@@ -219,24 +226,31 @@ describe('buildPerFrameState paints', () => {
   // Under the lever model `buildPerFramePaints` is width-input-independent;
   // radii anchor to `PAINT_REFERENCE_WIDTH` (1080). Same numbers everywhere.
 
-  it('waypoint radius = mapSettings.overlay_waypoint_circle_radius × PAINT_REFERENCE_WIDTH', () => {
-    const { clips, timeline } = twoClipFixture();
+  it('waypoint radius = mapSettings.overlay_waypoint_circle_radius × PAINT_REFERENCE_WIDTH when active mode is off', () => {
+    const { clips, waypoints, timeline } = twoClipFixture();
+    // Disable the active-waypoint highlight so the paint emits a scalar
+    // instead of a case-expression — the scalar branch is what this test
+    // exercises.
+    const settings: MapSettings = {
+      ...POINT_SETTINGS,
+      active_waypoint_mode: 'none',
+    };
     const state = buildPerFrameState(
       timeline,
       0,
       null,
-      null,
       clips,
-      POINT_SETTINGS,
+      waypoints,
+      settings,
       VIEWPORT,
     );
     expect(state.paints.waypointCircleRadius).toBeCloseTo(
-      POINT_SETTINGS.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH,
+      settings.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
     // At t=0 the pulse curve emits overlay_pulse_start_radius × PAINT_REFERENCE_WIDTH.
     expect(state.paints.pulseRadius).toBeCloseTo(
-      POINT_SETTINGS.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH,
+      settings.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH,
       6,
     );
   });
@@ -246,17 +260,18 @@ describe('buildPerFrameState paints', () => {
     // do — project defaults merged with `Clip.map_overrides` — then feeds
     // that to `buildPerFrameState`. The waypoint default radius for the
     // active clip should track the override, leaving the seed unused.
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     const overridden: MapSettings = {
       ...POINT_SETTINGS,
+      active_waypoint_mode: 'none',
       overlay_waypoint_circle_radius: 0.04,
     };
     const state = buildPerFrameState(
       timeline,
       0,
       null,
-      null,
       clips,
+      waypoints,
       overridden,
       VIEWPORT,
     );
@@ -267,13 +282,13 @@ describe('buildPerFrameState paints', () => {
   });
 
   it('two independent calls produce identical paints (no width input)', () => {
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     const a = buildPerFrameState(
       timeline,
       0,
       null,
-      null,
       clips,
+      waypoints,
       POINT_SETTINGS,
       VIEWPORT,
     );
@@ -281,8 +296,8 @@ describe('buildPerFrameState paints', () => {
       timeline,
       0,
       null,
-      null,
       clips,
+      waypoints,
       POINT_SETTINGS,
       VIEWPORT,
     );
@@ -295,21 +310,30 @@ describe('buildPerFrameState paints', () => {
     );
   });
 
-  it('activeClipId path: case-expression branches anchor to PAINT_REFERENCE_WIDTH', () => {
-    const { clips, timeline } = twoClipFixture();
+  it('active-waypoint mode "latest_passed" emits a case-expression keyed off the passed waypoint id', () => {
+    // v7 (post-refactor) — the active highlight is driven by
+    // `active_waypoint_mode` against the marker's wall-clock, not by the
+    // selected clip. At t=0 inside clip 1, the latest-passed waypoint is
+    // clip 1's seeded waypoint (its anchor equals the clip's wall-clock
+    // start). The case expression should target that waypoint's id.
+    const { clips, waypoints, timeline } = twoClipFixture();
+    expect(waypoints[0]).toBeDefined();
     const state = buildPerFrameState(
       timeline,
       0,
-      'a',
       null,
       clips,
+      waypoints,
       POINT_SETTINGS,
       VIEWPORT,
     );
-    // Active path: ['case', ['==', ['get', 'id'], 'a'], ACTIVE, DEFAULT]
     const expr = state.paints.waypointCircleRadius as unknown as unknown[];
     expect(Array.isArray(expr)).toBe(true);
     expect(expr[0]).toBe('case');
+    // expr[1] is the predicate: ['==', ['get', 'id'], <waypoint-id>]
+    const predicate = expr[1] as unknown[];
+    expect(predicate[0]).toBe('==');
+    expect(predicate[2]).toBe(waypoints[0].id);
     expect(expr[2]).toBeCloseTo(
       POINT_SETTINGS.overlay_waypoint_active_radius * PAINT_REFERENCE_WIDTH,
       9,
@@ -323,7 +347,7 @@ describe('buildPerFrameState paints', () => {
 
 describe('buildPerFrameState waypoints visibility', () => {
   it('visited mode: 1 visible at t=1000, 2 visible at t=6000 (clip 1 starts 0ms, clip 2 starts 5000ms)', () => {
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     // Sanity: confirm the fixture's compiled span layout matches the spec.
     expect(timeline.clipSpans[0].startMs).toBe(0);
     expect(timeline.clipSpans[1].startMs).toBe(5_000);
@@ -336,9 +360,9 @@ describe('buildPerFrameState waypoints visibility', () => {
     const at1k = buildPerFrameState(
       timeline,
       1_000,
-      'a',
       null,
       clips,
+      waypoints,
       settings,
       VIEWPORT,
     );
@@ -351,9 +375,9 @@ describe('buildPerFrameState waypoints visibility', () => {
     const at6k = buildPerFrameState(
       timeline,
       6_000,
-      'b',
       null,
       clips,
+      waypoints,
       settings,
       VIEWPORT,
     );
@@ -365,15 +389,15 @@ describe('buildPerFrameState waypoints visibility', () => {
   });
 
   it('non-visited mode: sources["waypoints"] is undefined (static seed handles it)', () => {
-    const { clips, timeline } = twoClipFixture();
+    const { clips, waypoints, timeline } = twoClipFixture();
     for (const mode of ['full', 'none'] as const) {
       const settings: MapSettings = { ...POINT_SETTINGS, waypoints_mode: mode };
       const state = buildPerFrameState(
         timeline,
         1_000,
-        'a',
         null,
         clips,
+        waypoints,
         settings,
         VIEWPORT,
       );
