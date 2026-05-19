@@ -94,6 +94,7 @@ function baseProps(over: Partial<React.ComponentProps<typeof DecorationPanel>> =
     onOpenWaypointsPanel: vi.fn(),
     triggerRef: { current: null } as React.RefObject<HTMLButtonElement | null>,
     currentClipOrdinal: null,
+    indexedRoute: null,
     ...over,
   };
 }
@@ -262,6 +263,415 @@ describe('DecorationPanel — POV in clip scope', () => {
     expect(onChange).toHaveBeenCalledTimes(1);
     const next = onChange.mock.calls[0][0] as MapSettings;
     expect(next.pov.color).toBe('#ff715b');
+  });
+});
+
+describe('DecorationPanel — gradient routing (Route panel, project scope)', () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  it('toggling Solid → Gradient seeds two-endpoint stops from the current solid', () => {
+    const onChange = vi.fn();
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'route',
+          onChange,
+          // routeLoaded=true + indexedRoute with positive totalMercatorMeters
+          // means gradient is available.
+          routeLoaded: true,
+          indexedRoute: {
+            points: [],
+            minTimeMs: 0,
+            maxTimeMs: 1000,
+            cumulativeDistMeters: [0, 1000],
+            totalDistMeters: 1000,
+            cumulativeMercatorMeters: [0, 1000],
+            totalMercatorMeters: 1000,
+          },
+        })}
+      />,
+    );
+    const gradientBtn = document.body.querySelector('[data-testid="color-mode-gradient"]');
+    expect(gradientBtn).toBeTruthy();
+    click(gradientBtn!);
+    expect(onChange).toHaveBeenCalled();
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.route.color.mode).toBe('gradient');
+    if (next.route.color.mode === 'gradient') {
+      expect(next.route.color.stops.length).toBe(2);
+      expect(next.route.color.stops[0].fraction).toBe(0);
+      expect(next.route.color.stops[1].fraction).toBe(1);
+      // Both seeded with the project default solid color.
+      expect(next.route.color.stops[0].color).toBe('#bced09');
+      expect(next.route.color.stops[1].color).toBe('#bced09');
+    }
+  });
+
+  it('toggling Gradient → Solid stashes stops into color_stops_cache', () => {
+    const onChange = vi.fn();
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#ff715b' },
+            { fraction: 1, color: '#2f52e0' },
+          ],
+        },
+      },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'route',
+          settings,
+          onChange,
+          routeLoaded: true,
+        })}
+      />,
+    );
+    const solidBtn = document.body.querySelector('[data-testid="color-mode-solid"]');
+    click(solidBtn!);
+    expect(onChange).toHaveBeenCalled();
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.route.color.mode).toBe('solid');
+    if (next.route.color.mode === 'solid') {
+      // First stop's color wins.
+      expect(next.route.color.solid).toBe('#ff715b');
+    }
+    // Cache preserved.
+    expect(next.route.color_stops_cache).toBeDefined();
+    expect(next.route.color_stops_cache?.length).toBe(2);
+  });
+
+  it('toggling Solid → Gradient with a cache restores the cached stops', () => {
+    const onChange = vi.fn();
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: { mode: 'solid', solid: '#bced09' },
+        color_stops_cache: [
+          { fraction: 0, color: '#ff715b' },
+          { fraction: 0.5, color: '#f9cb40' },
+          { fraction: 1, color: '#2f52e0' },
+        ],
+      },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'route',
+          settings,
+          onChange,
+          routeLoaded: true,
+          indexedRoute: {
+            points: [],
+            minTimeMs: 0,
+            maxTimeMs: 1000,
+            cumulativeDistMeters: [0, 1000],
+            totalDistMeters: 1000,
+            cumulativeMercatorMeters: [0, 1000],
+            totalMercatorMeters: 1000,
+          },
+        })}
+      />,
+    );
+    click(document.body.querySelector('[data-testid="color-mode-gradient"]')!);
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.route.color.mode).toBe('gradient');
+    if (next.route.color.mode === 'gradient') {
+      expect(next.route.color.stops.length).toBe(3);
+      expect(next.route.color.stops[1].color).toBe('#f9cb40');
+    }
+  });
+
+  it('Copy → Waypoints button copies Route stops into Waypoints', () => {
+    const onChange = vi.fn();
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#ff715b' },
+            { fraction: 1, color: '#2f52e0' },
+          ],
+        },
+      },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'route',
+          settings,
+          onChange,
+          routeLoaded: true,
+        })}
+      />,
+    );
+    click(document.body.querySelector('[data-testid="gradient-copy-to-waypoints"]')!);
+    expect(onChange).toHaveBeenCalled();
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.waypoints.color.mode).toBe('gradient');
+    if (next.waypoints.color.mode === 'gradient') {
+      expect(next.waypoints.color.stops).toEqual([
+        { fraction: 0, color: '#ff715b' },
+        { fraction: 1, color: '#2f52e0' },
+      ]);
+    }
+  });
+});
+
+describe('DecorationPanel — gradient routing (Waypoints panel, project scope)', () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  it('shows the gradient mode toggle in project scope', () => {
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          routeLoaded: true,
+        })}
+      />,
+    );
+    expect(document.body.querySelector('[data-testid="color-mode-toggle"]')).not.toBeNull();
+  });
+
+  it('hides ← Copy from Route when Route is solid', () => {
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          routeLoaded: true,
+          // Waypoints in gradient mode so the action row is present, but
+          // Route is in solid → no source to copy from.
+          settings: {
+            ...DEFAULT_MAP_SETTINGS,
+            waypoints: {
+              ...DEFAULT_MAP_SETTINGS.waypoints,
+              color: {
+                mode: 'gradient',
+                stops: [
+                  { fraction: 0, color: '#000000' },
+                  { fraction: 1, color: '#ffffff' },
+                ],
+              },
+            },
+          },
+        })}
+      />,
+    );
+    expect(document.body.querySelector('[data-testid="gradient-copy-from-route"]')).toBeNull();
+  });
+
+  it('shows ← Copy from Route when Waypoints is in solid mode and Route is gradient with ≥ 2 stops', () => {
+    // Reachability check: per `color-gradient.md` §9, the button must be
+    // present even when Waypoints is solid — pressing it is the affordance
+    // that flips Waypoints to gradient.
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          routeLoaded: true,
+          settings: {
+            ...DEFAULT_MAP_SETTINGS,
+            route: {
+              ...DEFAULT_MAP_SETTINGS.route,
+              color: {
+                mode: 'gradient',
+                stops: [
+                  { fraction: 0, color: '#ff715b' },
+                  { fraction: 1, color: '#2f52e0' },
+                ],
+              },
+            },
+            // Waypoints stays solid.
+            waypoints: {
+              ...DEFAULT_MAP_SETTINGS.waypoints,
+              color: { mode: 'solid', solid: '#f9cb40' },
+            },
+          },
+        })}
+      />,
+    );
+    expect(document.body.querySelector('[data-testid="gradient-copy-from-route"]')).not.toBeNull();
+  });
+
+  it('pressing ← Copy from Route in solid mode flips Waypoints to gradient and stashes the prior solid in color_stops_cache', () => {
+    const onChange = vi.fn();
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          routeLoaded: true,
+          onChange,
+          settings: {
+            ...DEFAULT_MAP_SETTINGS,
+            route: {
+              ...DEFAULT_MAP_SETTINGS.route,
+              color: {
+                mode: 'gradient',
+                stops: [
+                  { fraction: 0, color: '#ff715b' },
+                  { fraction: 1, color: '#2f52e0' },
+                ],
+              },
+            },
+            waypoints: {
+              ...DEFAULT_MAP_SETTINGS.waypoints,
+              color: { mode: 'solid', solid: '#f9cb40' },
+            },
+          },
+        })}
+      />,
+    );
+    const btn = document.body.querySelector('[data-testid="gradient-copy-from-route"]');
+    expect(btn).not.toBeNull();
+    click(btn!);
+    expect(onChange).toHaveBeenCalled();
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.waypoints.color.mode).toBe('gradient');
+    if (next.waypoints.color.mode === 'gradient') {
+      // Route's stops are deep-copied into Waypoints.
+      expect(next.waypoints.color.stops).toEqual([
+        { fraction: 0, color: '#ff715b' },
+        { fraction: 1, color: '#2f52e0' },
+      ]);
+    }
+    // Prior solid preserved in cache so a future Gradient→Solid toggle
+    // restores it (color-gradient.md §9 + §13).
+    expect(next.waypoints.color_stops_cache).toBeDefined();
+    expect(next.waypoints.color_stops_cache?.length).toBe(2);
+    // The cached stops both carry the prior solid color.
+    expect(next.waypoints.color_stops_cache?.[0].color).toBe('#f9cb40');
+    expect(next.waypoints.color_stops_cache?.[1].color).toBe('#f9cb40');
+  });
+
+  it('shows ← Copy from Route when Route is gradient with ≥ 2 stops (Waypoints already gradient)', () => {
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          routeLoaded: true,
+          settings: {
+            ...DEFAULT_MAP_SETTINGS,
+            route: {
+              ...DEFAULT_MAP_SETTINGS.route,
+              color: {
+                mode: 'gradient',
+                stops: [
+                  { fraction: 0, color: '#ff715b' },
+                  { fraction: 1, color: '#2f52e0' },
+                ],
+              },
+            },
+            waypoints: {
+              ...DEFAULT_MAP_SETTINGS.waypoints,
+              color: {
+                mode: 'gradient',
+                stops: [
+                  { fraction: 0, color: '#000000' },
+                  { fraction: 1, color: '#ffffff' },
+                ],
+              },
+            },
+          },
+        })}
+      />,
+    );
+    expect(document.body.querySelector('[data-testid="gradient-copy-from-route"]')).not.toBeNull();
+  });
+});
+
+describe('DecorationPanel — gradient absent in clip scope', () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  it('Route panel clip scope (read-only) does not render the mode toggle', () => {
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'route',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          routeLoaded: true,
+        })}
+      />,
+    );
+    expect(document.body.querySelector('[data-testid="color-mode-toggle"]')).toBeNull();
+  });
+
+  it('Waypoints panel clip scope does not render the mode toggle', () => {
+    const wp = makeWaypoint('wp-1', 'c1');
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          routeLoaded: true,
+        })}
+      />,
+    );
+    expect(document.body.querySelector('[data-testid="color-mode-toggle"]')).toBeNull();
+  });
+
+  it('POV panel never renders the mode toggle', () => {
+    render(<DecorationPanel {...baseProps({ decoration: 'pov' })} />);
+    expect(document.body.querySelector('[data-testid="color-mode-toggle"]')).toBeNull();
+  });
+});
+
+describe('DecorationPanel — gradient availability without GPX', () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  it('disables the gradient segment when routeLoaded=false', () => {
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'route',
+          routeLoaded: false,
+          indexedRoute: null,
+        })}
+      />,
+    );
+    const btn = document.body.querySelector('[data-testid="color-mode-gradient"]') as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    expect(btn.disabled).toBe(true);
   });
 });
 

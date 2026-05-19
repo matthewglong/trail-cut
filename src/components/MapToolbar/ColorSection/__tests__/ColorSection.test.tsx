@@ -181,3 +181,240 @@ describe('ColorSection', () => {
     expect(input.value).toBe('BCED09');
   });
 });
+
+// ============================================================================
+// Step 7 — Gradient mode tests
+// ============================================================================
+
+describe('ColorSection — gradient mode toggle', () => {
+  beforeEach(() => {
+    // jsdom doesn't ship ResizeObserver; the GradientEditor needs it.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  it('renders the [Solid][Gradient] toggle when mode + onModeChange are provided', () => {
+    render(
+      <ColorSection
+        value="#bced09"
+        onChange={() => undefined}
+        mode="solid"
+        onModeChange={() => undefined}
+      />,
+    );
+    expect(q('[data-testid="color-mode-toggle"]')).not.toBeNull();
+    expect(q('[data-testid="color-mode-solid"]')).not.toBeNull();
+    expect(q('[data-testid="color-mode-gradient"]')).not.toBeNull();
+  });
+
+  it('omits the mode toggle when mode is not provided', () => {
+    render(<ColorSection value="#bced09" onChange={() => undefined} />);
+    expect(q('[data-testid="color-mode-toggle"]')).toBeNull();
+  });
+
+  it('fires onModeChange with the opposite mode on segment click', () => {
+    const onModeChange = vi.fn();
+    render(
+      <ColorSection
+        value="#bced09"
+        onChange={() => undefined}
+        mode="solid"
+        onModeChange={onModeChange}
+      />,
+    );
+    click(q('[data-testid="color-mode-gradient"]')!);
+    expect(onModeChange).toHaveBeenCalledWith('gradient');
+  });
+
+  it('disables the gradient segment when gradientAvailable=false', () => {
+    const onModeChange = vi.fn();
+    render(
+      <ColorSection
+        value="#bced09"
+        onChange={() => undefined}
+        mode="solid"
+        onModeChange={onModeChange}
+        gradientAvailable={false}
+      />,
+    );
+    const btn = q('[data-testid="color-mode-gradient"]') as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    click(btn);
+    // Clicks on disabled buttons may still fire onClick in jsdom; the
+    // component guards internally — onModeChange must not be invoked.
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('ColorSection — gradient mode body', () => {
+  beforeEach(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+  });
+
+  const twoStop = () => [
+    { fraction: 0, color: '#000000' },
+    { fraction: 1, color: '#ffffff' },
+  ];
+
+  it('renders the gradient editor instead of the solid swatch row in gradient mode', () => {
+    render(
+      <ColorSection
+        value="#000000"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={twoStop()}
+        onGradientStopsChange={() => undefined}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+      />,
+    );
+    expect(q('[data-testid="gradient-editor"]')).not.toBeNull();
+    expect(q('[data-testid="gradient-bar"]')).not.toBeNull();
+    // The stop color picker doesn't appear until a stop is selected.
+    expect(q('[data-testid="stop-color-section-hex-input"]')).toBeNull();
+  });
+
+  it('shows + Stop button and disables it at 8 stops', () => {
+    const eight = Array.from({ length: 8 }, (_, i) => ({
+      fraction: i / 7,
+      color: '#888888',
+    }));
+    render(
+      <ColorSection
+        value="#888888"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={eight}
+        onGradientStopsChange={() => undefined}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+      />,
+    );
+    const addBtn = q('[data-testid="gradient-add-stop"]') as HTMLButtonElement;
+    expect(addBtn).not.toBeNull();
+    expect(addBtn.disabled).toBe(true);
+  });
+
+  it('+ Stop inserts at the largest gap', () => {
+    const onGradientStopsChange = vi.fn();
+    render(
+      <ColorSection
+        value="#000000"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={twoStop()}
+        onGradientStopsChange={onGradientStopsChange}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+      />,
+    );
+    click(q('[data-testid="gradient-add-stop"]')!);
+    expect(onGradientStopsChange).toHaveBeenCalled();
+    const next = onGradientStopsChange.mock.calls[0][0];
+    expect(next.length).toBe(3);
+    expect(next[1].fraction).toBeCloseTo(0.5, 4);
+  });
+
+  it('Copy → Waypoints button fires onCopy and flashes "Copied ✓"', () => {
+    const onCopy = vi.fn();
+    render(
+      <ColorSection
+        value="#000000"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={twoStop()}
+        onGradientStopsChange={() => undefined}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+        copyDirection="toWaypoints"
+        onCopy={onCopy}
+        copyVisible
+      />,
+    );
+    const btn = q('[data-testid="gradient-copy-to-waypoints"]') as HTMLElement;
+    expect(btn).not.toBeNull();
+    click(btn);
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    // After click, label flips to "Copied ✓".
+    expect(btn.textContent).toContain('Copied');
+  });
+
+  it('Copy from Route button uses ← arrow label', () => {
+    render(
+      <ColorSection
+        value="#000000"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={twoStop()}
+        onGradientStopsChange={() => undefined}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+        copyDirection="fromRoute"
+        onCopy={() => undefined}
+        copyVisible
+      />,
+    );
+    const btn = q('[data-testid="gradient-copy-from-route"]') as HTMLElement;
+    expect(btn).not.toBeNull();
+    expect(btn.textContent).toMatch(/← Copy from Route/);
+  });
+
+  it('hides the Copy button when copyVisible=false', () => {
+    render(
+      <ColorSection
+        value="#000000"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={twoStop()}
+        onGradientStopsChange={() => undefined}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+        copyDirection="toWaypoints"
+        onCopy={() => undefined}
+        copyVisible={false}
+      />,
+    );
+    expect(q('[data-testid="gradient-copy-to-waypoints"]')).toBeNull();
+  });
+
+  it('renders STOP COLOR picker when a stop is selected on the rail', () => {
+    render(
+      <ColorSection
+        value="#000000"
+        onChange={() => undefined}
+        mode="gradient"
+        onModeChange={() => undefined}
+        gradientStops={[
+          { fraction: 0, color: '#000000' },
+          { fraction: 0.5, color: '#888888' },
+          { fraction: 1, color: '#ffffff' },
+        ]}
+        onGradientStopsChange={() => undefined}
+        waypointProgress={[]}
+        totalDistMeters={1000}
+      />,
+    );
+    // Initially nothing selected → no picker.
+    expect(q('[data-testid="stop-swatch-coral"]')).toBeNull();
+    // Click the mid-handle → selectedIndex = 1.
+    click(q('[data-testid="gradient-stop-handle-1"]')!);
+    // Picker swatch row should now be present with the stop- prefix.
+    expect(q('[data-testid="stop-swatch-coral"]')).not.toBeNull();
+  });
+});
+

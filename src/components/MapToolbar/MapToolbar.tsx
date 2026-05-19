@@ -28,6 +28,7 @@ import type {
   OverridePath,
   Waypoint,
 } from '../../types';
+import type { IndexedRoute } from '../../lib/routeLocation';
 import { colors, semantic } from '../../theme/tokens';
 import { styles } from './styles';
 
@@ -69,6 +70,10 @@ interface MapToolbarProps {
   /** Receives the entire next waypoints array on per-Waypoint edits. The
    *  parent persists via its `setWaypoints` setter. */
   onWaypointsChange: (next: Waypoint[]) => void;
+  /** Indexed route — passed through to the decoration panels so the
+   *  gradient editor can compute waypoint Mercator fractions for snap
+   *  ticks + the trail preview SVG. Null when no GPX is loaded. */
+  indexedRoute: IndexedRoute | null;
 }
 
 const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
@@ -99,6 +104,7 @@ export default function MapToolbar({
   currentClipOrdinal,
   waypoints,
   onWaypointsChange,
+  indexedRoute,
 }: MapToolbarProps) {
   const followOn = settings.camera.follow_playhead;
   const bearingAuto = settings.camera.bearing_mode === 'auto';
@@ -248,6 +254,7 @@ export default function MapToolbar({
               onOpenWaypointsPanel={onOpenWaypointsPanel}
               triggerRef={routeTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
+              indexedRoute={indexedRoute}
             />
           )}
         </DecorationButton>
@@ -282,6 +289,7 @@ export default function MapToolbar({
               onOpenWaypointsPanel={onOpenWaypointsPanel}
               triggerRef={waypointsTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
+              indexedRoute={indexedRoute}
             />
           )}
         </DecorationButton>
@@ -316,6 +324,7 @@ export default function MapToolbar({
               onOpenWaypointsPanel={onOpenWaypointsPanel}
               triggerRef={povTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
+              indexedRoute={indexedRoute}
             />
           )}
         </DecorationButton>

@@ -168,6 +168,12 @@ export interface RouteSettings {
   mode: TriMode;
   color: DecorationColor;
   size: RouteSize;
+  /** UI affordance — stash of the last gradient stop array, populated when
+   *  the user toggles GRADIENT → SOLID so toggling back restores the prior
+   *  gradient. Never read by the renderer — see `color-gradient.md` §13.
+   *  Optional and additive; existing v8 projects round-trip unchanged with
+   *  this field absent. */
+  color_stops_cache?: GradientStop[];
 }
 
 export interface WaypointsSize {
@@ -187,6 +193,12 @@ export interface WaypointsSettings {
   /** Optional active-waypoint highlight color. Falls back to the waypoint's
    *  resolved color at render time when unset. */
   active_color?: string;
+  /** UI affordance — stash of the last gradient stop array, populated when
+   *  the user toggles GRADIENT → SOLID so toggling back restores the prior
+   *  gradient. Never read by the renderer — see `color-gradient.md` §13.
+   *  Optional and additive; existing v8 projects round-trip unchanged with
+   *  this field absent. */
+  color_stops_cache?: GradientStop[];
 }
 
 export interface PovSize {
@@ -279,23 +291,136 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   },
 };
 
+/** Minimum fractional separation enforced between adjacent gradient stops.
+ *  Mirrors `color-gradient.md` §7b's drag-collision guard so the editor and
+ *  the validator agree on what "two stops are too close" means. Stop
+ *  fractions are stored at 4-decimal precision, so 0.005 leaves slack. */
+const MIN_STOP_SEPARATION = 0.005;
+
+/** Validate the invariants `color-gradient.md` and `data-model.md` rely on
+ *  for a `GradientColor` payload to be renderable. Returns the validated
+ *  color (with stops sorted by fraction) on success, or a sensible solid
+ *  fallback on failure — never throws.
+ *
+ *  Failures we tolerate by falling back to solid:
+ *  - fewer than 2 stops (a single point has no gradient)
+ *  - any fraction outside [0, 1]
+ *  - missing endpoint stop (no `fraction === 0` or no `fraction === 1`)
+ *  - stops not sorted ascending after fixing
+ *  - adjacent stops closer than `MIN_STOP_SEPARATION`
+ *  - any color not a 6- or 7-character hex string
+ *
+ *  The fallback is `{ mode: 'solid', solid: stops[0]?.color ?? projectDefault }`
+ *  so the user keeps at least the first stop's intent. */
+function validateGradient(
+  color: DecorationColor,
+  projectDefaultSolid: string,
+): DecorationColor {
+  if (color.mode !== 'gradient') return color;
+  const raw = color.stops;
+
+  const fallback = (): DecorationColor => ({
+    mode: 'solid',
+    solid: isValidHex(raw[0]?.color ?? '')
+      ? (raw[0].color.toLowerCase())
+      : projectDefaultSolid,
+  });
+
+  if (!Array.isArray(raw) || raw.length < 2) return fallback();
+
+  for (const stop of raw) {
+    if (
+      typeof stop?.fraction !== 'number' ||
+      !Number.isFinite(stop.fraction) ||
+      stop.fraction < 0 ||
+      stop.fraction > 1
+    ) {
+      return fallback();
+    }
+    if (typeof stop.color !== 'string' || !isValidHex(stop.color)) {
+      return fallback();
+    }
+  }
+
+  // Defensive sort so an out-of-order array doesn't fail the separation
+  // check by accident. The renderer also sorts; sorting here makes the
+  // resolved value stable for downstream consumers.
+  const sorted = [...raw].sort((a, b) => a.fraction - b.fraction);
+
+  // Require both endpoints. Without them the gradient doesn't cover the
+  // whole route, which is the design contract from §7b ("pinned endpoints").
+  if (sorted[0].fraction !== 0 || sorted[sorted.length - 1].fraction !== 1) {
+    return fallback();
+  }
+
+  // Adjacent-stop separation. Strictly less than MIN means a drag-collision
+  // got past the editor guard (or a hand-edited project.json). Equal
+  // fractions count as a collision — no two stops may share a fraction.
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].fraction - sorted[i - 1].fraction < MIN_STOP_SEPARATION) {
+      return fallback();
+    }
+  }
+
+  return { mode: 'gradient', stops: sorted };
+}
+
+function isValidHex(s: string): boolean {
+  // Accept #RRGGBB or RRGGBB. (`color-gradient.md` §12 strips leading `#` on
+  // ingest but we validate both shapes here so disk-shape variation doesn't
+  // break us.)
+  return /^#?[0-9a-fA-F]{6}$/.test(s);
+}
+
 /** Merge project defaults with per-clip overrides. Block-level spreads —
- *  no recursion. */
+ *  no recursion. Also validates `route.color` and `waypoints.color`
+ *  defensively (per `color-gradient.md` §13) so a malformed gradient on
+ *  disk degrades gracefully to solid rather than crashing the renderer. */
 export function resolveMapSettings(
   defaults: MapSettings,
   overrides: MapOverrides | null | undefined,
 ): MapSettings {
-  if (!overrides) return defaults;
+  // The "project default solid" we degrade to on a malformed gradient is
+  // taken from the project's *solid* mode value when present. Falling back
+  // to a gradient's first stop would inherit the malformed input we're
+  // trying to escape from, so we use the canonical chartreuse literal
+  // when the project itself is in gradient mode (i.e. the validator is
+  // saving the renderer from disk corruption with no other source of truth).
+  const projectRouteSolid =
+    defaults.route.color.mode === 'solid'
+      ? defaults.route.color.solid
+      : '#bced09';
+  const projectWaypointsSolid =
+    defaults.waypoints.color.mode === 'solid'
+      ? defaults.waypoints.color.solid
+      : '#bced09';
+
+  if (!overrides) {
+    return {
+      camera: defaults.camera,
+      route: {
+        ...defaults.route,
+        color: validateGradient(defaults.route.color, projectRouteSolid),
+      },
+      waypoints: {
+        ...defaults.waypoints,
+        color: validateGradient(defaults.waypoints.color, projectWaypointsSolid),
+      },
+      pov: defaults.pov,
+    };
+  }
   return {
     camera: { ...defaults.camera, ...overrides.camera },
     route: {
       ...defaults.route,
       ...overrides.route,
+      color: validateGradient(defaults.route.color, projectRouteSolid),
       size: { ...defaults.route.size, ...overrides.route?.size },
     },
     waypoints: {
       ...defaults.waypoints,
       ...overrides.waypoints,
+      color: validateGradient(defaults.waypoints.color, projectWaypointsSolid),
       size: { ...defaults.waypoints.size, ...overrides.waypoints?.size },
     },
     pov: {

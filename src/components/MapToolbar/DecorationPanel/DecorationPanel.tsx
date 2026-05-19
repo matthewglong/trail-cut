@@ -1,28 +1,39 @@
 // DecorationPanel — the floating popover hosted by each `▾` toolbar button.
 // Anchored below its trigger, 280px wide, click-outside / Escape to close.
 //
-// Routing contract (per Step 6 spec):
+// Routing contract:
 //  • Any MapSettings-derived field (POV color, sizes, route/waypoint mode,
-//    label_mode, active_mode) is set by calling `onChange(nextSettings)`.
-//    The parent (`ProjectView.handleMapToolbarChange`) routes this through
-//    `computeClipOverrides` in clip scope, so MapOverrides routing is free.
+//    label_mode, active_mode, gradient stops) is set by calling
+//    `onChange(nextSettings)`. The parent (`ProjectView.handleMapToolbarChange`)
+//    routes this through `computeClipOverrides` in clip scope, so MapOverrides
+//    routing is free.
 //  • Per-Waypoint colors are set via `onWaypointsChange(nextWaypoints)` —
 //    these fields live on the Waypoint entity, not on MapSettings.
 //
-// Step 6 is solid-color only. The `[Solid][Gradient]` toggle is Step 7 and
-// is intentionally NOT rendered here. If a stored value is in gradient
-// mode, the swatch row falls back to the first stop's color and flips back
-// to a solid arm on any color change.
+// Step 7 adds the `[Solid][Gradient]` toggle for Route and Waypoints in
+// project scope. Gradient mode reads/writes
+// `mapSettings.{route,waypoints}.color.{mode,stops}` directly; the renderer
+// (`src/lib/mapVisuals/styleSpec.ts` → `resolveStaticPaints`) picks up
+// changes the same React tick. POV remains solid-only.
+//
+// `color_stops_cache` (per `color-gradient.md` §13) lives on the parent
+// RouteSettings/WaypointsSettings type and is read/written here on mode
+// toggles so the user can flip back and forth without losing their stops.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import ModePicker from '../../ModePicker';
 import NumberStepper from '../../NumberStepper';
 import { ColorSection } from '../ColorSection';
+import {
+  cloneStops,
+  initialGradientFromSolid,
+} from '../ColorSection/gradientMath';
 import { panelStyles } from './styles';
 import {
   type ActiveWaypointMode,
   type Clip,
   type DecorationColor,
+  type GradientStop,
   type MapSettings,
   type OverridePath,
   type PovPulseStyle,
@@ -31,6 +42,8 @@ import {
   type Waypoint,
   type WaypointLabelMode,
 } from '../../../types';
+import type { IndexedRoute } from '../../../lib/routeLocation';
+import { progressUpTo } from '../../../lib/routeLocation';
 
 /** Canonical width used for `× 1080` display conversion. Same constant the
  *  rendering pipeline calls `PAINT_REFERENCE_WIDTH` (1080 CSS px). */
@@ -86,6 +99,11 @@ export interface DecorationPanelProps {
   triggerRef: React.RefObject<HTMLButtonElement | null>;
   /** Optional 1-based ordinal of the current clip, used in scope-banner copy. */
   currentClipOrdinal: number | null;
+  /** Indexed route — read by the gradient editor for waypoint Mercator
+   *  fractions (snap ticks, preview dot positions) and total distance.
+   *  Null when no GPX is loaded; the editor disables gradient mode in
+   *  that state. */
+  indexedRoute: IndexedRoute | null;
 }
 
 export function DecorationPanel({
@@ -102,6 +120,7 @@ export function DecorationPanel({
   onOpenWaypointsPanel,
   triggerRef,
   currentClipOrdinal,
+  indexedRoute,
 }: DecorationPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -177,6 +196,8 @@ export function DecorationPanel({
           scope={scope}
           onScopeChange={onScopeChange}
           routeLoaded={routeLoaded}
+          waypoints={waypoints}
+          indexedRoute={indexedRoute}
         />
       )}
 
@@ -190,6 +211,7 @@ export function DecorationPanel({
           waypoints={waypoints}
           onWaypointsChange={onWaypointsChange}
           onOpenWaypointsPanel={onOpenWaypointsPanel}
+          indexedRoute={indexedRoute}
         />
       )}
 
@@ -211,21 +233,79 @@ function RoutePanelBody({
   scope,
   onScopeChange,
   routeLoaded,
+  waypoints,
+  indexedRoute,
 }: {
   settings: MapSettings;
   onChange: (next: MapSettings) => void;
   scope: 'project' | 'clip';
   onScopeChange: (scope: 'project' | 'clip') => void;
   routeLoaded: boolean;
+  waypoints: Waypoint[];
+  indexedRoute: IndexedRoute | null;
 }) {
   const setMode = (mode: TriMode) =>
     onChange({ ...settings, route: { ...settings.route, mode } });
 
+  // Solid-mode color setter — writes a fresh `{ mode: 'solid', solid }`
+  // discriminant, leaving any existing `color_stops_cache` intact (so a
+  // future Solid→Gradient toggle still has stops to restore).
   const setSolidColor = (hex: string) =>
     onChange({
       ...settings,
       route: { ...settings.route, color: { mode: 'solid', solid: hex } },
     });
+
+  // Gradient-mode stops setter — writes a fresh
+  // `{ mode: 'gradient', stops }` discriminant; renderer reads it through
+  // `resolveStaticPaints` and applies the `line-gradient` expression.
+  const setGradientStops = (stops: GradientStop[]) =>
+    onChange({
+      ...settings,
+      route: { ...settings.route, color: { mode: 'gradient', stops } },
+    });
+
+  // Mode toggle — moves stops to/from `color_stops_cache` per §13. The
+  // cache lives on RouteSettings (sibling of `color`); writing it from
+  // here keeps the rule "renderer never reads the cache" intact.
+  const setColorMode = (nextMode: 'solid' | 'gradient') => {
+    if (nextMode === 'solid') {
+      // Gradient → Solid: stash current stops, drop to solid using the
+      // first stop's color (sensible "what was on the left endpoint").
+      if (settings.route.color.mode === 'gradient') {
+        const stops = settings.route.color.stops;
+        const firstColor = stops[0]?.color ?? '#bced09';
+        onChange({
+          ...settings,
+          route: {
+            ...settings.route,
+            color: { mode: 'solid', solid: firstColor },
+            color_stops_cache: cloneStops(stops),
+          },
+        });
+        return;
+      }
+      // Already solid — no-op.
+      return;
+    }
+    // Solid → Gradient: prefer the cache; otherwise seed two-endpoint
+    // stops both at the current solid color.
+    const currentSolid =
+      settings.route.color.mode === 'solid'
+        ? settings.route.color.solid
+        : '#bced09';
+    const stops =
+      settings.route.color_stops_cache && settings.route.color_stops_cache.length >= 2
+        ? cloneStops(settings.route.color_stops_cache)
+        : initialGradientFromSolid(currentSolid);
+    onChange({
+      ...settings,
+      route: {
+        ...settings.route,
+        color: { mode: 'gradient', stops },
+      },
+    });
+  };
 
   const setSize = (patch: Partial<MapSettings['route']['size']>) =>
     onChange({
@@ -233,7 +313,52 @@ function RoutePanelBody({
       route: { ...settings.route, size: { ...settings.route.size, ...patch } },
     });
 
+  // Copy Route → Waypoints. Effects a one-time deep copy of the stop array.
+  // Per §9: when Waypoints is in solid mode, we switch it to gradient mode
+  // first and preserve its prior solid value in `color_stops_cache` so a
+  // later toggle-back restores it.
+  const onCopyToWaypoints = () => {
+    if (settings.route.color.mode !== 'gradient') return;
+    const stopsCopy = cloneStops(settings.route.color.stops);
+    if (settings.waypoints.color.mode === 'solid') {
+      // Preserve the prior solid by stashing the *existing* waypoints
+      // cache or, if none, the current waypoints solid wrapped in a
+      // two-endpoint cache so the user can revert.
+      const priorSolid = settings.waypoints.color.solid;
+      const cacheToKeep =
+        settings.waypoints.color_stops_cache && settings.waypoints.color_stops_cache.length >= 2
+          ? settings.waypoints.color_stops_cache
+          : initialGradientFromSolid(priorSolid);
+      onChange({
+        ...settings,
+        waypoints: {
+          ...settings.waypoints,
+          color: { mode: 'gradient', stops: stopsCopy },
+          color_stops_cache: cloneStops(cacheToKeep),
+        },
+      });
+      return;
+    }
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        color: { mode: 'gradient', stops: stopsCopy },
+      },
+    });
+  };
+
   const currentSolid = readSolid(settings.route.color);
+  const colorMode: 'solid' | 'gradient' =
+    settings.route.color.mode === 'gradient' ? 'gradient' : 'solid';
+  const gradientStops =
+    settings.route.color.mode === 'gradient' ? settings.route.color.stops : undefined;
+  const waypointProgress = useWaypointProgress(waypoints, indexedRoute);
+  const totalDistMeters = indexedRoute?.totalDistMeters ?? 0;
+  // Gradient mode is only meaningful with a usable route. A degenerate
+  // route (zero Mercator length) is treated as "no route loaded".
+  const gradientAvailable =
+    routeLoaded && (indexedRoute?.totalMercatorMeters ?? 0) > 0;
 
   return (
     <>
@@ -256,7 +381,20 @@ function RoutePanelBody({
             onSwitchToProject={() => onScopeChange('project')}
           />
         ) : (
-          <ColorSection value={currentSolid} onChange={setSolidColor} />
+          <ColorSection
+            value={currentSolid}
+            onChange={setSolidColor}
+            mode={colorMode}
+            onModeChange={setColorMode}
+            gradientAvailable={gradientAvailable}
+            gradientStops={gradientStops}
+            onGradientStopsChange={setGradientStops}
+            waypointProgress={waypointProgress}
+            totalDistMeters={totalDistMeters}
+            copyDirection="toWaypoints"
+            onCopy={onCopyToWaypoints}
+            copyVisible={colorMode === 'gradient'}
+          />
         )}
       </Section>
 
@@ -313,6 +451,7 @@ function WaypointsPanelBody({
   waypoints,
   onWaypointsChange,
   onOpenWaypointsPanel,
+  indexedRoute,
 }: {
   settings: MapSettings;
   onChange: (next: MapSettings) => void;
@@ -322,6 +461,7 @@ function WaypointsPanelBody({
   waypoints: Waypoint[];
   onWaypointsChange: (next: Waypoint[]) => void;
   onOpenWaypointsPanel: () => void;
+  indexedRoute: IndexedRoute | null;
 }) {
   const setMode = (mode: TriMode) =>
     onChange({ ...settings, waypoints: { ...settings.waypoints, mode } });
@@ -340,6 +480,82 @@ function WaypointsPanelBody({
         color: { mode: 'solid', solid: hex },
       },
     });
+
+  const setGradientStops = (stops: GradientStop[]) =>
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        color: { mode: 'gradient', stops },
+      },
+    });
+
+  const setColorMode = (nextMode: 'solid' | 'gradient') => {
+    if (nextMode === 'solid') {
+      if (settings.waypoints.color.mode === 'gradient') {
+        const stops = settings.waypoints.color.stops;
+        const firstColor = stops[0]?.color ?? '#bced09';
+        onChange({
+          ...settings,
+          waypoints: {
+            ...settings.waypoints,
+            color: { mode: 'solid', solid: firstColor },
+            color_stops_cache: cloneStops(stops),
+          },
+        });
+        return;
+      }
+      return;
+    }
+    const currentSolid =
+      settings.waypoints.color.mode === 'solid'
+        ? settings.waypoints.color.solid
+        : '#bced09';
+    const stops =
+      settings.waypoints.color_stops_cache &&
+      settings.waypoints.color_stops_cache.length >= 2
+        ? cloneStops(settings.waypoints.color_stops_cache)
+        : initialGradientFromSolid(currentSolid);
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        color: { mode: 'gradient', stops },
+      },
+    });
+  };
+
+  // Copy Route → Waypoints (initiated from the Waypoints panel). Hidden
+  // unless Route is in gradient mode with ≥ 2 stops (per §9).
+  const onCopyFromRoute = () => {
+    if (settings.route.color.mode !== 'gradient') return;
+    if (settings.route.color.stops.length < 2) return;
+    const stopsCopy = cloneStops(settings.route.color.stops);
+    if (settings.waypoints.color.mode === 'solid') {
+      const priorSolid = settings.waypoints.color.solid;
+      const cacheToKeep =
+        settings.waypoints.color_stops_cache &&
+        settings.waypoints.color_stops_cache.length >= 2
+          ? settings.waypoints.color_stops_cache
+          : initialGradientFromSolid(priorSolid);
+      onChange({
+        ...settings,
+        waypoints: {
+          ...settings.waypoints,
+          color: { mode: 'gradient', stops: stopsCopy },
+          color_stops_cache: cloneStops(cacheToKeep),
+        },
+      });
+      return;
+    }
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        color: { mode: 'gradient', stops: stopsCopy },
+      },
+    });
+  };
 
   const setSize = (patch: Partial<MapSettings['waypoints']['size']>) =>
     onChange({
@@ -374,6 +590,17 @@ function WaypointsPanelBody({
 
   const projectSolid = readSolid(settings.waypoints.color);
   const waypointColor = associatedWaypoint?.color ?? projectSolid;
+
+  const waypointsColorMode: 'solid' | 'gradient' =
+    settings.waypoints.color.mode === 'gradient' ? 'gradient' : 'solid';
+  const waypointsGradientStops =
+    settings.waypoints.color.mode === 'gradient'
+      ? settings.waypoints.color.stops
+      : undefined;
+  const waypointProgress = useWaypointProgress(waypoints, indexedRoute);
+  const totalDistMeters = indexedRoute?.totalDistMeters ?? 0;
+  const waypointsGradientAvailable =
+    routeLoaded && (indexedRoute?.totalMercatorMeters ?? 0) > 0;
 
   return (
     <>
@@ -413,7 +640,28 @@ function WaypointsPanelBody({
 
       <Section label="COLOR">
         {scope === 'project' ? (
-          <ColorSection value={projectSolid} onChange={setSolidColor} />
+          <ColorSection
+            value={projectSolid}
+            onChange={setSolidColor}
+            mode={waypointsColorMode}
+            onModeChange={setColorMode}
+            gradientAvailable={waypointsGradientAvailable}
+            gradientStops={waypointsGradientStops}
+            onGradientStopsChange={setGradientStops}
+            waypointProgress={waypointProgress}
+            totalDistMeters={totalDistMeters}
+            copyDirection="fromRoute"
+            onCopy={onCopyFromRoute}
+            // Per `color-gradient.md` §9: visibility depends ONLY on the
+            // source (Route) being in gradient mode with ≥ 2 stops.
+            // Waypoints' own mode doesn't matter — pressing the button in
+            // solid mode is exactly the affordance that flips Waypoints to
+            // gradient (with the prior solid stashed in `color_stops_cache`).
+            copyVisible={
+              settings.route.color.mode === 'gradient' &&
+              settings.route.color.stops.length >= 2
+            }
+          />
         ) : associatedWaypoint ? (
           <>
             <ColorSection
@@ -615,6 +863,29 @@ function omitColor(wp: Waypoint): Waypoint {
   const next: Waypoint = { ...wp };
   delete (next as { color?: string }).color;
   return next;
+}
+
+/** Per-waypoint Web Mercator progress fractions in [0, 1]. Used as snap
+ *  ticks on the gradient bar and as dot positions on the trail preview SVG.
+ *  Wall-clock-anchored waypoints get a real `progressUpTo` value;
+ *  fixed-position waypoints fall back to 0 because they have no defined
+ *  route progress. Matches the convention in `buildWaypointsCollection`
+ *  so editor previews and rendered dot colors agree at the same fraction.
+ *
+ *  Memoized cheaply by referential identity of the inputs — a fresh array
+ *  is created on every render, but the consumer (`GradientEditor`) only
+ *  reads the contents, not the array identity. */
+function useWaypointProgress(
+  waypoints: Waypoint[],
+  indexedRoute: IndexedRoute | null,
+): number[] {
+  if (!indexedRoute) return [];
+  return waypoints.map((wp) => {
+    if (wp.position.kind === 'wall_clock_ms') {
+      return progressUpTo(wp.position.ms, indexedRoute);
+    }
+    return 0;
+  });
 }
 
 /** Decide whether the panel should anchor to its trigger's left or right

@@ -405,6 +405,45 @@ describe('resolveStaticPaints', () => {
     expect(gradBy.get('route-trail-line')).toEqual(expected);
   });
 
+  it('cross-style swap preserves gradient (resolveStaticPaints is deterministic)', () => {
+    // Style swap behavior contract: MapView re-runs the apply effect on
+    // every `styleVersion` change (default ↔ satellite ↔ 3D). The effect
+    // calls `resolveStaticPaints(mapSettings)` and replays the paint /
+    // layout / gradient tuples. For gradient persistence across style
+    // swaps to work, the same input MUST produce the same output every
+    // time — that's what this test pins. (The actual map source re-add
+    // with `lineMetrics: true` is wired at the addSource sites in
+    // `MapView.tsx` and `renderer/index.ts`; this test guarantees the
+    // expression that gets pushed back on the freshly-added source is
+    // unchanged.)
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#bced09' },
+            { fraction: 0.5, color: '#f9cb40' },
+            { fraction: 1, color: '#ff715b' },
+          ],
+        },
+      },
+    };
+    // Resolve three times — once per "style swap" (default → satellite →
+    // 3D). The expressions must be deep-equal across all three.
+    const a = resolveStaticPaints(settings).gradients;
+    const b = resolveStaticPaints(settings).gradients;
+    const c = resolveStaticPaints(settings).gradients;
+    expect(a).toEqual(b);
+    expect(b).toEqual(c);
+    // And the actual expression must be a valid interpolate on line-progress.
+    const fullA = a.find(([l]) => l === 'route-full-line')?.[1];
+    expect(Array.isArray(fullA)).toBe(true);
+    expect((fullA as unknown[])[0]).toBe('interpolate');
+    expect((fullA as unknown[])[2]).toEqual(['line-progress']);
+  });
+
   it('gradient mode still emits line-color in the paints bucket', () => {
     // Design decision: `line-color` is emitted unconditionally even in
     // gradient mode. MapLibre prefers `line-gradient` over `line-color`

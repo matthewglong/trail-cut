@@ -652,6 +652,7 @@ export default function ProjectView({
               }
               waypoints={waypoints}
               onWaypointsChange={setWaypoints}
+              indexedRoute={indexedRoute}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView

@@ -198,6 +198,13 @@ pub struct RouteSettings {
     pub color: DecorationColor,
     #[serde(default)]
     pub size: RouteSize,
+    /// UI affordance — stash of the last gradient stop array, populated when
+    /// the user toggles GRADIENT → SOLID in the panel so toggling back
+    /// restores the prior gradient. Never read by the renderer; see
+    /// `color-gradient.md` §13. Optional and additive — round-trips
+    /// transparently when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_stops_cache: Option<Vec<GradientStop>>,
 }
 
 impl Default for RouteSettings {
@@ -206,6 +213,7 @@ impl Default for RouteSettings {
             mode: default_full(),
             color: DecorationColor::default(),
             size: RouteSize::default(),
+            color_stops_cache: None,
         }
     }
 }
@@ -249,6 +257,13 @@ pub struct WaypointsSettings {
     pub active_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_color: Option<String>,
+    /// UI affordance — stash of the last gradient stop array, populated when
+    /// the user toggles GRADIENT → SOLID in the panel so toggling back
+    /// restores the prior gradient. Never read by the renderer; see
+    /// `color-gradient.md` §13. Optional and additive — round-trips
+    /// transparently when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_stops_cache: Option<Vec<GradientStop>>,
 }
 
 impl Default for WaypointsSettings {
@@ -261,6 +276,7 @@ impl Default for WaypointsSettings {
             label_mode: default_label_mode(),
             active_mode: default_active_waypoint_mode(),
             active_color: None,
+            color_stops_cache: None,
         }
     }
 }
@@ -906,6 +922,95 @@ mod tests {
         }"#;
         let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
         assert!(parsed.last_export_selection.is_none());
+    }
+
+    #[test]
+    fn route_settings_color_stops_cache_round_trips_through_serde() {
+        // Schema v8 + Step 7 added an optional `color_stops_cache` to
+        // RouteSettings as a UI affordance — populated on the gradient →
+        // solid toggle so a later solid → gradient toggle restores the
+        // user's prior stops. Serde-optional with skip-when-none, so it
+        // round-trips transparently for projects that never used it.
+        let route = RouteSettings {
+            mode: "full".to_string(),
+            color: DecorationColor::Solid {
+                solid: "#bced09".to_string(),
+            },
+            size: RouteSize::default(),
+            color_stops_cache: Some(vec![
+                GradientStop {
+                    fraction: 0.0,
+                    color: "#ff715b".to_string(),
+                },
+                GradientStop {
+                    fraction: 1.0,
+                    color: "#2f52e0".to_string(),
+                },
+            ]),
+        };
+        let json = serde_json::to_string(&route).unwrap();
+        assert!(json.contains("color_stops_cache"));
+        let parsed: RouteSettings = serde_json::from_str(&json).unwrap();
+        let cache = parsed.color_stops_cache.expect("cache must survive");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache[0].color, "#ff715b");
+        assert_eq!(cache[1].fraction, 1.0);
+    }
+
+    #[test]
+    fn route_settings_color_stops_cache_absent_when_none() {
+        // skip_serializing_if = "Option::is_none" — JSON should NOT carry
+        // the field when the cache is None. Existing v8 projects without
+        // the cache stay byte-identical after the Step 7 type addition.
+        let route = RouteSettings::default();
+        let json = serde_json::to_string(&route).unwrap();
+        assert!(
+            !json.contains("color_stops_cache"),
+            "JSON must omit color_stops_cache when None — got {json}"
+        );
+    }
+
+    #[test]
+    fn waypoints_settings_color_stops_cache_round_trips_through_serde() {
+        let wp = WaypointsSettings {
+            mode: "full".to_string(),
+            color: DecorationColor::Solid {
+                solid: "#bced09".to_string(),
+            },
+            shape: "circle".to_string(),
+            size: WaypointsSize::default(),
+            label_mode: "numbered".to_string(),
+            active_mode: "latest_passed".to_string(),
+            active_color: None,
+            color_stops_cache: Some(vec![
+                GradientStop {
+                    fraction: 0.0,
+                    color: "#000000".to_string(),
+                },
+                GradientStop {
+                    fraction: 1.0,
+                    color: "#ffffff".to_string(),
+                },
+            ]),
+        };
+        let json = serde_json::to_string(&wp).unwrap();
+        let parsed: WaypointsSettings = serde_json::from_str(&json).unwrap();
+        let cache = parsed.color_stops_cache.expect("cache must survive");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache[1].color, "#ffffff");
+    }
+
+    #[test]
+    fn route_settings_deserializes_pre_step7_json_without_color_stops_cache() {
+        // Old project.json bundles (any v8 file written before Step 7) lack
+        // `color_stops_cache`. Deserialization must succeed with None.
+        let raw = r##"{
+            "mode": "full",
+            "color": { "mode": "solid", "solid": "#bced09" },
+            "size": { "full_width": 0.004, "trail_width": 0.0055 }
+        }"##;
+        let parsed: RouteSettings = serde_json::from_str(raw).expect("must deserialize");
+        assert!(parsed.color_stops_cache.is_none());
     }
 
     #[test]
