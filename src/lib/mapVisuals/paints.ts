@@ -140,6 +140,11 @@ export function buildPerFramePaints(
       waypointCircleColor:
         colorExpr as DataDrivenPropertyValueSpecification<string>,
       waypointCircleStrokeColor: DEFAULT_STROKE_COLOR,
+      // Symbol layer paints the same color expression as the circle layer
+      // so per-feature override_color and gradient stops apply uniformly
+      // across every shape family. See `PaintUpdates.waypointIconColor`.
+      waypointIconColor:
+        colorExpr as DataDrivenPropertyValueSpecification<string>,
       // No active waypoint → halo is invisible. Radius/opacity scalars
       // (cheap same-value diff); color still tracks the base so the
       // layer keeps a coherent paint if the user activates a waypoint
@@ -192,6 +197,10 @@ export function buildPerFramePaints(
       colorExpr as DataDrivenPropertyValueSpecification<string>,
     waypointCircleStrokeColor:
       strokeExpr as DataDrivenPropertyValueSpecification<string>,
+    // Same color expression as the circle layer — see no-active-waypoint
+    // branch for the rationale (uniform color across shape families).
+    waypointIconColor:
+      colorExpr as DataDrivenPropertyValueSpecification<string>,
     waypointHaloColor: haloColorOut,
     waypointHaloRadius:
       haloRadiusExpr as DataDrivenPropertyValueSpecification<number>,

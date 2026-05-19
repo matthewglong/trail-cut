@@ -318,6 +318,39 @@ describe('resolveStaticPaints', () => {
     expect(noneBy.get('route-trail-line/visibility')).toBe('none');
   });
 
+  it('layouts include a waypoints-symbol icon-image expression derived from mapSettings.waypoints.shape', () => {
+    // The symbol-layer `icon-image` fallback must read the project default
+    // shape — otherwise a project default of 'diamond' silently renders
+    // every un-overridden waypoint as a circle icon. The expression body
+    // is a `concat` of `'waypoint-' + coalesce(override_shape, projectShape)`;
+    // we serialize it and look for the project shape literal in the tree.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'diamond' },
+    };
+    const resolved = resolveStaticPaints(settings);
+    const tuple = resolved.layouts.find(
+      ([l, p]) => l === 'waypoints-symbol' && p === 'icon-image',
+    );
+    expect(tuple).toBeDefined();
+    const expr = tuple?.[2];
+    // `concat`-prefixed expression with the project shape literal somewhere
+    // inside the coalesce branch.
+    expect(Array.isArray(expr)).toBe(true);
+    expect((expr as unknown[])[0]).toBe('concat');
+    expect(JSON.stringify(expr)).toContain('diamond');
+    // Sanity: a different project shape produces a different literal.
+    const pinResolved = resolveStaticPaints({
+      ...settings,
+      waypoints: { ...settings.waypoints, shape: 'pin' },
+    });
+    const pinTuple = pinResolved.layouts.find(
+      ([l, p]) => l === 'waypoints-symbol' && p === 'icon-image',
+    );
+    expect(JSON.stringify(pinTuple?.[2])).toContain('pin');
+    expect(JSON.stringify(pinTuple?.[2])).not.toContain('diamond');
+  });
+
   it('layouts include the waypoint label expression derived from waypoints.label_mode', () => {
     const withLabelMode = (label_mode: 'numbered' | 'labeled'): MapSettings => ({
       ...DEFAULT_MAP_SETTINGS,

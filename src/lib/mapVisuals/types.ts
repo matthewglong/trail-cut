@@ -46,6 +46,15 @@ export interface PaintUpdates {
   waypointCircleColor: DataDrivenPropertyValueSpecification<string> | string;
   waypointCircleStrokeColor:
     | DataDrivenPropertyValueSpecification<string> | string;
+  /** Waypoint symbol-layer `icon-color`. SDF icons are tinted by this
+   *  paint property; the value is the SAME `case` expression used for
+   *  `waypointCircleColor` (override_color > base) so symbol-family shapes
+   *  (pin, square, diamond) and circle-family shapes (circle, ring,
+   *  numbered-circle) paint with bit-identical color logic — gradient
+   *  stops, per-`Waypoint.color` overrides, and the active-waypoint
+   *  highlight all apply uniformly. Applied to `waypoints-symbol`'s
+   *  `icon-color` per frame. */
+  waypointIconColor: DataDrivenPropertyValueSpecification<string> | string;
   /** Active-waypoint halo color. Per [DECIDED] Q1: when
    *  `mapSettings.waypoints.active_color` is set the halo paints that flat
    *  hex; when unset, the halo mirrors the active waypoint's own resolved

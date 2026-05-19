@@ -319,6 +319,73 @@ describe('buildPerFrameState paints', () => {
     );
   });
 
+  it('waypointIconColor equals waypointCircleColor in every per-frame call', () => {
+    // The symbol layer (pin/square/diamond) must paint with the SAME color
+    // expression as the circle layer (override_color > base). If the two
+    // ever diverge, per-`Waypoint.color` overrides and gradient stops fail
+    // silently on non-circle-family shapes. Asserted at two probe states:
+    // (a) no active waypoint, (b) active waypoint set.
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const noActive = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      POINT_SETTINGS,
+      VIEWPORT,
+    );
+    expect(noActive.paints.waypointIconColor).toEqual(
+      noActive.paints.waypointCircleColor,
+    );
+    // Force an active waypoint by jumping inside clip 1's span — the v7
+    // `latest_passed` selector picks waypoints[0] for any t inside clip 1.
+    const withActive = buildPerFrameState(
+      timeline,
+      1_000,
+      null,
+      clips,
+      waypoints,
+      POINT_SETTINGS,
+      VIEWPORT,
+    );
+    expect(withActive.paints.waypointIconColor).toEqual(
+      withActive.paints.waypointCircleColor,
+    );
+  });
+
+  it('waypointIconColor reflects gradient color expressions just like waypointCircleColor', () => {
+    // Gradient-mode project Waypoints color must reach the symbol layer
+    // via the same expression body — otherwise diamond/pin/square icons
+    // stay chartreuse while the circles paint a gradient sample.
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const gradientSettings: MapSettings = {
+      ...POINT_SETTINGS,
+      waypoints: {
+        ...POINT_SETTINGS.waypoints,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#bced09' },
+            { fraction: 1, color: '#ff715b' },
+          ],
+        },
+      },
+    };
+    const state = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      gradientSettings,
+      VIEWPORT,
+    );
+    expect(state.paints.waypointIconColor).toEqual(
+      state.paints.waypointCircleColor,
+    );
+  });
+
   it('active-waypoint mode "latest_passed" emits a case-expression keyed off the passed waypoint id', () => {
     // v7 (post-refactor) — the active highlight is driven by
     // `active_waypoint_mode` against the marker's wall-clock, not by the

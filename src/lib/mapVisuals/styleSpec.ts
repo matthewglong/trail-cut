@@ -193,24 +193,21 @@ export const WAYPOINTS_CIRCLE_LAYER: LayerSpecification = {
  *  SDF is required for `icon-color` to act as a per-feature data-driven
  *  tint — non-SDF icons would lock every symbol to a single uniform color.
  *
- *  `icon-image` is a `concat` expression: `'waypoint-' + override_shape`
- *  per feature, falling back to `'waypoint-circle'` when `override_shape`
- *  is absent. Until Step 8-UI rewires this to read from
- *  `mapSettings.waypoints.shape`, the fallback renders as 'waypoint-circle'
- *  — visually transparent for all features because every feature also
- *  resolves to the circle-family branch in the `icon-opacity` expression
- *  (the circle layer handles the actual paint). Source: `waypoints` (same
- *  source as the circle layer). */
+ *  `icon-image` is a PLACEHOLDER (`'waypoint-circle'`) at boot — the real
+ *  expression is a `concat` of `'waypoint-' + (override_shape ?? projectShape)`
+ *  emitted by `resolveStaticPaints` so it tracks `mapSettings.waypoints.shape`.
+ *  Both `icon-color` and `icon-opacity` are PLACEHOLDERS overridden on the
+ *  first frame: `icon-color` by `buildPerFramePaints` (per-feature override
+ *  > base color, identical logic to `waypoints-circle.circle-color`),
+ *  `icon-opacity` by `resolveStaticPaints` (per-feature routing between the
+ *  circle and symbol layers). Source: `waypoints` (same source as the
+ *  circle layer). */
 export const WAYPOINTS_SYMBOL_LAYER: LayerSpecification = {
   id: 'waypoints-symbol',
   type: 'symbol',
   source: 'waypoints',
   layout: {
-    'icon-image': [
-      'concat',
-      'waypoint-',
-      ['coalesce', ['get', 'override_shape'], 'circle'],
-    ],
+    'icon-image': 'waypoint-circle',
     'icon-size': 1,
     'icon-allow-overlap': true,
     'icon-ignore-placement': true,
@@ -443,6 +440,19 @@ export function resolveStaticPaints(
     0,
     1,
   ];
+  // Symbol-layer `icon-image`. Per-feature `'waypoint-' + effective_shape`,
+  // where the effective shape is `override_shape ?? mapSettings.waypoints.shape`.
+  // The fallback MUST be the project-level shape (MapSettings-derived), not a
+  // hardcoded literal — otherwise a project default of e.g. 'diamond' silently
+  // renders every un-overridden waypoint as a circle icon. Emitted through
+  // `layouts` because `icon-image` is a layout property (set via
+  // `setLayoutProperty`), and routed alongside `icon-opacity` so a single
+  // re-resolve flips both the visible layer AND the rendered symbol shape.
+  const iconImageExpr: ExpressionSpecification = [
+    'concat',
+    'waypoint-',
+    ['coalesce', ['get', 'override_shape'], projectShape],
+  ];
   return {
     paints: [
       ['route-full-line', 'line-color', routeSolid],
@@ -504,6 +514,11 @@ export function resolveStaticPaints(
       // steady-state cost is one map lookup per frame per tuple.
       ['route-full-line', 'visibility', mapSettings.route.mode === 'full' ? 'visible' : 'none'],
       ['route-trail-line', 'visibility', mapSettings.route.mode === 'visited' ? 'visible' : 'none'],
+      // Symbol-layer icon-image. MapSettings-derived (fallback reads
+      // `mapSettings.waypoints.shape`) so a project-default shape edit
+      // re-resolves and immediately changes the rendered symbol for every
+      // waypoint without a per-Waypoint `shape` override.
+      ['waypoints-symbol', 'icon-image', iconImageExpr],
     ],
     // Route line-gradient. Gradient mode emits an `interpolate` expression
     // on `line-progress`; solid mode emits `null` so the consumer clears

@@ -581,6 +581,14 @@ export default function MapView({
           map.setPaintProperty('waypoints-circle', 'circle-stroke-color',
             state.paints.waypointCircleStrokeColor);
         }
+        if (map.getLayer('waypoints-symbol')) {
+          // Symbol-family waypoints (pin, square, diamond) get the same
+          // color expression as circle-family — per-feature override_color
+          // and gradient stops apply uniformly. See `waypointIconColor` in
+          // `PaintUpdates`.
+          map.setPaintProperty('waypoints-symbol', 'icon-color',
+            state.paints.waypointIconColor);
+        }
         if (map.getLayer('waypoints-active-halo')) {
           // Halo radius/opacity collapse to 0 when no waypoint is active so
           // the always-seeded layer stays invisible without `visibility`

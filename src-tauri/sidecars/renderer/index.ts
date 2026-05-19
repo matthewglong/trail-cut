@@ -733,6 +733,10 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     ['waypoints-circle', 'circle-radius', state.paints.waypointCircleRadius],
     ['waypoints-circle', 'circle-color', state.paints.waypointCircleColor],
     ['waypoints-circle', 'circle-stroke-color', state.paints.waypointCircleStrokeColor],
+    // Symbol-layer icon-color: same color expression as the circle layer so
+    // symbol-family shapes (pin, square, diamond) paint with bit-identical
+    // color logic — override_color > base, gradient stops, active highlight.
+    ['waypoints-symbol', 'icon-color', state.paints.waypointIconColor],
     // Active-waypoint halo ([DECIDED] Q2). Always-seeded layer; radius and
     // opacity collapse to 0 when no waypoint is active, so the layer stays
     // invisible without `visibility` toggling. Color tracks the active
