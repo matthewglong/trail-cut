@@ -697,3 +697,274 @@ describe('DecorationPanel — scope banner', () => {
     expect(/overrides/.test(text)).toBe(false);
   });
 });
+
+// ============================================================================
+// Step 8-UI — Waypoints shape gallery routing
+// ============================================================================
+
+describe('DecorationPanel — Waypoints shape gallery (project scope)', () => {
+  it('renders the SHAPE section between COLOR and SIZE in the Waypoints panel', () => {
+    render(<DecorationPanel {...baseProps({ decoration: 'waypoints' })} />);
+    const shapeSection = q('[data-testid="shape-section"]');
+    expect(shapeSection).toBeTruthy();
+    // All six shape cells render.
+    expect(q('[data-testid="shape-cell-circle"]')).toBeTruthy();
+    expect(q('[data-testid="shape-cell-ring"]')).toBeTruthy();
+    expect(q('[data-testid="shape-cell-pin"]')).toBeTruthy();
+    expect(q('[data-testid="shape-cell-square"]')).toBeTruthy();
+    expect(q('[data-testid="shape-cell-diamond"]')).toBeTruthy();
+    expect(q('[data-testid="shape-cell-numbered-circle"]')).toBeTruthy();
+  });
+
+  it('writes mapSettings.waypoints.shape via onChange when a shape is clicked (project scope)', () => {
+    const onChange = vi.fn();
+    render(
+      <DecorationPanel
+        {...baseProps({ decoration: 'waypoints', onChange })}
+      />,
+    );
+    click(q('[data-testid="shape-cell-diamond"]')!);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.waypoints.shape).toBe('diamond');
+  });
+
+  it('selects the project default shape on the gallery', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'square' },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({ decoration: 'waypoints', settings })}
+      />,
+    );
+    const square = q('[data-testid="shape-cell-square"]') as HTMLElement;
+    expect(square.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('DecorationPanel — Waypoints shape gallery (clip scope)', () => {
+  it('clicking a shape writes Waypoint.shape via onWaypointsChange (NOT MapSettings)', () => {
+    const onChange = vi.fn();
+    const onWaypointsChange = vi.fn();
+    const wp = makeWaypoint('wp-1', 'c1');
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          onChange,
+          onWaypointsChange,
+        })}
+      />,
+    );
+    click(q('[data-testid="shape-cell-diamond"]')!);
+    // Shape edit must go through the Waypoint entity, NOT MapSettings.
+    expect(onWaypointsChange).toHaveBeenCalledTimes(1);
+    const next = onWaypointsChange.mock.calls[0][0] as Waypoint[];
+    expect(next.length).toBe(1);
+    expect(next[0].id).toBe('wp-1');
+    expect(next[0].shape).toBe('diamond');
+    // And no MapSettings write for the same click — the shape-related
+    // surface of MapSettings (waypoints.shape) must stay at the project
+    // default.
+    const shapeRelated = onChange.mock.calls.filter((call) => {
+      const settings = call[0] as MapSettings;
+      return settings.waypoints.shape !== DEFAULT_MAP_SETTINGS.waypoints.shape;
+    });
+    expect(shapeRelated.length).toBe(0);
+  });
+
+  it('selects the project default when the associated waypoint has no shape override', () => {
+    const wp = makeWaypoint('wp-1', 'c1');
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'pin' },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          settings,
+        })}
+      />,
+    );
+    const pin = q('[data-testid="shape-cell-pin"]') as HTMLElement;
+    expect(pin.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('selects the override (diamond) when the associated waypoint has shape=diamond', () => {
+    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'diamond' };
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      // Project default is circle, but the override wins.
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'circle' },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          settings,
+        })}
+      />,
+    );
+    const diamond = q('[data-testid="shape-cell-diamond"]') as HTMLElement;
+    expect(diamond.getAttribute('aria-pressed')).toBe('true');
+    const circle = q('[data-testid="shape-cell-circle"]') as HTMLElement;
+    expect(circle.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('shows an override pill when the associated waypoint has a shape override', () => {
+    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'pin' };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+        })}
+      />,
+    );
+    // The override pill labels its scope as "Wp N · override". The COLOR
+    // section also renders one when color is set, but in this fixture only
+    // shape is set — so any pill that appears is the shape one.
+    const text = document.body.textContent ?? '';
+    expect(/Wp 1 · override/.test(text)).toBe(true);
+    const clearBtn = q('[data-testid="shape-section-clear-override"]');
+    expect(clearBtn).toBeTruthy();
+  });
+
+  it('"Reset to project" clears Waypoint.shape via onWaypointsChange', () => {
+    const onWaypointsChange = vi.fn();
+    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'pin' };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          onWaypointsChange,
+        })}
+      />,
+    );
+    click(q('[data-testid="shape-section-clear-override"]')!);
+    expect(onWaypointsChange).toHaveBeenCalledTimes(1);
+    const next = onWaypointsChange.mock.calls[0][0] as Waypoint[];
+    expect(next.length).toBe(1);
+    expect(next[0].id).toBe('wp-1');
+    expect(next[0].shape).toBeUndefined();
+  });
+
+  it('renders the no-associated-waypoint note in the SHAPE section when none exists', () => {
+    const onOpenWaypointsPanel = vi.fn();
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [], // no associated waypoint
+          onOpenWaypointsPanel,
+        })}
+      />,
+    );
+    // The SHAPE section is collapsed to the same CTA the COLOR section uses;
+    // both sections render the open-waypoints-panel button in the no-waypoint
+    // case, so we expect AT LEAST one to be present.
+    const ctas = document.body.querySelectorAll('[data-testid="open-waypoints-panel"]');
+    expect(ctas.length).toBeGreaterThanOrEqual(1);
+    // Shape gallery itself is NOT rendered when there's no waypoint.
+    expect(q('[data-testid="shape-section"]')).toBeNull();
+  });
+});
+
+describe('DecorationPanel — Waypoints SIZE label_size conditional', () => {
+  it('omits the Label size row when project shape is not numbered-circle', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'circle' },
+    };
+    render(
+      <DecorationPanel {...baseProps({ decoration: 'waypoints', settings })} />,
+    );
+    const text = document.body.textContent ?? '';
+    expect(text.includes('Label size')).toBe(false);
+  });
+
+  it('renders the Label size row when project shape is numbered-circle', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'numbered-circle' },
+    };
+    render(
+      <DecorationPanel {...baseProps({ decoration: 'waypoints', settings })} />,
+    );
+    const text = document.body.textContent ?? '';
+    expect(text.includes('Label size')).toBe(true);
+  });
+
+  it('omits the Label size row in clip scope when the override is not numbered-circle', () => {
+    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'diamond' };
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      // Project default is numbered-circle, but the per-waypoint diamond
+      // override wins → label row hides.
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'numbered-circle' },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          settings,
+        })}
+      />,
+    );
+    const text = document.body.textContent ?? '';
+    expect(text.includes('Label size')).toBe(false);
+  });
+
+  it('renders the Label size row in clip scope when the override IS numbered-circle', () => {
+    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'numbered-circle' };
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      // Project default is something else; the override flips to
+      // numbered-circle and the label row appears.
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'circle' },
+    };
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'waypoints',
+          scope: 'clip',
+          currentClip: makeClip('c1'),
+          currentClipOrdinal: 1,
+          waypoints: [wp],
+          settings,
+        })}
+      />,
+    );
+    const text = document.body.textContent ?? '';
+    expect(text.includes('Label size')).toBe(true);
+  });
+});

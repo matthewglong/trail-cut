@@ -28,6 +28,7 @@ import {
   cloneStops,
   initialGradientFromSolid,
 } from '../ColorSection/gradientMath';
+import { ShapeSection } from '../ShapeSection';
 import { panelStyles } from './styles';
 import {
   type ActiveWaypointMode,
@@ -41,6 +42,7 @@ import {
   type TriMode,
   type Waypoint,
   type WaypointLabelMode,
+  type WaypointShape,
 } from '../../../types';
 import type { IndexedRoute } from '../../../lib/routeLocation';
 import { progressUpTo } from '../../../lib/routeLocation';
@@ -588,8 +590,43 @@ function WaypointsPanelBody({
     onWaypointsChange(nextWaypoints);
   };
 
+  // Project-default shape setter — writes through `onChange` (MapSettings).
+  const setProjectShape = (shape: WaypointShape) =>
+    onChange({ ...settings, waypoints: { ...settings.waypoints, shape } });
+
+  // Clip-scope shape setter — writes `Waypoint.shape` on the associated
+  // entity via `onWaypointsChange`. Same pattern as `setWaypointColor`.
+  // Per the v8 contract, shape overrides live on the Waypoint, never on
+  // `clip.map_overrides` (`MapOverrides.waypoints` has no `shape` field).
+  const setWaypointShape = (shape: WaypointShape) => {
+    if (!associatedWaypoint) return;
+    const nextWaypoints = waypoints.map((w) =>
+      w.id === associatedWaypoint.id ? { ...w, shape } : w,
+    );
+    onWaypointsChange(nextWaypoints);
+  };
+
+  const clearWaypointShape = () => {
+    if (!associatedWaypoint) return;
+    const nextWaypoints = waypoints.map((w) =>
+      w.id === associatedWaypoint.id ? omitShape(w) : w,
+    );
+    onWaypointsChange(nextWaypoints);
+  };
+
   const projectSolid = readSolid(settings.waypoints.color);
   const waypointColor = associatedWaypoint?.color ?? projectSolid;
+
+  // Effective shape — the shape the gallery shows as selected. In clip
+  // scope, the per-Waypoint override wins; in project scope (or when there
+  // is no associated waypoint) we fall back to the project default. The
+  // SIZE section's conditional `label_size` row reads the same value so
+  // gallery selection and label-row visibility stay in sync.
+  const effectiveShape: WaypointShape =
+    scope === 'clip'
+      ? (associatedWaypoint?.shape ?? settings.waypoints.shape)
+      : settings.waypoints.shape;
+  const showLabelSize = effectiveShape === 'numbered-circle';
 
   const waypointsColorMode: 'solid' | 'gradient' =
     settings.waypoints.color.mode === 'gradient' ? 'gradient' : 'solid';
@@ -685,6 +722,27 @@ function WaypointsPanelBody({
         )}
       </Section>
 
+      <Section label="SHAPE">
+        {scope === 'project' ? (
+          <ShapeSection value={settings.waypoints.shape} onChange={setProjectShape} />
+        ) : associatedWaypoint ? (
+          <ShapeSection
+            value={effectiveShape}
+            onChange={setWaypointShape}
+            overrideIndicator={
+              associatedWaypoint.shape !== undefined && associatedOrdinal != null
+                ? {
+                    label: `Wp ${associatedOrdinal} · override`,
+                    onClear: clearWaypointShape,
+                  }
+                : undefined
+            }
+          />
+        ) : (
+          <NoAssociatedWaypointNote onOpenWaypointsPanel={onOpenWaypointsPanel} />
+        )}
+      </Section>
+
       <Section label="SIZE">
         <SizeRow
           label="Radius"
@@ -701,11 +759,13 @@ function WaypointsPanelBody({
           stored={settings.waypoints.size.stroke_width}
           onStoredChange={(v) => setSize({ stroke_width: v })}
         />
-        <SizeRow
-          label="Label size"
-          stored={settings.waypoints.size.label_size}
-          onStoredChange={(v) => setSize({ label_size: v })}
-        />
+        {showLabelSize && (
+          <SizeRow
+            label="Label size"
+            stored={settings.waypoints.size.label_size}
+            onStoredChange={(v) => setSize({ label_size: v })}
+          />
+        )}
       </Section>
     </>
   );
@@ -862,6 +922,12 @@ function readSolid(color: DecorationColor): string {
 function omitColor(wp: Waypoint): Waypoint {
   const next: Waypoint = { ...wp };
   delete (next as { color?: string }).color;
+  return next;
+}
+
+function omitShape(wp: Waypoint): Waypoint {
+  const next: Waypoint = { ...wp };
+  delete (next as { shape?: WaypointShape }).shape;
   return next;
 }
 
