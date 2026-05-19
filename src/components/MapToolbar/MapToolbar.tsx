@@ -9,27 +9,26 @@ import {
 import {
   Route as RouteIcon,
   MapPin,
+  Crosshair as PovIcon,
   LocateFixed,
   Layers,
   ZoomIn,
   Compass,
   LayoutPanelTop,
-  Tag,
-  Crosshair,
   ListChecks,
 } from 'lucide-react';
 import Toolbar from '../Toolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
+import { DecorationPanel, type DecorationKind } from './DecorationPanel';
 import type {
-  ActiveWaypointMode,
+  Clip,
   MapSettings,
   MapStyleId,
   OverridePath,
-  TriMode,
-  WaypointLabelMode,
+  Waypoint,
 } from '../../types';
-import { colors } from '../../theme/tokens';
+import { colors, semantic } from '../../theme/tokens';
 import { styles } from './styles';
 
 // Right-to-left overflow wrap — items are an ordered list. A hidden off-screen
@@ -58,28 +57,24 @@ interface MapToolbarProps {
    *  individual waypoints (clip-sourced ones, manual ones once we add the
    *  add-affordance). */
   onOpenWaypointsPanel: () => void;
+  /** Selected clip — read in the decoration panels to find the associated
+   *  Waypoint by `clip_id` and to compute the scope-banner ordinal. */
+  currentClip: Clip | null;
+  /** 1-based ordinal of the current clip (its index in the project's clip
+   *  ordering). Passed through to the scope banner copy. */
+  currentClipOrdinal: number | null;
+  /** Full project waypoint list — read for the per-Waypoint override write
+   *  in the Waypoints panel's clip-scope COLOR section. */
+  waypoints: Waypoint[];
+  /** Receives the entire next waypoints array on per-Waypoint edits. The
+   *  parent persists via its `setWaypoints` setter. */
+  onWaypointsChange: (next: Waypoint[]) => void;
 }
-
-const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
-  { value: 'none', label: 'None', short: 'N' },
-  { value: 'visited', label: 'Visited', short: 'V' },
-  { value: 'full', label: 'Full', short: 'F' },
-];
 
 const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
   { value: 'default', label: 'Default', short: 'D' },
   { value: '3d', label: '3D', short: '3D' },
   { value: 'satellite', label: 'Satellite', short: 'S' },
-];
-
-const LABEL_MODE_OPTIONS: { value: WaypointLabelMode; label: string; short: string }[] = [
-  { value: 'numbered', label: 'Numbered', short: '#' },
-  { value: 'labeled', label: 'Labeled', short: 'A' },
-];
-
-const ACTIVE_WAYPOINT_OPTIONS: { value: ActiveWaypointMode; label: string; short: string }[] = [
-  { value: 'none', label: 'None', short: 'N' },
-  { value: 'latest_passed', label: 'Latest', short: 'L' },
 ];
 
 type Item = {
@@ -100,6 +95,10 @@ export default function MapToolbar({
   overriddenKeys,
   onOpenPositioning,
   onOpenWaypointsPanel,
+  currentClip,
+  currentClipOrdinal,
+  waypoints,
+  onWaypointsChange,
 }: MapToolbarProps) {
   const followOn = settings.camera.follow_playhead;
   const bearingAuto = settings.camera.bearing_mode === 'auto';
@@ -109,6 +108,37 @@ export default function MapToolbar({
    *  only the color toggles — no element is added or removed. */
   const overrideColor = (path: OverridePath): string | undefined =>
     overriddenKeys?.has(path) ? colors.accent : undefined;
+
+  /** Decoration-button override rollup — chartreuse if any path in the
+   *  decoration's domain is overridden. */
+  const decorationOverrideColor = (prefix: 'route' | 'waypoints' | 'pov'): string | undefined => {
+    if (!overriddenKeys) return undefined;
+    for (const p of overriddenKeys) {
+      if (p.startsWith(`${prefix}.`)) return colors.accent;
+    }
+    return undefined;
+  };
+
+  /** Per-Waypoint override rollup for the Waypoints decoration button. In
+   *  clip scope we check the associated waypoint; in project scope we check
+   *  whether any waypoint has an override. */
+  const waypointsButtonOverride = ((): string | undefined => {
+    const pathBased = decorationOverrideColor('waypoints');
+    if (pathBased) return pathBased;
+    if (scope === 'clip') {
+      const associated = currentClip
+        ? waypoints.find((w) => w.clip_id === currentClip.id)
+        : null;
+      if (associated && (associated.color !== undefined || associated.shape !== undefined)) {
+        return colors.accent;
+      }
+      return undefined;
+    }
+    const anyOverride = waypoints.some(
+      (w) => w.color !== undefined || w.shape !== undefined,
+    );
+    return anyOverride ? colors.accent : undefined;
+  })();
 
   const setCamera = (patch: Partial<MapSettings['camera']>) =>
     onChange({ ...settings, camera: { ...settings.camera, ...patch } });
@@ -163,6 +193,15 @@ export default function MapToolbar({
     />
   );
 
+  // --- Decoration panel state ----------------------------------------------
+  const [openPanel, setOpenPanel] = useState<DecorationKind | null>(null);
+  const routeTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const waypointsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const povTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const toggle = (kind: DecorationKind) =>
+    setOpenPanel((cur) => (cur === kind ? null : kind));
+
   const items: Item[] = [
     {
       id: 'style',
@@ -184,73 +223,102 @@ export default function MapToolbar({
       id: 'route',
       menuLabel: 'Route',
       node: (
-        <ModePicker<TriMode>
-          value={settings.route.mode}
-          options={TRI_OPTIONS}
-          onChange={(v) =>
-            onChange({ ...settings, route: { ...settings.route, mode: v } })
-          }
-          disabledValues={routeLoaded ? [] : ['visited']}
-          title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
-          minWidth={68}
+        <DecorationButton
+          id="route"
           icon={<RouteIcon size={15} strokeWidth={2} />}
-          variant="minimal"
-          iconColor={overrideColor('route.mode')}
-        />
+          label="Route"
+          isOpen={openPanel === 'route'}
+          overrideColor={decorationOverrideColor('route')}
+          triggerRef={routeTriggerRef}
+          onClick={() => toggle('route')}
+        >
+          {openPanel === 'route' && (
+            <DecorationPanel
+              decoration="route"
+              settings={settings}
+              onChange={onChange}
+              scope={scope}
+              overriddenKeys={overriddenKeys}
+              onScopeChange={onScopeChange}
+              onClose={() => setOpenPanel(null)}
+              routeLoaded={routeLoaded}
+              currentClip={currentClip}
+              waypoints={waypoints}
+              onWaypointsChange={onWaypointsChange}
+              onOpenWaypointsPanel={onOpenWaypointsPanel}
+              triggerRef={routeTriggerRef}
+              currentClipOrdinal={currentClipOrdinal}
+            />
+          )}
+        </DecorationButton>
       ),
     },
     {
       id: 'waypoints',
       menuLabel: 'Waypoints',
       node: (
-        <ModePicker<TriMode>
-          value={settings.waypoints.mode}
-          options={TRI_OPTIONS}
-          onChange={(v) =>
-            onChange({ ...settings, waypoints: { ...settings.waypoints, mode: v } })
-          }
-          title="Clip waypoint visibility"
-          minWidth={68}
+        <DecorationButton
+          id="waypoints"
           icon={<MapPin size={15} strokeWidth={2} />}
-          variant="minimal"
-          iconColor={overrideColor('waypoints.mode')}
-        />
+          label="Waypoints"
+          isOpen={openPanel === 'waypoints'}
+          overrideColor={waypointsButtonOverride}
+          triggerRef={waypointsTriggerRef}
+          onClick={() => toggle('waypoints')}
+        >
+          {openPanel === 'waypoints' && (
+            <DecorationPanel
+              decoration="waypoints"
+              settings={settings}
+              onChange={onChange}
+              scope={scope}
+              overriddenKeys={overriddenKeys}
+              onScopeChange={onScopeChange}
+              onClose={() => setOpenPanel(null)}
+              routeLoaded={routeLoaded}
+              currentClip={currentClip}
+              waypoints={waypoints}
+              onWaypointsChange={onWaypointsChange}
+              onOpenWaypointsPanel={onOpenWaypointsPanel}
+              triggerRef={waypointsTriggerRef}
+              currentClipOrdinal={currentClipOrdinal}
+            />
+          )}
+        </DecorationButton>
       ),
     },
     {
-      id: 'label_mode',
-      menuLabel: 'Label',
+      id: 'pov',
+      menuLabel: 'POV',
       node: (
-        <ModePicker<WaypointLabelMode>
-          value={settings.waypoints.label_mode}
-          options={LABEL_MODE_OPTIONS}
-          onChange={(v) =>
-            onChange({ ...settings, waypoints: { ...settings.waypoints, label_mode: v } })
-          }
-          title="Waypoint label mode (numbered vs. user-set label)"
-          minWidth={76}
-          icon={<Tag size={15} strokeWidth={2} />}
-          variant="minimal"
-          iconColor={overrideColor('waypoints.label_mode')}
-        />
-      ),
-    },
-    {
-      id: 'active_waypoint',
-      menuLabel: 'Active',
-      node: (
-        <ModePicker<ActiveWaypointMode>
-          value={settings.waypoints.active_mode}
-          options={ACTIVE_WAYPOINT_OPTIONS}
-          onChange={(v) =>
-            onChange({ ...settings, waypoints: { ...settings.waypoints, active_mode: v } })
-          }
-          title="Active-waypoint highlight (none, or the latest waypoint the marker has passed)"
-          minWidth={72}
-          icon={<Crosshair size={15} strokeWidth={2} />}
-          variant="minimal"
-          iconColor={overrideColor('waypoints.active_mode')}
-        />
+        <DecorationButton
+          id="pov"
+          icon={<PovIcon size={15} strokeWidth={2} />}
+          label="POV"
+          isOpen={openPanel === 'pov'}
+          overrideColor={decorationOverrideColor('pov')}
+          triggerRef={povTriggerRef}
+          onClick={() => toggle('pov')}
+        >
+          {openPanel === 'pov' && (
+            <DecorationPanel
+              decoration="pov"
+              settings={settings}
+              onChange={onChange}
+              scope={scope}
+              overriddenKeys={overriddenKeys}
+              onScopeChange={onScopeChange}
+              onClose={() => setOpenPanel(null)}
+              routeLoaded={routeLoaded}
+              currentClip={currentClip}
+              waypoints={waypoints}
+              onWaypointsChange={onWaypointsChange}
+              onOpenWaypointsPanel={onOpenWaypointsPanel}
+              triggerRef={povTriggerRef}
+              currentClipOrdinal={currentClipOrdinal}
+            />
+          )}
+        </DecorationButton>
       ),
     },
     {
@@ -509,6 +577,91 @@ const positioningButtonStyle: React.CSSProperties = {
   cursor: 'pointer',
   borderRadius: 4,
   padding: 0,
+};
+
+/** Compact icon button that triggers a `DecorationPanel`. The panel is
+ *  rendered as `children`, positioned absolutely beneath this button. */
+function DecorationButton({
+  id,
+  icon,
+  label,
+  isOpen,
+  overrideColor,
+  triggerRef,
+  onClick,
+  children,
+}: {
+  id: DecorationKind;
+  icon: ReactNode;
+  label: string;
+  isOpen: boolean;
+  overrideColor: string | undefined;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div style={decorationButtonWrapper}>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={onClick}
+        title={label}
+        aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        data-testid={`decoration-trigger-${id}`}
+        style={{
+          ...decorationButtonStyle,
+          ...(isOpen ? decorationButtonStyleOpen : null),
+          color: isOpen ? semantic.fg : '#c8c8c8',
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center' }}>{icon}</span>
+        {overrideColor && (
+          <span
+            style={{ ...overrideDotStyle, backgroundColor: overrideColor }}
+            aria-hidden
+          />
+        )}
+      </button>
+      {children}
+    </div>
+  );
+}
+
+const decorationButtonWrapper: React.CSSProperties = {
+  position: 'relative',
+  display: 'inline-flex',
+};
+
+const decorationButtonStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 28,
+  height: 24,
+  background: 'transparent',
+  border: 'none',
+  color: '#c8c8c8',
+  cursor: 'pointer',
+  borderRadius: 4,
+  padding: 0,
+  position: 'relative',
+  transition: 'background-color 0.15s ease, color 0.15s ease',
+};
+
+const decorationButtonStyleOpen: React.CSSProperties = {
+  backgroundColor: semantic.accentTint,
+};
+
+const overrideDotStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 3,
+  right: 3,
+  width: 4,
+  height: 4,
+  borderRadius: 999,
 };
 
 /** Complete perspective frame — wider on left (facing), tapering right (receding).

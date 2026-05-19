@@ -644,6 +644,14 @@ export default function ProjectView({
               overriddenKeys={overriddenKeys}
               onOpenPositioning={() => setPositioningModalOpen(true)}
               onOpenWaypointsPanel={() => setWaypointsPanelOpen(true)}
+              currentClip={selectedClip}
+              currentClipOrdinal={
+                selectedClipId
+                  ? (clips.findIndex((c) => c.id === selectedClipId) + 1) || null
+                  : null
+              }
+              waypoints={waypoints}
+              onWaypointsChange={setWaypoints}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView

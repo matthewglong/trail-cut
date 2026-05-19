@@ -15,12 +15,30 @@ const brand = {
   pollen:     '#f9cb40',
   chartreuse: '#bced09',
   azure:      '#2f52e0',
+  /** Off-white — the same hex `brand.text` uses. Re-exported here so palette
+   *  consumers (swatch rows) can pick "white" by name without reaching into
+   *  `text`. Same literal, distinct semantic role. */
+  white:      '#e6ecec',
   text:       '#e6ecec',
   textMid:    '#8a9697',
   textDim:    '#5a6868',
   textFaint:  '#34403f',
   wire:       '#2c3738',
   wireMid:    '#4c5b5c',
+} as const;
+
+/** Raw brand palette — exported for swatch rows and other "named-color"
+ *  consumers that need to pick from the palette by name (coral, pollen,
+ *  chartreuse, azure, granite, white). New code should still prefer
+ *  `semantic` aliases for any color whose role is functional rather than
+ *  identity (e.g. "the accent" vs. "the chartreuse swatch tile"). */
+export const palette = {
+  coral:      brand.coral,
+  pollen:     brand.pollen,
+  chartreuse: brand.chartreuse,
+  azure:      brand.azure,
+  granite:    brand.granite,
+  white:      brand.white,
 } as const;
 
 export const semantic = {
