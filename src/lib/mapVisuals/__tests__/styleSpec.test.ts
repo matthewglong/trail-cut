@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildStyleSpec,
+  buildLineGradientExpression,
   resolveStaticPaints,
   PAINT_REFERENCE_WIDTH,
   BUILDINGS_LAYER_SPEC,
@@ -95,10 +96,10 @@ describe('resolveStaticPaints', () => {
   function buildMap(
     resolved: ReturnType<typeof resolveStaticPaints>,
   ): {
-    paintBy: Map<string, number>;
+    paintBy: Map<string, unknown>;
     layoutBy: Map<string, number | string | unknown>;
   } {
-    const paintBy = new Map<string, number>();
+    const paintBy = new Map<string, unknown>();
     for (const [layerId, prop, value] of resolved.paints) {
       paintBy.set(`${layerId}/${prop}`, value);
     }
@@ -233,12 +234,13 @@ describe('resolveStaticPaints', () => {
     expect(Array.isArray(resolved.layouts)).toBe(true);
     expect(resolved.paints.length).toBeGreaterThan(0);
     expect(resolved.layouts.length).toBeGreaterThan(0);
-    // Paints stay scalar — all numeric size properties.
+    // Paints carry sizes (numbers) AND color hex strings — loosened in v8
+    // for route, waypoint, and POV solid-color plumbing. Only the 3-tuple
+    // shape is enforced here; value type varies by property.
     for (const entry of resolved.paints) {
       expect(entry).toHaveLength(3);
       expect(typeof entry[0]).toBe('string');
       expect(typeof entry[1]).toBe('string');
-      expect(typeof entry[2]).toBe('number');
     }
     // Layouts are heterogeneous (text-size: number, visibility: string,
     // text-field: ExpressionSpecification array). Only enforce the tuple
@@ -250,15 +252,46 @@ describe('resolveStaticPaints', () => {
     }
   });
 
-  it('paints never carry color / opacity / stroke-color entries — only size properties', () => {
-    // Property-name guard for the paints bucket: catches a future drift
-    // where a colour ends up in resolveStaticPaints (it should live in
-    // buildPerFramePaints or the static layer-spec instead).
+  it('paints carry color properties for route (solid) and POV', () => {
+    // Step 2 contract: solid-color route emits `line-color` for both route
+    // layers; POV emits `circle-color` (pulse) + `circle-stroke-color`
+    // (dot) every time. Waypoint colors flow per-feature via
+    // `buildPerFramePaints` and are intentionally NOT here.
     const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
-    for (const [, p] of resolved.paints) {
-      expect(p).not.toMatch(/color/);
-      expect(p).not.toMatch(/opacity/);
-    }
+    const props = new Set(resolved.paints.map(([l, p]) => `${l}/${p}`));
+    expect(props.has('route-full-line/line-color')).toBe(true);
+    expect(props.has('route-trail-line/line-color')).toBe(true);
+    expect(props.has('live-marker-pulse/circle-color')).toBe(true);
+    expect(props.has('live-marker-dot/circle-stroke-color')).toBe(true);
+  });
+
+  it('route line-color reflects mapSettings.route.color.solid', () => {
+    // Project edit to a non-default route color must flow through the
+    // paints bucket as-is — verifies the Step 2 single-source-of-truth
+    // path from `mapSettings.route.color` to `setPaintProperty`.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: { mode: 'solid', solid: '#ff715b' },
+      },
+    };
+    const { paintBy } = buildMap(resolveStaticPaints(settings));
+    expect(paintBy.get('route-full-line/line-color')).toBe('#ff715b');
+    expect(paintBy.get('route-trail-line/line-color')).toBe('#ff715b');
+  });
+
+  it('POV color flows to live-marker-pulse and live-marker-dot stroke', () => {
+    // Project edit to mapSettings.pov.color flows through both POV layer
+    // color properties — the ring and the dot stroke share the same
+    // single source of truth.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      pov: { ...DEFAULT_MAP_SETTINGS.pov, color: '#ff715b' },
+    };
+    const { paintBy } = buildMap(resolveStaticPaints(settings));
+    expect(paintBy.get('live-marker-pulse/circle-color')).toBe('#ff715b');
+    expect(paintBy.get('live-marker-dot/circle-stroke-color')).toBe('#ff715b');
   });
 
   it('layouts include route visibility derived from route.mode', () => {
@@ -303,6 +336,142 @@ describe('resolveStaticPaints', () => {
       ([l, p]) => l === 'waypoints-label' && p === 'text-field',
     )?.[2];
     expect(labeledExpr).toEqual(['to-string', ['get', 'label']]);
+  });
+
+  it('returns a gradients bucket alongside paints and layouts (Step 3)', () => {
+    // The bucket is a third top-level field on the ResolvedStaticPaints
+    // shape. `line-gradient` is split out from `paints` because MapLibre
+    // treats it as mutually exclusive with `line-color`: the consumer
+    // calls `setPaintProperty(layerId, 'line-gradient', value)` once per
+    // tuple, with `value` either an ExpressionSpecification (gradient
+    // mode) or `null` (solid mode, clears any stale gradient).
+    const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
+    expect(Array.isArray(resolved.gradients)).toBe(true);
+    // Two tuples: one for `route-full-line`, one for `route-trail-line`.
+    const layerIds = resolved.gradients.map(([id]) => id);
+    expect(layerIds).toContain('route-full-line');
+    expect(layerIds).toContain('route-trail-line');
+    // Each tuple is [string, ExpressionSpecification | null].
+    for (const entry of resolved.gradients) {
+      expect(entry).toHaveLength(2);
+      expect(typeof entry[0]).toBe('string');
+    }
+  });
+
+  it('solid mode emits null in gradients to clear stale state', () => {
+    // Solid color mode must NOT emit a `line-gradient` expression — but
+    // the bucket still emits a tuple per route layer with `null` as the
+    // value, so the consumer's `setPaintProperty(layer, 'line-gradient',
+    // null)` clears any stale gradient that survived from a prior
+    // resolve (e.g. user toggled gradient → solid in the picker).
+    const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
+    const gradBy = new Map(resolved.gradients);
+    expect(gradBy.get('route-full-line')).toBeNull();
+    expect(gradBy.get('route-trail-line')).toBeNull();
+  });
+
+  it('gradient mode emits an interpolate expression on line-progress', () => {
+    // Two-stop gradient (chartreuse → coral) at the canonical fractions.
+    // The expression shape mirrors the rendering.md §2 spec exactly:
+    // `['interpolate', ['linear'], ['line-progress'], 0, c0, 1, c1]`.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#bced09' },
+            { fraction: 1, color: '#ff715b' },
+          ],
+        },
+      },
+    };
+    const resolved = resolveStaticPaints(settings);
+    const gradBy = new Map(resolved.gradients);
+    const expected = [
+      'interpolate',
+      ['linear'],
+      ['line-progress'],
+      0,
+      '#bced09',
+      1,
+      '#ff715b',
+    ];
+    expect(gradBy.get('route-full-line')).toEqual(expected);
+    // The trail layer gets the same expression — visually approximate at
+    // the trail head (see rendering.md §2 "Slime-Trail Gradient"), but
+    // the wiring is symmetric with the full route.
+    expect(gradBy.get('route-trail-line')).toEqual(expected);
+  });
+
+  it('gradient mode still emits line-color in the paints bucket', () => {
+    // Design decision: `line-color` is emitted unconditionally even in
+    // gradient mode. MapLibre prefers `line-gradient` over `line-color`
+    // when both are set on a line layer, so the always-emitted
+    // `line-color` is harmless under the gradient and avoids special-
+    // casing the mode swap. The renderer's consumer applies the gradient
+    // tuple AFTER the paint tuple, so any race during the swap (e.g. an
+    // intermediate frame where the gradient was applied first) still
+    // ends with the gradient winning.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#bced09' },
+            { fraction: 1, color: '#ff715b' },
+          ],
+        },
+      },
+    };
+    const resolved = resolveStaticPaints(settings);
+    const props = new Set(resolved.paints.map(([l, p]) => `${l}/${p}`));
+    expect(props.has('route-full-line/line-color')).toBe(true);
+    expect(props.has('route-trail-line/line-color')).toBe(true);
+  });
+});
+
+describe('buildLineGradientExpression', () => {
+  it('emits an interpolate expression on line-progress with all stops in order', () => {
+    // Three-stop gradient. Output shape mirrors the rendering.md §2 spec.
+    const expr = buildLineGradientExpression([
+      { fraction: 0, color: '#bced09' },
+      { fraction: 0.5, color: '#ffeb3b' },
+      { fraction: 1, color: '#ff715b' },
+    ]);
+    expect(expr).toEqual([
+      'interpolate',
+      ['linear'],
+      ['line-progress'],
+      0,
+      '#bced09',
+      0.5,
+      '#ffeb3b',
+      1,
+      '#ff715b',
+    ]);
+  });
+
+  it('empty stops collapse to a constant chartreuse expression', () => {
+    // Defensive — the resolver shouldn't crash on an empty stop list.
+    // Falling back to the accent color keeps the route visible rather
+    // than transparent if the data model ever produces an invalid
+    // GradientStop[] (e.g. mid-edit in the picker).
+    const expr = buildLineGradientExpression([]);
+    expect(expr).toEqual(['to-color', '#bced09']);
+  });
+
+  it('single stop collapses to a constant color expression', () => {
+    // MapLibre's `interpolate` requires at least one stop, but with one
+    // stop the result is constant — we skip the interpolate and emit a
+    // direct color expression.
+    const expr = buildLineGradientExpression([
+      { fraction: 0.5, color: '#ff715b' },
+    ]);
+    expect(expr).toEqual(['to-color', '#ff715b']);
   });
 });
 

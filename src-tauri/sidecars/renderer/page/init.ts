@@ -76,6 +76,33 @@ interface InitPayload {
    *  / `label_mode` overrides can flow through the per-frame `frame.layouts`
    *  channel using the same wire shape. */
   staticLayouts: Array<[string, string, AnyJSON]>;
+  /** Resolved static line-gradient values — `[layerId, expressionOrNull]`
+   *  tuples for `route-full-line` and `route-trail-line`. Applied via
+   *  `setPaintProperty(layerId, 'line-gradient', value)` after the static
+   *  layers are added. Gradient mode ships an `interpolate` expression;
+   *  solid mode ships `null` so any stale `line-gradient` (from a prior
+   *  page or style swap) is cleared. The corresponding sources MUST be
+   *  added with `lineMetrics: true` — see `staticSources` above. */
+  staticGradients: Array<[string, AnyJSON | null]>;
+  /** SDF icon registrations for the waypoints-symbol layer.
+   *  `[name, { width, height, data }, options]` tuples where `data` carries
+   *  the raw RGBA pixel buffer. The buffer comes from `buildWaypointSdfIcon`
+   *  (a pure function in `src/lib/mapVisuals/shapes.ts`) on the worker side
+   *  — bit-identical to what the preview registers. JSON serialisation
+   *  through `page.evaluate` converts the Uint8Array to a plain numeric
+   *  object; `__init` reconstructs a Uint8Array before calling
+   *  `map.addImage(name, image, options)`. Six icons × 48×48×4 B = ~55 KB
+   *  raw, ~200 KB after JSON expansion — comfortably below CDP's
+   *  argument-size threshold. */
+  staticImages: Array<[
+    string,
+    {
+      width: number;
+      height: number;
+      data: Uint8Array | { [k: string]: number } | number[];
+    },
+    { sdf?: boolean; pixelRatio?: number; stretchX?: AnyJSON; stretchY?: AnyJSON; content?: AnyJSON },
+  ]>;
   /** Just the BUILDINGS_LAYER_SPEC if add3dBuildings; null otherwise. */
   buildingsLayer: AnyJSON | null;
   /** When true, page-side __init/__applyFrame log diagnostic breadcrumbs
@@ -106,6 +133,13 @@ interface FramePayload {
    *  `overlay_waypoint_label_size` (text-size), `label_mode` (text-field),
    *  and `route_mode` (visibility) all take effect at the cut. */
   layouts: Array<[string, string, AnyJSON]>;
+  /** Per-frame line-gradient values — `[layerId, expressionOrNull]` tuples
+   *  for `route-full-line` and `route-trail-line`. Applied via
+   *  `setPaintProperty(layerId, 'line-gradient', value)`. Optional because
+   *  older protocol callers may not ship the field; when absent, the
+   *  static seed remains in effect (the steady-state for v8 — per-clip
+   *  route-color overrides don't exist yet). */
+  gradients?: Array<[string, AnyJSON | null]>;
   /** Camera target. */
   camera: {
     center: { lng: number; lat: number };
@@ -387,6 +421,57 @@ window.__init = async (payload: InitPayload): Promise<void> => {
       bc(`addLayer ${layerId}`);
     }
 
+    // SDF icon registration for the waypoints-symbol layer. ORDER MATTERS:
+    // addSources → addLayers → addImages → seed paints. The symbol layer's
+    // `icon-image` expression resolves to a registered icon at first paint;
+    // missing icons render as the MapLibre fallback (a hot-pink question
+    // mark). Doing this AFTER addLayer matches MapLibre's documented order
+    // and matches the preview's onStyleLoad sequence in MapView.tsx — same
+    // ordering on both sides means same atlas layout, same per-feature
+    // SDF distance fields, same export pixels.
+    //
+    // The worker ships raw Uint8Array buffers in `staticImages`; CDP's
+    // JSON serialization round-trip turns each into a plain numeric object
+    // ({0: 255, 1: 255, 2: 255, 3: 200, ...}), so we reconstruct a
+    // Uint8Array here before handing it to `map.addImage()` — MapLibre's
+    // image-validation rejects plain objects with a confusing "image data
+    // must be a Uint8Array or ImageData" message otherwise.
+    if (payload.staticImages) {
+      for (const [name, image, options] of payload.staticImages) {
+        const raw = image.data;
+        let bytes: Uint8Array;
+        if (raw instanceof Uint8Array) {
+          bytes = raw;
+        } else if (Array.isArray(raw)) {
+          bytes = new Uint8Array(raw);
+        } else {
+          // Plain numeric object {0:n, 1:n, ...} — typical of JSON-roundtripped
+          // typed arrays. Build a length-sized Uint8Array by reading sequential
+          // integer keys; faster than Object.values().sort() for the same
+          // result and predictable across V8 versions.
+          const len = image.width * image.height * 4;
+          bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = (raw as { [k: string]: number })[i] | 0;
+        }
+        const img = { width: image.width, height: image.height, data: bytes };
+        try {
+          // hasImage guards a redundant re-add when __init somehow re-runs
+          // on the same Page (defensive — the page lifecycle is one __init
+          // per Page in the worker today).
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if ((map as any).hasImage(name)) (map as any).removeImage(name);
+          map.addImage(name, img as AnyJSON, options);
+          bc(`addImage ${name} ${image.width}x${image.height}`);
+        } catch (e) {
+          // Surface but don't tear down — a single missing SDF icon paints
+          // as the MapLibre fallback marker, which is visible-but-not-fatal.
+          console.error(
+            `[__init addImage ${name}] failed: ${(e as Error).message}`,
+          );
+        }
+      }
+    }
+
     // Static paint + layout seeding. Layer specs ship placeholder values
     // for every property derived from `mapSettings` (placeholder `1`s for
     // sizes, `''` for the label text-field). Real values come from
@@ -404,6 +489,19 @@ window.__init = async (payload: InitPayload): Promise<void> => {
     for (const [layerId, prop, value] of payload.staticLayouts) {
       map.setLayoutProperty(layerId, prop, value);
       bc(`setStaticLayout ${layerId}.${prop}=${value}`);
+    }
+    // Line gradients. Applied AFTER paints/layouts so `line-gradient` (the
+    // last paint property set) is what MapLibre paints with when present.
+    // `null` clears any stale `line-gradient` from a prior style — defense
+    // in depth at first init since the property is unset by default.
+    // The corresponding sources were created with `lineMetrics: true` in
+    // the staticSources loop above; the renderer worker enforces this on
+    // the route-full / route-trail entries.
+    if (payload.staticGradients) {
+      for (const [layerId, value] of payload.staticGradients) {
+        map.setPaintProperty(layerId, 'line-gradient', value);
+        bc(`setStaticGradient ${layerId}=${value === null ? 'null' : 'expr'}`);
+      }
     }
 
     // ---- Sticky 'render' listener for the readpixels transport ----
@@ -637,6 +735,17 @@ window.__applyFrame = async (frame: FramePayload): Promise<{ rgbaB64: string | n
       for (const [layerId, prop, value] of frame.layouts) {
         map.setLayoutProperty(layerId, prop, value);
         bc(`setLayout ${layerId}.${prop}`);
+      }
+    }
+    // Per-frame line-gradient re-resolve. Today the value always matches
+    // the static seed (no per-clip route-color overrides exist), but the
+    // wiring stays consistent with paints/layouts so a future override
+    // path lands without a renderer-side change. MapLibre no-ops same-value
+    // writes so the steady-state cost is negligible.
+    if (frame.gradients) {
+      for (const [layerId, value] of frame.gradients) {
+        map.setPaintProperty(layerId, 'line-gradient', value);
+        bc(`setGradient ${layerId}`);
       }
     }
 

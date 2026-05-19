@@ -22,6 +22,7 @@ import type { Clip, MapSettings, Route, Waypoint } from '../../types';
 import {
   indexRoute,
   locationAt,
+  progressUpTo,
   trailUpTo,
   type IndexedRoute,
   type ResolvedLocation,
@@ -86,6 +87,18 @@ function buildWaypointsCollection(
   waypoints.forEach((wp, index) => {
     const loc = waypointLocation(wp, indexedRoute);
     if (!loc) return;
+    // Per-waypoint Mercator-parameterized trail fraction. Consumed by the
+    // gradient `interpolate` arm of the waypoint `circle-color` expression
+    // in `buildPerFramePaints` — matches the parameterization MapLibre's
+    // `line-progress` evaluator uses on the route line, so waypoint dot
+    // colors and the line-gradient colors agree at the same fraction.
+    // Falls back to 0 for `fixed` waypoints or `wall_clock_ms` waypoints
+    // outside the route's covered range — they take the gradient's start
+    // color (acceptable since their route position is undefined).
+    const progress =
+      wp.position.kind === 'wall_clock_ms' && indexedRoute
+        ? progressUpTo(wp.position.ms, indexedRoute)
+        : 0;
     features.push({
       type: 'Feature',
       properties: {
@@ -93,6 +106,18 @@ function buildWaypointsCollection(
         index,
         clipId: wp.clip_id ?? null,
         label: wp.label,
+        progress,
+        // Per-waypoint solid override baked into the feature so the
+        // `circle-color` case expression in `buildPerFramePaints` can read
+        // it via `['get', 'override_color']`. `null` when unset so the
+        // guard `['!=', ['get', 'override_color'], null]` falls through to
+        // the active / base arms. Must match the visited-mode rebuild
+        // below or visited mode silently loses the override.
+        override_color: wp.color ?? null,
+        // Per-waypoint shape override (Step 8 consumer). `null` when unset
+        // so a future opacity expression `coalesce(get(override_shape),
+        // projectShape)` falls through to the project default.
+        override_shape: wp.shape ?? null,
       },
       geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
     });
@@ -279,6 +304,13 @@ export function buildPerFrameSourceData(args: {
         const loc = waypointLocation(wp, indexedRoute);
         if (!loc) return;
         if (!waypointPassed(wp, markerTrace.wallMs)) return;
+        // Mirror the static-build path so the gradient/override expressions
+        // resolve identically whether the waypoint flows through the full
+        // collection or the visited subset.
+        const progress =
+          wp.position.kind === 'wall_clock_ms' && indexedRoute
+            ? progressUpTo(wp.position.ms, indexedRoute)
+            : 0;
         features.push({
           type: 'Feature',
           properties: {
@@ -286,6 +318,9 @@ export function buildPerFrameSourceData(args: {
             index,
             clipId: wp.clip_id ?? null,
             label: wp.label,
+            progress,
+            override_color: wp.color ?? null,
+            override_shape: wp.shape ?? null,
           },
           geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
         });

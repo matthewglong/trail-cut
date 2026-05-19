@@ -71,14 +71,18 @@ import {
   buildStyleSpec,
   buildStaticSourceData,
   buildPerFrameState,
+  buildAllWaypointSdfIcons,
   resolveStaticPaints,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
+  LIVE_MARKER_PULSE_B_LAYER,
   LIVE_MARKER_DOT_LAYER,
   ROUTE_FULL_LAYER,
   ROUTE_TRAIL_LAYER,
+  WAYPOINTS_ACTIVE_HALO_LAYER,
   WAYPOINTS_CIRCLE_LAYER,
   WAYPOINTS_LABEL_LAYER,
+  WAYPOINTS_SYMBOL_LAYER,
 } from '../../../src/lib/mapVisuals';
 import {
   activeClipIdAt,
@@ -433,20 +437,60 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
 
   // Static sources/layers — order matches renderer/index.ts buildMap so
   // stacking is identical.
+  //
+  // `lineMetrics: true` on both route sources is mandatory for the
+  // `line-gradient` paint expression `resolveStaticPaints` emits in
+  // gradient mode. It MUST be set at `addSource` time — adding it later is
+  // a no-op. Preview-side, MapView.tsx adds the same flag on its own
+  // addSource sites; both sides must match for preview/export parity.
   const staticSources: Array<[string, unknown]> = [
-    ['route-full', { type: 'geojson', data: staticData['route-full'] }],
-    ['route-trail', { type: 'geojson', data: emptyLine }],
+    ['route-full', { type: 'geojson', data: staticData['route-full'], lineMetrics: true }],
+    ['route-trail', { type: 'geojson', data: emptyLine, lineMetrics: true }],
     ['waypoints', { type: 'geojson', data: staticData.waypoints }],
     ['live-marker', { type: 'geojson', data: emptyFc }],
   ];
+  // Layer stack on the shared `waypoints` source mirrors MapView.tsx
+  // (bottom → top):
+  //   waypoints-active-halo → waypoints-circle → waypoints-symbol → waypoints-label
+  // Per-feature opacity expressions (emitted by resolveStaticPaints) toggle
+  // exactly one of the circle/symbol layers per feature based on its
+  // effective shape. The halo sits BELOW the inner shape layers so the
+  // dot/symbol paints over it ([DECIDED] Q2); the label sits on top of
+  // both so the numeric label composites correctly over either base shape.
   const staticLayers: unknown[] = [
     ROUTE_FULL_LAYER,
     ROUTE_TRAIL_LAYER,
+    WAYPOINTS_ACTIVE_HALO_LAYER,
     WAYPOINTS_CIRCLE_LAYER,
+    WAYPOINTS_SYMBOL_LAYER,
     WAYPOINTS_LABEL_LAYER,
     LIVE_MARKER_PULSE_LAYER,
+    LIVE_MARKER_PULSE_B_LAYER,
     LIVE_MARKER_DOT_LAYER,
   ];
+
+  // SDF icon payload for the waypoints-symbol layer. Each entry is
+  // [name, { width, height, data: Uint8Array }, options] — the exact shape
+  // `map.addImage(name, image, options)` accepts. Pixels come from
+  // `buildWaypointSdfIcon` (a pure function in src/lib/mapVisuals/shapes.ts,
+  // shared with the preview), so the export renderer registers
+  // bit-identical icons to those MapView.tsx registers — preview/export
+  // parity by construction.
+  //
+  // The Uint8Array survives `JSON.stringify` in page.evaluate as a plain
+  // {0:n, 1:n, ...} object; page-side __init reconstructs a Uint8Array
+  // from it before handing the buffer to `map.addImage()`. The roundtrip
+  // adds a few hundred KB to the initPayload (6 icons × 48×48×4 B ≈ 55 KB,
+  // plus JSON expansion overhead) — well under CDP's argument-size threshold.
+  const staticImages: Array<[
+    string,
+    { width: number; height: number; data: Uint8Array },
+    { sdf: boolean },
+  ]> = buildAllWaypointSdfIcons().map(({ name, icon }) => [
+    `waypoint-${name}`,
+    { width: icon.width, height: icon.height, data: icon.data },
+    { sdf: true },
+  ]);
 
   // Static paint sizing + layouts — layer specs ship placeholder values for
   // every paint/layout property that derives from `mapSettings`
@@ -472,6 +516,23 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     staticLayers,
     staticPaints: staticPaintResolution.paints,
     staticLayouts: staticPaintResolution.layouts,
+    // Line-gradient expressions for `route-full-line` / `route-trail-line`.
+    // Gradient mode ships an `interpolate` expression; solid mode ships
+    // `null` so the page's __init clears any stale `line-gradient` from a
+    // prior style (defense-in-depth — at first init the property is unset
+    // anyway). Same per-frame channel below (`frame.gradients`) re-resolves
+    // these against the active clip's `MapSettings`, so per-clip overrides
+    // (none today, but the wiring stays consistent with paints/layouts).
+    staticGradients: staticPaintResolution.gradients,
+    // SDF icons for the waypoints-symbol layer. [name, { width, height, data },
+    // options] tuples. Built once here from `buildAllWaypointSdfIcons()` —
+    // the same pure function MapView.tsx calls in onStyleLoad — so preview
+    // and export register bit-identical pixels. The page's __init loops
+    // over this AFTER static layers are added and calls
+    // `map.addImage(name, image, options)`. Re-shipped on every applySetup
+    // (including post-recycle) so the SDF atlas is restored when a fresh
+    // page is constructed.
+    staticImages,
     buildingsLayer: payload.mapSettings.camera.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
     // Page-side opts. `verbose` gates the page's __init/__applyFrame
     // breadcrumbs and the in-flight idle-wait diagnostic. `transport`
@@ -504,7 +565,8 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     `style=${styleBytes}B route-full=${routeFullBytes}B routeCoords=${routeCoordCount} ` +
     `staticLayers=${staticLayers.length} ` +
     `staticPaints=${staticPaintResolution.paints.length} ` +
-    `staticLayouts=${staticPaintResolution.layouts.length}`,
+    `staticLayouts=${staticPaintResolution.layouts.length} ` +
+    `staticImages=${staticImages.length}`,
   );
 
   // Set up the signal-based handshake BEFORE kicking off __init so we
@@ -671,16 +733,38 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     ['waypoints-circle', 'circle-radius', state.paints.waypointCircleRadius],
     ['waypoints-circle', 'circle-color', state.paints.waypointCircleColor],
     ['waypoints-circle', 'circle-stroke-color', state.paints.waypointCircleStrokeColor],
+    // Active-waypoint halo ([DECIDED] Q2). Always-seeded layer; radius and
+    // opacity collapse to 0 when no waypoint is active, so the layer stays
+    // invisible without `visibility` toggling. Color tracks the active
+    // dot's resolved color (or `mapSettings.waypoints.active_color` when
+    // set) so preview and export composite identically.
+    ['waypoints-active-halo', 'circle-radius', state.paints.waypointHaloRadius],
+    ['waypoints-active-halo', 'circle-color', state.paints.waypointHaloColor],
+    ['waypoints-active-halo', 'circle-opacity', state.paints.waypointHaloOpacity],
     ['live-marker-pulse', 'circle-radius', state.paints.pulseRadius],
     ['live-marker-pulse', 'circle-opacity', state.paints.pulseOpacity],
+    // B-ring always seeded; opacity 0 outside heartbeat style.
+    ['live-marker-pulse-b', 'circle-radius', state.paints.pulseRadiusB],
+    ['live-marker-pulse-b', 'circle-opacity', state.paints.pulseOpacityB],
+    // Dot opacity oscillates in `throb` (sine wave 0.35 → 1.0); held at
+    // 1.0 in steady / sonar / heartbeat per shapes-pov.md Part 2 §2.
+    ['live-marker-dot', 'circle-opacity', state.paints.dotOpacity],
   ];
   const layouts: Array<[string, string, unknown]> = staticResolution.layouts;
+  // Per-frame line-gradient expressions. Re-resolved from the active clip's
+  // merged `MapSettings` so any future per-clip route-color override flows
+  // through the same channel paints/layouts use. Today's MapOverrides shape
+  // doesn't expose `route.color` (route is one continuous geometry; per-clip
+  // route color would force invented boundaries), so per-frame the value
+  // always matches the static seed — MapLibre no-ops same-value writes.
+  const gradients: Array<[string, unknown]> = staticResolution.gradients;
 
   const framePayload = {
     t,
     sources,
     paints,
     layouts,
+    gradients,
     camera: {
       center: { lng: state.camera.center.lng, lat: state.camera.center.lat },
       zoom: state.camera.zoom,

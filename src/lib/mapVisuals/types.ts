@@ -10,26 +10,69 @@ import type {
 } from 'maplibre-gl';
 import type { ResolvedCamera } from '../cameraIntent';
 
-/** Pulse animation sample at a given project-time. Drives the outer ring of
- *  the live-marker layer pair: `radius` → `circle-radius`,
- *  `opacity` → `circle-opacity`. Pure function of project-time so pause
- *  freezes the pulse mid-cycle and the export reproduces it identically. */
+/** Pulse animation sample at a given project-time. Drives one of the live-
+ *  marker outer ring layers: `radius` → `circle-radius`,
+ *  `opacity` → `circle-opacity`. Also carries `dotOpacity`, the
+ *  `live-marker-dot.circle-opacity` value for the same frame — the `throb`
+ *  style oscillates the dot's opacity in a sine wave per
+ *  `shapes-pov.md` Part 2 §2, while the other styles hold it at 1.0 so the
+ *  dot is the constant. Pure function of project-time so pause freezes the
+ *  pulse mid-cycle and the export reproduces it identically. */
 export interface PulseState {
   radius: number;
   opacity: number;
+  dotOpacity: number;
+}
+
+/** Pair of pulse samples. `a` drives `live-marker-pulse`; `b` drives
+ *  `live-marker-pulse-b` (the second ring, only animated in the `heartbeat`
+ *  style — for `steady` / `throb` / `sonar` the B ring's opacity is held
+ *  at 0 so the always-seeded layer renders invisible). */
+export interface PulseStatePair {
+  a: PulseState;
+  b: PulseState;
 }
 
 /** Per-frame paint deltas the consumer applies via `setPaintProperty`. The
  *  active-clip highlight is expressed as MapLibre `case` expressions so the
  *  highlight is data-driven on the waypoints layer (no layer churn). The
- *  pulse values are scalars meant for the `live-marker-pulse` circle layer. */
+ *  pulse values are scalars meant for the `live-marker-pulse` /
+ *  `live-marker-pulse-b` circle layers — `pulseRadiusB` / `pulseOpacityB`
+ *  carry the second ring that only the heartbeat style animates; in all
+ *  other styles the B-ring's opacity is 0 (visibility-by-opacity, not by
+ *  `setLayoutProperty('visibility', ...)`, so the layer is always seeded). */
 export interface PaintUpdates {
   waypointCircleRadius: DataDrivenPropertyValueSpecification<number> | number;
   waypointCircleColor: DataDrivenPropertyValueSpecification<string> | string;
   waypointCircleStrokeColor:
     | DataDrivenPropertyValueSpecification<string> | string;
+  /** Active-waypoint halo color. Per [DECIDED] Q1: when
+   *  `mapSettings.waypoints.active_color` is set the halo paints that flat
+   *  hex; when unset, the halo mirrors the active waypoint's own resolved
+   *  color (override_color > gradient sample > solid base) via the same
+   *  case expression the dot uses. Applied to the
+   *  `waypoints-active-halo` circle layer's `circle-color`. */
+  waypointHaloColor: DataDrivenPropertyValueSpecification<string> | string;
+  /** Active-waypoint halo radius. Scalar 0 when there is no active waypoint;
+   *  otherwise a `case` expression matching the active feature `id` so only
+   *  the active waypoint paints the halo. Applied to
+   *  `waypoints-active-halo`'s `circle-radius`. */
+  waypointHaloRadius: DataDrivenPropertyValueSpecification<number> | number;
+  /** Active-waypoint halo opacity. Scalar 0 when no active waypoint;
+   *  otherwise a `case` expression that paints the active feature at
+   *  `ACTIVE_HALO_OPACITY` and every other feature at 0. Applied to
+   *  `waypoints-active-halo`'s `circle-opacity`. */
+  waypointHaloOpacity: DataDrivenPropertyValueSpecification<number> | number;
   pulseRadius: number;
   pulseOpacity: number;
+  pulseRadiusB: number;
+  pulseOpacityB: number;
+  /** Live-marker dot's `circle-opacity`. Constant 1.0 except in the `throb`
+   *  pulse style, which oscillates the dot between 0.35 and 1.0 via a sine
+   *  wave per `shapes-pov.md` Part 2 §2. Applied to `live-marker-dot` in
+   *  both the preview apply block and the renderer's per-frame paints
+   *  array. */
+  dotOpacity: number;
 }
 
 /** What `buildStyleSpec` returns to its caller. `style` is either an inline

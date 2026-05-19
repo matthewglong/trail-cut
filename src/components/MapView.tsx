@@ -18,13 +18,17 @@ import {
   buildStaticSourceData,
   resolveStaticPaints,
   buildPerFrameState,
+  buildAllWaypointSdfIcons,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
+  LIVE_MARKER_PULSE_B_LAYER,
   LIVE_MARKER_DOT_LAYER,
   ROUTE_FULL_LAYER,
   ROUTE_TRAIL_LAYER,
+  WAYPOINTS_ACTIVE_HALO_LAYER,
   WAYPOINTS_CIRCLE_LAYER,
   WAYPOINTS_LABEL_LAYER,
+  WAYPOINTS_SYMBOL_LAYER,
 } from '../lib/mapVisuals';
 
 interface MapViewProps {
@@ -224,23 +228,79 @@ export default function MapView({
 
       // Pre-create source/layer pairs. Stacking order: routes → waypoints →
       // live-marker (marker on top).
+      //
+      // `lineMetrics: true` on both route sources is mandatory for the
+      // `line-gradient` paint expression `resolveStaticPaints` emits in
+      // gradient mode — it tells MapLibre to compute per-vertex
+      // `line-progress` metrics at tile load. It MUST be set at `addSource`
+      // time; adding it later is a no-op. `setStyle()` drops sources, so
+      // this `onStyleLoad` re-add path covers cross-style swaps.
       if (!map.getSource('route-full')) {
-        map.addSource('route-full', { type: 'geojson', data: emptyLine });
+        map.addSource('route-full', {
+          type: 'geojson',
+          data: emptyLine,
+          lineMetrics: true,
+        });
         map.addLayer(ROUTE_FULL_LAYER);
       }
       if (!map.getSource('route-trail')) {
-        map.addSource('route-trail', { type: 'geojson', data: emptyLine });
+        map.addSource('route-trail', {
+          type: 'geojson',
+          data: emptyLine,
+          lineMetrics: true,
+        });
         map.addLayer(ROUTE_TRAIL_LAYER);
       }
       if (!map.getSource('waypoints')) {
         map.addSource('waypoints', { type: 'geojson', data: emptyFc });
+        // Layer stack on the shared `waypoints` source (bottom → top):
+        //   waypoints-active-halo (semi-transparent ring behind the active
+        //                          waypoint's shape — [DECIDED] Q2)
+        //   waypoints-circle  (circle-family shapes; per-feature opacity 0/1)
+        //   waypoints-symbol  (symbol-family shapes; per-feature opacity 0/1)
+        //   waypoints-label   (numeric label on top of both)
+        // Per-feature opacity expressions emitted by resolveStaticPaints
+        // route each waypoint to exactly one of the circle/symbol layers
+        // based on its effective shape. The halo sits BELOW the inner
+        // shape layers so the dot/symbol paints over it; the label sits
+        // on top so it composites correctly over either base shape.
+        map.addLayer(WAYPOINTS_ACTIVE_HALO_LAYER);
         map.addLayer(WAYPOINTS_CIRCLE_LAYER);
+        map.addLayer(WAYPOINTS_SYMBOL_LAYER);
         map.addLayer(WAYPOINTS_LABEL_LAYER);
       }
       if (!map.getSource('live-marker')) {
         map.addSource('live-marker', { type: 'geojson', data: emptyFc });
         map.addLayer(LIVE_MARKER_PULSE_LAYER);
+        map.addLayer(LIVE_MARKER_PULSE_B_LAYER);
         map.addLayer(LIVE_MARKER_DOT_LAYER);
+      }
+
+      // Register SDF icons for the six waypoint shape variants
+      // (circle / ring / pin / square / diamond / numbered-circle). Order:
+      // addSource → addLayer → addImage → seed paints. Images are added
+      // AFTER the symbol layer is added so the layer's `icon-image`
+      // expression has a registered image to resolve to on its first paint.
+      //
+      // Re-register on every style.load — `setStyle()` clears the image
+      // atlas along with sources/layers, and this callback runs on the
+      // `style.load` event for each base-style swap (default ↔ satellite ↔
+      // 3d). `hasImage` guards a redundant re-register on the initial
+      // style load when the source-add branch above also took place.
+      //
+      // Pixels come from `buildWaypointSdfIcon` (pure, no DOM/Canvas) so
+      // the export renderer ships bit-identical pixels via the
+      // `staticImages` field on the InitPayload — preview/export parity
+      // by construction. White RGB + alpha coverage; MapLibre treats white
+      // as ink for SDF.
+      for (const { name, icon } of buildAllWaypointSdfIcons()) {
+        const id = `waypoint-${name}`;
+        if (map.hasImage(id)) map.removeImage(id);
+        map.addImage(
+          id,
+          { width: icon.width, height: icon.height, data: icon.data },
+          { sdf: true },
+        );
       }
 
       // Seed static data once. Route-fit + waypoint-seed effects below redo
@@ -407,6 +467,16 @@ export default function MapView({
         if (!map.getLayer(layerId)) continue;
         map.setLayoutProperty(layerId, prop, value);
       }
+      // Line gradients (route-full + route-trail). Gradient mode pushes an
+      // `interpolate` expression on `line-progress`; solid mode pushes
+      // `null` to clear any stale gradient from a prior resolve. This is
+      // the ONLY allowed `setPaintProperty(layer, 'line-gradient', …)`
+      // site preview-side — same single-source-of-truth contract as paints
+      // and layouts above.
+      for (const [layerId, value] of resolved.gradients) {
+        if (!map.getLayer(layerId)) continue;
+        map.setPaintProperty(layerId, 'line-gradient', value);
+      }
     };
     if (styleReadyRef.current) apply();
   }, [styleVersion, mapSettings]);
@@ -511,11 +581,38 @@ export default function MapView({
           map.setPaintProperty('waypoints-circle', 'circle-stroke-color',
             state.paints.waypointCircleStrokeColor);
         }
+        if (map.getLayer('waypoints-active-halo')) {
+          // Halo radius/opacity collapse to 0 when no waypoint is active so
+          // the always-seeded layer stays invisible without `visibility`
+          // toggling. Color tracks the dot's resolved color (or the
+          // user-set `mapSettings.waypoints.active_color`) — see
+          // `buildHaloColor` in paints.ts.
+          map.setPaintProperty('waypoints-active-halo', 'circle-radius',
+            state.paints.waypointHaloRadius);
+          map.setPaintProperty('waypoints-active-halo', 'circle-color',
+            state.paints.waypointHaloColor);
+          map.setPaintProperty('waypoints-active-halo', 'circle-opacity',
+            state.paints.waypointHaloOpacity);
+        }
         if (map.getLayer('live-marker-pulse')) {
           map.setPaintProperty('live-marker-pulse', 'circle-radius',
             state.paints.pulseRadius);
           map.setPaintProperty('live-marker-pulse', 'circle-opacity',
             state.paints.pulseOpacity);
+        }
+        if (map.getLayer('live-marker-pulse-b')) {
+          // B ring always seeded; opacity stays 0 except in heartbeat style.
+          map.setPaintProperty('live-marker-pulse-b', 'circle-radius',
+            state.paints.pulseRadiusB);
+          map.setPaintProperty('live-marker-pulse-b', 'circle-opacity',
+            state.paints.pulseOpacityB);
+        }
+        if (map.getLayer('live-marker-dot')) {
+          // Dot opacity oscillates in the `throb` pulse style (sine wave
+          // 0.35 → 1.0); held at 1.0 in steady / sonar / heartbeat per
+          // `shapes-pov.md` Part 2 §2.
+          map.setPaintProperty('live-marker-dot', 'circle-opacity',
+            state.paints.dotOpacity);
         }
       }
 
