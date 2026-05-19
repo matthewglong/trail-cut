@@ -25,6 +25,7 @@ import type {
   ActiveWaypointMode,
   MapSettings,
   MapStyleId,
+  OverridePath,
   TriMode,
   WaypointLabelMode,
 } from '../../types';
@@ -49,8 +50,8 @@ interface MapToolbarProps {
   /** Current editing scope. */
   scope: MapToolbarScope;
   onScopeChange: (scope: MapToolbarScope) => void;
-  /** Which fields the current clip overrides (non-null keys). Null when scope is 'project'. */
-  overriddenKeys: Set<keyof MapSettings> | null;
+  /** Which leaf paths the current clip overrides. Null when scope is 'project'. */
+  overriddenKeys: Set<OverridePath> | null;
   /** Opens the Map Positioning modal. */
   onOpenPositioning: () => void;
   /** Opens the Waypoints list/edit panel. v7 affordance — rename and delete
@@ -100,18 +101,21 @@ export default function MapToolbar({
   onOpenPositioning,
   onOpenWaypointsPanel,
 }: MapToolbarProps) {
-  const followOn = settings.follow_playhead;
-  const bearingAuto = settings.bearing_mode === 'auto';
+  const followOn = settings.camera.follow_playhead;
+  const bearingAuto = settings.camera.bearing_mode === 'auto';
 
-  /** Accent color when the given field is overridden by the current clip,
+  /** Accent color when the given leaf path is overridden by the current clip,
    *  undefined (default icon color) otherwise. Spacing stays constant because
    *  only the color toggles — no element is added or removed. */
-  const overrideColor = (field: keyof MapSettings): string | undefined =>
-    overriddenKeys?.has(field) ? colors.accent : undefined;
+  const overrideColor = (path: OverridePath): string | undefined =>
+    overriddenKeys?.has(path) ? colors.accent : undefined;
+
+  const setCamera = (patch: Partial<MapSettings['camera']>) =>
+    onChange({ ...settings, camera: { ...settings.camera, ...patch } });
 
   const followPill = (
     <div
-      onClick={() => onChange({ ...settings, follow_playhead: !followOn })}
+      onClick={() => setCamera({ follow_playhead: !followOn })}
       style={followOn ? styles.previewPillOn : styles.previewPillOff}
       title={followOn ? 'Map follows playhead — click to pan freely' : 'Free pan — click to follow playhead'}
     >
@@ -122,12 +126,7 @@ export default function MapToolbar({
 
   const bearingPill = (
     <div
-      onClick={() =>
-        onChange({
-          ...settings,
-          bearing_mode: bearingAuto ? 'fixed' : 'auto',
-        })
-      }
+      onClick={() => setCamera({ bearing_mode: bearingAuto ? 'fixed' : 'auto' })}
       style={bearingAuto ? styles.previewPillOn : styles.previewPillOff}
       title={
         bearingAuto
@@ -142,24 +141,24 @@ export default function MapToolbar({
 
   const bearingStepper = bearingAuto ? (
     <NumberStepper
-      value={settings.bearing_stops}
+      value={settings.camera.bearing_stops}
       min={1}
       max={99}
       step={1}
       unit=""
       decimals={0}
-      onChange={(v) => onChange({ ...settings, bearing_stops: Math.max(1, Math.round(v)) })}
+      onChange={(v) => setCamera({ bearing_stops: Math.max(1, Math.round(v)) })}
     />
   ) : (
     <NumberStepper
-      value={settings.bearing_degrees}
+      value={settings.camera.bearing_degrees}
       min={0}
       max={359}
       step={1}
       unit="°"
       decimals={0}
       onChange={(v) =>
-        onChange({ ...settings, bearing_degrees: ((Math.round(v) % 360) + 360) % 360 })
+        setCamera({ bearing_degrees: ((Math.round(v) % 360) + 360) % 360 })
       }
     />
   );
@@ -170,14 +169,14 @@ export default function MapToolbar({
       menuLabel: 'Style',
       node: (
         <ModePicker<MapStyleId>
-          value={settings.map_style}
+          value={settings.camera.map_style}
           options={STYLE_OPTIONS}
-          onChange={(v) => onChange({ ...settings, map_style: v })}
+          onChange={(v) => setCamera({ map_style: v })}
           title="Base map style"
           minWidth={76}
           icon={<Layers size={15} strokeWidth={2} />}
           variant="minimal"
-          iconColor={overrideColor('map_style')}
+          iconColor={overrideColor('camera.map_style')}
         />
       ),
     },
@@ -186,15 +185,17 @@ export default function MapToolbar({
       menuLabel: 'Route',
       node: (
         <ModePicker<TriMode>
-          value={settings.route_mode}
+          value={settings.route.mode}
           options={TRI_OPTIONS}
-          onChange={(v) => onChange({ ...settings, route_mode: v })}
+          onChange={(v) =>
+            onChange({ ...settings, route: { ...settings.route, mode: v } })
+          }
           disabledValues={routeLoaded ? [] : ['visited']}
           title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
           minWidth={68}
           icon={<RouteIcon size={15} strokeWidth={2} />}
           variant="minimal"
-          iconColor={overrideColor('route_mode')}
+          iconColor={overrideColor('route.mode')}
         />
       ),
     },
@@ -203,14 +204,16 @@ export default function MapToolbar({
       menuLabel: 'Waypoints',
       node: (
         <ModePicker<TriMode>
-          value={settings.waypoints_mode}
+          value={settings.waypoints.mode}
           options={TRI_OPTIONS}
-          onChange={(v) => onChange({ ...settings, waypoints_mode: v })}
+          onChange={(v) =>
+            onChange({ ...settings, waypoints: { ...settings.waypoints, mode: v } })
+          }
           title="Clip waypoint visibility"
           minWidth={68}
           icon={<MapPin size={15} strokeWidth={2} />}
           variant="minimal"
-          iconColor={overrideColor('waypoints_mode')}
+          iconColor={overrideColor('waypoints.mode')}
         />
       ),
     },
@@ -219,14 +222,16 @@ export default function MapToolbar({
       menuLabel: 'Label',
       node: (
         <ModePicker<WaypointLabelMode>
-          value={settings.label_mode}
+          value={settings.waypoints.label_mode}
           options={LABEL_MODE_OPTIONS}
-          onChange={(v) => onChange({ ...settings, label_mode: v })}
+          onChange={(v) =>
+            onChange({ ...settings, waypoints: { ...settings.waypoints, label_mode: v } })
+          }
           title="Waypoint label mode (numbered vs. user-set label)"
           minWidth={76}
           icon={<Tag size={15} strokeWidth={2} />}
           variant="minimal"
-          iconColor={overrideColor('label_mode')}
+          iconColor={overrideColor('waypoints.label_mode')}
         />
       ),
     },
@@ -235,14 +240,16 @@ export default function MapToolbar({
       menuLabel: 'Active',
       node: (
         <ModePicker<ActiveWaypointMode>
-          value={settings.active_waypoint_mode}
+          value={settings.waypoints.active_mode}
           options={ACTIVE_WAYPOINT_OPTIONS}
-          onChange={(v) => onChange({ ...settings, active_waypoint_mode: v })}
+          onChange={(v) =>
+            onChange({ ...settings, waypoints: { ...settings.waypoints, active_mode: v } })
+          }
           title="Active-waypoint highlight (none, or the latest waypoint the marker has passed)"
           minWidth={72}
           icon={<Crosshair size={15} strokeWidth={2} />}
           variant="minimal"
-          iconColor={overrideColor('active_waypoint_mode')}
+          iconColor={overrideColor('waypoints.active_mode')}
         />
       ),
     },
@@ -270,7 +277,7 @@ export default function MapToolbar({
           <span
             style={{
               ...styles.groupLabel,
-              color: overrideColor('zoom') ?? styles.groupLabel.color,
+              color: overrideColor('camera.zoom') ?? styles.groupLabel.color,
               transition: 'color 0.15s ease',
             }}
             title="Default zoom level applied when entering a clip"
@@ -278,12 +285,12 @@ export default function MapToolbar({
             <ZoomIn size={15} strokeWidth={2} />
           </span>
           <NumberStepper
-            value={settings.zoom}
+            value={settings.camera.zoom}
             min={1}
             max={20}
             step={0.5}
             unit=""
-            onChange={(v) => onChange({ ...settings, zoom: v })}
+            onChange={(v) => setCamera({ zoom: v })}
           />
         </>
       ),
@@ -312,7 +319,7 @@ export default function MapToolbar({
           <span
             style={{
               ...styles.groupLabel,
-              color: overrideColor('follow_playhead') ?? styles.groupLabel.color,
+              color: overrideColor('camera.follow_playhead') ?? styles.groupLabel.color,
               transition: 'color 0.15s ease',
             }}
             title="Follow playhead"
@@ -332,8 +339,8 @@ export default function MapToolbar({
             style={{
               ...styles.groupLabel,
               color:
-                overrideColor('bearing_mode') ??
-                overrideColor('bearing_degrees') ??
+                overrideColor('camera.bearing_mode') ??
+                overrideColor('camera.bearing_degrees') ??
                 styles.groupLabel.color,
               transition: 'color 0.15s ease',
             }}

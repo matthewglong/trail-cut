@@ -218,7 +218,7 @@ export const LIVE_MARKER_DOT_LAYER: LayerSpecification = {
  *  rather than getting its own helper — pitch is part of the mode's visual
  *  identity even though it isn't a style-spec property. */
 export function buildStyleSpec(mapSettings: MapSettings): StyleSpecResult {
-  const id = mapSettings.map_style;
+  const id = mapSettings.camera.map_style;
   if (id === 'satellite') {
     return { style: SATELLITE_STYLE, defaultPitch: 0 };
   }
@@ -277,33 +277,33 @@ export function resolveStaticPaints(
   // this single tuple so a future mode lands automatically in preview AND
   // export.
   const labelExpr: ExpressionSpecification =
-    mapSettings.label_mode === 'labeled'
+    mapSettings.waypoints.label_mode === 'labeled'
       ? ['to-string', ['get', 'label']]
       : ['to-string', ['+', ['get', 'index'], 1]];
   return {
     paints: [
-      ['route-full-line', 'line-width', mapSettings.overlay_route_full_width * w],
-      ['route-trail-line', 'line-width', mapSettings.overlay_route_trail_width * w],
+      ['route-full-line', 'line-width', mapSettings.route.size.full_width * w],
+      ['route-trail-line', 'line-width', mapSettings.route.size.trail_width * w],
       // waypoints-circle: circle-radius and circle-stroke-width. The radius
       // is also overridden per-frame by `buildPerFramePaints` (data-driven
       // case expression) — that per-frame write is the one that wins, but
       // we still seed the static default here so pre-first-frame state is
       // correct. circle-stroke-width is only ever set here.
-      ['waypoints-circle', 'circle-radius', mapSettings.overlay_waypoint_circle_radius * w],
+      ['waypoints-circle', 'circle-radius', mapSettings.waypoints.size.circle_radius * w],
       [
         'waypoints-circle',
         'circle-stroke-width',
-        mapSettings.overlay_waypoint_stroke_width * w,
+        mapSettings.waypoints.size.stroke_width * w,
       ],
       [
         'live-marker-dot',
         'circle-radius',
-        mapSettings.overlay_live_marker_dot_radius * w,
+        mapSettings.pov.size.dot_radius * w,
       ],
       [
         'live-marker-dot',
         'circle-stroke-width',
-        mapSettings.overlay_live_marker_dot_stroke_width * w,
+        mapSettings.pov.size.dot_stroke_width * w,
       ],
       // live-marker-pulse: initial radius. Per-frame builder overrides this
       // every frame via `pulseAt`, but seeding it gives a sensible value
@@ -311,18 +311,18 @@ export function resolveStaticPaints(
       [
         'live-marker-pulse',
         'circle-radius',
-        mapSettings.overlay_live_marker_pulse_radius * w,
+        mapSettings.pov.size.pulse_radius * w,
       ],
     ],
     layouts: [
-      ['waypoints-label', 'text-size', mapSettings.overlay_waypoint_label_size * w],
+      ['waypoints-label', 'text-size', mapSettings.waypoints.size.label_size * w],
       ['waypoints-label', 'text-field', labelExpr],
       // Route visibility flows through layouts so per-clip `map_overrides`
-      // of `route_mode` switch automatically at the cut (the renderer
+      // of `route.mode` switch automatically at the cut (the renderer
       // re-resolves per-frame). Maplibre no-ops same-value writes, so the
       // steady-state cost is one map lookup per frame per tuple.
-      ['route-full-line', 'visibility', mapSettings.route_mode === 'full' ? 'visible' : 'none'],
-      ['route-trail-line', 'visibility', mapSettings.route_mode === 'visited' ? 'visible' : 'none'],
+      ['route-full-line', 'visibility', mapSettings.route.mode === 'full' ? 'visible' : 'none'],
+      ['route-trail-line', 'visibility', mapSettings.route.mode === 'visited' ? 'visible' : 'none'],
     ],
   };
 }

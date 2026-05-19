@@ -452,9 +452,12 @@ describe('circularLerp short-way', () => {
 
 const COMPILER_POINT_SETTINGS: MapSettings = {
   ...DEFAULT_MAP_SETTINGS,
-  follow_playhead: false,
-  bearing_mode: 'fixed',
-  bearing_degrees: 0,
+  camera: {
+    ...DEFAULT_MAP_SETTINGS.camera,
+    follow_playhead: false,
+    bearing_mode: 'fixed',
+    bearing_degrees: 0,
+  },
 };
 
 /** Build a Clip for compileTimeline tests. Provides a full record so the
@@ -524,8 +527,14 @@ describe('resolveProjectStartCamera', () => {
 
   it('default pitch is 60 for 3d style, 0 otherwise', () => {
     const clips = [compilerClip()];
-    const settings3d: MapSettings = { ...DEFAULT_MAP_SETTINGS, map_style: '3d' };
-    const sat: MapSettings = { ...DEFAULT_MAP_SETTINGS, map_style: 'satellite' };
+    const settings3d: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      camera: { ...DEFAULT_MAP_SETTINGS.camera, map_style: '3d' },
+    };
+    const sat: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      camera: { ...DEFAULT_MAP_SETTINGS.camera, map_style: 'satellite' },
+    };
     const cam3d = resolveProjectStartCamera(clips, NO_PROJECT_SETTINGS, settings3d, null);
     const camSat = resolveProjectStartCamera(clips, NO_PROJECT_SETTINGS, sat, null);
     expect(cam3d.pitch).toBe(60);
@@ -1103,9 +1112,12 @@ describe('cameraAt(timeline, t)', () => {
     ];
     const followSettings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
-      follow_playhead: true,
-      bearing_mode: 'fixed',
-      bearing_degrees: 0,
+      camera: {
+        ...DEFAULT_MAP_SETTINGS.camera,
+        follow_playhead: true,
+        bearing_mode: 'fixed',
+        bearing_degrees: 0,
+      },
     };
     const timeline = compileTimeline(clips, route, followSettings, {});
     const span = timeline.clipSpans[0];

@@ -102,12 +102,40 @@ export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
   const clips: Clip[] = opts.clips ?? [DEFAULT_CLIP];
   const route: Route | null = opts.route === undefined ? DEFAULT_ROUTE : opts.route;
 
+  const overrides = opts.mapSettings ?? {};
   const mapSettings: MapSettings = {
     ...DEFAULT_MAP_SETTINGS,
-    map_style: 'default',
-    waypoints_mode: 'full',
-    route_mode: 'full',
-    ...(opts.mapSettings ?? {}),
+    camera: {
+      ...DEFAULT_MAP_SETTINGS.camera,
+      map_style: 'default',
+      ...(overrides.camera ?? {}),
+    },
+    route: {
+      ...DEFAULT_MAP_SETTINGS.route,
+      mode: 'full',
+      ...(overrides.route ?? {}),
+      size: {
+        ...DEFAULT_MAP_SETTINGS.route.size,
+        ...(overrides.route?.size ?? {}),
+      },
+    },
+    waypoints: {
+      ...DEFAULT_MAP_SETTINGS.waypoints,
+      mode: 'full',
+      ...(overrides.waypoints ?? {}),
+      size: {
+        ...DEFAULT_MAP_SETTINGS.waypoints.size,
+        ...(overrides.waypoints?.size ?? {}),
+      },
+    },
+    pov: {
+      ...DEFAULT_MAP_SETTINGS.pov,
+      ...(overrides.pov ?? {}),
+      size: {
+        ...DEFAULT_MAP_SETTINGS.pov.size,
+        ...(overrides.pov?.size ?? {}),
+      },
+    },
   };
 
   const indexedRoute = route ? indexRoute(route) : null;

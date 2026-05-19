@@ -32,9 +32,9 @@ export function pulseAt(
   const phase = wrapped / PULSE_PERIOD_MS;
   const eased = 1 - Math.pow(1 - phase, 3); // cubic ease-out
   const startRadius =
-    mapSettings.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH;
+    mapSettings.pov.size.pulse_start_radius * PAINT_REFERENCE_WIDTH;
   const endRadius =
-    mapSettings.overlay_pulse_end_radius * PAINT_REFERENCE_WIDTH;
+    mapSettings.pov.size.pulse_end_radius * PAINT_REFERENCE_WIDTH;
   return {
     radius: startRadius + (endRadius - startRadius) * eased,
     opacity: PULSE_OPACITY_START * (1 - eased),

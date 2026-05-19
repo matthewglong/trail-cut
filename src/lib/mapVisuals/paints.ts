@@ -46,9 +46,9 @@ export function buildPerFramePaints(
 ): PaintUpdates {
   const pulse = pulseAt(projectTimeMs, mapSettings);
   const defaultRadius =
-    mapSettings.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH;
+    mapSettings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH;
   const activeRadius =
-    mapSettings.overlay_waypoint_active_radius * PAINT_REFERENCE_WIDTH;
+    mapSettings.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH;
   return composePaints(activeWaypointId, pulse, defaultRadius, activeRadius);
 }
 

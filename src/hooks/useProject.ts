@@ -38,6 +38,35 @@ interface UseProjectParams {
   loadRecentProjects: () => Promise<void>;
 }
 
+/** Block-aware merge of project map settings from disk with the canonical
+ *  defaults. Mirrors `resolveMapSettings` (which is for clip overrides) but
+ *  drops in for the v8 nested shape — `project.map_settings` may be `null`
+ *  or a partially-populated nested record from a hand-edited bundle. */
+function mergeMapSettings(
+  defaults: MapSettings,
+  incoming: MapSettings | undefined | null,
+): MapSettings {
+  if (!incoming) return defaults;
+  return {
+    camera: { ...defaults.camera, ...incoming.camera },
+    route: {
+      ...defaults.route,
+      ...incoming.route,
+      size: { ...defaults.route.size, ...incoming.route?.size },
+    },
+    waypoints: {
+      ...defaults.waypoints,
+      ...incoming.waypoints,
+      size: { ...defaults.waypoints.size, ...incoming.waypoints?.size },
+    },
+    pov: {
+      ...defaults.pov,
+      ...incoming.pov,
+      size: { ...defaults.pov.size, ...incoming.pov?.size },
+    },
+  };
+}
+
 /** Defensive backfill mirroring the Rust `seeded_layouts()` (task 080 / 100).
  *  The Rust load path already populates `layouts` for every project; this
  *  TS-side guard handles the (theoretical) case where Rust hands us a missing
@@ -91,7 +120,7 @@ export function useProject({
       setProjectThumbnail(project.thumbnail ?? null);
       setClips(project.clips);
       setRoute(project.route);
-      setMapSettings({ ...DEFAULT_MAP_SETTINGS, ...project.map_settings });
+      setMapSettings(mergeMapSettings(DEFAULT_MAP_SETTINGS, project.map_settings));
       setTransitionFeel(project.transition_feel);
       // Rust's load_project backfills `layouts` when the bundle has it
       // unset; this guard covers the edge case where the IPC payload still

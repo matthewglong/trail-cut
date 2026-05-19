@@ -35,8 +35,6 @@ export interface Effects {
   speed: number;
 }
 
-export type MapOverrides = Partial<MapSettings>;
-
 export interface Clip {
   id: string;
   path: string;
@@ -114,76 +112,330 @@ export interface Waypoint {
   label: string;
   source: 'clip' | 'gpx' | 'manual';
   clip_id?: string;
+  /** Per-waypoint solid color override. When set, this waypoint paints in
+   *  this color regardless of `mapSettings.waypoints.color`. Solid only —
+   *  a single point has no anchor to gradient across. */
+  color?: string;
+  /** Per-waypoint shape override. When set, wins over
+   *  `mapSettings.waypoints.shape`. */
+  shape?: WaypointShape;
 }
 
-export interface MapSettings {
-  route_mode: TriMode;
-  waypoints_mode: TriMode;
+// ---------- shared decoration value types ----------
+
+export type SolidColor = { mode: 'solid'; solid: string };
+export type GradientColor = { mode: 'gradient'; stops: GradientStop[] };
+export type DecorationColor = SolidColor | GradientColor;
+
+export interface GradientStop {
+  /** Web Mercator line-progress fraction in [0, 1]. */
+  fraction: number;
+  /** CSS color string (hex or rgb()). */
+  color: string;
+}
+
+export type WaypointShape =
+  | 'circle'
+  | 'ring'
+  | 'pin'
+  | 'square'
+  | 'diamond'
+  | 'numbered-circle';
+
+/** Available POV pulse animation roster. See `shapes-pov.md` Part 2. */
+export type PovPulseStyle = 'steady' | 'throb' | 'sonar' | 'heartbeat';
+
+/** POV pulse rate buckets. `'medium'` is today's hardcoded 1600ms period. */
+export type PovPulseRate = 'slow' | 'medium' | 'fast';
+
+// ---------- per-block setting types ----------
+
+export interface CameraSettings {
   follow_playhead: boolean;
   map_style: MapStyleId;
-  /** Zoom level the map animates to when a clip becomes active. */
   zoom: number;
-  /** How the map's bearing is determined:
-   *  - 'fixed'  → pinned to `bearing_degrees` (default: 0 = north up)
-   *  - 'auto'   → tracks GPX direction of travel at the current playhead */
   bearing_mode: BearingMode;
-  /** Fixed-mode bearing in degrees, normalized 0–359. Ignored when
-   *  `bearing_mode` is 'auto'. */
   bearing_degrees: number;
-  /** Number of bearing keyframes (stops) used in auto mode. The clip's
-   *  trail segment is divided into this many chunks, each with a
-   *  representative bearing. The map arcs smoothly between them.
-   *  1 = single fixed bearing for the whole clip. */
   bearing_stops: number;
-  /** Overlay paint sizes — fractions of the canonical paint reference width
-   *  (1080 CSS px). Effective CSS-px size = field × 1080. Each lives on
-   *  MapSettings so the same project-default + per-clip-override flow used
-   *  for route_mode / waypoints_mode / zoom etc. covers them too. */
-  overlay_route_full_width: number;
-  overlay_route_trail_width: number;
-  overlay_waypoint_circle_radius: number;
-  overlay_waypoint_active_radius: number;
-  overlay_waypoint_stroke_width: number;
-  overlay_waypoint_label_size: number;
-  overlay_live_marker_pulse_radius: number;
-  overlay_live_marker_dot_radius: number;
-  overlay_live_marker_dot_stroke_width: number;
-  overlay_pulse_start_radius: number;
-  overlay_pulse_end_radius: number;
-  /** Render mode for waypoint labels. See `WaypointLabelMode`. */
+}
+
+export interface RouteSize {
+  full_width: number;
+  trail_width: number;
+}
+
+export interface RouteSettings {
+  mode: TriMode;
+  color: DecorationColor;
+  size: RouteSize;
+}
+
+export interface WaypointsSize {
+  circle_radius: number;
+  active_radius: number;
+  stroke_width: number;
+  label_size: number;
+}
+
+export interface WaypointsSettings {
+  mode: TriMode;
+  color: DecorationColor;
+  shape: WaypointShape;
+  size: WaypointsSize;
   label_mode: WaypointLabelMode;
-  /** Active-waypoint highlight strategy. See `ActiveWaypointMode`. */
-  active_waypoint_mode: ActiveWaypointMode;
+  active_mode: ActiveWaypointMode;
+  /** Optional active-waypoint highlight color. Falls back to the waypoint's
+   *  resolved color at render time when unset. */
+  active_color?: string;
+}
+
+export interface PovSize {
+  pulse_radius: number;
+  dot_radius: number;
+  dot_stroke_width: number;
+  pulse_start_radius: number;
+  pulse_end_radius: number;
+}
+
+export interface PovSettings {
+  /** Solid only — POV does not participate in the gradient palette. */
+  color: string;
+  size: PovSize;
+  pulse_style: PovPulseStyle;
+  pulse_rate: PovPulseRate;
+}
+
+// ---------- top-level types ----------
+
+export interface MapSettings {
+  camera: CameraSettings;
+  route: RouteSettings;
+  waypoints: WaypointsSettings;
+  pov: PovSettings;
+}
+
+/** Hand-curated nested override shape. Color and shape on waypoints live on
+ *  the `Waypoint` entity, not here. */
+export interface MapOverrides {
+  camera?: Partial<CameraSettings>;
+  map_style?: MapStyleId;
+  route?: {
+    mode?: TriMode;
+    size?: Partial<RouteSize>;
+  };
+  waypoints?: {
+    mode?: TriMode;
+    size?: Partial<WaypointsSize>;
+    label_mode?: WaypointLabelMode;
+    active_mode?: ActiveWaypointMode;
+    active_color?: string;
+  };
+  pov?: {
+    color?: string;
+    size?: Partial<PovSize>;
+    pulse_style?: PovPulseStyle;
+    pulse_rate?: PovPulseRate;
+  };
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
-  route_mode: 'full',
-  waypoints_mode: 'full',
-  follow_playhead: true,
-  map_style: 'default',
-  zoom: 14,
-  bearing_mode: 'fixed',
-  bearing_degrees: 0,
-  bearing_stops: 3,
-  overlay_route_full_width: 0.004,
-  overlay_route_trail_width: 0.0055,
-  overlay_waypoint_circle_radius: 0.015,
-  overlay_waypoint_active_radius: 0.019,
-  overlay_waypoint_stroke_width: 0.003,
-  overlay_waypoint_label_size: 0.014,
-  overlay_live_marker_pulse_radius: 0.012,
-  overlay_live_marker_dot_radius: 0.013,
-  overlay_live_marker_dot_stroke_width: 0.004,
-  overlay_pulse_start_radius: 0.012,
-  overlay_pulse_end_radius: 0.033,
-  label_mode: 'numbered',
-  active_waypoint_mode: 'latest_passed',
+  camera: {
+    follow_playhead: true,
+    map_style: 'default',
+    zoom: 14,
+    bearing_mode: 'fixed',
+    bearing_degrees: 0,
+    bearing_stops: 3,
+  },
+  route: {
+    mode: 'full',
+    color: { mode: 'solid', solid: '#bced09' },
+    size: { full_width: 0.004, trail_width: 0.0055 },
+  },
+  waypoints: {
+    mode: 'full',
+    color: { mode: 'solid', solid: '#bced09' },
+    shape: 'circle',
+    size: {
+      circle_radius: 0.015,
+      active_radius: 0.019,
+      stroke_width: 0.003,
+      label_size: 0.014,
+    },
+    label_mode: 'numbered',
+    active_mode: 'latest_passed',
+  },
+  pov: {
+    color: '#bced09',
+    size: {
+      pulse_radius: 0.012,
+      dot_radius: 0.013,
+      dot_stroke_width: 0.004,
+      pulse_start_radius: 0.012,
+      pulse_end_radius: 0.033,
+    },
+    pulse_style: 'sonar',
+    pulse_rate: 'medium',
+  },
 };
 
-/** Merge project defaults with per-clip overrides. */
-export function resolveMapSettings(defaults: MapSettings, overrides: MapOverrides | null | undefined): MapSettings {
+/** Merge project defaults with per-clip overrides. Block-level spreads —
+ *  no recursion. */
+export function resolveMapSettings(
+  defaults: MapSettings,
+  overrides: MapOverrides | null | undefined,
+): MapSettings {
   if (!overrides) return defaults;
-  return { ...defaults, ...overrides };
+  return {
+    camera: { ...defaults.camera, ...overrides.camera },
+    route: {
+      ...defaults.route,
+      ...overrides.route,
+      size: { ...defaults.route.size, ...overrides.route?.size },
+    },
+    waypoints: {
+      ...defaults.waypoints,
+      ...overrides.waypoints,
+      size: { ...defaults.waypoints.size, ...overrides.waypoints?.size },
+    },
+    pov: {
+      ...defaults.pov,
+      ...overrides.pov,
+      size: { ...defaults.pov.size, ...overrides.pov?.size },
+    },
+  };
+}
+
+/** Leaf-path enumeration of every override key in a `MapOverrides`. Used by
+ *  the toolbar's override-highlight rollup. */
+export type OverridePath =
+  | `camera.${keyof CameraSettings}`
+  | 'map_style'
+  | 'route.mode'
+  | `route.size.${keyof RouteSize}`
+  | 'waypoints.mode'
+  | 'waypoints.label_mode'
+  | 'waypoints.active_mode'
+  | 'waypoints.active_color'
+  | `waypoints.size.${keyof WaypointsSize}`
+  | 'pov.color'
+  | 'pov.pulse_style'
+  | 'pov.pulse_rate'
+  | `pov.size.${keyof PovSize}`;
+
+export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
+  const out = new Set<OverridePath>();
+  if (overrides.camera) {
+    for (const k of Object.keys(overrides.camera) as (keyof CameraSettings)[]) {
+      out.add(`camera.${k}` as OverridePath);
+    }
+  }
+  if (overrides.map_style !== undefined) out.add('map_style');
+  if (overrides.route?.mode !== undefined) out.add('route.mode');
+  if (overrides.route?.size) {
+    for (const k of Object.keys(overrides.route.size) as (keyof RouteSize)[]) {
+      out.add(`route.size.${k}` as OverridePath);
+    }
+  }
+  if (overrides.waypoints) {
+    if (overrides.waypoints.mode !== undefined) out.add('waypoints.mode');
+    if (overrides.waypoints.label_mode !== undefined) out.add('waypoints.label_mode');
+    if (overrides.waypoints.active_mode !== undefined) out.add('waypoints.active_mode');
+    if (overrides.waypoints.active_color !== undefined) out.add('waypoints.active_color');
+    if (overrides.waypoints.size) {
+      for (const k of Object.keys(overrides.waypoints.size) as (keyof WaypointsSize)[]) {
+        out.add(`waypoints.size.${k}` as OverridePath);
+      }
+    }
+  }
+  if (overrides.pov) {
+    if (overrides.pov.color !== undefined) out.add('pov.color');
+    if (overrides.pov.pulse_style !== undefined) out.add('pov.pulse_style');
+    if (overrides.pov.pulse_rate !== undefined) out.add('pov.pulse_rate');
+    if (overrides.pov.size) {
+      for (const k of Object.keys(overrides.pov.size) as (keyof PovSize)[]) {
+        out.add(`pov.size.${k}` as OverridePath);
+      }
+    }
+  }
+  return out;
+}
+
+/** Diff a fully-resolved `next` against project defaults to produce a sparse
+ *  `MapOverrides`. Used in clip scope when the toolbar emits a complete
+ *  `MapSettings` and we want to persist only what diverges. */
+export function computeClipOverrides(
+  next: MapSettings,
+  project: MapSettings,
+): MapOverrides {
+  const out: MapOverrides = {};
+
+  // camera
+  const camera: Partial<CameraSettings> = {};
+  const cameraKeys: (keyof CameraSettings)[] = [
+    'follow_playhead',
+    'map_style',
+    'zoom',
+    'bearing_mode',
+    'bearing_degrees',
+    'bearing_stops',
+  ];
+  for (const k of cameraKeys) {
+    if (next.camera[k] !== project.camera[k]) {
+      (camera as Record<string, unknown>)[k] = next.camera[k];
+    }
+  }
+  if (Object.keys(camera).length) out.camera = camera;
+
+  // route
+  const route: NonNullable<MapOverrides['route']> = {};
+  if (next.route.mode !== project.route.mode) route.mode = next.route.mode;
+  const routeSize = diffPartial(next.route.size, project.route.size);
+  if (routeSize) route.size = routeSize;
+  if (Object.keys(route).length) out.route = route;
+
+  // waypoints (no color, no shape — those live on Waypoint)
+  const wp: NonNullable<MapOverrides['waypoints']> = {};
+  if (next.waypoints.mode !== project.waypoints.mode) wp.mode = next.waypoints.mode;
+  if (next.waypoints.label_mode !== project.waypoints.label_mode) {
+    wp.label_mode = next.waypoints.label_mode;
+  }
+  if (next.waypoints.active_mode !== project.waypoints.active_mode) {
+    wp.active_mode = next.waypoints.active_mode;
+  }
+  if (next.waypoints.active_color !== project.waypoints.active_color) {
+    wp.active_color = next.waypoints.active_color;
+  }
+  const wpSize = diffPartial(next.waypoints.size, project.waypoints.size);
+  if (wpSize) wp.size = wpSize;
+  if (Object.keys(wp).length) out.waypoints = wp;
+
+  // pov (fully overridable; color is a plain hex string)
+  const pov: NonNullable<MapOverrides['pov']> = {};
+  if (next.pov.color !== project.pov.color) pov.color = next.pov.color;
+  if (next.pov.pulse_style !== project.pov.pulse_style) {
+    pov.pulse_style = next.pov.pulse_style;
+  }
+  if (next.pov.pulse_rate !== project.pov.pulse_rate) {
+    pov.pulse_rate = next.pov.pulse_rate;
+  }
+  const povSize = diffPartial(next.pov.size, project.pov.size);
+  if (povSize) pov.size = povSize;
+  if (Object.keys(pov).length) out.pov = pov;
+
+  return out;
+}
+
+function diffPartial<T extends object>(next: T, base: T): Partial<T> | null {
+  const out: Partial<T> = {};
+  let any = false;
+  for (const k of Object.keys(next) as (keyof T)[]) {
+    if (next[k] !== base[k]) {
+      out[k] = next[k];
+      any = true;
+    }
+  }
+  return any ? out : null;
 }
 
 /** Re-exported from `lib/layout.ts` so `types.ts` stays the single import

@@ -95,7 +95,7 @@ export default function MapView({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const styleReadyRef = useRef(false);
   const [styleVersion, setStyleVersion] = useState(0);
-  const mapStyleId = mapSettings.map_style;
+  const mapStyleId = mapSettings.camera.map_style;
 
   // Tracks the last route reference we framed via the region-intent jumpTo
   // below. Idempotence guard: we only refit once per unique route.
@@ -212,7 +212,7 @@ export default function MapView({
       // 3D-buildings layer for `'3d'` mode. The buildings source only exists
       // in the OpenFreeMap liberty style — guarded + try/catch so satellite
       // and other raster styles silently skip it.
-      if (mapSettingsRef.current.map_style === '3d') {
+      if (mapSettingsRef.current.camera.map_style === '3d') {
         try {
           if (!map.getLayer('3d-buildings') && map.getSource('openmaptiles')) {
             map.addLayer(BUILDINGS_LAYER_SPEC);

@@ -10,12 +10,12 @@ import { DEFAULT_MAP_SETTINGS } from '../../../types';
 
 const FLOAT_EPS = 1e-9;
 const START_R =
-  DEFAULT_MAP_SETTINGS.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH;
+  DEFAULT_MAP_SETTINGS.pov.size.pulse_start_radius * PAINT_REFERENCE_WIDTH;
 const END_R =
-  DEFAULT_MAP_SETTINGS.overlay_pulse_end_radius * PAINT_REFERENCE_WIDTH;
+  DEFAULT_MAP_SETTINGS.pov.size.pulse_end_radius * PAINT_REFERENCE_WIDTH;
 
 describe('pulseAt', () => {
-  it('boundary at t=0: radius=overlay_pulse_start_radius × PAINT_REFERENCE_WIDTH and opacity=0.55', () => {
+  it('boundary at t=0: radius=pov.size.pulse_start_radius × PAINT_REFERENCE_WIDTH and opacity=0.55', () => {
     const v = pulseAt(0, DEFAULT_MAP_SETTINGS);
     expect(Math.abs(v.radius - START_R)).toBeLessThan(FLOAT_EPS);
     expect(Math.abs(v.opacity - 0.55)).toBeLessThan(FLOAT_EPS);
@@ -64,7 +64,7 @@ describe('pulseAt', () => {
     expect(a.opacity).toBeLessThanOrEqual(0.55);
   });
 
-  it('end of period: t = PULSE_PERIOD_MS - 0.001 → radius ≈ overlay_pulse_end_radius × 1080, opacity ≈ 0', () => {
+  it('end of period: t = PULSE_PERIOD_MS - 0.001 → radius ≈ pov.size.pulse_end_radius × 1080, opacity ≈ 0', () => {
     const v = pulseAt(PULSE_PERIOD_MS - 0.001, DEFAULT_MAP_SETTINGS);
     expect(Math.abs(v.radius - END_R)).toBeLessThan(0.01);
     expect(v.opacity).toBeLessThan(0.01);
@@ -75,8 +75,14 @@ describe('pulseAt', () => {
     // carries an enlarged pulse end radius; pulseAt picks it up directly.
     const wide = {
       ...DEFAULT_MAP_SETTINGS,
-      overlay_pulse_start_radius: 0.03,
-      overlay_pulse_end_radius: 0.08,
+      pov: {
+        ...DEFAULT_MAP_SETTINGS.pov,
+        size: {
+          ...DEFAULT_MAP_SETTINGS.pov.size,
+          pulse_start_radius: 0.03,
+          pulse_end_radius: 0.08,
+        },
+      },
     };
     const v = pulseAt(0, wide);
     expect(v.radius).toBeCloseTo(0.03 * PAINT_REFERENCE_WIDTH, 9);

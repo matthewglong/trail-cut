@@ -132,7 +132,7 @@ export function buildStaticSourceData(args: {
   // pass fills in only the visited subset; `full` (default) seeds the full
   // collection.
   const wpCollection =
-    mapSettings.waypoints_mode === 'none'
+    mapSettings.waypoints.mode === 'none'
       ? emptyPointCollection()
       : buildWaypointsCollection(waypoints, indexedRoute);
   return {
@@ -172,7 +172,7 @@ export function pickActiveWaypoint(
   markerTrace: WallClockTrace | null,
   mapSettings: MapSettings,
 ): string | null {
-  if (mapSettings.active_waypoint_mode !== 'latest_passed') return null;
+  if (mapSettings.waypoints.active_mode !== 'latest_passed') return null;
   if (!markerTrace) return null;
   const marker = markerTrace.wallMs;
   let bestId: string | null = null;
@@ -221,7 +221,7 @@ export function buildPerFrameSourceData(args: {
   // export gets pixel-identical trail geometry.
   let trailFeature: GeoJSON.Feature<GeoJSON.LineString>;
   if (
-    mapSettings.route_mode === 'visited' &&
+    mapSettings.route.mode === 'visited' &&
     markerTrace &&
     indexedRoute
   ) {
@@ -272,7 +272,7 @@ export function buildPerFrameSourceData(args: {
   // waypoints — see `waypointPassed`). Wall-clock-only filtering replaces
   // the pre-v7 `ClipSpan.startMs` predicate, which doesn't apply to
   // waypoints decoupled from clips.
-  if (mapSettings.waypoints_mode === 'visited') {
+  if (mapSettings.waypoints.mode === 'visited') {
     const features: GeoJSON.Feature<GeoJSON.Point>[] = [];
     if (markerTrace) {
       waypoints.forEach((wp, index) => {

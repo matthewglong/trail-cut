@@ -321,16 +321,16 @@ function anchorIntentForClip(
   anchorStartMs: number,
   anchorEndMs: number,
 ): CameraIntent {
-  const pitch = settings.map_style === '3d' ? 60 : 0;
+  const pitch = settings.camera.map_style === '3d' ? 60 : 0;
 
-  if (settings.follow_playhead && route) {
+  if (settings.camera.follow_playhead && route) {
     const bearingKeyframes: BearingKeyframe[] =
-      settings.bearing_mode === 'auto'
+      settings.camera.bearing_mode === 'auto'
         ? (computeBearingKeyframes(
             anchorStartMs,
             anchorEndMs,
             route,
-            settings.bearing_stops,
+            settings.camera.bearing_stops,
           ) ?? [])
         : [];
     return {
@@ -339,13 +339,13 @@ function anchorIntentForClip(
       // `liveIntentForClipSpan` (project-time → wall-clock translation).
       playheadMs: anchorStartMs,
       route,
-      targetZoom: settings.zoom,
-      bearingMode: settings.bearing_mode,
+      targetZoom: settings.camera.zoom,
+      bearingMode: settings.camera.bearing_mode,
       // Fraction of min(viewport.w, viewport.h). Reserved for future
       // "frame the marker plus N meters" extensions; ignored by today's
       // 'follow' branch in resolveIntent.
       padding: 0.06,
-      fixedBearingDegrees: settings.bearing_degrees,
+      fixedBearingDegrees: settings.camera.bearing_degrees,
       bearingKeyframes,
       pitch,
     };
@@ -357,8 +357,8 @@ function anchorIntentForClip(
   return {
     kind: 'point',
     center: wp ? { lng: wp.lng, lat: wp.lat } : { lng: 0, lat: 0 },
-    zoom: settings.zoom,
-    bearing: settings.bearing_mode === 'fixed' ? settings.bearing_degrees : 0,
+    zoom: settings.camera.zoom,
+    bearing: settings.camera.bearing_mode === 'fixed' ? settings.camera.bearing_degrees : 0,
     pitch,
   };
 }
@@ -803,7 +803,7 @@ export function resolveProjectStartCamera(
     center,
     zoom: 12,
     bearing: 0,
-    pitch: projectMapSettings.map_style === '3d' ? 60 : 0,
+    pitch: projectMapSettings.camera.map_style === '3d' ? 60 : 0,
   };
 }
 

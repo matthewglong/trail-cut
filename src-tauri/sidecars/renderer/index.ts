@@ -467,12 +467,12 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     cssViewport: payload.cssViewport,
     framebuffer: payload.framebuffer,
     pixelRatio: payload.pixelRatio,
-    add3dBuildings: payload.mapSettings.map_style === '3d',
+    add3dBuildings: payload.mapSettings.camera.map_style === '3d',
     staticSources,
     staticLayers,
     staticPaints: staticPaintResolution.paints,
     staticLayouts: staticPaintResolution.layouts,
-    buildingsLayer: payload.mapSettings.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
+    buildingsLayer: payload.mapSettings.camera.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
     // Page-side opts. `verbose` gates the page's __init/__applyFrame
     // breadcrumbs and the in-flight idle-wait diagnostic. `transport`
     // selects the readback path: 'readpixels' (default) returns raw RGBA

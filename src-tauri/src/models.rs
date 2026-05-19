@@ -123,57 +123,207 @@ pub struct Route {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MapSettings {
-    #[serde(default = "default_full")]
-    pub route_mode: String, // "none" | "visited" | "full"
-    #[serde(default = "default_full")]
-    pub waypoints_mode: String, // "none" | "visited" | "full"
+pub struct GradientStop {
+    pub fraction: f64,
+    pub color: String,
+}
+
+/// Decoration color (`mode: "solid"` | `mode: "gradient"`). On disk:
+/// `{ "mode": "solid", "solid": "#bced09" }` or
+/// `{ "mode": "gradient", "stops": [{ "fraction": 0, "color": "#..." }, ...] }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum DecorationColor {
+    Solid { solid: String },
+    Gradient { stops: Vec<GradientStop> },
+}
+
+impl Default for DecorationColor {
+    fn default() -> Self {
+        DecorationColor::Solid { solid: default_accent_color() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraSettings {
     #[serde(default = "default_true")]
     pub follow_playhead: bool,
     #[serde(default = "default_map_style")]
-    pub map_style: String, // "default" | "3d" | "satellite"
+    pub map_style: String,
     #[serde(default = "default_map_zoom")]
     pub zoom: f64,
     #[serde(default = "default_bearing_mode")]
-    pub bearing_mode: String, // "auto" | "fixed"
+    pub bearing_mode: String,
     #[serde(default = "default_bearing_degrees")]
     pub bearing_degrees: f64,
     #[serde(default = "default_bearing_stops")]
     pub bearing_stops: u32,
-    /// Overlay paint sizes — fractions of the canonical paint reference width
-    /// (1080 CSS px). Effective CSS-px size = field × 1080. Legacy bundles
-    /// without these fields adopt the lowered defaults via serde.
+}
+
+impl Default for CameraSettings {
+    fn default() -> Self {
+        CameraSettings {
+            follow_playhead: true,
+            map_style: default_map_style(),
+            zoom: default_map_zoom(),
+            bearing_mode: default_bearing_mode(),
+            bearing_degrees: default_bearing_degrees(),
+            bearing_stops: default_bearing_stops(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteSize {
     #[serde(default = "default_overlay_route_full_width")]
-    pub overlay_route_full_width: f64,
+    pub full_width: f64,
     #[serde(default = "default_overlay_route_trail_width")]
-    pub overlay_route_trail_width: f64,
+    pub trail_width: f64,
+}
+
+impl Default for RouteSize {
+    fn default() -> Self {
+        RouteSize {
+            full_width: default_overlay_route_full_width(),
+            trail_width: default_overlay_route_trail_width(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteSettings {
+    #[serde(default = "default_full")]
+    pub mode: String,
+    #[serde(default)]
+    pub color: DecorationColor,
+    #[serde(default)]
+    pub size: RouteSize,
+}
+
+impl Default for RouteSettings {
+    fn default() -> Self {
+        RouteSettings {
+            mode: default_full(),
+            color: DecorationColor::default(),
+            size: RouteSize::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaypointsSize {
     #[serde(default = "default_overlay_waypoint_circle_radius")]
-    pub overlay_waypoint_circle_radius: f64,
+    pub circle_radius: f64,
     #[serde(default = "default_overlay_waypoint_active_radius")]
-    pub overlay_waypoint_active_radius: f64,
+    pub active_radius: f64,
     #[serde(default = "default_overlay_waypoint_stroke_width")]
-    pub overlay_waypoint_stroke_width: f64,
+    pub stroke_width: f64,
     #[serde(default = "default_overlay_waypoint_label_size")]
-    pub overlay_waypoint_label_size: f64,
-    #[serde(default = "default_overlay_live_marker_pulse_radius")]
-    pub overlay_live_marker_pulse_radius: f64,
-    #[serde(default = "default_overlay_live_marker_dot_radius")]
-    pub overlay_live_marker_dot_radius: f64,
-    #[serde(default = "default_overlay_live_marker_dot_stroke_width")]
-    pub overlay_live_marker_dot_stroke_width: f64,
-    #[serde(default = "default_overlay_pulse_start_radius")]
-    pub overlay_pulse_start_radius: f64,
-    #[serde(default = "default_overlay_pulse_end_radius")]
-    pub overlay_pulse_end_radius: f64,
-    /// "numbered" — render the waypoint's 1-based ordinal as its label.
-    /// "labeled" — render its `label` text (empty string = no text).
+    pub label_size: f64,
+}
+
+impl Default for WaypointsSize {
+    fn default() -> Self {
+        WaypointsSize {
+            circle_radius: default_overlay_waypoint_circle_radius(),
+            active_radius: default_overlay_waypoint_active_radius(),
+            stroke_width: default_overlay_waypoint_stroke_width(),
+            label_size: default_overlay_waypoint_label_size(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaypointsSettings {
+    #[serde(default = "default_full")]
+    pub mode: String,
+    #[serde(default)]
+    pub color: DecorationColor,
+    #[serde(default = "default_waypoint_shape")]
+    pub shape: String,
+    #[serde(default)]
+    pub size: WaypointsSize,
     #[serde(default = "default_label_mode")]
     pub label_mode: String,
-    /// "none" — no waypoint is highlighted.
-    /// "latest_passed" — the latest waypoint whose anchor sits at or before the
-    /// current marker is rendered at the active radius.
     #[serde(default = "default_active_waypoint_mode")]
-    pub active_waypoint_mode: String,
+    pub active_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_color: Option<String>,
+}
+
+impl Default for WaypointsSettings {
+    fn default() -> Self {
+        WaypointsSettings {
+            mode: default_full(),
+            color: DecorationColor::default(),
+            shape: default_waypoint_shape(),
+            size: WaypointsSize::default(),
+            label_mode: default_label_mode(),
+            active_mode: default_active_waypoint_mode(),
+            active_color: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PovSize {
+    #[serde(default = "default_overlay_live_marker_pulse_radius")]
+    pub pulse_radius: f64,
+    #[serde(default = "default_overlay_live_marker_dot_radius")]
+    pub dot_radius: f64,
+    #[serde(default = "default_overlay_live_marker_dot_stroke_width")]
+    pub dot_stroke_width: f64,
+    #[serde(default = "default_overlay_pulse_start_radius")]
+    pub pulse_start_radius: f64,
+    #[serde(default = "default_overlay_pulse_end_radius")]
+    pub pulse_end_radius: f64,
+}
+
+impl Default for PovSize {
+    fn default() -> Self {
+        PovSize {
+            pulse_radius: default_overlay_live_marker_pulse_radius(),
+            dot_radius: default_overlay_live_marker_dot_radius(),
+            dot_stroke_width: default_overlay_live_marker_dot_stroke_width(),
+            pulse_start_radius: default_overlay_pulse_start_radius(),
+            pulse_end_radius: default_overlay_pulse_end_radius(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PovSettings {
+    #[serde(default = "default_accent_color")]
+    pub color: String,
+    #[serde(default)]
+    pub size: PovSize,
+    #[serde(default = "default_pulse_style")]
+    pub pulse_style: String,
+    #[serde(default = "default_pulse_rate")]
+    pub pulse_rate: String,
+}
+
+impl Default for PovSettings {
+    fn default() -> Self {
+        PovSettings {
+            color: default_accent_color(),
+            size: PovSize::default(),
+            pulse_style: default_pulse_style(),
+            pulse_rate: default_pulse_rate(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MapSettings {
+    #[serde(default)]
+    pub camera: CameraSettings,
+    #[serde(default)]
+    pub route: RouteSettings,
+    #[serde(default)]
+    pub waypoints: WaypointsSettings,
+    #[serde(default)]
+    pub pov: PovSettings,
 }
 
 fn default_full() -> String {
@@ -243,51 +393,115 @@ fn default_label_mode() -> String {
 fn default_active_waypoint_mode() -> String {
     "latest_passed".to_string()
 }
+fn default_waypoint_shape() -> String {
+    "circle".to_string()
+}
+fn default_accent_color() -> String {
+    "#bced09".to_string()
+}
+fn default_pulse_style() -> String {
+    "sonar".to_string()
+}
+fn default_pulse_rate() -> String {
+    "medium".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CameraOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_playhead: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearing_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearing_degrees: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearing_stops: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RouteSizeOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trail_width: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RouteOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<RouteSizeOverrides>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WaypointsSizeOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circle_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_size: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WaypointsOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<WaypointsSizeOverrides>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PovSizeOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulse_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dot_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dot_stroke_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulse_start_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulse_end_radius: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PovOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<PovSizeOverrides>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulse_style: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulse_rate: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapOverrides {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub route_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub waypoints_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub follow_playhead: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<CameraOverrides>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_style: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub zoom: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bearing_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bearing_degrees: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bearing_stops: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_route_full_width: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_route_trail_width: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_waypoint_circle_radius: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_waypoint_active_radius: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_waypoint_stroke_width: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_waypoint_label_size: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_live_marker_pulse_radius: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_live_marker_dot_radius: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_live_marker_dot_stroke_width: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_pulse_start_radius: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub overlay_pulse_end_radius: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_waypoint_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<RouteOverrides>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waypoints: Option<WaypointsOverrides>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pov: Option<PovOverrides>,
 }
 
 /// Position anchor for a waypoint. Two variants:
@@ -336,6 +550,13 @@ pub struct Waypoint {
     pub source: String, // "clip" | "gpx" | "manual"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_id: Option<String>,
+    /// Per-waypoint solid color override. None falls through to the project
+    /// default at render time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Per-waypoint shape override. None falls through to the project default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<String>,
 }
 
 /// Project-level "transition feel" knob. Drives the duration multiplier for
@@ -447,7 +668,7 @@ pub struct ExportGrid {
 /// v7 promotes waypoints to a first-class project entity (was: derived from
 /// clip starts at render time). Purely additive: the v6→v7 migration stamps
 /// the version, and load_project seeds `waypoints` from clips when absent.
-pub const CURRENT_SCHEMA_VERSION: u32 = 7;
+pub const CURRENT_SCHEMA_VERSION: u32 = 8;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -457,27 +678,10 @@ fn default_schema_version() -> u32 {
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
-            route_mode: default_full(),
-            waypoints_mode: default_full(),
-            follow_playhead: true,
-            map_style: default_map_style(),
-            zoom: default_map_zoom(),
-            bearing_mode: default_bearing_mode(),
-            bearing_degrees: default_bearing_degrees(),
-            bearing_stops: default_bearing_stops(),
-            overlay_route_full_width: default_overlay_route_full_width(),
-            overlay_route_trail_width: default_overlay_route_trail_width(),
-            overlay_waypoint_circle_radius: default_overlay_waypoint_circle_radius(),
-            overlay_waypoint_active_radius: default_overlay_waypoint_active_radius(),
-            overlay_waypoint_stroke_width: default_overlay_waypoint_stroke_width(),
-            overlay_waypoint_label_size: default_overlay_waypoint_label_size(),
-            overlay_live_marker_pulse_radius: default_overlay_live_marker_pulse_radius(),
-            overlay_live_marker_dot_radius: default_overlay_live_marker_dot_radius(),
-            overlay_live_marker_dot_stroke_width: default_overlay_live_marker_dot_stroke_width(),
-            overlay_pulse_start_radius: default_overlay_pulse_start_radius(),
-            overlay_pulse_end_radius: default_overlay_pulse_end_radius(),
-            label_mode: default_label_mode(),
-            active_waypoint_mode: default_active_waypoint_mode(),
+            camera: CameraSettings::default(),
+            route: RouteSettings::default(),
+            waypoints: WaypointsSettings::default(),
+            pov: PovSettings::default(),
         }
     }
 }

@@ -24,9 +24,12 @@ const VIEWPORT: Viewport = { width: 800, height: 600, dpr: 1 };
  *  dependence in clip-anchor cameras so resolveIntent is identity. */
 const POINT_SETTINGS: MapSettings = {
   ...DEFAULT_MAP_SETTINGS,
-  follow_playhead: false,
-  bearing_mode: 'fixed',
-  bearing_degrees: 0,
+  camera: {
+    ...DEFAULT_MAP_SETTINGS.camera,
+    follow_playhead: false,
+    bearing_mode: 'fixed',
+    bearing_degrees: 0,
+  },
 };
 
 function mkClip(overrides: Partial<Clip> = {}): Clip {
@@ -206,7 +209,10 @@ describe('buildPerFrameState live-marker', () => {
 describe('buildPerFrameState slime-trail', () => {
   it('empty when route_mode !== "visited"', () => {
     const { clips, waypoints, timeline } = twoClipFixture();
-    const settings: MapSettings = { ...POINT_SETTINGS, route_mode: 'full' };
+    const settings: MapSettings = {
+      ...POINT_SETTINGS,
+      route: { ...POINT_SETTINGS.route, mode: 'full' },
+    };
     const state = buildPerFrameState(
       timeline,
       1_000,
@@ -233,7 +239,7 @@ describe('buildPerFrameState paints', () => {
     // exercises.
     const settings: MapSettings = {
       ...POINT_SETTINGS,
-      active_waypoint_mode: 'none',
+      waypoints: { ...POINT_SETTINGS.waypoints, active_mode: 'none' },
     };
     const state = buildPerFrameState(
       timeline,
@@ -245,12 +251,12 @@ describe('buildPerFrameState paints', () => {
       VIEWPORT,
     );
     expect(state.paints.waypointCircleRadius).toBeCloseTo(
-      settings.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH,
+      settings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
-    // At t=0 the pulse curve emits overlay_pulse_start_radius × PAINT_REFERENCE_WIDTH.
+    // At t=0 the pulse curve emits pov.size.pulse_start_radius × PAINT_REFERENCE_WIDTH.
     expect(state.paints.pulseRadius).toBeCloseTo(
-      settings.overlay_pulse_start_radius * PAINT_REFERENCE_WIDTH,
+      settings.pov.size.pulse_start_radius * PAINT_REFERENCE_WIDTH,
       6,
     );
   });
@@ -263,8 +269,11 @@ describe('buildPerFrameState paints', () => {
     const { clips, waypoints, timeline } = twoClipFixture();
     const overridden: MapSettings = {
       ...POINT_SETTINGS,
-      active_waypoint_mode: 'none',
-      overlay_waypoint_circle_radius: 0.04,
+      waypoints: {
+        ...POINT_SETTINGS.waypoints,
+        active_mode: 'none',
+        size: { ...POINT_SETTINGS.waypoints.size, circle_radius: 0.04 },
+      },
     };
     const state = buildPerFrameState(
       timeline,
@@ -335,11 +344,11 @@ describe('buildPerFrameState paints', () => {
     expect(predicate[0]).toBe('==');
     expect(predicate[2]).toBe(waypoints[0].id);
     expect(expr[2]).toBeCloseTo(
-      POINT_SETTINGS.overlay_waypoint_active_radius * PAINT_REFERENCE_WIDTH,
+      POINT_SETTINGS.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(expr[3]).toBeCloseTo(
-      POINT_SETTINGS.overlay_waypoint_circle_radius * PAINT_REFERENCE_WIDTH,
+      POINT_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
   });
@@ -354,7 +363,7 @@ describe('buildPerFrameState waypoints visibility', () => {
 
     const settings: MapSettings = {
       ...POINT_SETTINGS,
-      waypoints_mode: 'visited',
+      waypoints: { ...POINT_SETTINGS.waypoints, mode: 'visited' },
     };
 
     const at1k = buildPerFrameState(
@@ -391,7 +400,10 @@ describe('buildPerFrameState waypoints visibility', () => {
   it('non-visited mode: sources["waypoints"] is undefined (static seed handles it)', () => {
     const { clips, waypoints, timeline } = twoClipFixture();
     for (const mode of ['full', 'none'] as const) {
-      const settings: MapSettings = { ...POINT_SETTINGS, waypoints_mode: mode };
+      const settings: MapSettings = {
+        ...POINT_SETTINGS,
+        waypoints: { ...POINT_SETTINGS.waypoints, mode },
+      };
       const state = buildPerFrameState(
         timeline,
         1_000,

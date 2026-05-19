@@ -24,7 +24,10 @@ const minimal: MapSettings = DEFAULT_MAP_SETTINGS;
 
 describe('buildStyleSpec', () => {
   it('default style: returns DEFAULT_STYLE_URL string and pitch 0', () => {
-    const result = buildStyleSpec({ ...minimal, map_style: 'default' });
+    const result = buildStyleSpec({
+      ...minimal,
+      camera: { ...minimal.camera, map_style: 'default' },
+    });
     expect(typeof result.style).toBe('string');
     if (typeof result.style === 'string') {
       expect(result.style.startsWith('https://')).toBe(true);
@@ -33,7 +36,10 @@ describe('buildStyleSpec', () => {
   });
 
   it('satellite style: returns inline StyleSpecification with v8 + raster source, pitch 0', () => {
-    const result = buildStyleSpec({ ...minimal, map_style: 'satellite' });
+    const result = buildStyleSpec({
+      ...minimal,
+      camera: { ...minimal.camera, map_style: 'satellite' },
+    });
     expect(typeof result.style).toBe('object');
     if (typeof result.style === 'object') {
       expect(result.style.version).toBe(8);
@@ -46,8 +52,14 @@ describe('buildStyleSpec', () => {
   });
 
   it('3d style: same string URL as default, but defaultPitch 60', () => {
-    const def = buildStyleSpec({ ...minimal, map_style: 'default' });
-    const threeD = buildStyleSpec({ ...minimal, map_style: '3d' });
+    const def = buildStyleSpec({
+      ...minimal,
+      camera: { ...minimal.camera, map_style: 'default' },
+    });
+    const threeD = buildStyleSpec({
+      ...minimal,
+      camera: { ...minimal.camera, map_style: '3d' },
+    });
     expect(typeof threeD.style).toBe('string');
     expect(threeD.style).toBe(def.style);
     expect(threeD.defaultPitch).toBe(60);
@@ -65,19 +77,17 @@ describe('DEFAULT_MAP_SETTINGS overlay seeds', () => {
   it('matches the lowered defaults from the refactor spec', () => {
     // Pin the seeded fractions verbatim so a deliberate change is reviewable.
     // Numbers are unitless ratios of `PAINT_REFERENCE_WIDTH` (1080 CSS px).
-    expect(DEFAULT_MAP_SETTINGS.overlay_route_full_width).toBe(0.004);
-    expect(DEFAULT_MAP_SETTINGS.overlay_route_trail_width).toBe(0.0055);
-    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_circle_radius).toBe(0.015);
-    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_active_radius).toBe(0.019);
-    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_stroke_width).toBe(0.003);
-    expect(DEFAULT_MAP_SETTINGS.overlay_waypoint_label_size).toBe(0.014);
-    expect(DEFAULT_MAP_SETTINGS.overlay_live_marker_pulse_radius).toBe(0.012);
-    expect(DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_radius).toBe(0.013);
-    expect(DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_stroke_width).toBe(
-      0.004,
-    );
-    expect(DEFAULT_MAP_SETTINGS.overlay_pulse_start_radius).toBe(0.012);
-    expect(DEFAULT_MAP_SETTINGS.overlay_pulse_end_radius).toBe(0.033);
+    expect(DEFAULT_MAP_SETTINGS.route.size.full_width).toBe(0.004);
+    expect(DEFAULT_MAP_SETTINGS.route.size.trail_width).toBe(0.0055);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius).toBe(0.015);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.active_radius).toBe(0.019);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.stroke_width).toBe(0.003);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.label_size).toBe(0.014);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_radius).toBe(0.012);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.dot_radius).toBe(0.013);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.dot_stroke_width).toBe(0.004);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_start_radius).toBe(0.012);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_end_radius).toBe(0.033);
   });
 });
 
@@ -107,61 +117,63 @@ describe('resolveStaticPaints', () => {
     const { paintBy, layoutBy } = buildMap(resolved);
     expect(PAINT_REFERENCE_WIDTH).toBe(1080);
     expect(paintBy.get('route-full-line/line-width')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_route_full_width * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.route.size.full_width * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('route-trail-line/line-width')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_route_trail_width * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.route.size.trail_width * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_waypoint_circle_radius *
-        PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('waypoints-circle/circle-stroke-width')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_waypoint_stroke_width * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.waypoints.size.stroke_width * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('live-marker-dot/circle-radius')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_radius *
-        PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.pov.size.dot_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('live-marker-dot/circle-stroke-width')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_live_marker_dot_stroke_width *
-        PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.pov.size.dot_stroke_width * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(paintBy.get('live-marker-pulse/circle-radius')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_live_marker_pulse_radius *
-        PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.pov.size.pulse_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
     expect(layoutBy.get('waypoints-label/text-size')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_waypoint_label_size * PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.waypoints.size.label_size * PAINT_REFERENCE_WIDTH,
       9,
     );
   });
 
-  it('passing overlay_route_trail_width: 0.02 yields route-trail-line line-width of 21.6', () => {
+  it('passing route.size.trail_width: 0.02 yields route-trail-line line-width of 21.6', () => {
     // Pinned arithmetic — confirms the fraction × PAINT_REFERENCE_WIDTH
     // contract end-to-end. 0.02 × 1080 = 21.6.
     const settings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
-      overlay_route_trail_width: 0.02,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        size: { ...DEFAULT_MAP_SETTINGS.route.size, trail_width: 0.02 },
+      },
     };
     const { paintBy } = buildMap(resolveStaticPaints(settings));
     expect(paintBy.get('route-trail-line/line-width')).toBeCloseTo(21.6, 9);
   });
 
-  it('project-level edit: a non-default overlay_waypoint_circle_radius flows through', () => {
+  it('project-level edit: a non-default waypoints.size.circle_radius flows through', () => {
     // The renderer must surface a project's overlay-size edits (not just
     // the seeded constants). 0.04 × 1080 = 43.2 — a value far from any seed
     // so the test fails noisily if the resolver ever ignores the input.
     const settings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
-      overlay_waypoint_circle_radius: 0.04,
+      waypoints: {
+        ...DEFAULT_MAP_SETTINGS.waypoints,
+        size: { ...DEFAULT_MAP_SETTINGS.waypoints.size, circle_radius: 0.04 },
+      },
     };
     const { paintBy } = buildMap(resolveStaticPaints(settings));
     expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
@@ -171,35 +183,32 @@ describe('resolveStaticPaints', () => {
     // Sanity: the seeded default would have been 0.015 × 1080 = 16.2, far
     // from 43.2 — proves we picked up the override, not the seed.
     expect(paintBy.get('waypoints-circle/circle-radius')).not.toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.overlay_waypoint_circle_radius *
-        PAINT_REFERENCE_WIDTH,
+      DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
       3,
     );
   });
 
-  it('clip-level override: resolveMapSettings merge applies overlay fields', () => {
-    // The new overlay_* fields are flat MapSettings fields, so they inherit
-    // the existing resolveMapSettings(projectDefaults, clipOverrides) merge
-    // for free. Confirm: a single override changes only that field; siblings
-    // stay on the project default.
+  it('clip-level override: resolveMapSettings merge applies size fields', () => {
+    // Sparse nested overrides resolve through resolveMapSettings without
+    // disturbing sibling leaves.
     const projectDefaults = DEFAULT_MAP_SETTINGS;
     const resolved = resolveMapSettings(projectDefaults, {
-      overlay_waypoint_circle_radius: 0.02,
+      waypoints: { size: { circle_radius: 0.02 } },
     });
-    expect(resolved.overlay_waypoint_circle_radius).toBe(0.02);
+    expect(resolved.waypoints.size.circle_radius).toBe(0.02);
     // Sibling overlay fields untouched.
-    expect(resolved.overlay_route_full_width).toBe(
-      projectDefaults.overlay_route_full_width,
+    expect(resolved.route.size.full_width).toBe(
+      projectDefaults.route.size.full_width,
     );
-    expect(resolved.overlay_waypoint_active_radius).toBe(
-      projectDefaults.overlay_waypoint_active_radius,
+    expect(resolved.waypoints.size.active_radius).toBe(
+      projectDefaults.waypoints.size.active_radius,
     );
-    expect(resolved.overlay_pulse_end_radius).toBe(
-      projectDefaults.overlay_pulse_end_radius,
+    expect(resolved.pov.size.pulse_end_radius).toBe(
+      projectDefaults.pov.size.pulse_end_radius,
     );
     // Non-overlay fields untouched.
-    expect(resolved.zoom).toBe(projectDefaults.zoom);
-    expect(resolved.route_mode).toBe(projectDefaults.route_mode);
+    expect(resolved.camera.zoom).toBe(projectDefaults.camera.zoom);
+    expect(resolved.route.mode).toBe(projectDefaults.route.mode);
 
     // Feed the resolved settings through resolveStaticPaints — the
     // waypoint-circle line should now reflect 0.02, not the seed.
@@ -252,36 +261,44 @@ describe('resolveStaticPaints', () => {
     }
   });
 
-  it('layouts include route visibility derived from route_mode', () => {
-    // route_mode='full' → route-full visible, route-trail none.
-    const full = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, route_mode: 'full' });
+  it('layouts include route visibility derived from route.mode', () => {
+    const withRouteMode = (mode: 'full' | 'visited' | 'none'): MapSettings => ({
+      ...DEFAULT_MAP_SETTINGS,
+      route: { ...DEFAULT_MAP_SETTINGS.route, mode },
+    });
+    // mode='full' → route-full visible, route-trail none.
+    const full = resolveStaticPaints(withRouteMode('full'));
     const fullBy = new Map(full.layouts.map(([l, p, v]) => [`${l}/${p}`, v]));
     expect(fullBy.get('route-full-line/visibility')).toBe('visible');
     expect(fullBy.get('route-trail-line/visibility')).toBe('none');
 
-    // route_mode='visited' → swapped.
-    const visited = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, route_mode: 'visited' });
+    // mode='visited' → swapped.
+    const visited = resolveStaticPaints(withRouteMode('visited'));
     const visitedBy = new Map(visited.layouts.map(([l, p, v]) => [`${l}/${p}`, v]));
     expect(visitedBy.get('route-full-line/visibility')).toBe('none');
     expect(visitedBy.get('route-trail-line/visibility')).toBe('visible');
 
-    // route_mode='none' → both layers hidden.
-    const none = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, route_mode: 'none' });
+    // mode='none' → both layers hidden.
+    const none = resolveStaticPaints(withRouteMode('none'));
     const noneBy = new Map(none.layouts.map(([l, p, v]) => [`${l}/${p}`, v]));
     expect(noneBy.get('route-full-line/visibility')).toBe('none');
     expect(noneBy.get('route-trail-line/visibility')).toBe('none');
   });
 
-  it('layouts include the waypoint label expression derived from label_mode', () => {
+  it('layouts include the waypoint label expression derived from waypoints.label_mode', () => {
+    const withLabelMode = (label_mode: 'numbered' | 'labeled'): MapSettings => ({
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, label_mode },
+    });
     // 'numbered' → 1-based index expression.
-    const numbered = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, label_mode: 'numbered' });
+    const numbered = resolveStaticPaints(withLabelMode('numbered'));
     const numberedExpr = numbered.layouts.find(
       ([l, p]) => l === 'waypoints-label' && p === 'text-field',
     )?.[2];
     expect(numberedExpr).toEqual(['to-string', ['+', ['get', 'index'], 1]]);
 
     // 'labeled' → feature.label string verbatim.
-    const labeled = resolveStaticPaints({ ...DEFAULT_MAP_SETTINGS, label_mode: 'labeled' });
+    const labeled = resolveStaticPaints(withLabelMode('labeled'));
     const labeledExpr = labeled.layouts.find(
       ([l, p]) => l === 'waypoints-label' && p === 'text-field',
     )?.[2];

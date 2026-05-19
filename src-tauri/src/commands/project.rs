@@ -68,44 +68,53 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 
     let mut project = match version {
         1 => {
-            // Chain v1 → v2 → v3 → v4 → v5 → v6 → v7. Each step is value-level
-            // until the final `from_value` so a partially-migrated bundle
-            // (e.g. an interrupted save) reads through cleanly.
+            // Chain v1 → v2 → … → v8. Each step is value-level until the
+            // final `from_value` so a partially-migrated bundle (e.g. an
+            // interrupted save) reads through cleanly.
             let v2 = migrate_v1_to_v2_value(raw)?;
             let v3 = migrate_v2_to_v3_value(v2)?;
             let v4 = migrate_v3_to_v4_value(v3)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
-            migrate_v6_to_v7(v6)?
+            let v7 = migrate_v6_to_v7_value(v6)?;
+            migrate_v7_to_v8(v7)?
         }
         2 => {
             let v3 = migrate_v2_to_v3_value(raw)?;
             let v4 = migrate_v3_to_v4_value(v3)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
-            migrate_v6_to_v7(v6)?
+            let v7 = migrate_v6_to_v7_value(v6)?;
+            migrate_v7_to_v8(v7)?
         }
         3 => {
             let v4 = migrate_v3_to_v4_value(raw)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
-            migrate_v6_to_v7(v6)?
+            let v7 = migrate_v6_to_v7_value(v6)?;
+            migrate_v7_to_v8(v7)?
         }
         4 => {
             let v5 = migrate_v4_to_v5_value(raw)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
-            migrate_v6_to_v7(v6)?
+            let v7 = migrate_v6_to_v7_value(v6)?;
+            migrate_v7_to_v8(v7)?
         }
         5 => {
             let v6 = migrate_v5_to_v6_value(raw)?;
-            migrate_v6_to_v7(v6)?
+            let v7 = migrate_v6_to_v7_value(v6)?;
+            migrate_v7_to_v8(v7)?
         }
-        6 => migrate_v6_to_v7(raw)?,
-        7 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v7 project: {}", e))?,
+        6 => {
+            let v7 = migrate_v6_to_v7_value(raw)?;
+            migrate_v7_to_v8(v7)?
+        }
+        7 => migrate_v7_to_v8(raw)?,
+        8 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v8 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1–v7)",
+                "Unknown project schema version {} (this app supports v1–v8)",
                 version
             ));
         }
@@ -299,24 +308,267 @@ fn migrate_v5_to_v6(raw: serde_json::Value) -> Result<Project, String> {
     Ok(project)
 }
 
-/// v6 → v7 migration. v7 promotes waypoints to a first-class project entity.
-/// Purely additive: the `waypoints` field defaults to `Vec::new()` on v6
-/// bundles. The frontend's `load_project` consumer seeds it from the clip
-/// list when the field deserializes empty (legacy behavior parity), so the
-/// migration itself is just a version stamp.
-fn migrate_v6_to_v7(mut raw: serde_json::Value) -> Result<Project, String> {
+/// v6 → v7 migration (value-form). v7 promotes waypoints to a first-class
+/// project entity. Purely additive: the `waypoints` field defaults to
+/// `Vec::new()` on v6 bundles. The frontend's `load_project` consumer seeds
+/// it from the clip list when the field deserializes empty (legacy behavior
+/// parity), so the migration itself is just a version stamp.
+fn migrate_v6_to_v7_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Some(obj) = raw.as_object_mut() {
+        obj.insert("schema_version".into(), serde_json::Value::from(7u32));
+    } else {
+        return Err("v6 project root is not a JSON object".into());
+    }
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v6 → v7 migration that returns a parsed Project.
+#[cfg(test)]
+fn migrate_v6_to_v7(raw: serde_json::Value) -> Result<Project, String> {
+    let v7 = migrate_v6_to_v7_value(raw)?;
+    let mut project: Project = serde_json::from_value(v7)
+        .map_err(|e| format!("Failed to parse v6 project during v7 migration: {}", e))?;
+    project.schema_version = 7;
+    Ok(project)
+}
+
+/// v7 → v8 migration. Restructures `map_settings` and every clip's
+/// `map_overrides` from flat to nested blocks. Lifts the ~17 flat fields
+/// into 4 nested blocks (`camera` / `route` / `waypoints` / `pov`) per the
+/// table in `docs/map-decorations/data-model.md` §8. Most projects have
+/// `map_settings: null` and migrate as no-ops.
+fn migrate_v7_to_v8(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        if let Some(ms) = obj.get_mut("map_settings") {
+            if let Some(map) = ms.as_object_mut() {
+                migrate_map_settings_to_v8(map);
+            }
+        }
+        if let Some(clips) = obj.get_mut("clips").and_then(|c| c.as_array_mut()) {
+            for clip in clips {
+                if let Some(co) = clip
+                    .as_object_mut()
+                    .and_then(|c| c.get_mut("map_overrides"))
+                {
+                    if let Some(map) = co.as_object_mut() {
+                        migrate_map_overrides_to_v8(map);
+                    }
+                }
+            }
+        }
         obj.insert(
             "schema_version".into(),
             serde_json::Value::from(CURRENT_SCHEMA_VERSION),
         );
     } else {
-        return Err("v6 project root is not a JSON object".into());
+        return Err("v7 project root is not a JSON object".into());
     }
     let mut project: Project = serde_json::from_value(raw)
-        .map_err(|e| format!("Failed to parse v6 project during v7 migration: {}", e))?;
+        .map_err(|e| format!("Failed to parse v7 project during v8 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
+}
+
+/// Restructure a flat v7 `map_settings` object in place into the nested v8
+/// shape. Color blocks are seeded with chartreuse defaults (`#bced09`).
+fn migrate_map_settings_to_v8(ms: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::{json, Value};
+
+    let take = |ms: &mut serde_json::Map<String, Value>, key: &str| -> Option<Value> {
+        ms.remove(key)
+    };
+
+    // --- camera block ---
+    let mut camera = serde_json::Map::new();
+    for key in [
+        "follow_playhead",
+        "map_style",
+        "zoom",
+        "bearing_mode",
+        "bearing_degrees",
+        "bearing_stops",
+    ] {
+        if let Some(v) = take(ms, key) {
+            camera.insert(key.into(), v);
+        }
+    }
+    if !ms.contains_key("camera") {
+        ms.insert("camera".into(), Value::Object(camera));
+    }
+
+    // --- route block ---
+    let route_mode = take(ms, "route_mode").unwrap_or_else(|| json!("full"));
+    let full_width = take(ms, "overlay_route_full_width").unwrap_or_else(|| json!(0.004));
+    let trail_width = take(ms, "overlay_route_trail_width").unwrap_or_else(|| json!(0.0055));
+    if !ms.contains_key("route") {
+        ms.insert(
+            "route".into(),
+            json!({
+                "mode": route_mode,
+                "color": { "mode": "solid", "solid": "#bced09" },
+                "size": { "full_width": full_width, "trail_width": trail_width }
+            }),
+        );
+    }
+
+    // --- waypoints block ---
+    let wp_mode = take(ms, "waypoints_mode").unwrap_or_else(|| json!("full"));
+    let circle_radius = take(ms, "overlay_waypoint_circle_radius").unwrap_or_else(|| json!(0.015));
+    let active_radius = take(ms, "overlay_waypoint_active_radius").unwrap_or_else(|| json!(0.019));
+    let stroke_width = take(ms, "overlay_waypoint_stroke_width").unwrap_or_else(|| json!(0.003));
+    let label_size = take(ms, "overlay_waypoint_label_size").unwrap_or_else(|| json!(0.014));
+    let label_mode = take(ms, "label_mode").unwrap_or_else(|| json!("numbered"));
+    let active_mode =
+        take(ms, "active_waypoint_mode").unwrap_or_else(|| json!("latest_passed"));
+    if !ms.contains_key("waypoints") {
+        ms.insert(
+            "waypoints".into(),
+            json!({
+                "mode": wp_mode,
+                "color": { "mode": "solid", "solid": "#bced09" },
+                "shape": "circle",
+                "size": {
+                    "circle_radius": circle_radius,
+                    "active_radius": active_radius,
+                    "stroke_width": stroke_width,
+                    "label_size": label_size
+                },
+                "label_mode": label_mode,
+                "active_mode": active_mode
+            }),
+        );
+    }
+
+    // --- pov block ---
+    let pulse_radius =
+        take(ms, "overlay_live_marker_pulse_radius").unwrap_or_else(|| json!(0.012));
+    let dot_radius =
+        take(ms, "overlay_live_marker_dot_radius").unwrap_or_else(|| json!(0.013));
+    let dot_stroke_width =
+        take(ms, "overlay_live_marker_dot_stroke_width").unwrap_or_else(|| json!(0.004));
+    let pulse_start_radius =
+        take(ms, "overlay_pulse_start_radius").unwrap_or_else(|| json!(0.012));
+    let pulse_end_radius =
+        take(ms, "overlay_pulse_end_radius").unwrap_or_else(|| json!(0.033));
+    if !ms.contains_key("pov") {
+        ms.insert(
+            "pov".into(),
+            json!({
+                "color": "#bced09",
+                "size": {
+                    "pulse_radius": pulse_radius,
+                    "dot_radius": dot_radius,
+                    "dot_stroke_width": dot_stroke_width,
+                    "pulse_start_radius": pulse_start_radius,
+                    "pulse_end_radius": pulse_end_radius
+                },
+                "pulse_style": "sonar",
+                "pulse_rate": "medium"
+            }),
+        );
+    }
+}
+
+/// Restructure a flat v7 `map_overrides` object in place into the nested v8
+/// shape. Sparse on every block — only keys actually present in the input
+/// land in the output. Drops `map_style` from `camera` (it stays top-level).
+fn migrate_map_overrides_to_v8(mo: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::{Map, Value};
+
+    let take = |mo: &mut Map<String, Value>, key: &str| -> Option<Value> { mo.remove(key) };
+
+    // --- camera ---
+    let mut camera = Map::new();
+    for key in [
+        "follow_playhead",
+        "zoom",
+        "bearing_mode",
+        "bearing_degrees",
+        "bearing_stops",
+    ] {
+        if let Some(v) = take(mo, key) {
+            camera.insert(key.into(), v);
+        }
+    }
+    if !camera.is_empty() && !mo.contains_key("camera") {
+        mo.insert("camera".into(), Value::Object(camera));
+    }
+    // `map_style` stays a top-level override.
+
+    // --- route ---
+    let mut route = Map::new();
+    if let Some(v) = take(mo, "route_mode") {
+        route.insert("mode".into(), v);
+    }
+    let mut route_size = Map::new();
+    if let Some(v) = take(mo, "overlay_route_full_width") {
+        route_size.insert("full_width".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_route_trail_width") {
+        route_size.insert("trail_width".into(), v);
+    }
+    if !route_size.is_empty() {
+        route.insert("size".into(), Value::Object(route_size));
+    }
+    if !route.is_empty() && !mo.contains_key("route") {
+        mo.insert("route".into(), Value::Object(route));
+    }
+
+    // --- waypoints ---
+    let mut waypoints = Map::new();
+    if let Some(v) = take(mo, "waypoints_mode") {
+        waypoints.insert("mode".into(), v);
+    }
+    if let Some(v) = take(mo, "label_mode") {
+        waypoints.insert("label_mode".into(), v);
+    }
+    if let Some(v) = take(mo, "active_waypoint_mode") {
+        waypoints.insert("active_mode".into(), v);
+    }
+    let mut wp_size = Map::new();
+    if let Some(v) = take(mo, "overlay_waypoint_circle_radius") {
+        wp_size.insert("circle_radius".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_waypoint_active_radius") {
+        wp_size.insert("active_radius".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_waypoint_stroke_width") {
+        wp_size.insert("stroke_width".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_waypoint_label_size") {
+        wp_size.insert("label_size".into(), v);
+    }
+    if !wp_size.is_empty() {
+        waypoints.insert("size".into(), Value::Object(wp_size));
+    }
+    if !waypoints.is_empty() && !mo.contains_key("waypoints") {
+        mo.insert("waypoints".into(), Value::Object(waypoints));
+    }
+
+    // --- pov ---
+    let mut pov = Map::new();
+    let mut pov_size = Map::new();
+    if let Some(v) = take(mo, "overlay_live_marker_pulse_radius") {
+        pov_size.insert("pulse_radius".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_live_marker_dot_radius") {
+        pov_size.insert("dot_radius".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_live_marker_dot_stroke_width") {
+        pov_size.insert("dot_stroke_width".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_pulse_start_radius") {
+        pov_size.insert("pulse_start_radius".into(), v);
+    }
+    if let Some(v) = take(mo, "overlay_pulse_end_radius") {
+        pov_size.insert("pulse_end_radius".into(), v);
+    }
+    if !pov_size.is_empty() {
+        pov.insert("size".into(), Value::Object(pov_size));
+    }
+    if !pov.is_empty() && !mo.contains_key("pov") {
+        mo.insert("pov".into(), Value::Object(pov));
+    }
 }
 
 /// Rename a project by updating its name in project.json
@@ -1138,10 +1390,9 @@ mod tests {
 
     #[test]
     fn migrate_v6_to_v7_is_purely_additive() {
-        // v7 promotes waypoints to first-class state. The migration just
-        // stamps the version; the `waypoints` field defaults to an empty
-        // Vec via `#[serde(default)]`, and the frontend seeds it from clips
-        // on load when empty.
+        // v7 promotes waypoints to first-class state. The per-step helper
+        // stamps v7 specifically; the chained `load_project` path walks the
+        // rest of the way to CURRENT.
         let v6 = serde_json::json!({
             "schema_version": 6,
             "version": 1,
@@ -1152,11 +1403,232 @@ mod tests {
             "map_settings": null
         });
         let project = migrate_v6_to_v7(v6).expect("v6 → v7 migration must succeed");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 7);
         assert!(
             project.waypoints.is_empty(),
             "v6 → v7 must default `waypoints` to an empty Vec"
         );
+    }
+
+    #[test]
+    fn migrate_v7_to_v8_null_map_settings_is_noop() {
+        // A v7 project with `map_settings: null` migrates as a no-op.
+        // Post-load `Project.map_settings` is `None`; the frontend hydrates
+        // serde-default block values that match `DEFAULT_MAP_SETTINGS`.
+        let v7 = serde_json::json!({
+            "schema_version": 7,
+            "version": 1,
+            "name": "v7 null map_settings",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": null,
+            "waypoints": []
+        });
+        let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(project.map_settings.is_none());
+
+        // A subsequent serde load with a populated map_settings yields the
+        // canonical defaults — same chartreuse defaults the migrated bundles
+        // get seeded with.
+        let defaults = MapSettings::default();
+        assert!(matches!(
+            defaults.route.color,
+            DecorationColor::Solid { ref solid } if solid == "#bced09"
+        ));
+        assert!(matches!(
+            defaults.waypoints.color,
+            DecorationColor::Solid { ref solid } if solid == "#bced09"
+        ));
+        assert_eq!(defaults.pov.color, "#bced09");
+        assert_eq!(defaults.waypoints.shape, "circle");
+        assert_eq!(defaults.pov.pulse_style, "sonar");
+        assert_eq!(defaults.pov.pulse_rate, "medium");
+    }
+
+    #[test]
+    fn migrate_v7_to_v8_full_flat_map_settings_lifted() {
+        // A v7 project carrying the full flat `map_settings` is lifted into
+        // the nested v8 blocks with correct values. Color blocks get the
+        // chartreuse defaults so existing projects render identically.
+        let v7 = serde_json::json!({
+            "schema_version": 7,
+            "version": 1,
+            "name": "v7 full flat map_settings",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": {
+                "route_mode": "visited",
+                "waypoints_mode": "full",
+                "follow_playhead": true,
+                "map_style": "satellite",
+                "zoom": 13.5,
+                "bearing_mode": "auto",
+                "bearing_degrees": 90.0,
+                "bearing_stops": 5,
+                "overlay_route_full_width": 0.005,
+                "overlay_route_trail_width": 0.006,
+                "overlay_waypoint_circle_radius": 0.02,
+                "overlay_waypoint_active_radius": 0.025,
+                "overlay_waypoint_stroke_width": 0.0035,
+                "overlay_waypoint_label_size": 0.015,
+                "overlay_live_marker_pulse_radius": 0.013,
+                "overlay_live_marker_dot_radius": 0.014,
+                "overlay_live_marker_dot_stroke_width": 0.005,
+                "overlay_pulse_start_radius": 0.013,
+                "overlay_pulse_end_radius": 0.034,
+                "label_mode": "labeled",
+                "active_waypoint_mode": "latest_passed"
+            },
+            "waypoints": []
+        });
+        let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        let ms = project
+            .map_settings
+            .expect("map_settings must round-trip into the nested shape");
+
+        // camera
+        assert_eq!(ms.camera.map_style, "satellite");
+        assert_eq!(ms.camera.zoom, 13.5);
+        assert_eq!(ms.camera.bearing_mode, "auto");
+        assert_eq!(ms.camera.bearing_degrees, 90.0);
+        assert_eq!(ms.camera.bearing_stops, 5);
+        assert!(ms.camera.follow_playhead);
+
+        // route
+        assert_eq!(ms.route.mode, "visited");
+        assert!(matches!(
+            ms.route.color,
+            DecorationColor::Solid { ref solid } if solid == "#bced09"
+        ));
+        assert_eq!(ms.route.size.full_width, 0.005);
+        assert_eq!(ms.route.size.trail_width, 0.006);
+
+        // waypoints
+        assert_eq!(ms.waypoints.mode, "full");
+        assert!(matches!(
+            ms.waypoints.color,
+            DecorationColor::Solid { ref solid } if solid == "#bced09"
+        ));
+        assert_eq!(ms.waypoints.shape, "circle");
+        assert_eq!(ms.waypoints.size.circle_radius, 0.02);
+        assert_eq!(ms.waypoints.size.active_radius, 0.025);
+        assert_eq!(ms.waypoints.size.stroke_width, 0.0035);
+        assert_eq!(ms.waypoints.size.label_size, 0.015);
+        assert_eq!(ms.waypoints.label_mode, "labeled");
+        assert_eq!(ms.waypoints.active_mode, "latest_passed");
+
+        // pov
+        assert_eq!(ms.pov.color, "#bced09");
+        assert_eq!(ms.pov.size.pulse_radius, 0.013);
+        assert_eq!(ms.pov.size.dot_radius, 0.014);
+        assert_eq!(ms.pov.size.dot_stroke_width, 0.005);
+        assert_eq!(ms.pov.size.pulse_start_radius, 0.013);
+        assert_eq!(ms.pov.size.pulse_end_radius, 0.034);
+        assert_eq!(ms.pov.pulse_style, "sonar");
+        assert_eq!(ms.pov.pulse_rate, "medium");
+    }
+
+    #[test]
+    fn migrate_v7_to_v8_waypoint_circle_radius_override() {
+        // A v7 clip carrying `map_overrides: { "overlay_waypoint_circle_radius": 0.02 }`
+        // becomes `{ "waypoints": { "size": { "circle_radius": 0.02 } } }`
+        // after migration. The override flows through resolveMapSettings
+        // correctly (verified by reading the nested shape directly).
+        let v7 = serde_json::json!({
+            "schema_version": 7,
+            "version": 1,
+            "name": "v7 waypoint circle radius override",
+            "thumbnail": null,
+            "clips": [{
+                "id": "clip-a",
+                "path": "/dev/null/a.mov",
+                "filename": "a.mov",
+                "created_at": null,
+                "duration_ms": null,
+                "gps": null,
+                "resolution": null,
+                "frame_rate": null,
+                "trim": null,
+                "focal_point": { "x": 0.5, "y": 0.5, "zoom": 1.0 },
+                "effects": { "stabilize": { "enabled": false, "shakiness": 5 }, "speed": 1.0 },
+                "visible": true,
+                "map_overrides": {
+                    "overlay_waypoint_circle_radius": 0.02
+                }
+            }],
+            "selected_export_aspect": "9_16",
+            "map_settings": null,
+            "waypoints": []
+        });
+        let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        let overrides = project.clips[0]
+            .map_overrides
+            .as_ref()
+            .expect("clip must carry migrated map_overrides");
+        let waypoints = overrides
+            .waypoints
+            .as_ref()
+            .expect("waypoints block must be populated");
+        let size = waypoints
+            .size
+            .as_ref()
+            .expect("waypoints.size block must be populated");
+        assert_eq!(size.circle_radius, Some(0.02));
+        assert!(size.active_radius.is_none());
+    }
+
+    #[test]
+    fn migrate_v7_to_v8_pov_pulse_radius_override_preserved() {
+        // A v7 clip carrying `map_overrides: { "overlay_live_marker_pulse_radius": 0.018 }`
+        // becomes `{ "pov": { "size": { "pulse_radius": 0.018 } } }` after
+        // migration. POV overrides are preserved (not dropped) in v8.
+        let v7 = serde_json::json!({
+            "schema_version": 7,
+            "version": 1,
+            "name": "v7 pov pulse override",
+            "thumbnail": null,
+            "clips": [{
+                "id": "clip-a",
+                "path": "/dev/null/a.mov",
+                "filename": "a.mov",
+                "created_at": null,
+                "duration_ms": null,
+                "gps": null,
+                "resolution": null,
+                "frame_rate": null,
+                "trim": null,
+                "focal_point": { "x": 0.5, "y": 0.5, "zoom": 1.0 },
+                "effects": { "stabilize": { "enabled": false, "shakiness": 5 }, "speed": 1.0 },
+                "visible": true,
+                "map_overrides": {
+                    "overlay_live_marker_pulse_radius": 0.018
+                }
+            }],
+            "selected_export_aspect": "9_16",
+            "map_settings": null,
+            "waypoints": []
+        });
+        let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        let overrides = project.clips[0]
+            .map_overrides
+            .as_ref()
+            .expect("clip must carry migrated map_overrides");
+        let pov = overrides
+            .pov
+            .as_ref()
+            .expect("pov block must be populated");
+        let size = pov
+            .size
+            .as_ref()
+            .expect("pov.size block must be populated");
+        assert_eq!(size.pulse_radius, Some(0.018));
+        assert!(size.dot_radius.is_none());
     }
 
     #[test]
@@ -1188,6 +1660,8 @@ mod tests {
                     label: String::new(),
                     source: "clip".into(),
                     clip_id: Some("clip-a".into()),
+                    color: None,
+                    shape: None,
                 },
                 Waypoint {
                     id: "wp-b".into(),
@@ -1198,6 +1672,8 @@ mod tests {
                     label: "Summit".into(),
                     source: "manual".into(),
                     clip_id: None,
+                    color: None,
+                    shape: None,
                 },
             ],
             ..Project::default()

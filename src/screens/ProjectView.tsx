@@ -13,8 +13,8 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, MapOverrides, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint } from '../types';
-import { resolveMapSettings } from '../types';
+import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
+import { resolveMapSettings, computeClipOverrides, leafPaths } from '../types';
 import type { AspectRatio } from '../lib/layout';
 import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 
@@ -188,13 +188,10 @@ export default function ProjectView({
   // The settings shown in the toolbar depend on scope
   const toolbarSettings = mapScope === 'project' ? mapSettings : resolvedMapSettings;
 
-  // Which keys the current clip overrides
-  const overriddenKeys = useMemo((): Set<keyof MapSettings> | null => {
+  // Which leaf paths the current clip overrides
+  const overriddenKeys = useMemo((): Set<OverridePath> | null => {
     if (mapScope === 'project' || !selectedClip?.map_overrides) return null;
-    return new Set(
-      (Object.keys(selectedClip.map_overrides) as (keyof MapSettings)[])
-        .filter((k) => selectedClip.map_overrides![k] !== undefined)
-    );
+    return leafPaths(selectedClip.map_overrides);
   }, [mapScope, selectedClip]);
 
   // Handle toolbar changes based on scope
@@ -202,12 +199,8 @@ export default function ProjectView({
     if (mapScope === 'project') {
       setMapSettings(next);
     } else if (selectedClipId) {
-      // Compute overrides: only store fields that differ from project defaults
-      const entries = (Object.keys(next) as (keyof MapSettings)[])
-        .filter((key) => next[key] !== mapSettings[key])
-        .map((key) => [key, next[key]] as const);
-      const overrides = Object.fromEntries(entries) as MapOverrides;
-      const hasOverrides = entries.length > 0;
+      const overrides = computeClipOverrides(next, mapSettings);
+      const hasOverrides = Object.keys(overrides).length > 0;
       setClips((prev) => prev.map((c) =>
         c.id === selectedClipId
           ? { ...c, map_overrides: hasOverrides ? overrides : null }
@@ -221,7 +214,7 @@ export default function ProjectView({
   // empty override bags, but we re-check defensively for load-time state.
   const clipHasMapOverrides = useMemo((): boolean => {
     if (!selectedClip?.map_overrides) return false;
-    return Object.values(selectedClip.map_overrides).some((v) => v !== undefined);
+    return leafPaths(selectedClip.map_overrides).size > 0;
   }, [selectedClip]);
 
   // Indexed route — consumed by `compileTimeline` for per-clip bearing
