@@ -124,12 +124,20 @@ describe('resolveStaticPaints', () => {
       DEFAULT_MAP_SETTINGS.route.size.width * PAINT_REFERENCE_WIDTH,
       9,
     );
-    expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
+    // Waypoint size flows as `icon-size` on the SDF symbol layers — the
+    // user-facing radius is normalized by SHAPE_CANONICAL_RADIUS (18) so
+    // a circle_radius of 0.015 lands at icon-size 0.9 (32.4-px diameter
+    // for the circle shape, matching the pre-refactor native sizing).
+    const expectedIconSize =
+      (DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius *
+        PAINT_REFERENCE_WIDTH) /
+      18;
+    expect(layoutBy.get('waypoints-primary/icon-size')).toBeCloseTo(
+      expectedIconSize,
       9,
     );
-    expect(paintBy.get('waypoints-circle/circle-stroke-width')).toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.waypoints.size.stroke_width * PAINT_REFERENCE_WIDTH,
+    expect(layoutBy.get('waypoints-secondary/icon-size')).toBeCloseTo(
+      expectedIconSize,
       9,
     );
     expect(paintBy.get('live-marker-dot/circle-radius')).toBeCloseTo(
@@ -170,8 +178,8 @@ describe('resolveStaticPaints', () => {
 
   it('project-level edit: a non-default waypoints.size.circle_radius flows through', () => {
     // The renderer must surface a project's overlay-size edits (not just
-    // the seeded constants). 0.04 × 1080 = 43.2 — a value far from any seed
-    // so the test fails noisily if the resolver ever ignores the input.
+    // the seeded constants). 0.04 → icon-size 2.4 — a value far from any
+    // seed so the test fails noisily if the resolver ever ignores the input.
     const settings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
       waypoints: {
@@ -179,15 +187,22 @@ describe('resolveStaticPaints', () => {
         size: { ...DEFAULT_MAP_SETTINGS.waypoints.size, circle_radius: 0.04 },
       },
     };
-    const { paintBy } = buildMap(resolveStaticPaints(settings));
-    expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
-      0.04 * PAINT_REFERENCE_WIDTH,
+    const { layoutBy } = buildMap(resolveStaticPaints(settings));
+    const expected = (0.04 * PAINT_REFERENCE_WIDTH) / 18;
+    expect(layoutBy.get('waypoints-primary/icon-size')).toBeCloseTo(
+      expected,
       9,
     );
-    // Sanity: the seeded default would have been 0.015 × 1080 = 16.2, far
-    // from 43.2 — proves we picked up the override, not the seed.
-    expect(paintBy.get('waypoints-circle/circle-radius')).not.toBeCloseTo(
-      DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
+    expect(layoutBy.get('waypoints-secondary/icon-size')).toBeCloseTo(
+      expected,
+      9,
+    );
+    // Sanity: the seeded default icon-size is (0.015 × 1080) / 18 = 0.9,
+    // far from 2.4 — proves we picked up the override, not the seed.
+    expect(layoutBy.get('waypoints-primary/icon-size')).not.toBeCloseTo(
+      (DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius *
+        PAINT_REFERENCE_WIDTH) /
+        18,
       3,
     );
   });
@@ -215,20 +230,26 @@ describe('resolveStaticPaints', () => {
     expect(resolved.route.mode).toBe(projectDefaults.route.mode);
 
     // Feed the resolved settings through resolveStaticPaints — the
-    // waypoint-circle line should now reflect 0.02, not the seed.
-    const { paintBy } = (function buildMap2(
+    // waypoint primary/secondary icon-size should now reflect 0.02, not
+    // the seed.
+    const { layoutBy } = (function buildMap2(
       r: ReturnType<typeof resolveStaticPaints>,
     ) {
-      const paintBy = new Map<string, number>();
-      for (const [layerId, prop, value] of r.paints) {
+      const layoutBy = new Map<string, number>();
+      for (const [layerId, prop, value] of r.layouts) {
         if (typeof value === 'number') {
-          paintBy.set(`${layerId}/${prop}`, value);
+          layoutBy.set(`${layerId}/${prop}`, value);
         }
       }
-      return { paintBy };
+      return { layoutBy };
     })(resolveStaticPaints(resolved));
-    expect(paintBy.get('waypoints-circle/circle-radius')).toBeCloseTo(
-      0.02 * PAINT_REFERENCE_WIDTH,
+    const expected = (0.02 * PAINT_REFERENCE_WIDTH) / 18;
+    expect(layoutBy.get('waypoints-primary/icon-size')).toBeCloseTo(
+      expected,
+      9,
+    );
+    expect(layoutBy.get('waypoints-secondary/icon-size')).toBeCloseTo(
+      expected,
       9,
     );
   });
@@ -323,37 +344,70 @@ describe('resolveStaticPaints', () => {
     expect(noneBy.get('route-trail-line/visibility')).toBe('none');
   });
 
-  it('layouts include a waypoints-symbol icon-image expression derived from mapSettings.waypoints.shape', () => {
-    // The symbol-layer `icon-image` fallback must read the project default
-    // shape — otherwise a project default of 'diamond' silently renders
-    // every un-overridden waypoint as a circle icon. The expression body
-    // is a `concat` of `'waypoint-' + coalesce(override_shape, projectShape)`;
-    // we serialize it and look for the project shape literal in the tree.
+  it('layouts include icon-image expressions for both waypoint slots derived from mapSettings.waypoints.shape', () => {
+    // Each symbol layer's `icon-image` fallback must read the project
+    // default shape — otherwise a project default of 'diamond' silently
+    // renders every un-overridden waypoint as a circle icon. The
+    // expression body is a `concat` of
+    // `'waypoint-' + safeShape(override_shape, projectShape) + '-<slot>'`;
+    // we serialize and look for the project shape literal and slot suffix
+    // in the tree.
     const settings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
       waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'diamond' },
     };
     const resolved = resolveStaticPaints(settings);
-    const tuple = resolved.layouts.find(
-      ([l, p]) => l === 'waypoints-symbol' && p === 'icon-image',
+    const primaryTuple = resolved.layouts.find(
+      ([l, p]) => l === 'waypoints-primary' && p === 'icon-image',
     );
-    expect(tuple).toBeDefined();
-    const expr = tuple?.[2];
-    // `concat`-prefixed expression with the project shape literal somewhere
-    // inside the coalesce branch.
-    expect(Array.isArray(expr)).toBe(true);
-    expect((expr as unknown[])[0]).toBe('concat');
-    expect(JSON.stringify(expr)).toContain('diamond');
-    // Sanity: a different project shape produces a different literal.
+    const secondaryTuple = resolved.layouts.find(
+      ([l, p]) => l === 'waypoints-secondary' && p === 'icon-image',
+    );
+    expect(primaryTuple).toBeDefined();
+    expect(secondaryTuple).toBeDefined();
+    // Inner coalesce's default arm carries the project shape literal —
+    // this is the substring that flips when the project default changes.
+    // The outer `match` table mentions every known shape name, so we look
+    // specifically for the coalesce default placement.
+    expect(JSON.stringify(primaryTuple?.[2])).toContain(
+      '"coalesce",["get","override_shape"],"diamond"',
+    );
+    expect(JSON.stringify(primaryTuple?.[2])).toContain('-primary');
+    expect(JSON.stringify(secondaryTuple?.[2])).toContain(
+      '"coalesce",["get","override_shape"],"diamond"',
+    );
+    expect(JSON.stringify(secondaryTuple?.[2])).toContain('-secondary');
+    // Sanity: a different project shape produces a different coalesce default.
     const pinResolved = resolveStaticPaints({
       ...settings,
       waypoints: { ...settings.waypoints, shape: 'pin' },
     });
-    const pinTuple = pinResolved.layouts.find(
-      ([l, p]) => l === 'waypoints-symbol' && p === 'icon-image',
+    const pinPrimaryTuple = pinResolved.layouts.find(
+      ([l, p]) => l === 'waypoints-primary' && p === 'icon-image',
     );
-    expect(JSON.stringify(pinTuple?.[2])).toContain('pin');
-    expect(JSON.stringify(pinTuple?.[2])).not.toContain('diamond');
+    expect(JSON.stringify(pinPrimaryTuple?.[2])).toContain(
+      '"coalesce",["get","override_shape"],"pin"',
+    );
+    expect(JSON.stringify(pinPrimaryTuple?.[2])).not.toContain(
+      '"coalesce",["get","override_shape"],"diamond"',
+    );
+  });
+
+  it('live-marker-dot fill is driven by pov.secondary_color', () => {
+    // Replaces the pre-refactor hard-coded white. The secondary slot
+    // tints the dot fill; the primary slot tints the stroke and the pulse
+    // rings. Both flow through the static `paints` channel.
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      pov: {
+        ...DEFAULT_MAP_SETTINGS.pov,
+        color: '#bced09',
+        secondary_color: '#ff715b',
+      },
+    };
+    const { paintBy } = buildMap(resolveStaticPaints(settings));
+    expect(paintBy.get('live-marker-dot/circle-color')).toBe('#ff715b');
+    expect(paintBy.get('live-marker-dot/circle-stroke-color')).toBe('#bced09');
   });
 
   it('layouts include the waypoint label expression derived from waypoints.label_mode', () => {

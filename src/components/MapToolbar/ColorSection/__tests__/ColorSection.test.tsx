@@ -280,8 +280,9 @@ describe('ColorSection — gradient mode body', () => {
     );
     expect(q('[data-testid="gradient-editor"]')).not.toBeNull();
     expect(q('[data-testid="gradient-bar"]')).not.toBeNull();
-    // The stop color picker doesn't appear until a stop is selected.
-    expect(q('[data-testid="stop-color-section-hex-input"]')).toBeNull();
+    // Entering gradient mode auto-selects stop 1 so the STOP COLOR picker
+    // is visible immediately — it never collapses while in gradient mode.
+    expect(q('[data-testid="stop-color-section-hex-input"]')).not.toBeNull();
   });
 
   it('shows + Stop button and disables it at 8 stops', () => {
@@ -392,7 +393,7 @@ describe('ColorSection — gradient mode body', () => {
     expect(q('[data-testid="gradient-copy-to-waypoints"]')).toBeNull();
   });
 
-  it('renders STOP COLOR picker when a stop is selected on the rail', () => {
+  it('STOP COLOR picker is visible immediately and follows handle selection', () => {
     render(
       <ColorSection
         value="#000000"
@@ -409,11 +410,10 @@ describe('ColorSection — gradient mode body', () => {
         totalDistMeters={1000}
       />,
     );
-    // Initially nothing selected → no picker.
-    expect(q('[data-testid="stop-swatch-coral"]')).toBeNull();
-    // Click the mid-handle → selectedIndex = 1.
+    // Picker is shown immediately (stop 1 is the default selection).
+    expect(q('[data-testid="stop-swatch-coral"]')).not.toBeNull();
+    // Clicking a different handle keeps the picker visible.
     click(q('[data-testid="gradient-stop-handle-1"]')!);
-    // Picker swatch row should now be present with the stop- prefix.
     expect(q('[data-testid="stop-swatch-coral"]')).not.toBeNull();
   });
 });

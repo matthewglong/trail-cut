@@ -112,13 +112,20 @@ describe('DecorationPanel — POV', () => {
   it('routes a POV swatch click through onChange as a MapSettings update', () => {
     const onChange = vi.fn();
     render(<DecorationPanel {...baseProps({ onChange })} />);
+    // POV panel now has two ColorSections: primary (`color`) and
+    // secondary (`secondary_color`, the dot fill). Clicking the first
+    // coral swatch is a primary edit; clicking the second is a secondary
+    // edit. Verify both paths.
     const coralSwatches = document.body.querySelectorAll('[data-testid="swatch-coral"]');
-    // POV's swatch row is the only ColorSection in the POV panel.
-    expect(coralSwatches.length).toBe(1);
+    expect(coralSwatches.length).toBe(2);
     click(coralSwatches[0]);
     expect(onChange).toHaveBeenCalledTimes(1);
-    const nextSettings = onChange.mock.calls[0][0] as MapSettings;
-    expect(nextSettings.pov.color).toBe('#ff715b');
+    const afterPrimary = onChange.mock.calls[0][0] as MapSettings;
+    expect(afterPrimary.pov.color).toBe('#ff715b');
+    click(coralSwatches[1]);
+    expect(onChange).toHaveBeenCalledTimes(2);
+    const afterSecondary = onChange.mock.calls[1][0] as MapSettings;
+    expect(afterSecondary.pov.secondary_color).toBe('#ff715b');
   });
 });
 
@@ -715,13 +722,14 @@ describe('DecorationPanel — Waypoints shape gallery (project scope)', () => {
     render(<DecorationPanel {...baseProps({ decoration: 'waypoints' })} />);
     const shapeSection = q('[data-testid="shape-section"]');
     expect(shapeSection).toBeTruthy();
-    // All six shape cells render.
+    // All five shape cells render. `numbered-circle` was dropped in the
+    // shape-descriptor refactor — numbering now rides on the label layer
+    // regardless of shape, so the dedicated entry is gone.
     expect(q('[data-testid="shape-cell-circle"]')).toBeTruthy();
     expect(q('[data-testid="shape-cell-ring"]')).toBeTruthy();
     expect(q('[data-testid="shape-cell-pin"]')).toBeTruthy();
     expect(q('[data-testid="shape-cell-square"]')).toBeTruthy();
     expect(q('[data-testid="shape-cell-diamond"]')).toBeTruthy();
-    expect(q('[data-testid="shape-cell-numbered-circle"]')).toBeTruthy();
   });
 
   it('writes mapSettings.waypoints.shape via onChange when a shape is clicked (project scope)', () => {
@@ -903,76 +911,89 @@ describe('DecorationPanel — Waypoints shape gallery (clip scope)', () => {
   });
 });
 
-describe('DecorationPanel — Waypoints SIZE label_size conditional', () => {
-  it('omits the Label size row when project shape is not numbered-circle', () => {
+describe('DecorationPanel — Waypoints SIZE rows', () => {
+  it('always renders the Label size row regardless of shape', () => {
+    // Post-refactor: labels live on a dedicated symbol layer and paint
+    // independently of the shape silhouette, so the Label size control
+    // is always meaningful. The pre-refactor `effectiveShape ===
+    // 'numbered-circle'` gate is gone.
+    for (const shape of ['circle', 'diamond', 'ring', 'pin', 'square'] as const) {
+      const settings: MapSettings = {
+        ...DEFAULT_MAP_SETTINGS,
+        waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape },
+      };
+      render(
+        <DecorationPanel {...baseProps({ decoration: 'waypoints', settings })} />,
+      );
+      const text = document.body.textContent ?? '';
+      expect(text.includes('Label size'), `shape=${shape}`).toBe(true);
+      act(() => root.unmount());
+      root = createRoot(container);
+    }
+  });
+
+  it('does not render the deprecated Stroke size row', () => {
+    // Stroke width was tied to the native circle layer; outline thickness
+    // is now baked into the secondary SDF icon. The slider was removed
+    // to avoid the "control that does nothing" footgun.
+    render(<DecorationPanel {...baseProps({ decoration: 'waypoints' })} />);
+    const text = document.body.textContent ?? '';
+    expect(text.includes('Stroke')).toBe(false);
+  });
+});
+
+describe('DecorationPanel — Waypoints SECONDARY COLOR section', () => {
+  it('renders the SECONDARY COLOR section for shapes with a secondary slot', () => {
+    // Every default shape except `ring` declares a secondary rasterizer.
+    for (const shape of ['circle', 'pin', 'square', 'diamond'] as const) {
+      const settings: MapSettings = {
+        ...DEFAULT_MAP_SETTINGS,
+        waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape },
+      };
+      render(
+        <DecorationPanel {...baseProps({ decoration: 'waypoints', settings })} />,
+      );
+      const text = document.body.textContent ?? '';
+      expect(text.includes('SECONDARY COLOR'), `shape=${shape}`).toBe(true);
+      act(() => root.unmount());
+      root = createRoot(container);
+    }
+  });
+
+  it('hides the SECONDARY COLOR section for one-color shapes (ring)', () => {
     const settings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
-      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'circle' },
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'ring' },
     };
     render(
       <DecorationPanel {...baseProps({ decoration: 'waypoints', settings })} />,
     );
     const text = document.body.textContent ?? '';
-    expect(text.includes('Label size')).toBe(false);
+    expect(text.includes('SECONDARY COLOR')).toBe(false);
   });
 
-  it('renders the Label size row when project shape is numbered-circle', () => {
-    const settings: MapSettings = {
-      ...DEFAULT_MAP_SETTINGS,
-      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'numbered-circle' },
-    };
-    render(
-      <DecorationPanel {...baseProps({ decoration: 'waypoints', settings })} />,
-    );
-    const text = document.body.textContent ?? '';
-    expect(text.includes('Label size')).toBe(true);
-  });
-
-  it('omits the Label size row in clip scope when the override is not numbered-circle', () => {
-    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'diamond' };
-    const settings: MapSettings = {
-      ...DEFAULT_MAP_SETTINGS,
-      // Project default is numbered-circle, but the per-waypoint diamond
-      // override wins → label row hides.
-      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'numbered-circle' },
-    };
+  it('writes mapSettings.waypoints.secondary_color via onChange when a swatch is clicked', () => {
+    const onChange = vi.fn();
     render(
       <DecorationPanel
-        {...baseProps({
-          decoration: 'waypoints',
-          scope: 'clip',
-          currentClip: makeClip('c1'),
-          currentClipOrdinal: 1,
-          waypoints: [wp],
-          settings,
-        })}
+        {...baseProps({ decoration: 'waypoints', onChange })}
       />,
     );
-    const text = document.body.textContent ?? '';
-    expect(text.includes('Label size')).toBe(false);
-  });
-
-  it('renders the Label size row in clip scope when the override IS numbered-circle', () => {
-    const wp: Waypoint = { ...makeWaypoint('wp-1', 'c1'), shape: 'numbered-circle' };
-    const settings: MapSettings = {
-      ...DEFAULT_MAP_SETTINGS,
-      // Project default is something else; the override flips to
-      // numbered-circle and the label row appears.
-      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, shape: 'circle' },
-    };
-    render(
-      <DecorationPanel
-        {...baseProps({
-          decoration: 'waypoints',
-          scope: 'clip',
-          currentClip: makeClip('c1'),
-          currentClipOrdinal: 1,
-          waypoints: [wp],
-          settings,
-        })}
-      />,
+    // The Waypoints panel has two ColorSections in project scope: primary
+    // (the COLOR section) and secondary (the SECONDARY COLOR section).
+    // Clicking the second coral swatch is a secondary edit.
+    const coralSwatches = document.body.querySelectorAll('[data-testid="swatch-coral"]');
+    expect(coralSwatches.length).toBe(2);
+    click(coralSwatches[1]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.waypoints.secondary_color).toEqual({
+      mode: 'solid',
+      solid: '#ff715b',
+    });
+    // Primary slot untouched.
+    expect(next.waypoints.color).toEqual(
+      DEFAULT_MAP_SETTINGS.waypoints.color,
     );
-    const text = document.body.textContent ?? '';
-    expect(text.includes('Label size')).toBe(true);
   });
 });

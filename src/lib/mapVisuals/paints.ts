@@ -1,15 +1,24 @@
-// Per-frame paint deltas. The waypoint `circle-color` is a TWO-arm `case`
-// expression keyed off feature properties baked into the FeatureCollection by
-// `buildWaypointsCollection` in `sources.ts`:
+// Per-frame paint + layout deltas for the waypoint symbol layers and the
+// live-marker pulse pair. Two colors per waypoint feature flow through here:
 //
-//   override_color (per-waypoint hex) > project base color
+//   primary   → tints the filled silhouette (every shape's primary SDF slot).
+//               case arms: active_color (if active + set) > override_color
+//                          > project base (solid OR gradient).
+//   secondary → tints the outline / accent (every shape's secondary SDF slot;
+//               transparent placeholder for one-color shapes).
+//               case arms: active_secondary_color (if active + set) >
+//                          override_secondary_color > project secondary base.
 //
-// Per [DECIDED] Q1 / Q2 in `IMPLEMENTATION-PLAN.md`, the active waypoint's
-// visual signal lives on the dedicated halo layer (radius + color) plus the
-// active-radius bump on the dot. The dot itself paints in its OWN resolved
-// color (override > base) regardless of active state — the pre-v8 hardcoded
-// blue active-highlight literal is gone. `Waypoint.color` ("force this one
-// to be gold") still wins over the base via the override arm.
+// Both arms are resolved as MapLibre `case` expressions and shipped to the
+// consumer as one value each — preview and export apply the same expression
+// to the same layer property, so paint logic stays bit-identical across the
+// two pipelines.
+//
+// Active-state size lives here too: `waypointIconSize` is either a scalar
+// (no active waypoint) or a `case` expression that bumps the active feature's
+// `icon-size` from `circle_radius / SHAPE_CANONICAL_RADIUS` to
+// `active_radius / SHAPE_CANONICAL_RADIUS`. Applied to BOTH symbol layers so
+// the outline stays aligned with the fill.
 //
 // "Active" semantics: v7 (the first-class waypoint refactor) replaced the
 // prior "waypoint of the active clip" definition with "latest-passed
@@ -25,11 +34,9 @@ import type {
 import type { DecorationColor, MapSettings } from '../../types';
 import { colors } from '../../theme/tokens';
 import { pulsePairAt } from './animations';
-import { PAINT_REFERENCE_WIDTH } from './styleSpec';
+import { PAINT_REFERENCE_WIDTH, SHAPE_CANONICAL_RADIUS } from './styleSpec';
 import type { PaintUpdates } from './types';
 
-const DEFAULT_STROKE_COLOR = 'rgba(255, 255, 255, 0.85)';
-const ACTIVE_STROKE_COLOR = 'rgba(255, 255, 255, 0.95)';
 /** Active-waypoint halo opacity. The halo is a soft ring behind the dot —
  *  half-opaque keeps it visible without competing with the inner shape's
  *  fill. Constant rather than animated; the rendering spec calls for a
@@ -43,16 +50,19 @@ const ACTIVE_HALO_OPACITY = 0.5;
  *  stays modest. */
 const ACTIVE_HALO_RADIUS_FACTOR = 1.6;
 
-/** Resolve the project-level waypoint base color. Solid mode returns a
- *  flat hex; gradient mode returns a MapLibre `interpolate` expression
- *  keyed off the feature's `progress` property — the Mercator fraction
- *  `buildWaypointsCollection` bakes in via `progressUpTo`. Matches the
- *  parameterization MapLibre's `line-progress` evaluator uses on the
- *  route line so waypoint dot colors agree with the line-gradient at
- *  the same fraction. Stops are sorted defensively; MapLibre throws on
- *  out-of-order interpolate input. Empty stops collapse to chartreuse so
- *  the layer keeps painting validly. */
-function baseWaypointColor(
+/** Resolve a `DecorationColor` to a paint value: either a flat hex (solid
+ *  mode) or a MapLibre `interpolate` expression keyed off the feature's
+ *  `progress` property (gradient mode). The interpolate uses the same
+ *  parameterization MapLibre's `line-progress` evaluator uses on the route
+ *  line, so waypoint dot colors agree with the line-gradient at the same
+ *  fraction. Stops are sorted defensively; MapLibre throws on out-of-order
+ *  interpolate input. Empty stops collapse to chartreuse so the layer keeps
+ *  painting validly.
+ *
+ *  Used for both the primary and secondary base colors — the underlying
+ *  per-feature `progress` is the same, so secondary gradients sample the
+ *  same point on the route as primary gradients. */
+function decorationColorToBase(
   color: DecorationColor,
 ): string | ExpressionSpecification {
   if (color.mode === 'solid') return color.solid;
@@ -66,92 +76,155 @@ function baseWaypointColor(
   return expr as ExpressionSpecification;
 }
 
-/** Two-arm `circle-color` case: override_color > base. Override wins per
- *  `data-model.md` §2a — "force this one to be gold" stays gold whether or
- *  not the waypoint is currently active. The active state is signalled by
- *  the halo layer (radius + color) and the active-radius bump, not by a
- *  separate color arm on the dot — see [DECIDED] Q1 / Q2 in the plan. */
-function buildWaypointColorExpr(
+/** Build the three-arm color expression for one slot:
+ *
+ *    active && activeId match && activeOverride set → activeOverride
+ *    else override-property set                     → override-property
+ *    else                                            → base color
+ *
+ *  Used identically for primary (`override_color` + `active_color`) and
+ *  secondary (`override_secondary_color` + `active_secondary_color`).
+ *  Centralizing the structure here keeps the two slots truly symmetrical —
+ *  if someone changes the precedence (e.g. swaps override and active), both
+ *  slots get the new behavior in lockstep. */
+function buildSlotColorExpr(
+  activeWaypointId: string | null,
   baseColor: string | ExpressionSpecification,
+  overrideProperty: 'override_color' | 'override_secondary_color',
+  activeOverride: string | undefined,
 ): ExpressionSpecification {
+  // Base layer first — every shape gets at least "override > base."
+  const overrideArm: ExpressionSpecification = [
+    'case',
+    ['!=', ['get', overrideProperty], null],
+    ['get', overrideProperty],
+    baseColor,
+  ] as ExpressionSpecification;
+  // Active arm wraps the override arm when both an active id AND an
+  // active-color override are set. Without an active override, the active
+  // waypoint paints whatever its per-feature / base color would have been —
+  // halo + size bump carry the active signal in that case.
+  if (!activeWaypointId || activeOverride === undefined) {
+    return overrideArm;
+  }
   return [
     'case',
-    ['!=', ['get', 'override_color'], null],
-    ['get', 'override_color'],
-    baseColor,
+    ['==', ['get', 'id'], activeWaypointId],
+    activeOverride,
+    overrideArm,
   ] as ExpressionSpecification;
 }
 
 /** Resolve the halo's color per [DECIDED] Q1: when `active_color` is set on
  *  the project's WaypointsSettings, the halo paints that flat hex; when
- *  unset, the halo mirrors the active waypoint's OWN resolved color
- *  (override > base) via the same case expression the dot uses. Mirroring
- *  the dot's expression keeps preview and export bit-identical and makes
+ *  unset, the halo mirrors the active waypoint's OWN resolved PRIMARY color
+ *  (override > base) via the same case expression the primary slot uses.
+ *  Mirroring the primary keeps preview and export bit-identical and makes
  *  the halo visually agree with whatever the user sees on the active
  *  waypoint (gradient sample, per-waypoint override, etc.). */
 function buildHaloColor(
-  baseColor: string | ExpressionSpecification,
+  primaryBase: string | ExpressionSpecification,
   activeColor: string | undefined,
 ): string | ExpressionSpecification {
   if (activeColor) return activeColor;
-  return buildWaypointColorExpr(baseColor);
+  return [
+    'case',
+    ['!=', ['get', 'override_color'], null],
+    ['get', 'override_color'],
+    primaryBase,
+  ] as ExpressionSpecification;
 }
 
-/** Build the per-frame paint deltas. The waypoint `circle-color` is always
- *  the three-arm `case` so per-`Waypoint.color` overrides paint correctly
- *  whether or not a waypoint is currently active. Radius and stroke-color
- *  keep the no-active-id fast path (scalars; cheaper for MapLibre's
- *  same-value diff than expression trees). The halo layer ([DECIDED] Q2)
- *  paints behind the dot for the active waypoint only; when no waypoint is
- *  active the halo's radius and opacity are both 0 (the layer stays
- *  invisible without needing a `visibility` toggle). Pulse always comes
- *  from `pulsePairAt`.
+/** Build the per-frame paint + layout deltas. The two color slots and the
+ *  icon-size both flow through this single function so the active-state
+ *  signal (size bump + optional color flip + halo) propagates consistently.
  *
- *  Both renderer and preview call this: radii anchor to
+ *  Both renderer and preview call this: sizes anchor to
  *  `PAINT_REFERENCE_WIDTH` (1080 CSS px) × the relevant
- *  `mapSettings.waypoints.size.*` fraction; the renderer's `pixelRatio`
- *  lever absorbs the export-resolution shift, and the preview consumes the
- *  same CSS-px values directly (pane-invariant). */
+ *  `mapSettings.waypoints.size.*` fraction, normalized by
+ *  `SHAPE_CANONICAL_RADIUS` (18) to land in MapLibre's `icon-size` space.
+ *  The renderer's `pixelRatio` lever absorbs the export-resolution shift,
+ *  and the preview consumes the same CSS-px values directly (pane-invariant). */
 export function buildPerFramePaints(
   activeWaypointId: string | null,
+  activeWaypointIndex: number | null,
   projectTimeMs: number,
   mapSettings: MapSettings,
 ): PaintUpdates {
   const pulse = pulsePairAt(projectTimeMs, mapSettings);
-  const defaultRadius =
-    mapSettings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH;
-  const activeRadius =
-    mapSettings.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH;
-  const baseColor = baseWaypointColor(mapSettings.waypoints.color);
-  const colorExpr = buildWaypointColorExpr(baseColor);
-  const haloColor = buildHaloColor(
-    baseColor,
+
+  // ---- Size / icon-size ----
+  // The user-facing knob is `circle_radius` (in 1080-anchored fractions).
+  // For SDF symbols, the equivalent rendered size is
+  // `(target_radius / SHAPE_CANONICAL_RADIUS)` (icon-size multiplier).
+  const defaultIconSize =
+    (mapSettings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) /
+    SHAPE_CANONICAL_RADIUS;
+  const activeIconSize =
+    (mapSettings.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH) /
+    SHAPE_CANONICAL_RADIUS;
+
+  // ---- Color slots ----
+  const primaryBase = decorationColorToBase(mapSettings.waypoints.color);
+  const secondaryBase = decorationColorToBase(
+    mapSettings.waypoints.secondary_color,
+  );
+  const primaryColorExpr = buildSlotColorExpr(
+    activeWaypointId,
+    primaryBase,
+    'override_color',
     mapSettings.waypoints.active_color,
   );
+  const secondaryColorExpr = buildSlotColorExpr(
+    activeWaypointId,
+    secondaryBase,
+    'override_secondary_color',
+    mapSettings.waypoints.active_secondary_color,
+  );
+
+  // ---- Halo ----
+  const haloColor = buildHaloColor(primaryBase, mapSettings.waypoints.active_color);
   const haloColorOut = (
     typeof haloColor === 'string'
       ? haloColor
       : (haloColor as DataDrivenPropertyValueSpecification<string>)
   );
 
+  // ---- Sort key ----
+  // Per-feature `symbol-sort-key`. MapLibre draws features in ascending
+  // sort-key order — higher sort-key paints later (on top) — so we want the
+  // closest-to-playhead waypoint to score highest. Two branches:
+  //
+  //   active: sort_key = -|index - activeIndex|. Distance-from-active in
+  //           feature-index space. The active waypoint scores 0 (max);
+  //           index ±1 scores -1; etc. Past waypoints (i < A) stack with
+  //           later-passed on top of earlier-passed; future waypoints (i > A)
+  //           stack with soonest on top. Past and future at equal distance
+  //           tie at the same sort-key — acceptable since adjacent-in-time
+  //           waypoints rarely overlap in space, and there is no user
+  //           preference between past and future of equal distance.
+  //
+  //   no active: sort_key = -index. The playhead hasn't reached any
+  //              waypoint yet, so every waypoint is "future" — by the rule
+  //              for future waypoints (earlier on top), `index = 0` paints
+  //              above `index = N`.
+  const sortKeyExpr: ExpressionSpecification =
+    activeWaypointIndex == null
+      ? ['-', 0, ['get', 'index']]
+      : ['-', 0, ['abs', ['-', ['get', 'index'], activeWaypointIndex]]];
+
   if (!activeWaypointId) {
     return {
-      waypointCircleRadius: defaultRadius,
-      waypointCircleColor:
-        colorExpr as DataDrivenPropertyValueSpecification<string>,
-      waypointCircleStrokeColor: DEFAULT_STROKE_COLOR,
-      // Symbol layer paints the same color expression as the circle layer
-      // so per-feature override_color and gradient stops apply uniformly
-      // across every shape family. See `PaintUpdates.waypointIconColor`.
-      waypointIconColor:
-        colorExpr as DataDrivenPropertyValueSpecification<string>,
-      // No active waypoint → halo is invisible. Radius/opacity scalars
-      // (cheap same-value diff); color still tracks the base so the
-      // layer keeps a coherent paint if the user activates a waypoint
-      // mid-frame before the next builder call.
+      waypointPrimaryColor:
+        primaryColorExpr as DataDrivenPropertyValueSpecification<string>,
+      waypointSecondaryColor:
+        secondaryColorExpr as DataDrivenPropertyValueSpecification<string>,
+      waypointIconSize: defaultIconSize,
       waypointHaloColor: haloColorOut,
       waypointHaloRadius: 0,
       waypointHaloOpacity: 0,
+      waypointSortKey:
+        sortKeyExpr as DataDrivenPropertyValueSpecification<number>,
       pulseRadius: pulse.a.radius,
       pulseOpacity: pulse.a.opacity,
       pulseRadiusB: pulse.b.radius,
@@ -160,27 +233,19 @@ export function buildPerFramePaints(
     };
   }
 
-  const radiusExpr: ExpressionSpecification = [
+  // Active-state expressions. Icon-size bumps the matched feature to the
+  // active size. Halo lights up at the matched feature only (radius +
+  // opacity collapse to 0 elsewhere so the layer needs no visibility flip).
+  const iconSizeExpr: ExpressionSpecification = [
     'case',
     ['==', ['get', 'id'], activeWaypointId],
-    activeRadius,
-    defaultRadius,
+    activeIconSize,
+    defaultIconSize,
   ];
-  const strokeExpr: ExpressionSpecification = [
-    'case',
-    ['==', ['get', 'id'], activeWaypointId],
-    ACTIVE_STROKE_COLOR,
-    DEFAULT_STROKE_COLOR,
-  ];
-  // Halo radius / opacity: data-driven `case` so only the active feature
-  // paints. Radius scales the already-enlarged active dot by
-  // `ACTIVE_HALO_RADIUS_FACTOR`; opacity is `ACTIVE_HALO_OPACITY` on the
-  // active feature and 0 on every other (so the layer keeps a uniform
-  // shape across features without needing `visibility`).
   const haloRadiusExpr: ExpressionSpecification = [
     'case',
     ['==', ['get', 'id'], activeWaypointId],
-    activeRadius * ACTIVE_HALO_RADIUS_FACTOR,
+    activeIconSize * SHAPE_CANONICAL_RADIUS * ACTIVE_HALO_RADIUS_FACTOR,
     0,
   ];
   const haloOpacityExpr: ExpressionSpecification = [
@@ -191,21 +256,19 @@ export function buildPerFramePaints(
   ];
 
   return {
-    waypointCircleRadius:
-      radiusExpr as DataDrivenPropertyValueSpecification<number>,
-    waypointCircleColor:
-      colorExpr as DataDrivenPropertyValueSpecification<string>,
-    waypointCircleStrokeColor:
-      strokeExpr as DataDrivenPropertyValueSpecification<string>,
-    // Same color expression as the circle layer — see no-active-waypoint
-    // branch for the rationale (uniform color across shape families).
-    waypointIconColor:
-      colorExpr as DataDrivenPropertyValueSpecification<string>,
+    waypointPrimaryColor:
+      primaryColorExpr as DataDrivenPropertyValueSpecification<string>,
+    waypointSecondaryColor:
+      secondaryColorExpr as DataDrivenPropertyValueSpecification<string>,
+    waypointIconSize:
+      iconSizeExpr as DataDrivenPropertyValueSpecification<number>,
     waypointHaloColor: haloColorOut,
     waypointHaloRadius:
       haloRadiusExpr as DataDrivenPropertyValueSpecification<number>,
     waypointHaloOpacity:
       haloOpacityExpr as DataDrivenPropertyValueSpecification<number>,
+    waypointSortKey:
+      sortKeyExpr as DataDrivenPropertyValueSpecification<number>,
     pulseRadius: pulse.a.radius,
     pulseOpacity: pulse.a.opacity,
     pulseRadiusB: pulse.b.radius,

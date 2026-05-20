@@ -84,15 +84,16 @@ interface InitPayload {
    *  page or style swap) is cleared. The corresponding sources MUST be
    *  added with `lineMetrics: true` — see `staticSources` above. */
   staticGradients: Array<[string, AnyJSON | null]>;
-  /** SDF icon registrations for the waypoints-symbol layer.
-   *  `[name, { width, height, data }, options]` tuples where `data` carries
-   *  the raw RGBA pixel buffer. The buffer comes from `buildWaypointSdfIcon`
-   *  (a pure function in `src/lib/mapVisuals/shapes.ts`) on the worker side
-   *  — bit-identical to what the preview registers. JSON serialisation
+  /** SDF icon registrations for the waypoint primary + secondary symbol
+   *  layers. `[id, { width, height, data }, options]` tuples where `id` is
+   *  `waypoint-<shape>-<slot>` and `data` carries the raw RGBA pixel
+   *  buffer. The buffer comes from `buildAllShapeIcons` in
+   *  `src/lib/mapVisuals/shapes.ts` (pure function) on the worker side —
+   *  bit-identical to what the preview registers. JSON serialisation
    *  through `page.evaluate` converts the Uint8Array to a plain numeric
    *  object; `__init` reconstructs a Uint8Array before calling
-   *  `map.addImage(name, image, options)`. Six icons × 48×48×4 B = ~55 KB
-   *  raw, ~200 KB after JSON expansion — comfortably below CDP's
+   *  `map.addImage(id, image, options)`. With 5 shapes × 2 slots ≈ 92 KB
+   *  raw, ~340 KB after JSON expansion — comfortably below CDP's
    *  argument-size threshold. */
   staticImages: Array<[
     string,

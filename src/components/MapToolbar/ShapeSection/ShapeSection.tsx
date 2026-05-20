@@ -6,11 +6,8 @@
 //
 // The icons here are UX hints; the actual map renders are produced by the
 // SDF rasterizer in `src/lib/mapVisuals/shapes.ts`. We use lucide-react
-// glyphs for five of the six shapes (Circle, CircleDot for ring, MapPin,
-// Square, Diamond) and an inline SVG with "1" inside a circle for
-// `numbered-circle`. The lucide glyphs' default stroke style is fine for
-// the gallery — they're recognizable at 24-28px and consistent with the
-// rest of the toolbar.
+// glyphs (Circle, CircleDot for ring, MapPin, Square, Diamond) — they're
+// recognizable at 24-28px and consistent with the rest of the toolbar.
 //
 // Routing contract:
 //  • `value` is the currently effective shape. The parent computes this
@@ -59,38 +56,6 @@ interface ShapeDefinition {
   renderIcon: (size: number) => ReactElement;
 }
 
-/** Inline SVG for `numbered-circle`: filled disc with a centered "1"
- *  in white. The disc colour is `currentColor` so the cell's foreground
- *  colour (driven by the selected/unselected style) shows through. The
- *  number is rendered as SVG `<text>` so it scales with the icon box.
- *  This mirrors the SDF rasterizer's "filled circle + label" identity for
- *  the numbered-circle shape (see `shapes.ts` → `drawFilledCircle`). */
-function NumberedCircleIcon({ size }: { size: number }): ReactElement {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="9" fill="currentColor" />
-      <text
-        x="12"
-        y="16"
-        textAnchor="middle"
-        fontSize="11"
-        fontWeight="700"
-        fontFamily="'Manrope', sans-serif"
-        fill="#0e1416"
-      >
-        1
-      </text>
-    </svg>
-  );
-}
-
 const SHAPES: ShapeDefinition[] = [
   {
     value: 'circle',
@@ -121,12 +86,6 @@ const SHAPES: ShapeDefinition[] = [
     label: 'Diamond',
     title: 'Filled diamond',
     renderIcon: (size) => <DiamondIcon size={size} fill="currentColor" strokeWidth={0} />,
-  },
-  {
-    value: 'numbered-circle',
-    label: 'Numbered',
-    title: 'Numbered circle',
-    renderIcon: (size) => <NumberedCircleIcon size={size} />,
   },
 ];
 

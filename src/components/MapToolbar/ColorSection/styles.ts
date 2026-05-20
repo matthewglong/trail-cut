@@ -193,33 +193,32 @@ export const sectionStyles: Record<string, CSSProperties> = {
     border: `1px solid ${semantic.border}`,
     cursor: 'crosshair',
     boxSizing: 'border-box' as const,
-    overflow: 'hidden' as const,
   },
   gradientBarDisabled: {
     cursor: 'default' as const,
   },
-  gradientBarTick: {
-    position: 'absolute' as const,
-    top: 0,
-    bottom: 0,
-    width: 1,
-    backgroundColor: semantic.fgFaint,
-    pointerEvents: 'none' as const,
-  },
-  gradientBarTickActive: {
-    backgroundColor: semantic.accent,
-  },
 
-  // Stop rail (26px tall, transparent — handles sit on the boundary
-  // between bar and rail).
+  // Stop rail — sits below the gradient bar with a dashed guide line
+  // running through its middle. Handles are centered on the dashed line
+  // and a short A/B/n position label appears below each.
   stopRail: {
     position: 'relative' as const,
-    height: 26,
-    marginTop: -1,
+    height: 30,
+    marginTop: 12,
+  },
+  stopRailDashedLine: {
+    position: 'absolute' as const,
+    // Handle (14px tall) sits at top: 0..14 with center at y=7; align the
+    // 1px dashed line to that center so handles appear threaded onto it.
+    top: 7,
+    left: 0,
+    right: 0,
+    borderTop: `1px dashed ${semantic.borderSoft}`,
+    pointerEvents: 'none' as const,
   },
   stopHandle: {
     position: 'absolute' as const,
-    top: -7,
+    top: 0,
     width: 14,
     height: 14,
     transform: 'translateX(-50%)',
@@ -238,7 +237,7 @@ export const sectionStyles: Record<string, CSSProperties> = {
   },
   stopDeleteAffordance: {
     position: 'absolute' as const,
-    top: -22,
+    top: -16,
     left: '50%',
     transform: 'translateX(-50%)',
     width: 14,
@@ -253,7 +252,7 @@ export const sectionStyles: Record<string, CSSProperties> = {
   },
   stopDragLabel: {
     position: 'absolute' as const,
-    top: -22,
+    top: -18,
     left: '50%',
     transform: 'translateX(-50%)',
     padding: '2px 5px',
@@ -265,20 +264,17 @@ export const sectionStyles: Record<string, CSSProperties> = {
     whiteSpace: 'nowrap' as const,
     pointerEvents: 'none' as const,
   },
-
-  // Distance axis (below stop rail).
-  distanceAxis: {
-    position: 'relative' as const,
-    height: 14,
-    marginTop: 2,
-  },
-  distanceAxisLabel: {
+  stopLabel: {
     position: 'absolute' as const,
+    top: 18,
+    left: '50%',
     transform: 'translateX(-50%)',
     fontFamily: fonts.mono,
     fontSize: 9,
     color: semantic.fgDim,
+    letterSpacing: '0.06em',
     whiteSpace: 'nowrap' as const,
+    pointerEvents: 'none' as const,
   },
 
   // STOP COLOR header above the swatch row when in gradient mode.
@@ -317,30 +313,5 @@ export const sectionStyles: Record<string, CSSProperties> = {
   ghostButtonCopied: {
     borderColor: semantic.accent,
     color: semantic.accent,
-  },
-
-  // Trail preview block (header + SVG).
-  previewBlock: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    marginTop: 6,
-    paddingTop: 6,
-    borderTop: `1px dashed ${semantic.borderSoft}`,
-  },
-  previewHeader: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    fontFamily: fonts.mono,
-    fontSize: 9,
-    color: semantic.fgDim,
-    letterSpacing: '0.06em',
-    textTransform: 'uppercase' as const,
-  },
-  previewSvg: {
-    display: 'block',
-    width: '100%',
-    height: 28,
   },
 };

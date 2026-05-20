@@ -244,6 +244,12 @@ pub struct WaypointsSettings {
     pub mode: String,
     #[serde(default)]
     pub color: DecorationColor,
+    /// Secondary color slot — tints the waypoint's outline / accent element.
+    /// Defaults to solid white via `default_white_decoration`; legacy v8
+    /// projects deserialize with that default so the field is always present
+    /// after a load+save round-trip. See `shapes.ts`.
+    #[serde(default = "default_white_decoration")]
+    pub secondary_color: DecorationColor,
     #[serde(default = "default_waypoint_shape")]
     pub shape: String,
     #[serde(default)]
@@ -254,6 +260,11 @@ pub struct WaypointsSettings {
     pub active_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_color: Option<String>,
+    /// Active-waypoint secondary highlight — mirrors `active_color` for the
+    /// secondary slot. Optional; when unset the secondary slot keeps its
+    /// resolved per-waypoint color during the active state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_secondary_color: Option<String>,
     /// UI affordance — stash of the last gradient stop array, populated when
     /// the user toggles GRADIENT → SOLID in the panel so toggling back
     /// restores the prior gradient. Never read by the renderer; see
@@ -261,6 +272,9 @@ pub struct WaypointsSettings {
     /// transparently when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_stops_cache: Option<Vec<GradientStop>>,
+    /// Mirror of `color_stops_cache` for the secondary color slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_color_stops_cache: Option<Vec<GradientStop>>,
 }
 
 impl Default for WaypointsSettings {
@@ -268,12 +282,15 @@ impl Default for WaypointsSettings {
         WaypointsSettings {
             mode: default_full(),
             color: DecorationColor::default(),
+            secondary_color: default_white_decoration(),
             shape: default_waypoint_shape(),
             size: WaypointsSize::default(),
             label_mode: default_label_mode(),
             active_mode: default_active_waypoint_mode(),
             active_color: None,
+            active_secondary_color: None,
             color_stops_cache: None,
+            secondary_color_stops_cache: None,
         }
     }
 }
@@ -308,6 +325,12 @@ impl Default for PovSize {
 pub struct PovSettings {
     #[serde(default = "default_accent_color")]
     pub color: String,
+    /// Secondary color — tints the POV marker's accent (today the
+    /// `live-marker-dot` stroke). Defaults to white to match the pre-refactor
+    /// hard-coded dot fill so existing projects look identical after the
+    /// load + first-save round-trip introduces this field.
+    #[serde(default = "default_white_color")]
+    pub secondary_color: String,
     #[serde(default)]
     pub size: PovSize,
     #[serde(default = "default_pulse_style")]
@@ -320,6 +343,7 @@ impl Default for PovSettings {
     fn default() -> Self {
         PovSettings {
             color: default_accent_color(),
+            secondary_color: default_white_color(),
             size: PovSize::default(),
             pulse_style: default_pulse_style(),
             pulse_rate: default_pulse_rate(),
@@ -409,6 +433,18 @@ fn default_waypoint_shape() -> String {
 fn default_accent_color() -> String {
     "#bced09".to_string()
 }
+/// Default for `secondary_color` slots that take a plain hex string (POV).
+/// White is the historical pre-refactor default for the dot fill and the
+/// universal "neutral outline" choice when the secondary slot isn't doing
+/// anything more specific.
+fn default_white_color() -> String {
+    "#ffffff".to_string()
+}
+/// Default for `secondary_color` slots that take a `DecorationColor` (waypoints).
+/// Solid white — see `default_white_color` for rationale.
+fn default_white_decoration() -> DecorationColor {
+    DecorationColor::Solid { solid: default_white_color() }
+}
 fn default_pulse_style() -> String {
     "sonar".to_string()
 }
@@ -469,6 +505,8 @@ pub struct WaypointsOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_secondary_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<WaypointsSizeOverrides>,
 }
 
@@ -490,6 +528,8 @@ pub struct PovSizeOverrides {
 pub struct PovOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<PovSizeOverrides>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -558,10 +598,15 @@ pub struct Waypoint {
     pub source: String, // "clip" | "gpx" | "manual"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip_id: Option<String>,
-    /// Per-waypoint solid color override. None falls through to the project
-    /// default at render time.
+    /// Per-waypoint solid PRIMARY-color override. None falls through to the
+    /// project default at render time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Per-waypoint solid SECONDARY-color override (the outline / accent slot
+    /// on shapes that define one). None falls through to the project default.
+    /// Solid only — single-point gradients don't apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_color: Option<String>,
     /// Per-waypoint shape override. None falls through to the project default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<String>,
@@ -969,11 +1014,15 @@ mod tests {
             color: DecorationColor::Solid {
                 solid: "#bced09".to_string(),
             },
+            secondary_color: DecorationColor::Solid {
+                solid: "#ffffff".to_string(),
+            },
             shape: "circle".to_string(),
             size: WaypointsSize::default(),
             label_mode: "numbered".to_string(),
             active_mode: "latest_passed".to_string(),
             active_color: None,
+            active_secondary_color: None,
             color_stops_cache: Some(vec![
                 GradientStop {
                     fraction: 0.0,
@@ -984,6 +1033,7 @@ mod tests {
                     color: "#ffffff".to_string(),
                 },
             ]),
+            secondary_color_stops_cache: None,
         };
         let json = serde_json::to_string(&wp).unwrap();
         let parsed: WaypointsSettings = serde_json::from_str(&json).unwrap();

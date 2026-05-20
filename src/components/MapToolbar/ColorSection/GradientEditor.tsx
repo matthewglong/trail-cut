@@ -1,5 +1,5 @@
-// GradientEditor — the bar + stop rail + distance axis + trail preview that
-// replaces ColorSection's swatch row when mode === 'gradient'.
+// GradientEditor — the bar + stop rail + distance axis that replaces
+// ColorSection's swatch row when mode === 'gradient'.
 //
 // Storage contract (per `color-gradient.md` §13):
 //  • The component is fully controlled by its parent. `stops` is the source
@@ -29,59 +29,12 @@ import {
   MAX_STOPS,
   MIN_STOP_SEPARATION,
   SNAP_PX,
-  formatDistanceLabel,
-  formatTotalDistance,
   insertStop,
   moveStop,
   removeStop,
-  sampleStopsAt,
   snapToTicks,
   stopsToCssLinearGradient,
 } from './gradientMath';
-
-/** Static decorative S-curve path for the trail preview SVG. Drawn in a
- *  100×28 viewBox so the editor can scale it to fit the panel width. The
- *  path is intentionally not GPS-derived — per `color-gradient.md` §8 it's a
- *  schematic that gives the gradient + waypoint dots a "trail-ish" backbone
- *  without committing to actual geography. */
-const PREVIEW_VIEWBOX_W = 100;
-const PREVIEW_VIEWBOX_H = 28;
-const PREVIEW_PATH_D = 'M 2 22 C 18 22, 30 6, 50 14 S 82 22, 98 6';
-
-/** SVG path-coordinate sample of `PREVIEW_PATH_D` at a normalized parameter
- *  in [0, 1]. Returns the `y` (vertical) value for that fractional position
- *  along the path so the waypoint dots can lift off the path's actual
- *  vertical position rather than sitting at a flat baseline. Lightweight
- *  cubic-bezier interpolation between the four anchor points the path
- *  defines. */
-function previewPathY(fraction: number): number {
-  // S-curve constructed as two cubic segments. First segment runs from x=2
-  // to x=50 (which is x-fraction 0..0.5); second runs from x=50 to x=98
-  // (fraction 0.5..1.0). Mirroring the analytic form is enough for a
-  // schematic — we don't need pixel-perfect bezier evaluation.
-  const f = Math.max(0, Math.min(1, fraction));
-  const segT = f < 0.5 ? f * 2 : (f - 0.5) * 2;
-  if (f < 0.5) {
-    // Cubic from (2, 22) to (50, 14) via control points (18, 22) and (30, 6).
-    const t = segT;
-    const mt = 1 - t;
-    return (
-      mt * mt * mt * 22 +
-      3 * mt * mt * t * 22 +
-      3 * mt * t * t * 6 +
-      t * t * t * 14
-    );
-  }
-  // Cubic from (50, 14) to (98, 6) via the smoothed control (70, 22).
-  const t = segT;
-  const mt = 1 - t;
-  return (
-    mt * mt * mt * 14 +
-    3 * mt * mt * t * 22 +
-    3 * mt * t * t * 22 +
-    t * t * t * 6
-  );
-}
 
 export interface GradientEditorProps {
   /** Current stop array. Endpoints (fraction 0 and 1) must exist. */
@@ -93,12 +46,13 @@ export interface GradientEditorProps {
    *  to read the same selection. */
   selectedIndex: number | null;
   onSelectedIndexChange: (idx: number | null) => void;
-  /** Waypoint progress fractions in [0, 1] (Web Mercator). Used for snap
-   *  ticks on the gradient bar and as dot positions on the trail preview
-   *  SVG. Empty when no waypoints exist. */
+  /** Waypoint progress fractions in [0, 1] (Web Mercator). Used as snap
+   *  targets when dragging a stop along the bar. Empty when no waypoints
+   *  exist. */
   waypointProgress: number[];
-  /** Total route distance in metres — display-only label derivation. */
-  totalDistMeters: number;
+  /** @deprecated unused — drag label now displays a percentage of the route
+   *  rather than a distance. Kept on the interface for backward compat. */
+  totalDistMeters?: number;
   /** Editor disabled (no GPX, degenerate route). Renders the bar in a
    *  read-only state. */
   disabled?: boolean;
@@ -110,7 +64,6 @@ export function GradientEditor({
   selectedIndex,
   onSelectedIndexChange,
   waypointProgress,
-  totalDistMeters,
   disabled,
 }: GradientEditorProps) {
   const barRef = useRef<HTMLDivElement>(null);
@@ -197,27 +150,22 @@ export function GradientEditor({
       const rect = bar.getBoundingClientRect();
       if (rect.width <= 0) return;
       const fraction = (e.clientX - rect.left) / rect.width;
-      // Reject clicks within snap distance of an existing stop — the click
-      // should not produce a no-op-and-deselect when the user meant to grab
-      // the existing stop. Editor selection clears separately on a click of
-      // the bar background.
+      // Reject clicks within snap distance of an existing stop — leave the
+      // current selection alone so the picker doesn't collapse when the
+      // user misses a handle by a few pixels.
       for (const s of stops) {
         if (Math.abs(s.fraction - fraction) < MIN_STOP_SEPARATION) {
-          onSelectedIndexChange(null);
           return;
         }
       }
       const next = insertStop(stops, fraction);
-      if (next === stops) {
-        onSelectedIndexChange(null);
-        return;
-      }
+      if (next === stops) return;
       // Find the new stop's index by fraction match (rounded equal).
       const newIdx = next.findIndex(
         (s) => Math.abs(s.fraction - Math.round(fraction * 10000) / 10000) < 1e-9,
       );
       onStopsChange(next);
-      onSelectedIndexChange(newIdx >= 0 ? newIdx : null);
+      if (newIdx >= 0) onSelectedIndexChange(newIdx);
     },
     [disabled, stops, onSelectedIndexChange, onStopsChange],
   );
@@ -233,10 +181,12 @@ export function GradientEditor({
       const next = removeStop(stops, index);
       if (next === stops) return;
       onStopsChange(next);
-      // After deletion, drop the selection so the panel collapses to the
-      // gradient-only view.
-      if (selectedIndex === index) onSelectedIndexChange(null);
-      else if (selectedIndex != null && selectedIndex > index) {
+      // Keep a stop selected at all times so the color picker stays open.
+      // If the deleted stop was selected, pick the stop now occupying the
+      // slot (or the new last stop if we deleted the trailing one).
+      if (selectedIndex === index) {
+        onSelectedIndexChange(Math.min(index, next.length - 1));
+      } else if (selectedIndex != null && selectedIndex > index) {
         onSelectedIndexChange(selectedIndex - 1);
       }
     },
@@ -259,28 +209,18 @@ export function GradientEditor({
           ...(disabled ? sectionStyles.gradientBarDisabled : null),
         }}
         data-testid="gradient-bar"
-      >
-        {waypointProgress.map((p, i) => (
-          <div
-            key={i}
-            style={{
-              ...sectionStyles.gradientBarTick,
-              left: `${p * 100}%`,
-              ...(dragState?.activeSnapFraction === p
-                ? sectionStyles.gradientBarTickActive
-                : null),
-            }}
-          />
-        ))}
-      </div>
+      />
 
-      {/* Stop rail */}
+      {/* Stop rail — dashed guide line with handles centered on it and
+          A/B/n position labels below. */}
       <div style={sectionStyles.stopRail} data-testid="stop-rail">
+        <div style={sectionStyles.stopRailDashedLine} />
         {stops.map((stop, idx) => {
           const isEndpoint = idx === 0 || idx === stops.length - 1;
           const isSelected = selectedIndex === idx;
           const isHovered = hoveredHandleIdx === idx;
           const isDragging = dragState?.index === idx;
+          const label = String(idx + 1);
           return (
             <div
               key={idx}
@@ -302,7 +242,7 @@ export function GradientEditor({
               )}
               {isDragging && (
                 <span style={sectionStyles.stopDragLabel}>
-                  {formatDistanceLabel(dragLabelFraction ?? stop.fraction, totalDistMeters)}
+                  {Math.round((dragLabelFraction ?? stop.fraction) * 100)}%
                 </span>
               )}
               <button
@@ -326,82 +266,15 @@ export function GradientEditor({
                   ...(isSelected ? sectionStyles.stopHandleSelected : null),
                 }}
               />
+              <span
+                style={sectionStyles.stopLabel}
+                data-testid={`gradient-stop-label-${idx}`}
+              >
+                {label}
+              </span>
             </div>
           );
         })}
-      </div>
-
-      {/* Distance axis */}
-      {totalDistMeters > 0 && (
-        <div style={sectionStyles.distanceAxis} data-testid="gradient-distance-axis">
-          {stops.map((stop, idx) => (
-            <span
-              key={idx}
-              style={{
-                ...sectionStyles.distanceAxisLabel,
-                left: `${stop.fraction * 100}%`,
-              }}
-            >
-              {formatDistanceLabel(stop.fraction, totalDistMeters)}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Trail preview — header + SVG. Header always present; SVG dots
-          omitted when no waypoints (path-only). */}
-      <div style={sectionStyles.previewBlock} data-testid="gradient-preview">
-        <div style={sectionStyles.previewHeader}>
-          <span>TRAIL PREVIEW</span>
-          {totalDistMeters > 0 && <span>{formatTotalDistance(totalDistMeters)}</span>}
-        </div>
-        <svg
-          viewBox={`0 0 ${PREVIEW_VIEWBOX_W} ${PREVIEW_VIEWBOX_H}`}
-          preserveAspectRatio="none"
-          style={sectionStyles.previewSvg}
-          data-testid="gradient-preview-svg"
-        >
-          <defs>
-            <linearGradient
-              id="gradient-editor-preview-stroke"
-              x1="0"
-              y1="0"
-              x2="1"
-              y2="0"
-            >
-              {stops.map((stop, idx) => (
-                <stop
-                  key={idx}
-                  offset={stop.fraction}
-                  stopColor={stop.color}
-                />
-              ))}
-            </linearGradient>
-          </defs>
-          <path
-            d={PREVIEW_PATH_D}
-            stroke="url(#gradient-editor-preview-stroke)"
-            strokeWidth={2}
-            fill="none"
-            strokeLinecap="round"
-          />
-          {waypointProgress.map((p, idx) => {
-            const cx = p * PREVIEW_VIEWBOX_W;
-            const cy = previewPathY(p);
-            return (
-              <circle
-                key={idx}
-                cx={cx}
-                cy={cy}
-                r={2.5}
-                fill={sampleStopsAt(stops, p)}
-                stroke="#0e1416"
-                strokeWidth={0.75}
-                data-testid={`gradient-preview-dot-${idx}`}
-              />
-            );
-          })}
-        </svg>
       </div>
     </div>
   );

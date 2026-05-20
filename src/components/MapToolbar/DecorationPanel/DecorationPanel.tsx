@@ -21,7 +21,7 @@
 // toggles so the user can flip back and forth without losing their stops.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import ModePicker from '../../ModePicker';
+import SegmentedPicker from '../../SegmentedPicker';
 import NumberStepper from '../../NumberStepper';
 import { ColorSection } from '../ColorSection';
 import {
@@ -30,6 +30,7 @@ import {
 } from '../ColorSection/gradientMath';
 import { ShapeSection } from '../ShapeSection';
 import { panelStyles } from './styles';
+import { shapeHasSecondary } from '../../../lib/mapVisuals';
 import {
   type ActiveWaypointMode,
   type Clip,
@@ -51,33 +52,35 @@ import { progressUpTo } from '../../../lib/routeLocation';
  *  rendering pipeline calls `PAINT_REFERENCE_WIDTH` (1080 CSS px). */
 const PAINT_REFERENCE_WIDTH = 1080;
 
-const TRI_OPTIONS: { value: TriMode; label: string; short: string }[] = [
-  { value: 'none',    label: 'None',    short: 'N' },
-  { value: 'visited', label: 'Visited', short: 'V' },
-  { value: 'full',    label: 'Full',    short: 'F' },
+const TRI_OPTIONS: { value: TriMode; label: string }[] = [
+  { value: 'none',    label: 'None'    },
+  { value: 'visited', label: 'Visited' },
+  { value: 'full',    label: 'Full'    },
 ];
 
-const LABEL_MODE_OPTIONS: { value: WaypointLabelMode; label: string; short: string }[] = [
-  { value: 'numbered', label: 'Numbered', short: '#' },
-  { value: 'labeled',  label: 'Labeled',  short: 'A' },
+const LABEL_MODE_OPTIONS: { value: WaypointLabelMode; label: string }[] = [
+  { value: 'numbered', label: 'Numbered' },
+  { value: 'labeled',  label: 'Labeled'  },
 ];
 
-const ACTIVE_WAYPOINT_OPTIONS: { value: ActiveWaypointMode; label: string; short: string }[] = [
-  { value: 'none',          label: 'None',   short: 'N' },
-  { value: 'latest_passed', label: 'Latest', short: 'L' },
+const ACTIVE_WAYPOINT_OPTIONS: { value: ActiveWaypointMode; label: string }[] = [
+  { value: 'none',          label: 'None'   },
+  { value: 'latest_passed', label: 'Latest' },
 ];
 
-const PULSE_STYLE_OPTIONS: { value: PovPulseStyle; label: string; short: string }[] = [
-  { value: 'steady',    label: 'Steady',    short: 'St' },
-  { value: 'throb',     label: 'Throb',     short: 'Th' },
-  { value: 'sonar',     label: 'Sonar',     short: 'So' },
-  { value: 'heartbeat', label: 'Heartbeat', short: 'Hb' },
+const PULSE_STYLE_OPTIONS: { value: PovPulseStyle; label: string }[] = [
+  { value: 'steady',    label: 'Steady' },
+  { value: 'throb',     label: 'Throb'  },
+  { value: 'sonar',     label: 'Sonar'  },
+  // Labeled `Heart` rather than `Heartbeat` so all four labels fit the
+  // 4-up segmented strip at panel width without shrinking the type.
+  { value: 'heartbeat', label: 'Heart'  },
 ];
 
-const PULSE_RATE_OPTIONS: { value: PovPulseRate; label: string; short: string }[] = [
-  { value: 'slow',   label: 'Slow',   short: 'Sl' },
-  { value: 'medium', label: 'Medium', short: 'Md' },
-  { value: 'fast',   label: 'Fast',   short: 'Fs' },
+const PULSE_RATE_OPTIONS: { value: PovPulseRate; label: string }[] = [
+  { value: 'slow',   label: 'Slow'   },
+  { value: 'medium', label: 'Medium' },
+  { value: 'fast',   label: 'Fast'   },
 ];
 
 export type DecorationKind = 'route' | 'waypoints' | 'pov';
@@ -369,14 +372,14 @@ function RoutePanelBody({
   return (
     <>
       <Section label="VISIBILITY">
-        <ModePicker<TriMode>
+        <SegmentedPicker<TriMode>
           value={settings.route.mode}
           options={TRI_OPTIONS}
           onChange={setMode}
           disabledValues={routeLoaded ? [] : ['visited']}
           title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
-          minWidth={68}
-          variant="full"
+          ariaLabel="Route visibility"
+          variant="trail"
         />
       </Section>
 
@@ -491,6 +494,29 @@ function WaypointsPanelBody({
       },
     });
 
+  // ---- Secondary color: identical channel shape as primary ----
+  // Each setter writes into `waypoints.secondary_color` /
+  // `secondary_color_stops_cache`. The two slots stay independent of each
+  // other — toggling secondary's mode between solid/gradient does not
+  // touch primary's mode or cache.
+  const setSecondarySolidColor = (hex: string) =>
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        secondary_color: { mode: 'solid', solid: hex },
+      },
+    });
+
+  const setSecondaryGradientStops = (stops: GradientStop[]) =>
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        secondary_color: { mode: 'gradient', stops },
+      },
+    });
+
   const setColorMode = (nextMode: 'solid' | 'gradient') => {
     if (nextMode === 'solid') {
       if (settings.waypoints.color.mode === 'gradient') {
@@ -522,6 +548,45 @@ function WaypointsPanelBody({
       waypoints: {
         ...settings.waypoints,
         color: { mode: 'gradient', stops },
+      },
+    });
+  };
+
+  /** Same stash/restore protocol as `setColorMode`, but against the
+   *  secondary slot's color + `secondary_color_stops_cache`. White is the
+   *  fallback solid because the project-default secondary is white — same
+   *  rationale as `resolveMapSettings`' `projectWaypointsSecondarySolid`. */
+  const setSecondaryColorMode = (nextMode: 'solid' | 'gradient') => {
+    if (nextMode === 'solid') {
+      if (settings.waypoints.secondary_color.mode === 'gradient') {
+        const stops = settings.waypoints.secondary_color.stops;
+        const firstColor = stops[0]?.color ?? '#ffffff';
+        onChange({
+          ...settings,
+          waypoints: {
+            ...settings.waypoints,
+            secondary_color: { mode: 'solid', solid: firstColor },
+            secondary_color_stops_cache: cloneStops(stops),
+          },
+        });
+        return;
+      }
+      return;
+    }
+    const currentSolid =
+      settings.waypoints.secondary_color.mode === 'solid'
+        ? settings.waypoints.secondary_color.solid
+        : '#ffffff';
+    const stops =
+      settings.waypoints.secondary_color_stops_cache &&
+      settings.waypoints.secondary_color_stops_cache.length >= 2
+        ? cloneStops(settings.waypoints.secondary_color_stops_cache)
+        : initialGradientFromSolid(currentSolid);
+    onChange({
+      ...settings,
+      waypoints: {
+        ...settings.waypoints,
+        secondary_color: { mode: 'gradient', stops },
       },
     });
   };
@@ -589,6 +654,22 @@ function WaypointsPanelBody({
     onWaypointsChange(nextWaypoints);
   };
 
+  const setWaypointSecondaryColor = (hex: string) => {
+    if (!associatedWaypoint) return;
+    const nextWaypoints = waypoints.map((w) =>
+      w.id === associatedWaypoint.id ? { ...w, secondary_color: hex } : w,
+    );
+    onWaypointsChange(nextWaypoints);
+  };
+
+  const clearWaypointSecondaryColor = () => {
+    if (!associatedWaypoint) return;
+    const nextWaypoints = waypoints.map((w) =>
+      w.id === associatedWaypoint.id ? omitSecondaryColor(w) : w,
+    );
+    onWaypointsChange(nextWaypoints);
+  };
+
   // Project-default shape setter — writes through `onChange` (MapSettings).
   const setProjectShape = (shape: WaypointShape) =>
     onChange({ ...settings, waypoints: { ...settings.waypoints, shape } });
@@ -614,24 +695,34 @@ function WaypointsPanelBody({
   };
 
   const projectSolid = readSolid(settings.waypoints.color);
+  const projectSecondarySolid = readSolid(settings.waypoints.secondary_color);
   const waypointColor = associatedWaypoint?.color ?? projectSolid;
+  const waypointSecondaryColorValue =
+    associatedWaypoint?.secondary_color ?? projectSecondarySolid;
 
   // Effective shape — the shape the gallery shows as selected. In clip
   // scope, the per-Waypoint override wins; in project scope (or when there
-  // is no associated waypoint) we fall back to the project default. The
-  // SIZE section's conditional `label_size` row reads the same value so
-  // gallery selection and label-row visibility stay in sync.
+  // is no associated waypoint) we fall back to the project default.
+  // Gates the SECONDARY COLOR section: shapes whose descriptor has no
+  // `secondary` rasterizer (today: `ring`) hide the secondary picker so
+  // editing a color that paints nothing isn't possible.
   const effectiveShape: WaypointShape =
     scope === 'clip'
       ? (associatedWaypoint?.shape ?? settings.waypoints.shape)
       : settings.waypoints.shape;
-  const showLabelSize = effectiveShape === 'numbered-circle';
+  const showSecondaryColor = shapeHasSecondary(effectiveShape);
 
   const waypointsColorMode: 'solid' | 'gradient' =
     settings.waypoints.color.mode === 'gradient' ? 'gradient' : 'solid';
   const waypointsGradientStops =
     settings.waypoints.color.mode === 'gradient'
       ? settings.waypoints.color.stops
+      : undefined;
+  const waypointsSecondaryColorMode: 'solid' | 'gradient' =
+    settings.waypoints.secondary_color.mode === 'gradient' ? 'gradient' : 'solid';
+  const waypointsSecondaryGradientStops =
+    settings.waypoints.secondary_color.mode === 'gradient'
+      ? settings.waypoints.secondary_color.stops
       : undefined;
   const waypointProgress = useWaypointProgress(waypoints, indexedRoute);
   const totalDistMeters = indexedRoute?.totalDistMeters ?? 0;
@@ -640,37 +731,44 @@ function WaypointsPanelBody({
 
   return (
     <>
+      {/* Two SegmentedPicker variants surfaced side-by-side for
+       *  comparison: VISIBILITY uses `trail` (chartreuse blaze sliding
+       *  along the top edge); LABEL MODE + ACTIVE MODE use `summit`
+       *  (chartreuse summit triangle hovering above the active label,
+       *  with a tinted active card). Once the user picks one, unify
+       *  all four DecorationPanel pickers (this panel's three + Route
+       *  VISIBILITY + POV's two) onto the winner. */}
       <Section label="VISIBILITY">
-        <ModePicker<TriMode>
+        <SegmentedPicker<TriMode>
           value={settings.waypoints.mode}
           options={TRI_OPTIONS}
           onChange={setMode}
           disabledValues={routeLoaded ? [] : ['visited']}
           title="Waypoint visibility"
-          minWidth={68}
-          variant="full"
+          ariaLabel="Waypoint visibility"
+          variant="trail"
         />
       </Section>
 
       <Section label="LABEL MODE">
-        <ModePicker<WaypointLabelMode>
+        <SegmentedPicker<WaypointLabelMode>
           value={settings.waypoints.label_mode}
           options={LABEL_MODE_OPTIONS}
           onChange={setLabelMode}
           title="Waypoint label render mode"
-          minWidth={76}
-          variant="full"
+          ariaLabel="Waypoint label render mode"
+          variant="summit"
         />
       </Section>
 
       <Section label="ACTIVE MODE">
-        <ModePicker<ActiveWaypointMode>
+        <SegmentedPicker<ActiveWaypointMode>
           value={settings.waypoints.active_mode}
           options={ACTIVE_WAYPOINT_OPTIONS}
           onChange={setActiveMode}
           title="Active-waypoint highlight strategy"
-          minWidth={72}
-          variant="full"
+          ariaLabel="Active-waypoint highlight strategy"
+          variant="summit"
         />
       </Section>
 
@@ -721,6 +819,45 @@ function WaypointsPanelBody({
         )}
       </Section>
 
+      {showSecondaryColor && (
+        <Section label="SECONDARY COLOR">
+          {scope === 'project' ? (
+            <ColorSection
+              value={projectSecondarySolid}
+              onChange={setSecondarySolidColor}
+              mode={waypointsSecondaryColorMode}
+              onModeChange={setSecondaryColorMode}
+              gradientAvailable={waypointsGradientAvailable}
+              gradientStops={waypointsSecondaryGradientStops}
+              onGradientStopsChange={setSecondaryGradientStops}
+              waypointProgress={waypointProgress}
+              totalDistMeters={totalDistMeters}
+            />
+          ) : associatedWaypoint ? (
+            <>
+              <ColorSection
+                value={waypointSecondaryColorValue}
+                onChange={setWaypointSecondaryColor}
+                overrideIndicator={
+                  associatedWaypoint.secondary_color !== undefined &&
+                  associatedOrdinal != null
+                    ? {
+                        label: `Wp ${associatedOrdinal} · override`,
+                        onClear: clearWaypointSecondaryColor,
+                      }
+                    : undefined
+                }
+              />
+              <p style={panelStyles.caption}>
+                Per-waypoint secondary overrides are solid-color only.
+              </p>
+            </>
+          ) : (
+            <NoAssociatedWaypointNote onOpenWaypointsPanel={onOpenWaypointsPanel} />
+          )}
+        </Section>
+      )}
+
       <Section label="SHAPE">
         {scope === 'project' ? (
           <ShapeSection value={settings.waypoints.shape} onChange={setProjectShape} />
@@ -753,18 +890,18 @@ function WaypointsPanelBody({
           stored={settings.waypoints.size.active_radius}
           onStoredChange={(v) => setSize({ active_radius: v })}
         />
+        {/* The Stroke control was tied to the native circle layer's
+         *  `circle-stroke-width`. With shapes now rendering through SDF
+         *  symbols, outline thickness is baked into the secondary icon
+         *  rasterizer; surfacing the stroke slider here is misleading
+         *  because adjusting it would have no visible effect. The
+         *  underlying `waypoints.size.stroke_width` field stays in the
+         *  data model for backward compat. */}
         <SizeRow
-          label="Stroke"
-          stored={settings.waypoints.size.stroke_width}
-          onStoredChange={(v) => setSize({ stroke_width: v })}
+          label="Label size"
+          stored={settings.waypoints.size.label_size}
+          onStoredChange={(v) => setSize({ label_size: v })}
         />
-        {showLabelSize && (
-          <SizeRow
-            label="Label size"
-            stored={settings.waypoints.size.label_size}
-            onStoredChange={(v) => setSize({ label_size: v })}
-          />
-        )}
       </Section>
     </>
   );
@@ -802,6 +939,12 @@ function PovPanelBody({
   const setColor = (hex: string) =>
     onChange({ ...settings, pov: { ...settings.pov, color: hex } });
 
+  // POV's secondary slot is a plain hex (POV is a single point that doesn't
+  // sample a gradient). Today this drives the `live-marker-dot` fill that
+  // used to be hard-coded white.
+  const setSecondaryColor = (hex: string) =>
+    onChange({ ...settings, pov: { ...settings.pov, secondary_color: hex } });
+
   const setPulseStyle = (pulse_style: PovPulseStyle) =>
     onChange({ ...settings, pov: { ...settings.pov, pulse_style } });
 
@@ -820,25 +963,33 @@ function PovPanelBody({
         <ColorSection value={settings.pov.color} onChange={setColor} />
       </Section>
 
-      <Section label="PULSE">
-        <div style={panelStyles.pulseRow}>
-          <ModePicker<PovPulseStyle>
-            value={settings.pov.pulse_style}
-            options={PULSE_STYLE_OPTIONS}
-            onChange={setPulseStyle}
-            title="Pulse animation style"
-            minWidth={92}
-            variant="full"
-          />
-          <ModePicker<PovPulseRate>
-            value={settings.pov.pulse_rate}
-            options={PULSE_RATE_OPTIONS}
-            onChange={setPulseRate}
-            title="Pulse rate"
-            minWidth={80}
-            variant="full"
-          />
-        </div>
+      <Section label="SECONDARY COLOR">
+        <ColorSection
+          value={settings.pov.secondary_color}
+          onChange={setSecondaryColor}
+        />
+      </Section>
+
+      <Section label="PULSE STYLE">
+        <SegmentedPicker<PovPulseStyle>
+          value={settings.pov.pulse_style}
+          options={PULSE_STYLE_OPTIONS}
+          onChange={setPulseStyle}
+          title="Pulse animation style"
+          ariaLabel="Pulse animation style"
+          variant="trail"
+        />
+      </Section>
+
+      <Section label="PULSE RATE">
+        <SegmentedPicker<PovPulseRate>
+          value={settings.pov.pulse_rate}
+          options={PULSE_RATE_OPTIONS}
+          onChange={setPulseRate}
+          title="Pulse rate"
+          ariaLabel="Pulse rate"
+          variant="summit"
+        />
       </Section>
 
       <Section label="SIZE">
@@ -921,6 +1072,12 @@ function readSolid(color: DecorationColor): string {
 function omitColor(wp: Waypoint): Waypoint {
   const next: Waypoint = { ...wp };
   delete (next as { color?: string }).color;
+  return next;
+}
+
+function omitSecondaryColor(wp: Waypoint): Waypoint {
+  const next: Waypoint = { ...wp };
+  delete (next as { secondary_color?: string }).secondary_color;
   return next;
 }
 

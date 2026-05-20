@@ -250,8 +250,8 @@ describe('buildPerFrameState paints', () => {
       settings,
       VIEWPORT,
     );
-    expect(state.paints.waypointCircleRadius).toBeCloseTo(
-      settings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
+    expect(state.paints.waypointIconSize).toBeCloseTo(
+      (settings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) / 18,
       9,
     );
     // At t=0 the pulse curve emits pov.size.pulse_start_radius × PAINT_REFERENCE_WIDTH.
@@ -284,8 +284,8 @@ describe('buildPerFrameState paints', () => {
       overridden,
       VIEWPORT,
     );
-    expect(state.paints.waypointCircleRadius).toBeCloseTo(
-      0.04 * PAINT_REFERENCE_WIDTH,
+    expect(state.paints.waypointIconSize).toBeCloseTo(
+      (0.04 * PAINT_REFERENCE_WIDTH) / 18,
       9,
     );
   });
@@ -310,23 +310,24 @@ describe('buildPerFrameState paints', () => {
       POINT_SETTINGS,
       VIEWPORT,
     );
-    expect(a.paints.waypointCircleRadius).toEqual(b.paints.waypointCircleRadius);
+    expect(a.paints.waypointIconSize).toEqual(b.paints.waypointIconSize);
     expect(a.paints.pulseRadius).toBeCloseTo(b.paints.pulseRadius, 9);
     expect(a.paints.pulseOpacity).toBeCloseTo(b.paints.pulseOpacity, 9);
-    expect(a.paints.waypointCircleColor).toEqual(b.paints.waypointCircleColor);
-    expect(a.paints.waypointCircleStrokeColor).toEqual(
-      b.paints.waypointCircleStrokeColor,
+    expect(a.paints.waypointPrimaryColor).toEqual(
+      b.paints.waypointPrimaryColor,
+    );
+    expect(a.paints.waypointSecondaryColor).toEqual(
+      b.paints.waypointSecondaryColor,
     );
   });
 
-  it('waypointIconColor equals waypointCircleColor in every per-frame call', () => {
-    // The symbol layer (pin/square/diamond) must paint with the SAME color
-    // expression as the circle layer (override_color > base). If the two
-    // ever diverge, per-`Waypoint.color` overrides and gradient stops fail
-    // silently on non-circle-family shapes. Asserted at two probe states:
-    // (a) no active waypoint, (b) active waypoint set.
+  it('primary and secondary color expressions are independent of each other', () => {
+    // After the descriptor refactor the two slots are independent inputs —
+    // editing `secondary_color` must NOT change the primary color expression
+    // (and vice versa). A regression here would silently re-couple the two
+    // slots, defeating the whole point of the two-color model.
     const { clips, waypoints, timeline } = twoClipFixture();
-    const noActive = buildPerFrameState(
+    const a = buildPerFrameState(
       timeline,
       0,
       null,
@@ -335,54 +336,51 @@ describe('buildPerFrameState paints', () => {
       POINT_SETTINGS,
       VIEWPORT,
     );
-    expect(noActive.paints.waypointIconColor).toEqual(
-      noActive.paints.waypointCircleColor,
-    );
-    // Force an active waypoint by jumping inside clip 1's span — the v7
-    // `latest_passed` selector picks waypoints[0] for any t inside clip 1.
-    const withActive = buildPerFrameState(
-      timeline,
-      1_000,
-      null,
-      clips,
-      waypoints,
-      POINT_SETTINGS,
-      VIEWPORT,
-    );
-    expect(withActive.paints.waypointIconColor).toEqual(
-      withActive.paints.waypointCircleColor,
-    );
-  });
-
-  it('waypointIconColor reflects gradient color expressions just like waypointCircleColor', () => {
-    // Gradient-mode project Waypoints color must reach the symbol layer
-    // via the same expression body — otherwise diamond/pin/square icons
-    // stay chartreuse while the circles paint a gradient sample.
-    const { clips, waypoints, timeline } = twoClipFixture();
-    const gradientSettings: MapSettings = {
+    const settingsWithDifferentSecondary: MapSettings = {
       ...POINT_SETTINGS,
       waypoints: {
         ...POINT_SETTINGS.waypoints,
-        color: {
-          mode: 'gradient',
-          stops: [
-            { fraction: 0, color: '#bced09' },
-            { fraction: 1, color: '#ff715b' },
-          ],
-        },
+        secondary_color: { mode: 'solid', solid: '#123456' },
       },
     };
+    const b = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      settingsWithDifferentSecondary,
+      VIEWPORT,
+    );
+    expect(a.paints.waypointPrimaryColor).toEqual(
+      b.paints.waypointPrimaryColor,
+    );
+    expect(a.paints.waypointSecondaryColor).not.toEqual(
+      b.paints.waypointSecondaryColor,
+    );
+  });
+
+  it('secondary color expression includes the override_secondary_color arm', () => {
+    // The case expression `buildSlotColorExpr` emits for the secondary slot
+    // must read the `override_secondary_color` feature property — otherwise
+    // per-Waypoint secondary overrides fail silently. Serialize and look
+    // for the property name in the expression body.
+    const { clips, waypoints, timeline } = twoClipFixture();
     const state = buildPerFrameState(
       timeline,
       0,
       null,
       clips,
       waypoints,
-      gradientSettings,
+      POINT_SETTINGS,
       VIEWPORT,
     );
-    expect(state.paints.waypointIconColor).toEqual(
-      state.paints.waypointCircleColor,
+    expect(JSON.stringify(state.paints.waypointSecondaryColor)).toContain(
+      'override_secondary_color',
+    );
+    // Sanity: primary doesn't reference the secondary feature property.
+    expect(JSON.stringify(state.paints.waypointPrimaryColor)).not.toContain(
+      'override_secondary_color',
     );
   });
 
@@ -403,21 +401,89 @@ describe('buildPerFrameState paints', () => {
       POINT_SETTINGS,
       VIEWPORT,
     );
-    const expr = state.paints.waypointCircleRadius as unknown as unknown[];
+    const expr = state.paints.waypointIconSize as unknown as unknown[];
     expect(Array.isArray(expr)).toBe(true);
     expect(expr[0]).toBe('case');
     // expr[1] is the predicate: ['==', ['get', 'id'], <waypoint-id>]
     const predicate = expr[1] as unknown[];
     expect(predicate[0]).toBe('==');
     expect(predicate[2]).toBe(waypoints[0].id);
+    // expr[2] is the active icon-size, expr[3] is the default. Both flow
+    // through `(radius × PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS`
+    // (18), matching the static seed in `resolveStaticPaints`.
     expect(expr[2]).toBeCloseTo(
-      POINT_SETTINGS.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH,
+      (POINT_SETTINGS.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH) /
+        18,
       9,
     );
     expect(expr[3]).toBeCloseTo(
-      POINT_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH,
+      (POINT_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) /
+        18,
       9,
     );
+  });
+
+  it('symbol-sort-key (no active): emits `-index` so earliest upcoming waypoint paints on top', () => {
+    // Before the playhead crosses any waypoint, every waypoint is "future."
+    // By the user's rule for future waypoints (earlier on top), index=0 must
+    // outscore index=N. The two-clip fixture seeds waypoints at the clip
+    // start times; at t=-1 no waypoint has been passed, so active is null
+    // and the sort-key expression should be `['-', 0, ['get', 'index']]`.
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const noActiveSettings: MapSettings = {
+      ...POINT_SETTINGS,
+      waypoints: { ...POINT_SETTINGS.waypoints, active_mode: 'none' },
+    };
+    const state = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      noActiveSettings,
+      VIEWPORT,
+    );
+    const expr = state.paints.waypointSortKey as unknown as unknown[];
+    expect(Array.isArray(expr)).toBe(true);
+    expect(expr[0]).toBe('-');
+    expect(expr[1]).toBe(0);
+    // expr[2] is `['get', 'index']`.
+    const arg = expr[2] as unknown[];
+    expect(arg[0]).toBe('get');
+    expect(arg[1]).toBe('index');
+  });
+
+  it('symbol-sort-key (active set): emits `-|index - activeIndex|` so closest-to-playhead waypoints win', () => {
+    // With latest_passed mode + a marker past the first waypoint, the
+    // expression should be `['-', 0, ['abs', ['-', ['get', 'index'], A]]]`
+    // where A is the active waypoint's array index. The two-clip fixture
+    // seeds waypoint[0] at clip a's start (project-time 0); at t=0 it's the
+    // latest-passed, so activeIndex=0.
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const state = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      POINT_SETTINGS,
+      VIEWPORT,
+    );
+    const expr = state.paints.waypointSortKey as unknown as unknown[];
+    expect(Array.isArray(expr)).toBe(true);
+    expect(expr[0]).toBe('-');
+    expect(expr[1]).toBe(0);
+    const absExpr = expr[2] as unknown[];
+    expect(absExpr[0]).toBe('abs');
+    const subExpr = absExpr[1] as unknown[];
+    expect(subExpr[0]).toBe('-');
+    const getExpr = subExpr[1] as unknown[];
+    expect(getExpr[0]).toBe('get');
+    expect(getExpr[1]).toBe('index');
+    // Active index is the position of the latest-passed waypoint in the
+    // waypoints array. The fixture's first seeded waypoint is the one
+    // anchored at project-time 0.
+    expect(subExpr[2]).toBe(0);
   });
 });
 

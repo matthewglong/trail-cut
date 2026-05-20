@@ -2,9 +2,10 @@
 //
 // Mirrors the pattern in `ColorSection.test.tsx`: render via `react-dom/client`
 // directly, query by `data-testid`, and assert on rendered HTML + callback
-// payloads. Step 8-UI acceptance details:
-//   • All six shape buttons render (circle, ring, pin, square, diamond,
-//     numbered-circle) with the documented labels
+// payloads. Acceptance details:
+//   • All five shape buttons render (circle, ring, pin, square, diamond)
+//     with the documented labels — `numbered-circle` was dropped in the
+//     shape-descriptor refactor; numbering rides on the label layer now.
 //   • Clicking a cell fires `onChange` with the matching enum string
 //   • Selected cell gets the accent (chartreuse) ring via `cellSelected`
 //   • `disabled` blocks pointer events and `onChange`
@@ -57,18 +58,17 @@ const ALL_SHAPES: WaypointShape[] = [
   'pin',
   'square',
   'diamond',
-  'numbered-circle',
 ];
 
 describe('ShapeSection', () => {
-  it('renders all six shape cells with the documented enum values', () => {
+  it('renders all five shape cells with the documented enum values', () => {
     render(<ShapeSection value="circle" onChange={() => undefined} />);
     for (const shape of ALL_SHAPES) {
       const cell = q(`[data-testid="shape-cell-${shape}"]`);
       expect(cell, `expected cell for ${shape}`).toBeTruthy();
     }
     const cells = qAll('[data-testid^="shape-cell-"]');
-    expect(cells.length).toBe(6);
+    expect(cells.length).toBe(5);
   });
 
   it('renders human-readable labels for each shape', () => {
@@ -79,7 +79,6 @@ describe('ShapeSection', () => {
     expect(text).toContain('Pin');
     expect(text).toContain('Square');
     expect(text).toContain('Diamond');
-    expect(text).toContain('Numbered');
   });
 
   it('fires onChange with the matching enum value when a cell is clicked', () => {
@@ -90,15 +89,6 @@ describe('ShapeSection', () => {
     click(diamond!);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange.mock.calls[0][0]).toBe('diamond');
-  });
-
-  it('uses the exact hyphenated string for numbered-circle', () => {
-    const onChange = vi.fn();
-    render(<ShapeSection value="circle" onChange={onChange} />);
-    const numbered = q('[data-testid="shape-cell-numbered-circle"]');
-    expect(numbered).toBeTruthy();
-    click(numbered!);
-    expect(onChange).toHaveBeenCalledWith('numbered-circle');
   });
 
   it('marks the selected cell with the accent (chartreuse) styling', () => {

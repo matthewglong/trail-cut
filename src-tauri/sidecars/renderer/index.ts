@@ -71,7 +71,7 @@ import {
   buildStyleSpec,
   buildStaticSourceData,
   buildPerFrameState,
-  buildAllWaypointSdfIcons,
+  buildAllShapeIcons,
   resolveStaticPaints,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
@@ -80,9 +80,9 @@ import {
   ROUTE_FULL_LAYER,
   ROUTE_TRAIL_LAYER,
   WAYPOINTS_ACTIVE_HALO_LAYER,
-  WAYPOINTS_CIRCLE_LAYER,
+  WAYPOINTS_PRIMARY_LAYER,
+  WAYPOINTS_SECONDARY_LAYER,
   WAYPOINTS_LABEL_LAYER,
-  WAYPOINTS_SYMBOL_LAYER,
 } from '../../../src/lib/mapVisuals';
 import {
   activeClipIdAt,
@@ -451,45 +451,46 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
   ];
   // Layer stack on the shared `waypoints` source mirrors MapView.tsx
   // (bottom → top):
-  //   waypoints-active-halo → waypoints-circle → waypoints-symbol → waypoints-label
-  // Per-feature opacity expressions (emitted by resolveStaticPaints) toggle
-  // exactly one of the circle/symbol layers per feature based on its
-  // effective shape. The halo sits BELOW the inner shape layers so the
-  // dot/symbol paints over it ([DECIDED] Q2); the label sits on top of
-  // both so the numeric label composites correctly over either base shape.
+  //   waypoints-active-halo → waypoints-primary → waypoints-secondary → waypoints-label
+  // Both primary and secondary are SDF symbol layers; primary paints the
+  // filled silhouette tinted by the primary color, secondary stacks above
+  // and paints the outline / accent tinted by the secondary color. Shapes
+  // without a declared secondary rasterizer register a transparent
+  // placeholder so the secondary layer stays valid. The halo sits BELOW
+  // the shape layers; the label sits on top.
   const staticLayers: unknown[] = [
     ROUTE_FULL_LAYER,
     ROUTE_TRAIL_LAYER,
     WAYPOINTS_ACTIVE_HALO_LAYER,
-    WAYPOINTS_CIRCLE_LAYER,
-    WAYPOINTS_SYMBOL_LAYER,
+    WAYPOINTS_PRIMARY_LAYER,
+    WAYPOINTS_SECONDARY_LAYER,
     WAYPOINTS_LABEL_LAYER,
     LIVE_MARKER_PULSE_LAYER,
     LIVE_MARKER_PULSE_B_LAYER,
     LIVE_MARKER_DOT_LAYER,
   ];
 
-  // SDF icon payload for the waypoints-symbol layer. Each entry is
-  // [name, { width, height, data: Uint8Array }, options] — the exact shape
-  // `map.addImage(name, image, options)` accepts. Pixels come from
-  // `buildWaypointSdfIcon` (a pure function in src/lib/mapVisuals/shapes.ts,
-  // shared with the preview), so the export renderer registers
-  // bit-identical icons to those MapView.tsx registers — preview/export
+  // SDF icon payload — every waypoint shape × both slots (primary +
+  // secondary). Each entry is [id, { width, height, data: Uint8Array },
+  // options] — the exact shape `map.addImage(id, image, options)` accepts.
+  // Pixels come from `buildAllShapeIcons` in shapes.ts (a pure function
+  // shared with the preview), so the export renderer registers bit-
+  // identical icons to those MapView.tsx registers — preview/export
   // parity by construction.
   //
   // The Uint8Array survives `JSON.stringify` in page.evaluate as a plain
   // {0:n, 1:n, ...} object; page-side __init reconstructs a Uint8Array
-  // from it before handing the buffer to `map.addImage()`. The roundtrip
-  // adds a few hundred KB to the initPayload (6 icons × 48×48×4 B ≈ 55 KB,
-  // plus JSON expansion overhead) — well under CDP's argument-size threshold.
+  // from it before handing the buffer to `map.addImage()`. With 5 shapes
+  // × 2 slots × 48×48×4 B ≈ 92 KB plus JSON expansion overhead — still
+  // well under CDP's argument-size threshold.
   const staticImages: Array<[
     string,
     { width: number; height: number; data: Uint8Array },
     { sdf: boolean },
-  ]> = buildAllWaypointSdfIcons().map(({ name, icon }) => [
-    `waypoint-${name}`,
+  ]> = buildAllShapeIcons().map(({ id, icon, options }) => [
+    id,
     { width: icon.width, height: icon.height, data: icon.data },
-    { sdf: true },
+    options,
   ]);
 
   // Static paint sizing + layouts — layer specs ship placeholder values for
@@ -524,7 +525,8 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     // these against the active clip's `MapSettings`, so per-clip overrides
     // (none today, but the wiring stays consistent with paints/layouts).
     staticGradients: staticPaintResolution.gradients,
-    // SDF icons for the waypoints-symbol layer. [name, { width, height, data },
+    // SDF icons for the waypoint primary + secondary symbol layers.
+    // [id, { width, height, data },
     // options] tuples. Built once here from `buildAllWaypointSdfIcons()` —
     // the same pure function MapView.tsx calls in onStyleLoad — so preview
     // and export register bit-identical pixels. The page's __init loops
@@ -730,18 +732,17 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
   const sources: Array<[string, unknown]> = Object.entries(state.sources);
   const paints: Array<[string, string, unknown]> = [
     ...staticResolution.paints,
-    ['waypoints-circle', 'circle-radius', state.paints.waypointCircleRadius],
-    ['waypoints-circle', 'circle-color', state.paints.waypointCircleColor],
-    ['waypoints-circle', 'circle-stroke-color', state.paints.waypointCircleStrokeColor],
-    // Symbol-layer icon-color: same color expression as the circle layer so
-    // symbol-family shapes (pin, square, diamond) paint with bit-identical
-    // color logic — override_color > base, gradient stops, active highlight.
-    ['waypoints-symbol', 'icon-color', state.paints.waypointIconColor],
+    // Primary + secondary `icon-color` flow as data-driven case expressions
+    // from buildPerFramePaints (override > active > base for each slot).
+    // The SDF tint at draw time turns the white-ink rasters into the
+    // user's chosen colors, identically across preview and export.
+    ['waypoints-primary', 'icon-color', state.paints.waypointPrimaryColor],
+    ['waypoints-secondary', 'icon-color', state.paints.waypointSecondaryColor],
     // Active-waypoint halo ([DECIDED] Q2). Always-seeded layer; radius and
     // opacity collapse to 0 when no waypoint is active, so the layer stays
     // invisible without `visibility` toggling. Color tracks the active
-    // dot's resolved color (or `mapSettings.waypoints.active_color` when
-    // set) so preview and export composite identically.
+    // primary's resolved color (or `mapSettings.waypoints.active_color`
+    // when set) so preview and export composite identically.
     ['waypoints-active-halo', 'circle-radius', state.paints.waypointHaloRadius],
     ['waypoints-active-halo', 'circle-color', state.paints.waypointHaloColor],
     ['waypoints-active-halo', 'circle-opacity', state.paints.waypointHaloOpacity],
@@ -754,7 +755,21 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     // 1.0 in steady / sonar / heartbeat per shapes-pov.md Part 2 §2.
     ['live-marker-dot', 'circle-opacity', state.paints.dotOpacity],
   ];
-  const layouts: Array<[string, string, unknown]> = staticResolution.layouts;
+  // `icon-size` is a layout property (not paint), so the active-state size
+  // bump rides the layouts channel. Both symbol layers get the same value
+  // so the outline tracks the fill at every size.
+  const layouts: Array<[string, string, unknown]> = [
+    ...staticResolution.layouts,
+    ['waypoints-primary', 'icon-size', state.paints.waypointIconSize],
+    ['waypoints-secondary', 'icon-size', state.paints.waypointIconSize],
+    // `symbol-sort-key` stacks features so the closest-to-playhead
+    // waypoint paints on top of farther ones — see `waypointSortKey` in
+    // `paints.ts`. Applied to all three symbol layers so the fill,
+    // outline, and label all reorder together.
+    ['waypoints-primary', 'symbol-sort-key', state.paints.waypointSortKey],
+    ['waypoints-secondary', 'symbol-sort-key', state.paints.waypointSortKey],
+    ['waypoints-label', 'symbol-sort-key', state.paints.waypointSortKey],
+  ];
   // Per-frame line-gradient expressions. Re-resolved from the active clip's
   // merged `MapSettings` so any future per-clip route-color override flows
   // through the same channel paints/layouts use. Today's MapOverrides shape

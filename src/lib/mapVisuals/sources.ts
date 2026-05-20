@@ -107,16 +107,18 @@ function buildWaypointsCollection(
         clipId: wp.clip_id ?? null,
         label: wp.label,
         progress,
-        // Per-waypoint solid override baked into the feature so the
-        // `circle-color` case expression in `buildPerFramePaints` can read
-        // it via `['get', 'override_color']`. `null` when unset so the
-        // guard `['!=', ['get', 'override_color'], null]` falls through to
-        // the active / base arms. Must match the visited-mode rebuild
-        // below or visited mode silently loses the override.
+        // Per-waypoint solid overrides baked into the feature so the
+        // primary/secondary color case expressions in `buildPerFramePaints`
+        // can read them via `['get', 'override_color']` /
+        // `['get', 'override_secondary_color']`. `null` when unset so the
+        // guard `['!=', ['get', '...'], null]` falls through to the active
+        // / base arms. Must match the visited-mode rebuild below or visited
+        // mode silently loses the override.
         override_color: wp.color ?? null,
-        // Per-waypoint shape override (Step 8 consumer). `null` when unset
-        // so a future opacity expression `coalesce(get(override_shape),
-        // projectShape)` falls through to the project default.
+        override_secondary_color: wp.secondary_color ?? null,
+        // Per-waypoint shape override. `null` when unset so the
+        // icon-image `coalesce(get(override_shape), projectShape)` in
+        // `resolveStaticPaints` falls through to the project default.
         override_shape: wp.shape ?? null,
       },
       geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },

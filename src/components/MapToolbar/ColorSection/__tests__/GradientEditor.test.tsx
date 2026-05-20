@@ -51,10 +51,6 @@ function q(sel: string): Element | null {
   return container.querySelector(sel);
 }
 
-function qAll(sel: string): Element[] {
-  return Array.from(container.querySelectorAll(sel));
-}
-
 /** Construct a synthetic PointerEvent — jsdom lacks PointerEvent's
  *  constructor; the LayoutConfigurator test suite uses the same pattern. */
 function pointerEvent(
@@ -94,7 +90,7 @@ const twoStop = (): GradientStop[] => [
 ];
 
 describe('GradientEditor — structure', () => {
-  it('renders bar, stop rail, distance axis, preview', () => {
+  it('renders bar and stop rail with 1..N labels', () => {
     render(
       <GradientEditor
         stops={twoStop()}
@@ -102,14 +98,12 @@ describe('GradientEditor — structure', () => {
         selectedIndex={null}
         onSelectedIndexChange={() => undefined}
         waypointProgress={[0.25, 0.75]}
-        totalDistMeters={12400}
       />,
     );
     expect(q('[data-testid="gradient-bar"]')).not.toBeNull();
     expect(q('[data-testid="stop-rail"]')).not.toBeNull();
-    expect(q('[data-testid="gradient-distance-axis"]')).not.toBeNull();
-    expect(q('[data-testid="gradient-preview"]')).not.toBeNull();
-    expect(q('[data-testid="gradient-preview-svg"]')).not.toBeNull();
+    expect(q('[data-testid="gradient-stop-label-0"]')?.textContent).toBe('1');
+    expect(q('[data-testid="gradient-stop-label-1"]')?.textContent).toBe('2');
   });
 
   it('renders a handle per stop', () => {
@@ -132,19 +126,6 @@ describe('GradientEditor — structure', () => {
     expect(q('[data-testid="gradient-stop-handle-2"]')).not.toBeNull();
   });
 
-  it('renders one preview dot per waypoint', () => {
-    render(
-      <GradientEditor
-        stops={twoStop()}
-        onStopsChange={() => undefined}
-        selectedIndex={null}
-        onSelectedIndexChange={() => undefined}
-        waypointProgress={[0.1, 0.5, 0.9]}
-        totalDistMeters={1000}
-      />,
-    );
-    expect(qAll('[data-testid^="gradient-preview-dot-"]').length).toBe(3);
-  });
 });
 
 describe('GradientEditor — bar click inserts a stop', () => {
@@ -247,35 +228,26 @@ describe('GradientEditor — endpoints', () => {
   });
 });
 
-describe('GradientEditor — distance axis', () => {
-  it('hides the axis when total distance is 0', () => {
+describe('GradientEditor — stop labels', () => {
+  it('numbers stops 1..N regardless of endpoint vs mid-stop', () => {
     render(
       <GradientEditor
-        stops={twoStop()}
+        stops={[
+          { fraction: 0, color: '#000000' },
+          { fraction: 0.33, color: '#444444' },
+          { fraction: 0.66, color: '#888888' },
+          { fraction: 1, color: '#ffffff' },
+        ]}
         onStopsChange={() => undefined}
         selectedIndex={null}
         onSelectedIndexChange={() => undefined}
         waypointProgress={[]}
-        totalDistMeters={0}
       />,
     );
-    expect(q('[data-testid="gradient-distance-axis"]')).toBeNull();
-  });
-
-  it('shows km labels when total >= 1 km', () => {
-    render(
-      <GradientEditor
-        stops={twoStop()}
-        onStopsChange={() => undefined}
-        selectedIndex={null}
-        onSelectedIndexChange={() => undefined}
-        waypointProgress={[]}
-        totalDistMeters={12400}
-      />,
-    );
-    const text = q('[data-testid="gradient-distance-axis"]')?.textContent ?? '';
-    expect(text).toMatch(/0\.0 km/);
-    expect(text).toMatch(/12\.4 km/);
+    expect(q('[data-testid="gradient-stop-label-0"]')?.textContent).toBe('1');
+    expect(q('[data-testid="gradient-stop-label-1"]')?.textContent).toBe('2');
+    expect(q('[data-testid="gradient-stop-label-2"]')?.textContent).toBe('3');
+    expect(q('[data-testid="gradient-stop-label-3"]')?.textContent).toBe('4');
   });
 });
 

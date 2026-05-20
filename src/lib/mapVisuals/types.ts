@@ -33,33 +33,40 @@ export interface PulseStatePair {
   b: PulseState;
 }
 
-/** Per-frame paint deltas the consumer applies via `setPaintProperty`. The
- *  active-clip highlight is expressed as MapLibre `case` expressions so the
- *  highlight is data-driven on the waypoints layer (no layer churn). The
- *  pulse values are scalars meant for the `live-marker-pulse` /
- *  `live-marker-pulse-b` circle layers — `pulseRadiusB` / `pulseOpacityB`
- *  carry the second ring that only the heartbeat style animates; in all
- *  other styles the B-ring's opacity is 0 (visibility-by-opacity, not by
+/** Per-frame paint + layout deltas the consumer applies via
+ *  `setPaintProperty` / `setLayoutProperty`. Active-state highlights are
+ *  expressed as MapLibre `case` expressions so the highlight is data-driven
+ *  on the waypoint symbol layers (no layer churn). The pulse values are
+ *  scalars meant for the `live-marker-pulse` / `live-marker-pulse-b` circle
+ *  layers — `pulseRadiusB` / `pulseOpacityB` carry the second ring that only
+ *  the heartbeat style animates; in all other styles the B-ring's opacity
+ *  is 0 (visibility-by-opacity, not by
  *  `setLayoutProperty('visibility', ...)`, so the layer is always seeded). */
 export interface PaintUpdates {
-  waypointCircleRadius: DataDrivenPropertyValueSpecification<number> | number;
-  waypointCircleColor: DataDrivenPropertyValueSpecification<string> | string;
-  waypointCircleStrokeColor:
-    | DataDrivenPropertyValueSpecification<string> | string;
-  /** Waypoint symbol-layer `icon-color`. SDF icons are tinted by this
-   *  paint property; the value is the SAME `case` expression used for
-   *  `waypointCircleColor` (override_color > base) so symbol-family shapes
-   *  (pin, square, diamond) and circle-family shapes (circle, ring,
-   *  numbered-circle) paint with bit-identical color logic — gradient
-   *  stops, per-`Waypoint.color` overrides, and the active-waypoint
-   *  highlight all apply uniformly. Applied to `waypoints-symbol`'s
-   *  `icon-color` per frame. */
-  waypointIconColor: DataDrivenPropertyValueSpecification<string> | string;
+  /** Waypoint PRIMARY-slot `icon-color`. Three-arm `case` expression:
+   *  active-color (when set on `mapSettings.waypoints.active_color` and the
+   *  feature is the active one) > per-feature `override_color` > resolved
+   *  base (solid hex or gradient interpolate). Applied to
+   *  `waypoints-primary.icon-color` per frame via `setPaintProperty`. */
+  waypointPrimaryColor: DataDrivenPropertyValueSpecification<string> | string;
+  /** Waypoint SECONDARY-slot `icon-color`. Same three-arm shape as
+   *  `waypointPrimaryColor` but resolved against `secondary_color` /
+   *  `active_secondary_color` / per-feature `override_secondary_color`.
+   *  Applied to `waypoints-secondary.icon-color` per frame. */
+  waypointSecondaryColor: DataDrivenPropertyValueSpecification<string> | string;
+  /** Waypoint `icon-size` (layout, not paint). Scalar when no waypoint is
+   *  active; a `case` expression branching on feature `id` when one is —
+   *  active feature renders at `active_radius / SHAPE_CANONICAL_RADIUS`,
+   *  every other feature at `circle_radius / SHAPE_CANONICAL_RADIUS`.
+   *  Applied to BOTH waypoint symbol layers (`waypoints-primary` and
+   *  `waypoints-secondary`) per frame via `setLayoutProperty` — they share
+   *  the same size so the outline stays aligned with the fill. */
+  waypointIconSize: DataDrivenPropertyValueSpecification<number> | number;
   /** Active-waypoint halo color. Per [DECIDED] Q1: when
    *  `mapSettings.waypoints.active_color` is set the halo paints that flat
    *  hex; when unset, the halo mirrors the active waypoint's own resolved
-   *  color (override_color > gradient sample > solid base) via the same
-   *  case expression the dot uses. Applied to the
+   *  primary color (override_color > gradient sample > solid base) via the
+   *  same case expression the primary slot uses. Applied to the
    *  `waypoints-active-halo` circle layer's `circle-color`. */
   waypointHaloColor: DataDrivenPropertyValueSpecification<string> | string;
   /** Active-waypoint halo radius. Scalar 0 when there is no active waypoint;
@@ -72,6 +79,19 @@ export interface PaintUpdates {
    *  `ACTIVE_HALO_OPACITY` and every other feature at 0. Applied to
    *  `waypoints-active-halo`'s `circle-opacity`. */
   waypointHaloOpacity: DataDrivenPropertyValueSpecification<number> | number;
+  /** Per-feature `symbol-sort-key` for the three waypoint symbol layers
+   *  (primary, secondary, label). With `icon-allow-overlap: true` /
+   *  `text-allow-overlap: true` AND `symbol-z-order: 'source'`, MapLibre
+   *  draws features in ascending sort-key order — higher sort-key paints
+   *  later (i.e., on top). The expression encodes "closer-to-playhead
+   *  waypoints win": when a waypoint has been passed, sort-key is
+   *  `-|index - activeIndex|` so the active dot tops everything and
+   *  neighboring indices stack toward it (later-passed past wpts cover
+   *  earlier-passed; soon-to-come future wpts cover further-out future).
+   *  When no waypoint has been passed yet, sort-key is `-index` so the
+   *  earliest upcoming waypoint paints on top of later ones. Applied to
+   *  all three layers via `setLayoutProperty('symbol-sort-key', …)`. */
+  waypointSortKey: DataDrivenPropertyValueSpecification<number> | number;
   pulseRadius: number;
   pulseOpacity: number;
   pulseRadiusB: number;

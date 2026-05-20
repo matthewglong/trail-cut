@@ -112,10 +112,16 @@ export interface Waypoint {
   label: string;
   source: 'clip' | 'gpx' | 'manual';
   clip_id?: string;
-  /** Per-waypoint solid color override. When set, this waypoint paints in
-   *  this color regardless of `mapSettings.waypoints.color`. Solid only —
-   *  a single point has no anchor to gradient across. */
+  /** Per-waypoint solid color override. When set, this waypoint paints its
+   *  PRIMARY slot in this color regardless of `mapSettings.waypoints.color`.
+   *  Solid only — a single point has no anchor to gradient across. */
   color?: string;
+  /** Per-waypoint solid secondary-color override. When set, this waypoint
+   *  paints its SECONDARY slot (the outline / accent element on shapes that
+   *  define one) in this color regardless of
+   *  `mapSettings.waypoints.secondary_color`. Solid only, same reason as
+   *  `color`. Has no visible effect on one-color shapes (`ring`). */
+  secondary_color?: string;
   /** Per-waypoint shape override. When set, wins over
    *  `mapSettings.waypoints.shape`. */
   shape?: WaypointShape;
@@ -134,13 +140,22 @@ export interface GradientStop {
   color: string;
 }
 
+/** Waypoint shape roster. Each name resolves to a `ShapeDescriptor` in
+ *  `src/lib/mapVisuals/shapes.ts`, which carries the primary + (optional)
+ *  secondary SDF rasterizers.
+ *
+ *  `'numbered-circle'` was removed in this iteration — numbering rides on
+ *  the label layer, not the shape silhouette, so the dedicated shape was
+ *  redundant. Legacy projects that persisted `'numbered-circle'` on disk
+ *  are coerced to `'circle'` defensively in the icon-image expression
+ *  emitted by `resolveStaticPaints`, so they keep rendering without a
+ *  data-migration step. */
 export type WaypointShape =
   | 'circle'
   | 'ring'
   | 'pin'
   | 'square'
-  | 'diamond'
-  | 'numbered-circle';
+  | 'diamond';
 
 /** Available POV pulse animation roster. See `shapes-pov.md` Part 2. */
 export type PovPulseStyle = 'steady' | 'throb' | 'sonar' | 'heartbeat';
@@ -178,26 +193,46 @@ export interface RouteSettings {
 export interface WaypointsSize {
   circle_radius: number;
   active_radius: number;
+  /** @deprecated Not applied to waypoint rendering since the shape-descriptor
+   *  refactor. Outline thickness is now baked into the secondary SDF icon
+   *  (constant `OUTLINE_THICKNESS` in `shapes.ts`). The field is retained
+   *  for backward compatibility with persisted projects — re-introducing
+   *  user-controllable stroke thickness will re-rasterize the outline icons
+   *  on change rather than re-add this number to MapLibre paint properties. */
   stroke_width: number;
   label_size: number;
 }
 
 export interface WaypointsSettings {
   mode: TriMode;
+  /** Primary color — tints the waypoint's filled silhouette (every shape's
+   *  primary SDF slot). Solid or gradient. Per-feature override via
+   *  `Waypoint.color`. */
   color: DecorationColor;
+  /** Secondary color — tints the waypoint's outline / accent element (every
+   *  shape's secondary SDF slot). Solid or gradient. Per-feature override via
+   *  `Waypoint.secondary_color`. One-color shapes (`ring`) ignore this. */
+  secondary_color: DecorationColor;
   shape: WaypointShape;
   size: WaypointsSize;
   label_mode: WaypointLabelMode;
   active_mode: ActiveWaypointMode;
-  /** Optional active-waypoint highlight color. Falls back to the waypoint's
-   *  resolved color at render time when unset. */
+  /** Optional active-waypoint primary-color highlight. Falls back to the
+   *  waypoint's resolved primary color at render time when unset. */
   active_color?: string;
-  /** UI affordance — stash of the last gradient stop array, populated when
-   *  the user toggles GRADIENT → SOLID so toggling back restores the prior
-   *  gradient. Never read by the renderer — see `color-gradient.md` §13.
-   *  Optional and additive; existing v8 projects round-trip unchanged with
-   *  this field absent. */
+  /** Optional active-waypoint secondary-color highlight. Falls back to the
+   *  waypoint's resolved secondary color at render time when unset. Mirrors
+   *  `active_color` so the two slots flip together when the user activates
+   *  a waypoint. */
+  active_secondary_color?: string;
+  /** UI affordance — stash of the last gradient stop array for the PRIMARY
+   *  color, populated when the user toggles GRADIENT → SOLID so toggling
+   *  back restores the prior gradient. Never read by the renderer — see
+   *  `color-gradient.md` §13. */
   color_stops_cache?: GradientStop[];
+  /** UI affordance — stash for the SECONDARY color's gradient stops. Same
+   *  semantics as `color_stops_cache` but for the secondary slot. */
+  secondary_color_stops_cache?: GradientStop[];
 }
 
 export interface PovSize {
@@ -209,8 +244,16 @@ export interface PovSize {
 }
 
 export interface PovSettings {
-  /** Solid only — POV does not participate in the gradient palette. */
+  /** Primary color — tints the POV marker's body (today's `live-marker-dot`
+   *  fill; once POV gains shape variants, the primary SDF slot). Solid only:
+   *  the POV marker is a single point and there's nothing to gradient
+   *  across. */
   color: string;
+  /** Secondary color — tints the POV marker's accent (today's
+   *  `live-marker-dot` stroke; with POV shape variants, the secondary SDF
+   *  slot). Solid only, same reason. Defaults to white to match the
+   *  pre-refactor hard-coded white dot fill. */
+  secondary_color: string;
   size: PovSize;
   pulse_style: PovPulseStyle;
   pulse_rate: PovPulseRate;
@@ -240,9 +283,11 @@ export interface MapOverrides {
     label_mode?: WaypointLabelMode;
     active_mode?: ActiveWaypointMode;
     active_color?: string;
+    active_secondary_color?: string;
   };
   pov?: {
     color?: string;
+    secondary_color?: string;
     size?: Partial<PovSize>;
     pulse_style?: PovPulseStyle;
     pulse_rate?: PovPulseRate;
@@ -266,6 +311,10 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   waypoints: {
     mode: 'full',
     color: { mode: 'solid', solid: '#bced09' },
+    // Secondary defaults to white so the out-of-the-box look — accent-tinted
+    // body with a clean white outline — matches what the native circle layer
+    // produced before the shape-descriptor refactor.
+    secondary_color: { mode: 'solid', solid: '#ffffff' },
     shape: 'circle',
     size: {
       circle_radius: 0.015,
@@ -278,6 +327,8 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   },
   pov: {
     color: '#bced09',
+    // Matches the pre-refactor hard-coded white dot fill on `live-marker-dot`.
+    secondary_color: '#ffffff',
     size: {
       pulse_radius: 0.012,
       dot_radius: 0.013,
@@ -393,6 +444,15 @@ export function resolveMapSettings(
     defaults.waypoints.color.mode === 'solid'
       ? defaults.waypoints.color.solid
       : '#bced09';
+  // The secondary slot's solid-fallback default is white rather than the
+  // accent color — secondary is conceptually the outline, and reverting a
+  // corrupted gradient to the project's primary color would blend the two
+  // slots together. White matches the DEFAULT_MAP_SETTINGS seed and is the
+  // sensible "neutral outline" choice when there's no other signal.
+  const projectWaypointsSecondarySolid =
+    defaults.waypoints.secondary_color.mode === 'solid'
+      ? defaults.waypoints.secondary_color.solid
+      : '#ffffff';
 
   if (!overrides) {
     return {
@@ -404,6 +464,10 @@ export function resolveMapSettings(
       waypoints: {
         ...defaults.waypoints,
         color: validateGradient(defaults.waypoints.color, projectWaypointsSolid),
+        secondary_color: validateGradient(
+          defaults.waypoints.secondary_color,
+          projectWaypointsSecondarySolid,
+        ),
       },
       pov: defaults.pov,
     };
@@ -420,6 +484,10 @@ export function resolveMapSettings(
       ...defaults.waypoints,
       ...overrides.waypoints,
       color: validateGradient(defaults.waypoints.color, projectWaypointsSolid),
+      secondary_color: validateGradient(
+        defaults.waypoints.secondary_color,
+        projectWaypointsSecondarySolid,
+      ),
       size: { ...defaults.waypoints.size, ...overrides.waypoints?.size },
     },
     pov: {
@@ -441,8 +509,10 @@ export type OverridePath =
   | 'waypoints.label_mode'
   | 'waypoints.active_mode'
   | 'waypoints.active_color'
+  | 'waypoints.active_secondary_color'
   | `waypoints.size.${keyof WaypointsSize}`
   | 'pov.color'
+  | 'pov.secondary_color'
   | 'pov.pulse_style'
   | 'pov.pulse_rate'
   | `pov.size.${keyof PovSize}`;
@@ -466,6 +536,9 @@ export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
     if (overrides.waypoints.label_mode !== undefined) out.add('waypoints.label_mode');
     if (overrides.waypoints.active_mode !== undefined) out.add('waypoints.active_mode');
     if (overrides.waypoints.active_color !== undefined) out.add('waypoints.active_color');
+    if (overrides.waypoints.active_secondary_color !== undefined) {
+      out.add('waypoints.active_secondary_color');
+    }
     if (overrides.waypoints.size) {
       for (const k of Object.keys(overrides.waypoints.size) as (keyof WaypointsSize)[]) {
         out.add(`waypoints.size.${k}` as OverridePath);
@@ -474,6 +547,7 @@ export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
   }
   if (overrides.pov) {
     if (overrides.pov.color !== undefined) out.add('pov.color');
+    if (overrides.pov.secondary_color !== undefined) out.add('pov.secondary_color');
     if (overrides.pov.pulse_style !== undefined) out.add('pov.pulse_style');
     if (overrides.pov.pulse_rate !== undefined) out.add('pov.pulse_rate');
     if (overrides.pov.size) {
@@ -530,6 +604,12 @@ export function computeClipOverrides(
   if (next.waypoints.active_color !== project.waypoints.active_color) {
     wp.active_color = next.waypoints.active_color;
   }
+  if (
+    next.waypoints.active_secondary_color !==
+    project.waypoints.active_secondary_color
+  ) {
+    wp.active_secondary_color = next.waypoints.active_secondary_color;
+  }
   const wpSize = diffPartial(next.waypoints.size, project.waypoints.size);
   if (wpSize) wp.size = wpSize;
   if (Object.keys(wp).length) out.waypoints = wp;
@@ -537,6 +617,9 @@ export function computeClipOverrides(
   // pov (fully overridable; color is a plain hex string)
   const pov: NonNullable<MapOverrides['pov']> = {};
   if (next.pov.color !== project.pov.color) pov.color = next.pov.color;
+  if (next.pov.secondary_color !== project.pov.secondary_color) {
+    pov.secondary_color = next.pov.secondary_color;
+  }
   if (next.pov.pulse_style !== project.pov.pulse_style) {
     pov.pulse_style = next.pov.pulse_style;
   }

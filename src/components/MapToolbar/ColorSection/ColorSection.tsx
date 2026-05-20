@@ -113,29 +113,24 @@ export function ColorSection({
   copyVisible,
 }: ColorSectionProps) {
   const isGradient = mode === 'gradient';
-  // The stop currently being edited (gradient mode only). The parent reads
-  // `value` independently of this index — when nothing is selected, the
-  // parent supplies the first stop's color so the swatch row still has a
-  // sensible source. The component itself owns this selection state since
+  // The stop currently being edited (gradient mode only). A stop is always
+  // selected when in gradient mode so the STOP COLOR picker never collapses
+  // — index 0 is the default. The component owns this selection state since
   // the bridge from swatch/hex → stop color uses it.
-  const [selectedStopIndex, setSelectedStopIndex] = useState<number | null>(null);
+  const [selectedStopIndex, setSelectedStopIndex] = useState<number>(0);
   // Copy button feedback. 500ms chartreuse + "Copied ✓" per §9.
   const [copyFlash, setCopyFlash] = useState(false);
   const copyTimer = useRef<number | null>(null);
 
-  // In gradient mode, the displayed value is the selected stop's color
-  // (when one is selected). When nothing is selected we still feed the swatch
-  // row a sensible color (the first stop) so it doesn't render blank, but
-  // none of the named swatches outline as "active" since the user hasn't
-  // picked a stop to edit.
+  // In gradient mode, the displayed value is the selected stop's color.
+  // `selectedStopIndex` is always a valid index (we default to 0 and clamp
+  // on delete), so no null branching is needed here.
   const displayedHex =
-    isGradient && gradientStops && selectedStopIndex != null
+    isGradient && gradientStops
       ? (gradientStops[selectedStopIndex]?.color ?? value)
       : value;
   const normalizedValue = (displayedHex ?? '').toLowerCase();
-  const isNamed =
-    (isGradient ? selectedStopIndex != null : true) &&
-    SWATCH_HEX_SET.has(normalizedValue);
+  const isNamed = SWATCH_HEX_SET.has(normalizedValue);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [hexDraft, setHexDraft] = useState<string>(stripHash(normalizedValue));
@@ -148,10 +143,16 @@ export function ColorSection({
     setHexDraft(stripHash(normalizedValue));
   }, [normalizedValue]);
 
-  // Reset the in-component selection when toggling away from gradient.
+  // Reset to the first stop whenever we toggle modes or the stop count
+  // shrinks past the current index. Re-entering gradient mode therefore
+  // always opens on stop 1.
   useEffect(() => {
-    if (!isGradient) setSelectedStopIndex(null);
-  }, [isGradient]);
+    if (!isGradient) {
+      setSelectedStopIndex(0);
+    } else if (gradientStops && selectedStopIndex >= gradientStops.length) {
+      setSelectedStopIndex(Math.max(0, gradientStops.length - 1));
+    }
+  }, [isGradient, gradientStops, selectedStopIndex]);
 
   // Cleanup the red-flash and copy-flash timers on unmount.
   useEffect(() => {
@@ -172,7 +173,7 @@ export function ColorSection({
   // `onChange`. This is the single source of truth for "where does a color
   // edit go" — swatch click, hex input, and custom picker all funnel here.
   const applyColor = (hex: string) => {
-    if (isGradient && gradientStops && onGradientStopsChange && selectedStopIndex != null) {
+    if (isGradient && gradientStops && onGradientStopsChange) {
       onGradientStopsChange(setStopColor(gradientStops, selectedStopIndex, hex));
       return;
     }
@@ -337,7 +338,7 @@ export function ColorSection({
     return <div style={sectionStyles.actionRow}>{renderCopyButton()}</div>;
   };
 
-  const showStopPicker = isGradient && selectedStopIndex != null;
+  const showStopPicker = isGradient && gradientStops != null;
 
   return (
     <div style={sectionStyles.container} data-testid="color-section">
@@ -366,7 +367,7 @@ export function ColorSection({
             stops={gradientStops}
             onStopsChange={(next) => onGradientStopsChange?.(next)}
             selectedIndex={selectedStopIndex}
-            onSelectedIndexChange={setSelectedStopIndex}
+            onSelectedIndexChange={(idx) => setSelectedStopIndex(idx ?? 0)}
             waypointProgress={waypointProgress}
             totalDistMeters={totalDistMeters}
             disabled={disabled}
@@ -375,7 +376,7 @@ export function ColorSection({
           {showStopPicker && (
             <>
               <div style={sectionStyles.stopColorHeader}>
-                STOP COLOR (stop {(selectedStopIndex ?? 0) + 1})
+                STOP COLOR (stop {selectedStopIndex + 1})
               </div>
               <SwatchRow
                 normalizedValue={normalizedValue}

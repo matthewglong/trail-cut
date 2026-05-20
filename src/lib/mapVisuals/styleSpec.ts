@@ -28,6 +28,22 @@ import type { DecorationColor, GradientStop, MapSettings } from '../../types';
 import { colors } from '../../theme/tokens';
 import type { StyleSpecResult } from './types';
 
+/** Canonical primary-shape radius on the 48-px SDF canvas — every shape's
+ *  primary rasterizer draws into a roughly 36-px-diameter envelope on the
+ *  canonical canvas (circle r=18, ring r=18, square halfSide=16, etc.).
+ *  `icon-size = (target_radius / SHAPE_CANONICAL_RADIUS)` gives an icon
+ *  whose primary shape's effective radius matches the user-facing
+ *  `waypoints.size.circle_radius × PAINT_REFERENCE_WIDTH` value.
+ *
+ *  Anchored on the circle/ring's drawn radius rather than the canvas size
+ *  so existing projects keep their pre-refactor visual size: at the default
+ *  `circle_radius = 0.015`, `icon-size = 0.9` renders the circle at 32.4-px
+ *  diameter, identical to the pre-refactor native circle layer.
+ *
+ *  Exported for `paints.ts` — the per-frame builder uses the same constant
+ *  to compute the active-state icon-size override. */
+export const SHAPE_CANONICAL_RADIUS = 18;
+
 const TRAIL_COLOR = colors.accent;
 const FULL_ROUTE_COLOR = colors.accent;
 
@@ -131,14 +147,13 @@ export const ROUTE_TRAIL_LAYER: LayerSpecification = {
 };
 
 /** Active-waypoint halo. Semi-transparent ring painting behind the active
- *  waypoint's dot/symbol — the "you are here" indicator that generalizes
- *  across circle and (Step 8) symbol shapes. All paint values are data-
- *  driven per-feature by `buildPerFramePaints`: opacity ~0.5 on active and
- *  0 elsewhere; radius = `active_radius × PAINT_REFERENCE_WIDTH` on active,
- *  0 elsewhere; color tracks `mapSettings.waypoints.active_color` when set,
- *  otherwise mirrors the dot's resolved color ([DECIDED] Q1). Added BELOW
- *  `waypoints-circle` in the layer stack so the inner shape paints over
- *  it. Source: `waypoints`. */
+ *  waypoint's shape — the "you are here" indicator that generalizes across
+ *  every shape variant. All paint values are data-driven per-feature by
+ *  `buildPerFramePaints`: opacity ~0.5 on active and 0 elsewhere; radius =
+ *  `active_radius × PAINT_REFERENCE_WIDTH` on active, 0 elsewhere; color
+ *  tracks `mapSettings.waypoints.active_color` when set, otherwise mirrors
+ *  the primary slot's resolved color. Added BELOW the two symbol layers in
+ *  the stack so the shape paints over it. Source: `waypoints`. */
 export const WAYPOINTS_ACTIVE_HALO_LAYER: LayerSpecification = {
   id: 'waypoints-active-halo',
   type: 'circle',
@@ -151,71 +166,72 @@ export const WAYPOINTS_ACTIVE_HALO_LAYER: LayerSpecification = {
   },
 };
 
-/** Waypoint circle layer. Paint is overridden per-frame via
- *  `setPaintProperty` from `buildPerFramePaints` to express the active-clip
- *  highlight as a data-driven `case` expression. The literal defaults below
- *  are PLACEHOLDERS (1) — the consumer must apply `resolveStaticPaints()`
- *  (or `resolveStaticPaintsForPreview` in the preview) after style.load to
- *  seed real values; the per-frame builder overrides circle-radius
- *  thereafter. Source: `waypoints`. */
-export const WAYPOINTS_CIRCLE_LAYER: LayerSpecification = {
-  id: 'waypoints-circle',
-  type: 'circle',
-  source: 'waypoints',
-  paint: {
-    'circle-radius': 1,
-    'circle-color': colors.accent,
-    'circle-stroke-width': 1,
-    'circle-stroke-color': 'rgba(255,255,255,0.85)',
-  },
-};
-
-/** Waypoint symbol layer. Renders the non-circle shape variants (pin,
- *  square, diamond) as SDF icons; transparent for circle-family shapes
- *  (circle, ring, numbered-circle) where `waypoints-circle` does the work.
+/** Waypoint PRIMARY symbol layer. Paints each waypoint's filled silhouette
+ *  using the `waypoint-<shape>-primary` SDF icon registered by
+ *  `buildAllShapeIcons` in `shapes.ts`. Tinted per-feature via the
+ *  `icon-color` expression emitted by `buildPerFramePaints` (primary base
+ *  color, optionally overridden by `override_color` on the feature and
+ *  swapped to `active_color` while active).
  *
- *  Both `waypoints-circle` and `waypoints-symbol` stay layout-visible at
- *  all times. Per-feature opacity expressions emitted by
- *  `resolveStaticPaints` route each waypoint to exactly one of the two
- *  layers based on its effective shape (`wp.shape ?? mapSettings.waypoints.shape`),
- *  so the mixed-shape case — one diamond among four circles — renders
- *  correctly without per-layer juggling.
- *
- *  SDF icons are registered via `map.addImage('waypoint-<shape>', { width,
- *  height, data }, { sdf: true })` after style.load on both sides:
- *   - preview: `MapView.tsx` `onStyleLoad` loops over `WAYPOINT_SHAPE_NAMES`
- *     and calls `buildWaypointSdfIcon` (re-registers on every style.load,
- *     surviving `setStyle()` swaps).
- *   - export: `renderer/index.ts` builds the same set in `applySetup` and
- *     ships them on the `staticImages` field; `renderer/page/init.ts` __init
- *     loops over them after the static layers are added.
- *
- *  SDF is required for `icon-color` to act as a per-feature data-driven
- *  tint — non-SDF icons would lock every symbol to a single uniform color.
- *
- *  `icon-image` is a PLACEHOLDER (`'waypoint-circle'`) at boot — the real
- *  expression is a `concat` of `'waypoint-' + (override_shape ?? projectShape)`
- *  emitted by `resolveStaticPaints` so it tracks `mapSettings.waypoints.shape`.
- *  Both `icon-color` and `icon-opacity` are PLACEHOLDERS overridden on the
- *  first frame: `icon-color` by `buildPerFramePaints` (per-feature override
- *  > base color, identical logic to `waypoints-circle.circle-color`),
- *  `icon-opacity` by `resolveStaticPaints` (per-feature routing between the
- *  circle and symbol layers). Source: `waypoints` (same source as the
- *  circle layer). */
-export const WAYPOINTS_SYMBOL_LAYER: LayerSpecification = {
-  id: 'waypoints-symbol',
+ *  Every literal in `layout` / `paint` is a PLACEHOLDER — `resolveStaticPaints`
+ *  seeds the real `icon-image` expression, `icon-size`, and per-frame
+ *  `buildPerFramePaints` writes the real `icon-color`. Both must run after
+ *  style.load before the first frame paints. Source: `waypoints`. */
+export const WAYPOINTS_PRIMARY_LAYER: LayerSpecification = {
+  id: 'waypoints-primary',
   type: 'symbol',
   source: 'waypoints',
   layout: {
-    'icon-image': 'waypoint-circle',
+    'icon-image': 'waypoint-circle-primary',
     'icon-size': 1,
     'icon-allow-overlap': true,
     'icon-ignore-placement': true,
     'icon-anchor': 'center',
+    // `symbol-z-order: 'source'` makes MapLibre honor `symbol-sort-key`
+    // for draw order rather than the viewport-y default. Combined with
+    // `icon-allow-overlap: true`, higher sort-key features paint later
+    // (on top). `buildPerFramePaints` writes the per-feature sort-key
+    // expression every frame so the active waypoint and its near
+    // neighbors stack toward the playhead. Seeded at 0 so the first paint
+    // before the per-frame builder runs is deterministic.
+    'symbol-z-order': 'source',
+    'symbol-sort-key': 0,
   },
   paint: {
     'icon-color': colors.accent,
-    'icon-opacity': 0,
+  },
+};
+
+/** Waypoint SECONDARY symbol layer. Stacked above `waypoints-primary` so its
+ *  outline / accent element paints on top of the filled silhouette.
+ *
+ *  Uses the `waypoint-<shape>-secondary` SDF icon — for shapes with a
+ *  declared secondary rasterizer this is the outline; for one-color shapes
+ *  (today: `ring`) it's a transparent placeholder so the layer stays valid
+ *  and paint expressions stay uniform. Tinted by `mapSettings.waypoints.secondary_color`
+ *  via `buildPerFramePaints` (per-feature `override_secondary_color` wins,
+ *  active state may swap to `active_secondary_color`).
+ *
+ *  SDF icons are registered identically on both sides — see `shapes.ts` →
+ *  `buildAllShapeIcons` for the canonical iteration. Source: `waypoints`. */
+export const WAYPOINTS_SECONDARY_LAYER: LayerSpecification = {
+  id: 'waypoints-secondary',
+  type: 'symbol',
+  source: 'waypoints',
+  layout: {
+    'icon-image': 'waypoint-circle-secondary',
+    'icon-size': 1,
+    'icon-allow-overlap': true,
+    'icon-ignore-placement': true,
+    'icon-anchor': 'center',
+    // Mirror primary's z-order / sort-key seed so the outline stacks
+    // identically with the fill. See WAYPOINTS_PRIMARY_LAYER for the
+    // rationale.
+    'symbol-z-order': 'source',
+    'symbol-sort-key': 0,
+  },
+  paint: {
+    'icon-color': '#ffffff',
   },
 };
 
@@ -236,6 +252,11 @@ export const WAYPOINTS_LABEL_LAYER: LayerSpecification = {
     'text-size': 1,
     'text-allow-overlap': true,
     'text-ignore-placement': true,
+    // Mirror the icon layers' z-order / sort-key seed so the labels stack
+    // identically — the closest-to-playhead waypoint's label paints on
+    // top, just like its dot.
+    'symbol-z-order': 'source',
+    'symbol-sort-key': 0,
   },
   paint: {
     'text-color': '#fff',
@@ -334,14 +355,18 @@ export function buildStyleSpec(mapSettings: MapSettings): StyleSpecResult {
  *  Today's tuples:
  *   - `paints`: size-based numeric properties (line-widths, stroke widths,
  *     circle radii, etc.) plus solid color strings (route `line-color`, POV
- *     `circle-color` / `circle-stroke-color`). Per-frame writes from
- *     `buildPerFramePaints` separately override `waypoints-circle.circle-radius`
- *     / `.circle-color` / `.circle-stroke-color` and the pulse radius/opacity.
+ *     `circle-color` / `circle-stroke-color`, the live-marker dot's
+ *     `circle-color` driven by `pov.secondary_color`). Per-frame writes from
+ *     `buildPerFramePaints` separately override the waypoint primary +
+ *     secondary `icon-color` expressions and the pulse radius/opacity.
  *   - `layouts`: every `setLayoutProperty`-able value, including
- *     `visibility` (mode strings), `text-size` (numbers), and `text-field`
- *     (expressions). Values are heterogeneous because MapLibre's layout
- *     surface itself is heterogeneous; the consumer just iterates and
- *     forwards each tuple to `setLayoutProperty`.
+ *     `visibility` (mode strings), `text-size` / `icon-size` (numbers),
+ *     and `text-field` / `icon-image` (expressions). Values are
+ *     heterogeneous because MapLibre's layout surface itself is
+ *     heterogeneous; the consumer just iterates and forwards each tuple
+ *     to `setLayoutProperty`. Per-frame writes from `buildPerFramePaints`
+ *     additionally override the waypoint `icon-size` on both slots with
+ *     the active-state case expression.
  *   - `gradients`: the `line-gradient` paint property is split into its own
  *     bucket because MapLibre treats it as mutually exclusive with
  *     `line-color`. Each tuple is `[layerId, expressionOrNull]` — the value
@@ -406,73 +431,72 @@ export function resolveStaticPaints(
     mapSettings.route.color.mode === 'gradient'
       ? buildLineGradientExpression(mapSettings.route.color.stops)
       : null;
-  // Waypoint per-feature opacity routing (Step 8 backend). The circle layer
-  // and the symbol layer are both layout-visible at all times; per-feature
-  // opacity decides which one paints for each waypoint based on its effective
-  // shape — `override_shape` baked into the feature by `buildWaypointsCollection`,
-  // falling back to the project-level `mapSettings.waypoints.shape`.
+  // Effective-shape expression. Reads the per-feature `override_shape` baked
+  // in by `buildWaypointsCollection`, falling back to the project default
+  // (`mapSettings.waypoints.shape`). Wrapped in a defensive `match` that
+  // collapses any value outside the known catalog (e.g. a legacy
+  // `'numbered-circle'` persisted before the shape-descriptor refactor) to
+  // `'circle'` — without this, the `concat` below would build the string
+  // `waypoint-numbered-circle-primary`, which `buildAllShapeIcons` does not
+  // register, and MapLibre would render a missing-image placeholder.
   //
-  // Circle-family shapes (`circle`, `ring`, `numbered-circle`) → circle layer
-  // paints (opacity 1), symbol layer transparent (opacity 0). Symbol-family
-  // shapes (`pin`, `square`, `diamond`) → inverted.
-  //
-  // The expression is MapSettings-derived (the `coalesce` fallback reads
-  // `mapSettings.waypoints.shape`), so it MUST come from this resolver —
-  // putting it on the static layer spec would freeze the fallback at module-
-  // load. Emitting it here means a project-default-shape edit re-resolves
-  // and re-applies via the same channel that already carries paint sizes,
-  // identically in preview and export.
+  // The fallback MUST come from this resolver (MapSettings-derived), not the
+  // static layer spec — putting it on the layer would freeze the project
+  // default at module-load. Emitting it here means a project-default-shape
+  // edit re-resolves and applies through the same channel that already
+  // carries paint sizes, in both preview and export.
   const projectShape = mapSettings.waypoints.shape;
-  const isCircleFamilyExpr: ExpressionSpecification = [
-    'in',
+  const safeShape: ExpressionSpecification = [
+    'match',
     ['coalesce', ['get', 'override_shape'], projectShape],
-    ['literal', ['circle', 'ring', 'numbered-circle']],
+    'circle', 'circle',
+    'ring', 'ring',
+    'pin', 'pin',
+    'square', 'square',
+    'diamond', 'diamond',
+    /* default for legacy / unknown names */ 'circle',
   ];
-  const circleOpacityExpr: ExpressionSpecification = [
-    'case',
-    isCircleFamilyExpr,
-    1,
-    0,
-  ];
-  const iconOpacityExpr: ExpressionSpecification = [
-    'case',
-    isCircleFamilyExpr,
-    0,
-    1,
-  ];
-  // Symbol-layer `icon-image`. Per-feature `'waypoint-' + effective_shape`,
-  // where the effective shape is `override_shape ?? mapSettings.waypoints.shape`.
-  // The fallback MUST be the project-level shape (MapSettings-derived), not a
-  // hardcoded literal — otherwise a project default of e.g. 'diamond' silently
-  // renders every un-overridden waypoint as a circle icon. Emitted through
-  // `layouts` because `icon-image` is a layout property (set via
-  // `setLayoutProperty`), and routed alongside `icon-opacity` so a single
-  // re-resolve flips both the visible layer AND the rendered symbol shape.
-  const iconImageExpr: ExpressionSpecification = [
+  // Per-feature `icon-image` expression for each slot. Resolves to
+  // `waypoint-<effective_shape>-primary` (or `-secondary`) — the same id
+  // `buildAllShapeIcons` registers on both sides, so the resolved string
+  // always names an existing icon in the atlas.
+  const primaryIconImageExpr: ExpressionSpecification = [
     'concat',
     'waypoint-',
-    ['coalesce', ['get', 'override_shape'], projectShape],
+    safeShape,
+    '-primary',
   ];
+  const secondaryIconImageExpr: ExpressionSpecification = [
+    'concat',
+    'waypoint-',
+    safeShape,
+    '-secondary',
+  ];
+  // Static seed for `icon-size` on both waypoint symbol layers. The renderer
+  // anchors paint sizing to `PAINT_REFERENCE_WIDTH` × the relevant
+  // `waypoints.size.*` fraction; for SDF symbols the equivalent is
+  // `targetRadius / SHAPE_CANONICAL_RADIUS`, since the canonical primary
+  // shapes are drawn at radius 18 on the 48-px canvas. At default
+  // (`circle_radius = 0.015`) this lands at icon-size 0.9 → the circle
+  // renders at 32.4-px diameter, matching the pre-refactor native-circle
+  // sizing exactly. `buildPerFramePaints` overrides this every frame with
+  // an expression that bumps the active waypoint to `active_radius`. */
+  const defaultIconSize =
+    (mapSettings.waypoints.size.circle_radius * w) / SHAPE_CANONICAL_RADIUS;
   return {
     paints: [
       ['route-full-line', 'line-color', routeSolid],
       ['route-trail-line', 'line-color', routeSolid],
       ['live-marker-pulse', 'circle-color', mapSettings.pov.color],
       ['live-marker-pulse-b', 'circle-color', mapSettings.pov.color],
+      // Dot's stroke color tracks the POV primary (used to be hard-coded
+      // accent); its fill takes the POV secondary, which is the field that
+      // replaces the pre-refactor white-literal default. Both flow through
+      // the static channel — no per-feature variation on the POV marker.
       ['live-marker-dot', 'circle-stroke-color', mapSettings.pov.color],
+      ['live-marker-dot', 'circle-color', mapSettings.pov.secondary_color],
       ['route-full-line', 'line-width', mapSettings.route.size.width * w],
       ['route-trail-line', 'line-width', mapSettings.route.size.width * w],
-      // waypoints-circle: circle-radius and circle-stroke-width. The radius
-      // is also overridden per-frame by `buildPerFramePaints` (data-driven
-      // case expression) — that per-frame write is the one that wins, but
-      // we still seed the static default here so pre-first-frame state is
-      // correct. circle-stroke-width is only ever set here.
-      ['waypoints-circle', 'circle-radius', mapSettings.waypoints.size.circle_radius * w],
-      [
-        'waypoints-circle',
-        'circle-stroke-width',
-        mapSettings.waypoints.size.stroke_width * w,
-      ],
       [
         'live-marker-dot',
         'circle-radius',
@@ -496,14 +520,6 @@ export function resolveStaticPaints(
         'circle-radius',
         mapSettings.pov.size.pulse_radius * w,
       ],
-      // Per-feature opacity routing for waypoint shape variants. Both the
-      // circle layer and the symbol layer paint every feature; this pair of
-      // case expressions makes exactly one of them visible for each waypoint.
-      // Re-resolved on every `mapSettings.waypoints.shape` change so a
-      // project-default-shape edit immediately flips the visible layer for
-      // features without per-Waypoint `shape` overrides.
-      ['waypoints-circle', 'circle-opacity', circleOpacityExpr],
-      ['waypoints-symbol', 'icon-opacity', iconOpacityExpr],
     ],
     layouts: [
       ['waypoints-label', 'text-size', mapSettings.waypoints.size.label_size * w],
@@ -514,11 +530,16 @@ export function resolveStaticPaints(
       // steady-state cost is one map lookup per frame per tuple.
       ['route-full-line', 'visibility', mapSettings.route.mode === 'full' ? 'visible' : 'none'],
       ['route-trail-line', 'visibility', mapSettings.route.mode === 'visited' ? 'visible' : 'none'],
-      // Symbol-layer icon-image. MapSettings-derived (fallback reads
-      // `mapSettings.waypoints.shape`) so a project-default shape edit
-      // re-resolves and immediately changes the rendered symbol for every
-      // waypoint without a per-Waypoint `shape` override.
-      ['waypoints-symbol', 'icon-image', iconImageExpr],
+      // Waypoint icon-image (per slot). MapSettings-derived so a project-
+      // default shape edit re-resolves and re-applies to every waypoint
+      // without a per-`Waypoint.shape` override.
+      ['waypoints-primary', 'icon-image', primaryIconImageExpr],
+      ['waypoints-secondary', 'icon-image', secondaryIconImageExpr],
+      // Waypoint icon-size (per slot). Per-frame builder overrides this
+      // with a case expression that bumps the active waypoint to
+      // `active_radius`; the seed here is the steady-state default size.
+      ['waypoints-primary', 'icon-size', defaultIconSize],
+      ['waypoints-secondary', 'icon-size', defaultIconSize],
     ],
     // Route line-gradient. Gradient mode emits an `interpolate` expression
     // on `line-progress`; solid mode emits `null` so the consumer clears

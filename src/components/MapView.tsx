@@ -18,7 +18,7 @@ import {
   buildStaticSourceData,
   resolveStaticPaints,
   buildPerFrameState,
-  buildAllWaypointSdfIcons,
+  buildAllShapeIcons,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_PULSE_B_LAYER,
@@ -26,9 +26,9 @@ import {
   ROUTE_FULL_LAYER,
   ROUTE_TRAIL_LAYER,
   WAYPOINTS_ACTIVE_HALO_LAYER,
-  WAYPOINTS_CIRCLE_LAYER,
+  WAYPOINTS_PRIMARY_LAYER,
+  WAYPOINTS_SECONDARY_LAYER,
   WAYPOINTS_LABEL_LAYER,
-  WAYPOINTS_SYMBOL_LAYER,
 } from '../lib/mapVisuals';
 
 interface MapViewProps {
@@ -255,18 +255,18 @@ export default function MapView({
         map.addSource('waypoints', { type: 'geojson', data: emptyFc });
         // Layer stack on the shared `waypoints` source (bottom → top):
         //   waypoints-active-halo (semi-transparent ring behind the active
-        //                          waypoint's shape — [DECIDED] Q2)
-        //   waypoints-circle  (circle-family shapes; per-feature opacity 0/1)
-        //   waypoints-symbol  (symbol-family shapes; per-feature opacity 0/1)
-        //   waypoints-label   (numeric label on top of both)
-        // Per-feature opacity expressions emitted by resolveStaticPaints
-        // route each waypoint to exactly one of the circle/symbol layers
-        // based on its effective shape. The halo sits BELOW the inner
-        // shape layers so the dot/symbol paints over it; the label sits
-        // on top so it composites correctly over either base shape.
+        //                          waypoint's shape)
+        //   waypoints-primary     (filled silhouette SDF; tinted by primary color)
+        //   waypoints-secondary   (outline / accent SDF; tinted by secondary color)
+        //   waypoints-label       (label on top of all three)
+        // The halo sits BELOW the shape layers so the shape paints over it.
+        // Primary paints the body; secondary overpaints the outermost band
+        // (or whatever the shape descriptor's secondary rasterizer defines)
+        // so the user-visible stroke matches the shape silhouette exactly.
+        // The label sits on top so it composites correctly over the shape.
         map.addLayer(WAYPOINTS_ACTIVE_HALO_LAYER);
-        map.addLayer(WAYPOINTS_CIRCLE_LAYER);
-        map.addLayer(WAYPOINTS_SYMBOL_LAYER);
+        map.addLayer(WAYPOINTS_PRIMARY_LAYER);
+        map.addLayer(WAYPOINTS_SECONDARY_LAYER);
         map.addLayer(WAYPOINTS_LABEL_LAYER);
       }
       if (!map.getSource('live-marker')) {
@@ -276,11 +276,11 @@ export default function MapView({
         map.addLayer(LIVE_MARKER_DOT_LAYER);
       }
 
-      // Register SDF icons for the six waypoint shape variants
-      // (circle / ring / pin / square / diamond / numbered-circle). Order:
-      // addSource → addLayer → addImage → seed paints. Images are added
-      // AFTER the symbol layer is added so the layer's `icon-image`
-      // expression has a registered image to resolve to on its first paint.
+      // Register SDF icons for every waypoint shape × both slots
+      // (primary + secondary). Order: addSource → addLayer → addImage →
+      // seed paints. Images are added AFTER the symbol layers are added
+      // so the layers' `icon-image` expression has a registered image to
+      // resolve to on its first paint.
       //
       // Re-register on every style.load — `setStyle()` clears the image
       // atlas along with sources/layers, and this callback runs on the
@@ -288,18 +288,16 @@ export default function MapView({
       // 3d). `hasImage` guards a redundant re-register on the initial
       // style load when the source-add branch above also took place.
       //
-      // Pixels come from `buildWaypointSdfIcon` (pure, no DOM/Canvas) so
-      // the export renderer ships bit-identical pixels via the
-      // `staticImages` field on the InitPayload — preview/export parity
-      // by construction. White RGB + alpha coverage; MapLibre treats white
-      // as ink for SDF.
-      for (const { name, icon } of buildAllWaypointSdfIcons()) {
-        const id = `waypoint-${name}`;
+      // Pixels come from `buildAllShapeIcons` in `shapes.ts` (pure, no
+      // DOM/Canvas) so the export renderer ships bit-identical pixels via
+      // the `staticImages` field on the InitPayload — preview/export
+      // parity by construction.
+      for (const { id, icon, options } of buildAllShapeIcons()) {
         if (map.hasImage(id)) map.removeImage(id);
         map.addImage(
           id,
           { width: icon.width, height: icon.height, data: icon.data },
-          { sdf: true },
+          options,
         );
       }
 
@@ -322,7 +320,11 @@ export default function MapView({
 
     // Register layer event listeners once — they resolve the layer by name
     // at dispatch time, so they survive setStyle().
-    map.on('click', 'waypoints-circle', (e) => {
+    // Click target is the primary symbol layer (the filled silhouette).
+    // Hits on the secondary outline composite as the primary too since the
+    // two layers share a source — but the primary is the natural hit
+    // surface and avoids double-firing on overlapping pixels at the edge.
+    map.on('click', 'waypoints-primary', (e) => {
       const f = e.features?.[0];
       // The feature's `id` is the waypoint id (v7); read `clipId` (set when
       // the waypoint is clip-sourced) to recover the clip selection.
@@ -330,10 +332,10 @@ export default function MapView({
       const clipId = f?.properties?.clipId;
       if (typeof clipId === 'string') onSelectClipRef.current?.(clipId);
     });
-    map.on('mouseenter', 'waypoints-circle', () => {
+    map.on('mouseenter', 'waypoints-primary', () => {
       map.getCanvas().style.cursor = 'pointer';
     });
-    map.on('mouseleave', 'waypoints-circle', () => {
+    map.on('mouseleave', 'waypoints-primary', () => {
       map.getCanvas().style.cursor = '';
     });
 
@@ -573,21 +575,39 @@ export default function MapView({
           // `GeoJSON.GeoJSON`. Runtime-equivalent — cast through unknown.
           if (src) src.setData(data as unknown as GeoJSON.GeoJSON);
         }
-        if (map.getLayer('waypoints-circle')) {
-          map.setPaintProperty('waypoints-circle', 'circle-radius',
-            state.paints.waypointCircleRadius);
-          map.setPaintProperty('waypoints-circle', 'circle-color',
-            state.paints.waypointCircleColor);
-          map.setPaintProperty('waypoints-circle', 'circle-stroke-color',
-            state.paints.waypointCircleStrokeColor);
+        if (map.getLayer('waypoints-primary')) {
+          // Primary slot: tinted by `waypointPrimaryColor` (three-arm case:
+          // active > override > base). Icon-size lives on layout, so it
+          // goes through `setLayoutProperty` rather than the paint channel.
+          // `symbol-sort-key` (also layout) stacks features so the
+          // closest-to-playhead waypoint paints on top — see
+          // `waypointSortKey` in `paints.ts`.
+          map.setPaintProperty('waypoints-primary', 'icon-color',
+            state.paints.waypointPrimaryColor);
+          map.setLayoutProperty('waypoints-primary', 'icon-size',
+            state.paints.waypointIconSize);
+          map.setLayoutProperty('waypoints-primary', 'symbol-sort-key',
+            state.paints.waypointSortKey);
         }
-        if (map.getLayer('waypoints-symbol')) {
-          // Symbol-family waypoints (pin, square, diamond) get the same
-          // color expression as circle-family — per-feature override_color
-          // and gradient stops apply uniformly. See `waypointIconColor` in
-          // `PaintUpdates`.
-          map.setPaintProperty('waypoints-symbol', 'icon-color',
-            state.paints.waypointIconColor);
+        if (map.getLayer('waypoints-secondary')) {
+          // Secondary slot: tinted by `waypointSecondaryColor` (same case
+          // shape as primary, against secondary base / override / active).
+          // Icon-size mirrors primary so the outline stays aligned with
+          // the fill. Sort-key mirrors primary so the outline stacks with
+          // its fill instead of slipping behind a neighboring waypoint.
+          map.setPaintProperty('waypoints-secondary', 'icon-color',
+            state.paints.waypointSecondaryColor);
+          map.setLayoutProperty('waypoints-secondary', 'icon-size',
+            state.paints.waypointIconSize);
+          map.setLayoutProperty('waypoints-secondary', 'symbol-sort-key',
+            state.paints.waypointSortKey);
+        }
+        if (map.getLayer('waypoints-label')) {
+          // Label layer: same sort-key so the label stacks with its dot.
+          // Without this, two overlapping waypoints would still show two
+          // labels even though the dots correctly stack.
+          map.setLayoutProperty('waypoints-label', 'symbol-sort-key',
+            state.paints.waypointSortKey);
         }
         if (map.getLayer('waypoints-active-halo')) {
           // Halo radius/opacity collapse to 0 when no waypoint is active so

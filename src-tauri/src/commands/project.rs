@@ -1660,6 +1660,7 @@ mod tests {
                     source: "clip".into(),
                     clip_id: Some("clip-a".into()),
                     color: None,
+                    secondary_color: None,
                     shape: None,
                 },
                 Waypoint {
@@ -1672,6 +1673,7 @@ mod tests {
                     source: "manual".into(),
                     clip_id: None,
                     color: None,
+                    secondary_color: None,
                     shape: None,
                 },
             ],

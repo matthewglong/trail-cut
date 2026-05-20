@@ -105,10 +105,12 @@ function wallClockTrace(
  *  'visited'`) `waypoints`. See `buildPerFrameSourceData` for the
  *  visibility predicate.
  *
- *  Paints: data-driven highlight on `waypoints-circle` keyed off
- *  `activeClipId` plus pulse values for `live-marker-pulse`. Paints anchor
- *  to `PAINT_REFERENCE_WIDTH` (1080 CSS px) × the relevant `mapSettings.overlay_*`
- *  fraction. See `buildPerFramePaints` for details. */
+ *  Paints: data-driven highlight expressions on the waypoint primary +
+ *  secondary symbol layers keyed off the active waypoint id, plus pulse
+ *  values for `live-marker-pulse`. Sizes anchor to `PAINT_REFERENCE_WIDTH`
+ *  (1080 CSS px) × the relevant `mapSettings.waypoints.size.*` fraction,
+ *  normalized by `SHAPE_CANONICAL_RADIUS` for the icon-size space.
+ *  See `buildPerFramePaints` for details. */
 export function buildPerFrameState(
   timeline: CompiledTimeline,
   projectTimeMs: number,
@@ -138,7 +140,25 @@ export function buildPerFrameState(
   // waypoint mapping). When mode is 'none' or no waypoint has been passed
   // yet, this is null and `buildPerFramePaints` returns scalar defaults.
   const activeWaypointId = pickActiveWaypoint(waypoints, trace, mapSettings);
-  const paints = buildPerFramePaints(activeWaypointId, projectTimeMs, mapSettings);
+  // Active waypoint's position in the `waypoints` array — same value the
+  // GeoJSON `index` property carries on each feature. Used by
+  // `buildPerFramePaints` to build the `symbol-sort-key` expression
+  // (`-|index - activeIndex|`). Null when no active id, or when the id
+  // doesn't resolve to a current waypoint (defensive — shouldn't happen
+  // since `pickActiveWaypoint` returns ids from this same array).
+  const activeWaypointIndex =
+    activeWaypointId == null
+      ? null
+      : (() => {
+          const i = waypoints.findIndex((w) => w.id === activeWaypointId);
+          return i < 0 ? null : i;
+        })();
+  const paints = buildPerFramePaints(
+    activeWaypointId,
+    activeWaypointIndex,
+    projectTimeMs,
+    mapSettings,
+  );
 
   return { camera, sources, paints };
 }

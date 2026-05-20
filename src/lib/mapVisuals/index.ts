@@ -16,18 +16,26 @@ export {
   ROUTE_FULL_LAYER,
   ROUTE_TRAIL_LAYER,
   WAYPOINTS_ACTIVE_HALO_LAYER,
-  WAYPOINTS_CIRCLE_LAYER,
+  WAYPOINTS_PRIMARY_LAYER,
+  WAYPOINTS_SECONDARY_LAYER,
   WAYPOINTS_LABEL_LAYER,
-  WAYPOINTS_SYMBOL_LAYER,
 } from './styleSpec';
 
 export {
   WAYPOINT_SHAPE_NAMES,
   WAYPOINT_ICON_SIZE,
-  buildWaypointSdfIcon,
-  buildAllWaypointSdfIcons,
+  SHAPES,
+  shapesFor,
+  getShape,
+  shapeHasSecondary,
+  buildAllShapeIcons,
 } from './shapes';
-export type { WaypointIconName, WaypointSdfIcon } from './shapes';
+export type {
+  SdfIcon,
+  ShapeDescriptor,
+  ShapeDomain,
+  ShapeRegistryEntry,
+} from './shapes';
 
 export { buildStaticSourceData } from './sources';
 
