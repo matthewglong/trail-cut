@@ -635,6 +635,14 @@ function DecorationButton({
       <button
         ref={isMirror ? undefined : triggerRef}
         type="button"
+        // Prevent the button from receiving focus on mouse-down. WebKit's
+        // default focus ring (`-webkit-focus-ring-color auto 1px`) otherwise
+        // lingers after a click-to-open / click-outside-to-close cycle and
+        // reads as a stuck highlight — especially when the system accent
+        // color is in the same hue range as `accentTint`. Keyboard users
+        // still focus normally via Tab, since `keydown` doesn't go through
+        // `mousedown`.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onClick}
         title={label}
         aria-label={label}
