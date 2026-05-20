@@ -1,5 +1,7 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -39,6 +41,15 @@ import { styles } from './styles';
 // floats below the bar, right-aligned over the content beneath. Reorder = swap
 // a line in the `items` array below.
 const CONTENT_GAP = 4;
+
+// Set true inside the hidden measurement mirror so stateful descendants
+// (notably `DecorationButton`) can opt out of side effects that would conflict
+// with their visible twin: triggerRef writes (last-write wins would otherwise
+// pin refs to the offscreen mirror button) and the open DecorationPanel
+// children (a duplicate panel would register a second document.mousedown
+// listener whose panelRef points into the hidden tree, closing the panel on
+// any click inside the visible one).
+const MirrorContext = createContext(false);
 
 export type MapToolbarScope = 'project' | 'clip';
 
@@ -529,14 +540,19 @@ export default function MapToolbar({
           off-screen. We read each wrapper's offsetWidth to learn its footprint,
           then decide how many fit in the visible bar. items[0]'s wrapper has
           no leading separator (matching how it renders as the bar's first
-          item); subsequent wrappers do, matching their in-bar appearance. */}
-      <div ref={mirrorRef} style={styles.mirror} aria-hidden>
-        {items.map((it, i) => (
-          <ItemWrapper key={it.id} measured firstInRow={i === 0}>
-            {it.node}
-          </ItemWrapper>
-        ))}
-      </div>
+          item); subsequent wrappers do, matching their in-bar appearance.
+          MirrorContext tells DecorationButton descendants not to attach refs
+          or render their panel children — both would conflict with the
+          visible twins. */}
+      <MirrorContext.Provider value={true}>
+        <div ref={mirrorRef} style={styles.mirror} aria-hidden>
+          {items.map((it, i) => (
+            <ItemWrapper key={it.id} measured firstInRow={i === 0}>
+              {it.node}
+            </ItemWrapper>
+          ))}
+        </div>
+      </MirrorContext.Provider>
     </div>
   );
 }
@@ -589,7 +605,11 @@ const positioningButtonStyle: React.CSSProperties = {
 };
 
 /** Compact icon button that triggers a `DecorationPanel`. The panel is
- *  rendered as `children`, positioned absolutely beneath this button. */
+ *  rendered as `children`, positioned absolutely beneath this button. When
+ *  mounted inside the measurement mirror (MirrorContext === true), the button
+ *  skips its triggerRef and its panel children so the visible twin owns both
+ *  the ref and the live document listeners — duplicates would either pin the
+ *  ref to an offscreen node or close the panel on any inner click. */
 function DecorationButton({
   id,
   icon,
@@ -609,10 +629,11 @@ function DecorationButton({
   onClick: () => void;
   children: ReactNode;
 }) {
+  const isMirror = useContext(MirrorContext);
   return (
     <div style={decorationButtonWrapper}>
       <button
-        ref={triggerRef}
+        ref={isMirror ? undefined : triggerRef}
         type="button"
         onClick={onClick}
         title={label}
@@ -634,7 +655,7 @@ function DecorationButton({
           />
         )}
       </button>
-      {children}
+      {!isMirror && children}
     </div>
   );
 }
