@@ -74,10 +74,12 @@ export type MapStyleId = 'default' | '3d' | 'satellite';
 
 export type BearingMode = 'auto' | 'fixed';
 
-/** Render mode for the `waypoints-label` symbol layer. `numbered` writes the
+/** Render mode for the waypoint label text. `numbered` writes the
  *  waypoint's 1-based index; `labeled` writes its `label` text (empty → blank,
- *  which MapLibre renders as no glyphs). Per-frame swap is via
- *  `setLayoutProperty('waypoints-label', 'text-field', expr)`. */
+ *  which MapLibre renders as no glyphs). The label rides the
+ *  `waypoints-secondary` symbol layer (icon + text co-placed as one
+ *  placement unit) and the per-frame swap is via
+ *  `setLayoutProperty('waypoints-secondary', 'text-field', expr)`. */
 export type WaypointLabelMode = 'numbered' | 'labeled';
 
 /** Strategy for picking which waypoint (if any) is rendered at the "active"

@@ -762,13 +762,17 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     ...staticResolution.layouts,
     ['waypoints-primary', 'icon-size', state.paints.waypointIconSize],
     ['waypoints-secondary', 'icon-size', state.paints.waypointIconSize],
-    // `symbol-sort-key` stacks features so the closest-to-playhead
-    // waypoint paints on top of farther ones — see `waypointSortKey` in
-    // `paints.ts`. Applied to all three symbol layers so the fill,
-    // outline, and label all reorder together.
+    // `symbol-sort-key` channels for the two waypoint symbol layers.
+    // Primary (filled silhouette) uses the DRAW key (negative distance —
+    // higher sort-key paints later, on top) because the layer keeps
+    // `icon-allow-overlap: true` and every fill must render. Secondary
+    // (outline + label, co-placed in one symbol layer) uses the PLACEMENT
+    // key (positive distance — lower sort-key wins placement) because
+    // that layer runs with `allow-overlap: false` on both icon and text,
+    // leaning on MapLibre's collision detection to hide back markers that
+    // would otherwise paint over the front fill. See `paints.ts`.
     ['waypoints-primary', 'symbol-sort-key', state.paints.waypointSortKey],
-    ['waypoints-secondary', 'symbol-sort-key', state.paints.waypointSortKey],
-    ['waypoints-label', 'symbol-sort-key', state.paints.waypointSortKey],
+    ['waypoints-secondary', 'symbol-sort-key', state.paints.waypointPlacementKey],
   ];
   // Per-frame line-gradient expressions. Re-resolved from the active clip's
   // merged `MapSettings` so any future per-clip route-color override flows

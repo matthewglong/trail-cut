@@ -25,6 +25,7 @@ import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
 import {
   DecorationPanel,
+  PANEL_TRIGGER_GAP,
   type DecorationKind,
   type DecorationPanelCloseOptions,
 } from './DecorationPanel';
@@ -216,7 +217,48 @@ export default function MapToolbar({
   );
 
   // --- Decoration panel state ----------------------------------------------
-  const [openPanel, setOpenPanel] = useState<DecorationKind | null>(null);
+  // Panels are independently open/closed (multi-open) and always render as
+  // floating windows — there is no "docked" mode. Position, size, and
+  // stacking order are owned here so they survive close/reopen.
+  const [openPanels, setOpenPanels] = useState<Record<DecorationKind, boolean>>({
+    route: false,
+    waypoints: false,
+    pov: false,
+  });
+  const [positions, setPositions] = useState<Record<DecorationKind, { x: number; y: number } | null>>({
+    route: null,
+    waypoints: null,
+    pov: null,
+  });
+  const setPositionFor = useCallback(
+    (kind: DecorationKind, pos: { x: number; y: number }) =>
+      setPositions((cur) => ({ ...cur, [kind]: pos })),
+    [],
+  );
+  const [panelSize, setPanelSize] = useState<Record<DecorationKind, { w: number; h: number } | null>>({
+    route: null,
+    waypoints: null,
+    pov: null,
+  });
+  const setPanelSizeFor = useCallback(
+    (kind: DecorationKind, next: { w: number; h: number } | null) =>
+      setPanelSize((cur) => ({ ...cur, [kind]: next })),
+    [],
+  );
+  // Stacking order — last item is on top. Any pointerdown inside a panel
+  // (or a trigger click that opens one) moves that kind to the end.
+  // zIndex = BASE_Z + indexOf(kind), so we get monotonic stacking without
+  // an ever-growing counter.
+  const [stackOrder, setStackOrder] = useState<DecorationKind[]>(['route', 'waypoints', 'pov']);
+  const bringToFront = useCallback((kind: DecorationKind) => {
+    setStackOrder((cur) => {
+      if (cur[cur.length - 1] === kind) return cur;
+      return [...cur.filter((k) => k !== kind), kind];
+    });
+  }, []);
+  const BASE_Z = 200;
+  const zIndexFor = (kind: DecorationKind) => BASE_Z + stackOrder.indexOf(kind);
+
   const routeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const waypointsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const povTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -239,24 +281,41 @@ export default function MapToolbar({
     setTimeout(blur, 0);
   }, [triggerRefFor]);
 
-  const closePanel = useCallback(
-    (options?: DecorationPanelCloseOptions) => {
-      setOpenPanel((cur) => {
-        if (cur && !options?.restoreFocus) scheduleBlur(cur);
-        return null;
-      });
+  // Per-kind close — used by the panel's X button and Escape handler.
+  // `restoreFocus: true` (Escape) skips the blur because the panel itself
+  // calls `triggerRef.current?.focus()` to return focus there.
+  const closePanelFor = useCallback(
+    (kind: DecorationKind, options?: DecorationPanelCloseOptions) => {
+      setOpenPanels((cur) => ({ ...cur, [kind]: false }));
+      if (!options?.restoreFocus) scheduleBlur(kind);
     },
     [scheduleBlur],
   );
 
-  const toggle = (kind: DecorationKind) =>
-    setOpenPanel((cur) => {
-      if (cur === kind) {
+  // Trigger toggle. Opening a fresh panel seeds its position from the
+  // trigger's viewport rect — same visual placement as the old dropdown's
+  // first frame, but the panel persists and can be dragged thereafter.
+  const toggle = useCallback(
+    (kind: DecorationKind) => {
+      if (openPanels[kind]) {
+        setOpenPanels((cur) => ({ ...cur, [kind]: false }));
         scheduleBlur(kind);
-        return null;
+        return;
       }
-      return kind;
-    });
+      if (!positions[kind]) {
+        const rect = triggerRefFor(kind).current?.getBoundingClientRect();
+        if (rect) {
+          setPositions((cur) => ({
+            ...cur,
+            [kind]: { x: rect.left, y: rect.bottom + PANEL_TRIGGER_GAP },
+          }));
+        }
+      }
+      bringToFront(kind);
+      setOpenPanels((cur) => ({ ...cur, [kind]: true }));
+    },
+    [openPanels, positions, triggerRefFor, bringToFront, scheduleBlur],
+  );
 
   const items: Item[] = [
     {
@@ -283,12 +342,12 @@ export default function MapToolbar({
           id="route"
           icon={<RouteIcon size={15} strokeWidth={2} />}
           label="Route"
-          isOpen={openPanel === 'route'}
+          isOpen={openPanels.route}
           overrideColor={decorationOverrideColor('route')}
           triggerRef={routeTriggerRef}
           onClick={() => toggle('route')}
         >
-          {openPanel === 'route' && (
+          {openPanels.route && (
             <DecorationPanel
               decoration="route"
               settings={settings}
@@ -296,7 +355,7 @@ export default function MapToolbar({
               scope={scope}
               overriddenKeys={overriddenKeys}
               onScopeChange={onScopeChange}
-              onClose={closePanel}
+              onClose={(opts) => closePanelFor('route', opts)}
               routeLoaded={routeLoaded}
               currentClip={currentClip}
               waypoints={waypoints}
@@ -305,6 +364,12 @@ export default function MapToolbar({
               triggerRef={routeTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
               indexedRoute={indexedRoute}
+              position={positions.route ?? undefined}
+              onPositionChange={(pos) => setPositionFor('route', pos)}
+              size={panelSize.route}
+              onSizeChange={(next) => setPanelSizeFor('route', next)}
+              zIndex={zIndexFor('route')}
+              onFocus={() => bringToFront('route')}
             />
           )}
         </DecorationButton>
@@ -318,12 +383,12 @@ export default function MapToolbar({
           id="waypoints"
           icon={<MapPin size={15} strokeWidth={2} />}
           label="Waypoints"
-          isOpen={openPanel === 'waypoints'}
+          isOpen={openPanels.waypoints}
           overrideColor={waypointsButtonOverride}
           triggerRef={waypointsTriggerRef}
           onClick={() => toggle('waypoints')}
         >
-          {openPanel === 'waypoints' && (
+          {openPanels.waypoints && (
             <DecorationPanel
               decoration="waypoints"
               settings={settings}
@@ -331,7 +396,7 @@ export default function MapToolbar({
               scope={scope}
               overriddenKeys={overriddenKeys}
               onScopeChange={onScopeChange}
-              onClose={closePanel}
+              onClose={(opts) => closePanelFor('waypoints', opts)}
               routeLoaded={routeLoaded}
               currentClip={currentClip}
               waypoints={waypoints}
@@ -340,6 +405,12 @@ export default function MapToolbar({
               triggerRef={waypointsTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
               indexedRoute={indexedRoute}
+              position={positions.waypoints ?? undefined}
+              onPositionChange={(pos) => setPositionFor('waypoints', pos)}
+              size={panelSize.waypoints}
+              onSizeChange={(next) => setPanelSizeFor('waypoints', next)}
+              zIndex={zIndexFor('waypoints')}
+              onFocus={() => bringToFront('waypoints')}
             />
           )}
         </DecorationButton>
@@ -353,12 +424,12 @@ export default function MapToolbar({
           id="pov"
           icon={<PovIcon size={15} strokeWidth={2} />}
           label="POV"
-          isOpen={openPanel === 'pov'}
+          isOpen={openPanels.pov}
           overrideColor={decorationOverrideColor('pov')}
           triggerRef={povTriggerRef}
           onClick={() => toggle('pov')}
         >
-          {openPanel === 'pov' && (
+          {openPanels.pov && (
             <DecorationPanel
               decoration="pov"
               settings={settings}
@@ -366,7 +437,7 @@ export default function MapToolbar({
               scope={scope}
               overriddenKeys={overriddenKeys}
               onScopeChange={onScopeChange}
-              onClose={closePanel}
+              onClose={(opts) => closePanelFor('pov', opts)}
               routeLoaded={routeLoaded}
               currentClip={currentClip}
               waypoints={waypoints}
@@ -375,6 +446,12 @@ export default function MapToolbar({
               triggerRef={povTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
               indexedRoute={indexedRoute}
+              position={positions.pov ?? undefined}
+              onPositionChange={(pos) => setPositionFor('pov', pos)}
+              size={panelSize.pov}
+              onSizeChange={(next) => setPanelSizeFor('pov', next)}
+              zIndex={zIndexFor('pov')}
+              onFocus={() => bringToFront('pov')}
             />
           )}
         </DecorationButton>

@@ -1,13 +1,8 @@
 // ShapeSection — the shape-gallery picker used by the Waypoints DecorationPanel.
-// Renders a 2×3 grid of shape cells (52×52px each, centered icon + label
-// below). Selected cell uses `semantic.accentTint` background + `semantic.accent`
-// border per `panel-ux.md` §5b — the same look the toolbar's
-// `segmentedBtnActive` pattern uses.
-//
-// The icons here are UX hints; the actual map renders are produced by the
-// SDF rasterizer in `src/lib/mapVisuals/shapes.ts`. We use lucide-react
-// glyphs (Circle, CircleDot for ring, MapPin, Square, Diamond) — they're
-// recognizable at 24-28px and consistent with the rest of the toolbar.
+// A thin wrapper over the reusable `GridPicker`: this file owns the
+// per-shape definitions (icon + label) and the override-pill row; the
+// gallery's visual chrome (the inverse-style 3×N grid, active cell flip,
+// hover/disable behavior) lives in `src/components/GridPicker.tsx`.
 //
 // Routing contract:
 //  • `value` is the currently effective shape. The parent computes this
@@ -26,7 +21,7 @@ import {
   Square as SquareIcon,
   Diamond as DiamondIcon,
 } from 'lucide-react';
-import type { ReactElement } from 'react';
+import GridPicker, { type GridPickerOption } from '../../GridPicker';
 import type { WaypointShape } from '../../../types';
 import { shapeSectionStyles } from './styles';
 
@@ -44,19 +39,7 @@ export interface ShapeSectionProps {
   overrideIndicator?: { label: string; onClear: () => void } | undefined;
 }
 
-interface ShapeDefinition {
-  /** The enum string written into `MapSettings.waypoints.shape` /
-   *  `Waypoint.shape`. */
-  value: WaypointShape;
-  /** Display label rendered below the icon. */
-  label: string;
-  /** Tooltip text shown on hover. */
-  title: string;
-  /** Icon renderer. Receives the pixel size; returns the JSX element. */
-  renderIcon: (size: number) => ReactElement;
-}
-
-const SHAPES: ShapeDefinition[] = [
+const SHAPES: GridPickerOption<WaypointShape>[] = [
   {
     value: 'circle',
     label: 'Circle',
@@ -89,8 +72,6 @@ const SHAPES: ShapeDefinition[] = [
   },
 ];
 
-const ICON_PIXEL_SIZE = 26;
-
 export function ShapeSection({
   value,
   onChange,
@@ -117,40 +98,14 @@ export function ShapeSection({
         </div>
       )}
 
-      <div
-        style={{
-          ...shapeSectionStyles.grid,
-          ...(disabled ? shapeSectionStyles.gridDisabled : null),
-        }}
-      >
-        {SHAPES.map((shape) => {
-          const isSelected = shape.value === value;
-          return (
-            <button
-              key={shape.value}
-              type="button"
-              onClick={() => {
-                if (disabled) return;
-                onChange(shape.value);
-              }}
-              disabled={disabled}
-              title={shape.title}
-              aria-pressed={isSelected}
-              data-testid={`shape-cell-${shape.value}`}
-              style={{
-                ...shapeSectionStyles.cell,
-                ...(isSelected ? shapeSectionStyles.cellSelected : null),
-                ...(disabled ? shapeSectionStyles.cellDisabled : null),
-              }}
-            >
-              <span style={shapeSectionStyles.iconBox} aria-hidden="true">
-                {shape.renderIcon(ICON_PIXEL_SIZE)}
-              </span>
-              <span style={shapeSectionStyles.label}>{shape.label}</span>
-            </button>
-          );
-        })}
-      </div>
+      <GridPicker<WaypointShape>
+        value={value}
+        options={SHAPES}
+        onChange={onChange}
+        disabled={disabled}
+        ariaLabel="Waypoint shape"
+        testIdPrefix="shape-cell"
+      />
     </div>
   );
 }

@@ -70,7 +70,7 @@ export function waypointLocation(
 /** Build the full waypoints FeatureCollection (one Point per waypoint
  *  whose location can be resolved). Properties: `{ id, index, clipId? }`
  *  where `index` is the waypoint's position in the input array — used by
- *  the `waypoints-label` layer's `text-field` expression when
+ *  the `waypoints-secondary` layer's `text-field` expression when
  *  `label_mode === 'numbered'`. `clipId` is set when the waypoint was
  *  sourced from a clip; unused by the layer today but available to future
  *  data-driven expressions (e.g. an active-clip highlight). `label` rides

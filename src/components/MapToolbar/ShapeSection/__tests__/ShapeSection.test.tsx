@@ -94,18 +94,18 @@ describe('ShapeSection', () => {
   it('marks the selected cell with the accent (chartreuse) styling', () => {
     render(<ShapeSection value="ring" onChange={() => undefined} />);
     const ring = q('[data-testid="shape-cell-ring"]') as HTMLElement;
-    // `cellSelected` swaps the background color to `semantic.accentTint`
-    // (`rgba(188, 237, 9, 0.10)`). Browsers normalize that to rgba form.
-    expect(ring.style.backgroundColor).toBe('rgba(188, 237, 9, 0.1)');
-    expect(ring.getAttribute('aria-pressed')).toBe('true');
+    // Inverse treatment: the active cell flips to a SOLID chartreuse fill
+    // (`semantic.accent` = `#bced09`). jsdom serializes hex to rgb().
+    expect(ring.style.backgroundColor).toBe('rgb(188, 237, 9)');
+    expect(ring.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('marks unselected cells with the default surface styling', () => {
+  it('marks unselected cells with the transparent backdrop', () => {
     render(<ShapeSection value="ring" onChange={() => undefined} />);
     const circle = q('[data-testid="shape-cell-circle"]') as HTMLElement;
-    // `semantic.surfaceDeep` = `#232c2d`. jsdom serializes hex to rgb().
-    expect(circle.style.backgroundColor).toBe('rgb(35, 44, 45)');
-    expect(circle.getAttribute('aria-pressed')).toBe('false');
+    // Idle cells sit transparent over the picker's recessed slab.
+    expect(circle.style.backgroundColor).toBe('transparent');
+    expect(circle.getAttribute('aria-checked')).toBe('false');
   });
 
   it('blocks onChange and dims the grid when disabled', () => {
@@ -139,15 +139,18 @@ describe('ShapeSection', () => {
     expect(onClear).toHaveBeenCalledTimes(1);
   });
 
-  it('fires onChange for every shape in the gallery', () => {
+  it('fires onChange for every non-active shape in the gallery', () => {
     const onChange = vi.fn();
     render(<ShapeSection value="circle" onChange={onChange} />);
+    // GridPicker (radiogroup semantics) no-ops on clicks of the already-
+    // selected cell, so we expect 4 onChange calls — one for each non-circle.
     for (const shape of ALL_SHAPES) {
       const cell = q(`[data-testid="shape-cell-${shape}"]`);
       click(cell!);
     }
-    expect(onChange).toHaveBeenCalledTimes(ALL_SHAPES.length);
+    const nonActive = ALL_SHAPES.filter((s) => s !== 'circle');
+    expect(onChange).toHaveBeenCalledTimes(nonActive.length);
     const seen = onChange.mock.calls.map((c) => c[0]);
-    expect(seen).toEqual(ALL_SHAPES);
+    expect(seen).toEqual(nonActive);
   });
 });

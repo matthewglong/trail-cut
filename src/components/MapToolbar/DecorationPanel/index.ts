@@ -1,4 +1,4 @@
-export { DecorationPanel } from './DecorationPanel';
+export { DecorationPanel, PANEL_TRIGGER_GAP } from './DecorationPanel';
 export type {
   DecorationKind,
   DecorationPanelCloseOptions,

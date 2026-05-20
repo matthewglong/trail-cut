@@ -200,6 +200,8 @@
   },
   "active": "30eba115a7891163",
   "lastOpenFiles": [
+    "src/components/Dropdown.tsx",
+    "src/components/GridPicker.tsx",
     "src/lib/mapVisuals/perFrame.ts.tmp.17957.cdb734ef140a",
     "selector-explorations-v2.html",
     "src-tauri/target/debug/incremental/trail_cut-2i5rke35sdxmj/s-hipg15iuaf-0hnuyt7-6z6qiaurjgcux9kflz9m6h6jo/work-products.bin",
@@ -209,8 +211,6 @@
     "src-tauri/target/debug/incremental/trail_cut-2i5rke35sdxmj/s-hipg15iuaf-0hnuyt7.lock",
     "src-tauri/target/debug/incremental/trail_cut_lib-03sy3wvn2damw/s-hipg12w3zt-1eggzsb-8piswhoubk74stv360u2lyysj/work-products.bin",
     "src-tauri/target/debug/incremental/trail_cut_lib-03sy3wvn2damw/s-hipg12w3zt-1eggzsb-8piswhoubk74stv360u2lyysj/query-cache.bin",
-    "src-tauri/target/debug/incremental/trail_cut_lib-03sy3wvn2damw/s-hipg12w3zt-1eggzsb-8piswhoubk74stv360u2lyysj/metadata.rmeta",
-    "src-tauri/target/debug/incremental/trail_cut_lib-03sy3wvn2damw/s-hipg12w3zt-1eggzsb-8piswhoubk74stv360u2lyysj/dep-graph.bin",
     "decoration-buttons-chromium.png",
     "Untitled.md",
     "node_modules/react-colorful/README.md",

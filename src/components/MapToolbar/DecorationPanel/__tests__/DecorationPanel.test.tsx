@@ -756,7 +756,7 @@ describe('DecorationPanel — Waypoints shape gallery (project scope)', () => {
       />,
     );
     const square = q('[data-testid="shape-cell-square"]') as HTMLElement;
-    expect(square.getAttribute('aria-pressed')).toBe('true');
+    expect(square.getAttribute('aria-checked')).toBe('true');
   });
 });
 
@@ -814,7 +814,7 @@ describe('DecorationPanel — Waypoints shape gallery (clip scope)', () => {
       />,
     );
     const pin = q('[data-testid="shape-cell-pin"]') as HTMLElement;
-    expect(pin.getAttribute('aria-pressed')).toBe('true');
+    expect(pin.getAttribute('aria-checked')).toBe('true');
   });
 
   it('selects the override (diamond) when the associated waypoint has shape=diamond', () => {
@@ -837,9 +837,9 @@ describe('DecorationPanel — Waypoints shape gallery (clip scope)', () => {
       />,
     );
     const diamond = q('[data-testid="shape-cell-diamond"]') as HTMLElement;
-    expect(diamond.getAttribute('aria-pressed')).toBe('true');
+    expect(diamond.getAttribute('aria-checked')).toBe('true');
     const circle = q('[data-testid="shape-cell-circle"]') as HTMLElement;
-    expect(circle.getAttribute('aria-pressed')).toBe('false');
+    expect(circle.getAttribute('aria-checked')).toBe('false');
   });
 
   it('shows an override pill when the associated waypoint has a shape override', () => {

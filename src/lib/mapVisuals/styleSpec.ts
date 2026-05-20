@@ -62,7 +62,8 @@ export const DEFAULT_STYLE_URL =
 
 /** Inline raster style for `satellite` mode. Esri World Imagery tiles, with
  *  a single raster layer and the demotiles glyphs URL so any text labels
- *  added on top (today: `waypoints-label`) can resolve a font stack. */
+ *  added on top (today: the label text-field on `waypoints-secondary`) can
+ *  resolve a font stack. */
 export const SATELLITE_STYLE: StyleSpecification = {
   version: 8,
   glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
@@ -203,7 +204,14 @@ export const WAYPOINTS_PRIMARY_LAYER: LayerSpecification = {
 };
 
 /** Waypoint SECONDARY symbol layer. Stacked above `waypoints-primary` so its
- *  outline / accent element paints on top of the filled silhouette.
+ *  outline / accent element paints on top of the filled silhouette. Also
+ *  carries the per-waypoint label `text-field` — keeping the outline icon
+ *  and the label in the SAME symbol layer is what lets MapLibre treat them
+ *  as a single placement unit, so they don't collide with each other and the
+ *  label can't cull the outline of its own waypoint. The prior split had
+ *  the label in a dedicated `waypoints-label` layer; that broke in `labeled`
+ *  mode because the wider text bounding box would block the (separate)
+ *  outline feature at the same coordinates, leaving the outline invisible.
  *
  *  Uses the `waypoint-<shape>-secondary` SDF icon — for shapes with a
  *  declared secondary rasterizer this is the outline; for one-color shapes
@@ -221,45 +229,31 @@ export const WAYPOINTS_SECONDARY_LAYER: LayerSpecification = {
   layout: {
     'icon-image': 'waypoint-circle-secondary',
     'icon-size': 1,
-    'icon-allow-overlap': true,
-    'icon-ignore-placement': true,
+    // Unlike the primary fill, the outline+label layer relies on MapLibre's
+    // collision detection to hide back waypoints' outlines AND labels when
+    // they overlap the front. The icon and text are co-placed inside this
+    // single layer as one marker — `icon-allow-overlap: false` /
+    // `text-allow-overlap: false` make both subject to collision;
+    // `icon-ignore-placement: false` / `text-ignore-placement: false` make
+    // the marker also BLOCK other markers, so within a cluster the
+    // closest-to-playhead marker wins and the rest are culled. Sort-key
+    // (placement key, lower = wins) is written per frame via
+    // `waypointPlacementKey`.
+    'icon-allow-overlap': false,
+    'icon-ignore-placement': false,
     'icon-anchor': 'center',
-    // Mirror primary's z-order / sort-key seed so the outline stacks
-    // identically with the fill. See WAYPOINTS_PRIMARY_LAYER for the
-    // rationale.
+    'text-field': '',
+    'text-font': ['Noto Sans Bold'],
+    'text-size': 1,
+    'text-allow-overlap': false,
+    'text-ignore-placement': false,
+    'text-anchor': 'center',
     'symbol-z-order': 'source',
     'symbol-sort-key': 0,
   },
   paint: {
     'icon-color': '#ffffff',
-  },
-};
-
-/** Label centered on each waypoint circle. `text-field` and `text-size` are
- *  both PLACEHOLDERS — `resolveStaticPaints` overrides them. `text-field`
- *  deliberately ships as an empty string so a missed seed fails loudly
- *  (blank labels) rather than silently rendering one of the real modes; the
- *  prior numbered-by-default expression masked the export's missing
- *  `label_mode` plumbing as "labeled mode falls back to numbered." Source:
- *  `waypoints` (same source as the circle layer). */
-export const WAYPOINTS_LABEL_LAYER: LayerSpecification = {
-  id: 'waypoints-label',
-  type: 'symbol',
-  source: 'waypoints',
-  layout: {
-    'text-field': '',
-    'text-font': ['Noto Sans Bold'],
-    'text-size': 1,
-    'text-allow-overlap': true,
-    'text-ignore-placement': true,
-    // Mirror the icon layers' z-order / sort-key seed so the labels stack
-    // identically — the closest-to-playhead waypoint's label paints on
-    // top, just like its dot.
-    'symbol-z-order': 'source',
-    'symbol-sort-key': 0,
-  },
-  paint: {
-    'text-color': '#fff',
+    'text-color': '#ffffff',
   },
 };
 
@@ -522,8 +516,12 @@ export function resolveStaticPaints(
       ],
     ],
     layouts: [
-      ['waypoints-label', 'text-size', mapSettings.waypoints.size.label_size * w],
-      ['waypoints-label', 'text-field', labelExpr],
+      // Label text-size / text-field live on the SECONDARY layer because
+      // the outline icon and the label text are co-placed there as a
+      // single MapLibre placement unit. See `WAYPOINTS_SECONDARY_LAYER`
+      // for the rationale.
+      ['waypoints-secondary', 'text-size', mapSettings.waypoints.size.label_size * w],
+      ['waypoints-secondary', 'text-field', labelExpr],
       // Route visibility flows through layouts so per-clip `map_overrides`
       // of `route.mode` switch automatically at the cut (the renderer
       // re-resolves per-frame). Maplibre no-ops same-value writes, so the

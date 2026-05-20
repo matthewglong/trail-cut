@@ -190,28 +190,36 @@ export function buildPerFramePaints(
       : (haloColor as DataDrivenPropertyValueSpecification<string>)
   );
 
-  // ---- Sort key ----
-  // Per-feature `symbol-sort-key`. MapLibre draws features in ascending
-  // sort-key order — higher sort-key paints later (on top) — so we want the
-  // closest-to-playhead waypoint to score highest. Two branches:
+  // ---- Sort keys ----
+  // The waypoint stack is split across THREE symbol layers — primary (filled
+  // silhouette), secondary (outline), and label. Symbol-sort-key only
+  // governs ordering WITHIN a layer, so even with the primaries stacked
+  // correctly, a back waypoint's outline (drawn entirely after every primary)
+  // paints on top of the front waypoint's fill. To hide back outlines and
+  // labels we rely on MapLibre's collision detection — toggle `allow-overlap:
+  // false` on those two layers so colliding back features are culled.
   //
-  //   active: sort_key = -|index - activeIndex|. Distance-from-active in
-  //           feature-index space. The active waypoint scores 0 (max);
-  //           index ±1 scores -1; etc. Past waypoints (i < A) stack with
-  //           later-passed on top of earlier-passed; future waypoints (i > A)
-  //           stack with soonest on top. Past and future at equal distance
-  //           tie at the same sort-key — acceptable since adjacent-in-time
-  //           waypoints rarely overlap in space, and there is no user
-  //           preference between past and future of equal distance.
+  // Two sort-key expressions fall out of that split because MapLibre's
+  // sort-key semantics depend on `allow-overlap`:
   //
-  //   no active: sort_key = -index. The playhead hasn't reached any
-  //              waypoint yet, so every waypoint is "future" — by the rule
-  //              for future waypoints (earlier on top), `index = 0` paints
-  //              above `index = N`.
-  const sortKeyExpr: ExpressionSpecification =
+  //   - `allow-overlap: true` (primary): every fill renders; higher sort-key
+  //     paints later (on top). Closer-to-playhead → HIGHER sort-key.
+  //     Expression: `-|index - activeIndex|` (active scores 0, neighbors
+  //     trail).
+  //
+  //   - `allow-overlap: false` (secondary, label): lower sort-key wins
+  //     placement (gets placed first; colliders are culled). Closer-to-
+  //     playhead → LOWER sort-key. Expression: `|index - activeIndex|`
+  //     (active scores 0, the smallest distance).
+  //
+  // No-active branch (playhead hasn't reached any waypoint yet): every
+  // waypoint is "future." By the rule for future waypoints (earlier on top),
+  // index 0 wins — `-index` for draw order, `index` for placement.
+  const placementKeyExpr: ExpressionSpecification =
     activeWaypointIndex == null
-      ? ['-', 0, ['get', 'index']]
-      : ['-', 0, ['abs', ['-', ['get', 'index'], activeWaypointIndex]]];
+      ? ['get', 'index']
+      : ['abs', ['-', ['get', 'index'], activeWaypointIndex]];
+  const sortKeyExpr: ExpressionSpecification = ['-', 0, placementKeyExpr];
 
   if (!activeWaypointId) {
     return {
@@ -225,6 +233,8 @@ export function buildPerFramePaints(
       waypointHaloOpacity: 0,
       waypointSortKey:
         sortKeyExpr as DataDrivenPropertyValueSpecification<number>,
+      waypointPlacementKey:
+        placementKeyExpr as DataDrivenPropertyValueSpecification<number>,
       pulseRadius: pulse.a.radius,
       pulseOpacity: pulse.a.opacity,
       pulseRadiusB: pulse.b.radius,
@@ -269,6 +279,8 @@ export function buildPerFramePaints(
       haloOpacityExpr as DataDrivenPropertyValueSpecification<number>,
     waypointSortKey:
       sortKeyExpr as DataDrivenPropertyValueSpecification<number>,
+    waypointPlacementKey:
+      placementKeyExpr as DataDrivenPropertyValueSpecification<number>,
     pulseRadius: pulse.a.radius,
     pulseOpacity: pulse.a.opacity,
     pulseRadiusB: pulse.b.radius,

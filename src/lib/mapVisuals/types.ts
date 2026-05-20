@@ -79,19 +79,27 @@ export interface PaintUpdates {
    *  `ACTIVE_HALO_OPACITY` and every other feature at 0. Applied to
    *  `waypoints-active-halo`'s `circle-opacity`. */
   waypointHaloOpacity: DataDrivenPropertyValueSpecification<number> | number;
-  /** Per-feature `symbol-sort-key` for the three waypoint symbol layers
-   *  (primary, secondary, label). With `icon-allow-overlap: true` /
-   *  `text-allow-overlap: true` AND `symbol-z-order: 'source'`, MapLibre
-   *  draws features in ascending sort-key order — higher sort-key paints
-   *  later (i.e., on top). The expression encodes "closer-to-playhead
-   *  waypoints win": when a waypoint has been passed, sort-key is
-   *  `-|index - activeIndex|` so the active dot tops everything and
-   *  neighboring indices stack toward it (later-passed past wpts cover
-   *  earlier-passed; soon-to-come future wpts cover further-out future).
-   *  When no waypoint has been passed yet, sort-key is `-index` so the
-   *  earliest upcoming waypoint paints on top of later ones. Applied to
-   *  all three layers via `setLayoutProperty('symbol-sort-key', …)`. */
+  /** Per-feature `symbol-sort-key` for the waypoint PRIMARY layer (the
+   *  filled silhouette). That layer keeps `icon-allow-overlap: true` so
+   *  every fill renders — sort-key only governs draw order. With
+   *  `symbol-z-order: 'source'`, higher sort-key paints later (on top), so
+   *  the value is the NEGATED distance from the active waypoint:
+   *  `-|index - activeIndex|` when a waypoint has been passed (active wins
+   *  with sort-key 0; neighbors trail at -1, -2, …); `-index` when no
+   *  waypoint has been passed yet (index 0 is the earliest upcoming, so it
+   *  paints on top of later ones). */
   waypointSortKey: DataDrivenPropertyValueSpecification<number> | number;
+  /** Per-feature `symbol-sort-key` for the SECONDARY (outline) and LABEL
+   *  layers. Both layers flip `allow-overlap` off so MapLibre's collision
+   *  detection culls back features when their bounding boxes overlap the
+   *  front — this is what hides the back waypoint's white outline poking
+   *  through the front's fill and the back label appearing on top of the
+   *  front's body. With `allow-overlap: false`, LOWER sort-key wins
+   *  placement (the closer-to-playhead feature gets placed first; back
+   *  features colliding with it are dropped), so the value is the POSITIVE
+   *  distance: `|index - activeIndex|` (active = 0 = wins) or `index` (no
+   *  active — closest-upcoming wins). Inverse of `waypointSortKey`. */
+  waypointPlacementKey: DataDrivenPropertyValueSpecification<number> | number;
   pulseRadius: number;
   pulseOpacity: number;
   pulseRadiusB: number;

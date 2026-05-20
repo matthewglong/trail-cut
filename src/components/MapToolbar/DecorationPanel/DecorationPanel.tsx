@@ -20,7 +20,8 @@
 // RouteSettings/WaypointsSettings type and is read/written here on mode
 // toggles so the user can flip back and forth without losing their stops.
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import SegmentedPicker from '../../SegmentedPicker';
 import NumberStepper from '../../NumberStepper';
 import { ColorSection } from '../ColorSection';
@@ -51,6 +52,19 @@ import { progressUpTo } from '../../../lib/routeLocation';
 /** Canonical width used for `× 1080` display conversion. Same constant the
  *  rendering pipeline calls `PAINT_REFERENCE_WIDTH` (1080 CSS px). */
 const PAINT_REFERENCE_WIDTH = 1080;
+
+// --- Panel sizing constants -----------------------------------------------
+// Defaults match the prior fixed dimensions (`width: 280; maxHeight: 480`)
+// so first-open panels look identical. User-driven resize writes through
+// `onSizeChange` and bypasses these.
+const PANEL_DEFAULT_WIDTH = 280;
+const PANEL_DEFAULT_MAX_HEIGHT = 480;
+const PANEL_MIN_WIDTH = 240;
+const PANEL_MAX_WIDTH = 640;
+const PANEL_MIN_HEIGHT = 180;
+/** Gap between a trigger button's bottom and the freshly-opened panel's top.
+ *  Exported so MapToolbar can compute matching first-open positions. */
+export const PANEL_TRIGGER_GAP = 4;
 
 const TRI_OPTIONS: { value: TriMode; label: string }[] = [
   { value: 'none',    label: 'None'    },
@@ -110,6 +124,24 @@ export interface DecorationPanelProps {
    *  Null when no GPX is loaded; the editor disables gradient mode in
    *  that state. */
   indexedRoute: IndexedRoute | null;
+  /** Viewport-relative top-left position. The panel is always a floating
+   *  window — there is no docked mode. Owned by MapToolbar so the position
+   *  survives close/reopen. Optional (defaults to {0,0}) so existing tests
+   *  that don't care about positioning compile unchanged. */
+  position?: { x: number; y: number };
+  /** Receives the next position on title-row drag. */
+  onPositionChange?: (next: { x: number; y: number }) => void;
+  /** User-set panel size. Null means "use defaults" (auto-height, default
+   *  width). Survives close/reopen by living in the parent's state. */
+  size?: { w: number; h: number } | null;
+  /** Receives the next size on resize-handle drag. */
+  onSizeChange?: (next: { w: number; h: number } | null) => void;
+  /** Stacking index. Higher = renders on top. MapToolbar bumps this on any
+   *  panel interaction so the most-recently-touched panel comes forward. */
+  zIndex?: number;
+  /** Called on any pointerdown inside the panel — used by the parent to
+   *  bring this panel to the front of the stack. */
+  onFocus?: () => void;
 }
 
 export function DecorationPanel({
@@ -127,22 +159,21 @@ export function DecorationPanel({
   triggerRef,
   currentClipOrdinal,
   indexedRoute,
+  position,
+  onPositionChange,
+  size = null,
+  onSizeChange,
+  zIndex,
+  onFocus,
 }: DecorationPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const currentWidth = size?.w ?? PANEL_DEFAULT_WIDTH;
+  const pos = position ?? { x: 0, y: 0 };
 
-  // Click-outside to close.
-  useEffect(() => {
-    const onMouseDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (panelRef.current?.contains(target)) return;
-      if (triggerRef.current?.contains(target)) return;
-      onClose({ restoreFocus: false });
-    };
-    document.addEventListener('mousedown', onMouseDown);
-    return () => document.removeEventListener('mousedown', onMouseDown);
-  }, [onClose, triggerRef]);
-
-  // Escape to close — returns focus to trigger.
+  // Escape to close — returns focus to trigger. With multi-open, every open
+  // panel registers its own listener; pressing Escape closes all of them,
+  // which reads as a sensible "dismiss everything" gesture.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -155,8 +186,82 @@ export function DecorationPanel({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, triggerRef]);
 
-  // Boundary check: if `left: 0` would overflow the window, anchor to right.
-  const panelPlacement = useAnchorSide(triggerRef);
+  // Title-row drag: pointer-capture lets us receive move/up events even if
+  // the pointer leaves the panel. Position writes go to the parent through
+  // `onPositionChange`, which both moves the panel and (via the parent's
+  // bringToFront) keeps it on top.
+  const startDrag = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      if (!onPositionChange) return;
+      const target = e.currentTarget;
+      const panel = panelRef.current;
+      if (!panel) return;
+      target.setPointerCapture(e.pointerId);
+      const startRect = panel.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const initialPanelX = startRect.left;
+      const initialPanelY = startRect.top;
+
+      setDragging(true);
+
+      const move = (ev: PointerEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        onPositionChange({ x: initialPanelX + dx, y: initialPanelY + dy });
+      };
+      const stop = () => {
+        target.removeEventListener('pointermove', move);
+        target.removeEventListener('pointerup', stop);
+        target.removeEventListener('pointercancel', stop);
+        setDragging(false);
+      };
+      target.addEventListener('pointermove', move);
+      target.addEventListener('pointerup', stop);
+      target.addEventListener('pointercancel', stop);
+    },
+    [onPositionChange],
+  );
+
+  // Resize handle drag — independent of title drag. Reads current panel
+  // dimensions at pointerdown (so user-set or auto-sized starting points
+  // both work), then writes deltas through `onSizeChange`. Clamped to
+  // sensible min/max so the gradient editor and segmented pickers stay
+  // legible. The event is allowed to bubble so the panel root's onFocus
+  // still fires and the parent brings this panel to the front.
+  const startResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      if (!onSizeChange) return;
+      const target = e.currentTarget;
+      const panel = panelRef.current;
+      if (!panel) return;
+      target.setPointerCapture(e.pointerId);
+      const startRect = panel.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const initialW = startRect.width;
+      const initialH = startRect.height;
+
+      const move = (ev: PointerEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        const w = clamp(initialW + dx, PANEL_MIN_WIDTH, PANEL_MAX_WIDTH);
+        const h = clamp(initialH + dy, PANEL_MIN_HEIGHT, window.innerHeight - 24);
+        onSizeChange({ w, h });
+      };
+      const stop = () => {
+        target.removeEventListener('pointermove', move);
+        target.removeEventListener('pointerup', stop);
+        target.removeEventListener('pointercancel', stop);
+      };
+      target.addEventListener('pointermove', move);
+      target.addEventListener('pointerup', stop);
+      target.addEventListener('pointercancel', stop);
+    },
+    [onSizeChange],
+  );
 
   const titleByDecoration: Record<DecorationKind, string> = {
     route:     'ROUTE',
@@ -164,71 +269,138 @@ export function DecorationPanel({
     pov:       'POV',
   };
 
-  return (
+  const panelStyle: CSSProperties = {
+    ...panelStyles.panel,
+    position: 'fixed' as const,
+    left: pos.x,
+    top: pos.y,
+    width: currentWidth,
+    // User-set height when present; otherwise content-driven up to
+    // PANEL_DEFAULT_MAX_HEIGHT so a freshly-opened panel hugs its content.
+    ...(size?.h ? { height: size.h } : { maxHeight: PANEL_DEFAULT_MAX_HEIGHT }),
+    ...(zIndex !== undefined ? { zIndex } : null),
+  };
+
+  const titleRowStyle: CSSProperties = {
+    ...panelStyles.titleRow,
+    ...(dragging ? panelStyles.titleRowDragging : null),
+  };
+
+  const supportsDrag = !!onPositionChange;
+  const supportsResize = !!onSizeChange;
+
+  // Any pointerdown inside the panel (title-row drag, body interactions,
+  // resize handle) bubbles up here and triggers onFocus, which the parent
+  // uses to bring this panel to the front of the stack.
+  const onPanelPointerDown = onFocus ? () => onFocus() : undefined;
+
+  const panel = (
     <div
       ref={panelRef}
-      style={{
-        ...panelStyles.panel,
-        ...(panelPlacement === 'right' ? panelStyles.panelAnchorRight : panelStyles.panelAnchorLeft),
-      }}
+      style={panelStyle}
       role="dialog"
       aria-label={`${decoration} decoration panel`}
       data-testid={`decoration-panel-${decoration}`}
+      onPointerDown={onPanelPointerDown}
     >
-      <div style={panelStyles.titleRow}>
-        <span style={panelStyles.title}>{titleByDecoration[decoration]}</span>
-      </div>
-
-      {scope === 'clip' && (
-        <div style={panelStyles.scopeBanner}>
-          <span style={panelStyles.scopeBannerIcon}>◫</span>
-          <span style={panelStyles.scopeBannerText}>
-            Clip {currentClipOrdinal ?? '—'} overrides
-          </span>
+      <div
+        style={titleRowStyle}
+        onPointerDown={supportsDrag ? startDrag : undefined}
+        title={supportsDrag ? 'Drag to move' : undefined}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+          {supportsDrag && <span style={panelStyles.dragHandle} aria-hidden />}
+          <span style={panelStyles.title}>{titleByDecoration[decoration]}</span>
+        </span>
+        <span style={panelStyles.titleActions}>
           <button
             type="button"
-            onClick={() => onScopeChange('project')}
-            style={panelStyles.scopeBannerLink}
+            onClick={() => onClose({ restoreFocus: false })}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={panelStyles.titleClose}
+            title="Close"
+            aria-label="Close panel"
+            data-testid={`decoration-panel-${decoration}-close`}
           >
-            ← switch to proj
+            ×
           </button>
-        </div>
-      )}
+        </span>
+      </div>
 
-      {decoration === 'route' && (
-        <RoutePanelBody
-          settings={settings}
-          onChange={onChange}
-          scope={scope}
-          onScopeChange={onScopeChange}
-          routeLoaded={routeLoaded}
-          waypoints={waypoints}
-          indexedRoute={indexedRoute}
-        />
-      )}
+      <div style={panelStyles.body}>
+        {scope === 'clip' && (
+          <div style={panelStyles.scopeBanner}>
+            <span style={panelStyles.scopeBannerIcon}>◫</span>
+            <span style={panelStyles.scopeBannerText}>
+              Clip {currentClipOrdinal ?? '—'} overrides
+            </span>
+            <button
+              type="button"
+              onClick={() => onScopeChange('project')}
+              style={panelStyles.scopeBannerLink}
+            >
+              ← switch to proj
+            </button>
+          </div>
+        )}
 
-      {decoration === 'waypoints' && (
-        <WaypointsPanelBody
-          settings={settings}
-          onChange={onChange}
-          scope={scope}
-          routeLoaded={routeLoaded}
-          currentClip={currentClip}
-          waypoints={waypoints}
-          onWaypointsChange={onWaypointsChange}
-          onOpenWaypointsPanel={onOpenWaypointsPanel}
-          indexedRoute={indexedRoute}
-        />
-      )}
+        {decoration === 'route' && (
+          <RoutePanelBody
+            settings={settings}
+            onChange={onChange}
+            scope={scope}
+            onScopeChange={onScopeChange}
+            routeLoaded={routeLoaded}
+            waypoints={waypoints}
+            indexedRoute={indexedRoute}
+          />
+        )}
 
-      {decoration === 'pov' && (
-        <PovPanelBody
-          settings={settings}
-          onChange={onChange}
+        {decoration === 'waypoints' && (
+          <WaypointsPanelBody
+            settings={settings}
+            onChange={onChange}
+            scope={scope}
+            routeLoaded={routeLoaded}
+            currentClip={currentClip}
+            waypoints={waypoints}
+            onWaypointsChange={onWaypointsChange}
+            onOpenWaypointsPanel={onOpenWaypointsPanel}
+            indexedRoute={indexedRoute}
+          />
+        )}
+
+        {decoration === 'pov' && (
+          <PovPanelBody
+            settings={settings}
+            onChange={onChange}
+          />
+        )}
+      </div>
+
+      {supportsResize && (
+        <div
+          style={panelStyles.resizeHandle}
+          onPointerDown={startResize}
+          role="separator"
+          aria-label="Resize panel"
+          aria-orientation="horizontal"
+          data-testid={`decoration-panel-${decoration}-resize`}
         />
       )}
     </div>
   );
+
+  // Portal to document.body so the panel escapes the map pane's bounding box
+  // (the split layout's right pane has constrained width and the toolbar
+  // sits inside it). SSR isn't a concern — this is a Tauri webview app.
+  return typeof document !== 'undefined'
+    ? createPortal(panel, document.body)
+    : panel;
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(Math.max(n, min), max);
 }
 
 // ---------- Route panel body ----------------------------------------------
@@ -379,7 +551,6 @@ function RoutePanelBody({
           disabledValues={routeLoaded ? [] : ['visited']}
           title={routeLoaded ? 'Route line mode' : 'Import a GPX route to enable visited mode'}
           ariaLabel="Route visibility"
-          variant="trail"
         />
       </Section>
 
@@ -731,13 +902,6 @@ function WaypointsPanelBody({
 
   return (
     <>
-      {/* Two SegmentedPicker variants surfaced side-by-side for
-       *  comparison: VISIBILITY uses `trail` (chartreuse blaze sliding
-       *  along the top edge); LABEL MODE + ACTIVE MODE use `summit`
-       *  (chartreuse summit triangle hovering above the active label,
-       *  with a tinted active card). Once the user picks one, unify
-       *  all four DecorationPanel pickers (this panel's three + Route
-       *  VISIBILITY + POV's two) onto the winner. */}
       <Section label="VISIBILITY">
         <SegmentedPicker<TriMode>
           value={settings.waypoints.mode}
@@ -746,7 +910,6 @@ function WaypointsPanelBody({
           disabledValues={routeLoaded ? [] : ['visited']}
           title="Waypoint visibility"
           ariaLabel="Waypoint visibility"
-          variant="trail"
         />
       </Section>
 
@@ -757,7 +920,6 @@ function WaypointsPanelBody({
           onChange={setLabelMode}
           title="Waypoint label render mode"
           ariaLabel="Waypoint label render mode"
-          variant="summit"
         />
       </Section>
 
@@ -768,7 +930,6 @@ function WaypointsPanelBody({
           onChange={setActiveMode}
           title="Active-waypoint highlight strategy"
           ariaLabel="Active-waypoint highlight strategy"
-          variant="summit"
         />
       </Section>
 
@@ -977,7 +1138,6 @@ function PovPanelBody({
           onChange={setPulseStyle}
           title="Pulse animation style"
           ariaLabel="Pulse animation style"
-          variant="trail"
         />
       </Section>
 
@@ -988,7 +1148,6 @@ function PovPanelBody({
           onChange={setPulseRate}
           title="Pulse rate"
           ariaLabel="Pulse rate"
-          variant="summit"
         />
       </Section>
 
@@ -1110,21 +1269,3 @@ function useWaypointProgress(
   });
 }
 
-/** Decide whether the panel should anchor to its trigger's left or right
- *  edge. Measured in a layout effect so the read happens after the trigger
- *  is in the DOM but before the browser paints. The synchronous `setSide`
- *  is intentional — same pattern `ModePicker` uses for its anchor read. */
-function useAnchorSide(
-  triggerRef: React.RefObject<HTMLButtonElement | null>,
-): 'left' | 'right' {
-  const PANEL_WIDTH = 280;
-  const [side, setSide] = useState<'left' | 'right'>('left');
-  useLayoutEffect(() => {
-    const el = triggerRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSide(rect.left + PANEL_WIDTH > window.innerWidth ? 'right' : 'left');
-  }, [triggerRef]);
-  return side;
-}

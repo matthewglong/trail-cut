@@ -485,6 +485,55 @@ describe('buildPerFrameState paints', () => {
     // anchored at project-time 0.
     expect(subExpr[2]).toBe(0);
   });
+
+  it('placement key is the positive-distance inverse of the draw sort-key', () => {
+    // Primary uses the negated draw key (allow-overlap: true → higher
+    // wins draw order); secondary + label use the placement key directly
+    // (allow-overlap: false → lower wins collision). Both have to share
+    // the same `|index - activeIndex|` distance so the same waypoint
+    // wins in every layer — otherwise the front fill, front outline, and
+    // front label could disagree on who's "front."
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const state = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      POINT_SETTINGS,
+      VIEWPORT,
+    );
+    // Placement key shape: `['abs', ['-', ['get', 'index'], A]]`.
+    const placement = state.paints.waypointPlacementKey as unknown as unknown[];
+    expect(Array.isArray(placement)).toBe(true);
+    expect(placement[0]).toBe('abs');
+    // The draw sort-key wraps the same placement expression in `['-', 0, …]`.
+    const draw = state.paints.waypointSortKey as unknown as unknown[];
+    expect(draw[0]).toBe('-');
+    expect(draw[1]).toBe(0);
+    expect(draw[2]).toEqual(placement);
+  });
+
+  it('placement key (no active): emits bare get-index so the earliest upcoming waypoint wins placement', () => {
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const noActiveSettings: MapSettings = {
+      ...POINT_SETTINGS,
+      waypoints: { ...POINT_SETTINGS.waypoints, active_mode: 'none' },
+    };
+    const state = buildPerFrameState(
+      timeline,
+      0,
+      null,
+      clips,
+      waypoints,
+      noActiveSettings,
+      VIEWPORT,
+    );
+    const placement = state.paints.waypointPlacementKey as unknown as unknown[];
+    expect(Array.isArray(placement)).toBe(true);
+    expect(placement[0]).toBe('get');
+    expect(placement[1]).toBe('index');
+  });
 });
 
 describe('buildPerFrameState waypoints visibility', () => {

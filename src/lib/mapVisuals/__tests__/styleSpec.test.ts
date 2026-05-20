@@ -152,7 +152,7 @@ describe('resolveStaticPaints', () => {
       DEFAULT_MAP_SETTINGS.pov.size.pulse_radius * PAINT_REFERENCE_WIDTH,
       9,
     );
-    expect(layoutBy.get('waypoints-label/text-size')).toBeCloseTo(
+    expect(layoutBy.get('waypoints-secondary/text-size')).toBeCloseTo(
       DEFAULT_MAP_SETTINGS.waypoints.size.label_size * PAINT_REFERENCE_WIDTH,
       9,
     );
@@ -418,14 +418,14 @@ describe('resolveStaticPaints', () => {
     // 'numbered' → 1-based index expression.
     const numbered = resolveStaticPaints(withLabelMode('numbered'));
     const numberedExpr = numbered.layouts.find(
-      ([l, p]) => l === 'waypoints-label' && p === 'text-field',
+      ([l, p]) => l === 'waypoints-secondary' && p === 'text-field',
     )?.[2];
     expect(numberedExpr).toEqual(['to-string', ['+', ['get', 'index'], 1]]);
 
     // 'labeled' → feature.label string verbatim.
     const labeled = resolveStaticPaints(withLabelMode('labeled'));
     const labeledExpr = labeled.layouts.find(
-      ([l, p]) => l === 'waypoints-label' && p === 'text-field',
+      ([l, p]) => l === 'waypoints-secondary' && p === 'text-field',
     )?.[2];
     expect(labeledExpr).toEqual(['to-string', ['get', 'label']]);
   });

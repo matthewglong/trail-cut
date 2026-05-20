@@ -28,7 +28,6 @@ import {
   WAYPOINTS_ACTIVE_HALO_LAYER,
   WAYPOINTS_PRIMARY_LAYER,
   WAYPOINTS_SECONDARY_LAYER,
-  WAYPOINTS_LABEL_LAYER,
 } from '../lib/mapVisuals';
 
 interface MapViewProps {
@@ -257,17 +256,19 @@ export default function MapView({
         //   waypoints-active-halo (semi-transparent ring behind the active
         //                          waypoint's shape)
         //   waypoints-primary     (filled silhouette SDF; tinted by primary color)
-        //   waypoints-secondary   (outline / accent SDF; tinted by secondary color)
-        //   waypoints-label       (label on top of all three)
+        //   waypoints-secondary   (outline SDF + label text co-placed as one
+        //                          MapLibre placement unit, so the label
+        //                          can't block the outline of its own
+        //                          waypoint — see the layer spec for why)
         // The halo sits BELOW the shape layers so the shape paints over it.
         // Primary paints the body; secondary overpaints the outermost band
         // (or whatever the shape descriptor's secondary rasterizer defines)
         // so the user-visible stroke matches the shape silhouette exactly.
-        // The label sits on top so it composites correctly over the shape.
+        // The label rides the secondary's symbol so the two compose as a
+        // single drawable unit during collision detection.
         map.addLayer(WAYPOINTS_ACTIVE_HALO_LAYER);
         map.addLayer(WAYPOINTS_PRIMARY_LAYER);
         map.addLayer(WAYPOINTS_SECONDARY_LAYER);
-        map.addLayer(WAYPOINTS_LABEL_LAYER);
       }
       if (!map.getSource('live-marker')) {
         map.addSource('live-marker', { type: 'geojson', data: emptyFc });
@@ -593,21 +594,17 @@ export default function MapView({
           // Secondary slot: tinted by `waypointSecondaryColor` (same case
           // shape as primary, against secondary base / override / active).
           // Icon-size mirrors primary so the outline stays aligned with
-          // the fill. Sort-key mirrors primary so the outline stacks with
-          // its fill instead of slipping behind a neighboring waypoint.
+          // the fill. Sort-key uses the PLACEMENT key (positive distance,
+          // lower = wins) because this layer has `allow-overlap: false`
+          // on both icon and text — closer-to-playhead outline+label wins
+          // the collision; back markers (outline + label together) are
+          // culled so they don't paint over the front fill.
           map.setPaintProperty('waypoints-secondary', 'icon-color',
             state.paints.waypointSecondaryColor);
           map.setLayoutProperty('waypoints-secondary', 'icon-size',
             state.paints.waypointIconSize);
           map.setLayoutProperty('waypoints-secondary', 'symbol-sort-key',
-            state.paints.waypointSortKey);
-        }
-        if (map.getLayer('waypoints-label')) {
-          // Label layer: same sort-key so the label stacks with its dot.
-          // Without this, two overlapping waypoints would still show two
-          // labels even though the dots correctly stack.
-          map.setLayoutProperty('waypoints-label', 'symbol-sort-key',
-            state.paints.waypointSortKey);
+            state.paints.waypointPlacementKey);
         }
         if (map.getLayer('waypoints-active-halo')) {
           // Halo radius/opacity collapse to 0 when no waypoint is active so

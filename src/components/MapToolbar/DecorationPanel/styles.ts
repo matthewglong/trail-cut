@@ -2,27 +2,32 @@ import type { CSSProperties } from 'react';
 import { semantic, fonts, radii, typeScale } from '../../../theme/tokens';
 
 export const panelStyles: Record<string, CSSProperties> = {
+  // Sizing & position (width/height/left/top) are applied inline by the
+  // component — both docked and torn-off panels render via portal as
+  // `position: fixed` so the map pane's clipping doesn't trap them.
   panel: {
-    position: 'absolute',
-    top: 'calc(100% + 4px)',
-    width: 280,
-    maxHeight: 480,
-    overflowY: 'auto' as const,
     backgroundColor: semantic.surfaceRaised,
     border: `1px solid ${semantic.borderStrong}`,
     borderRadius: radii.lg,
     zIndex: 200,
-    boxShadow: '0 8px 24px rgba(0, 0, 0, 0.45)',
+    // Heavier shadow than a dropdown — these panels float independently
+    // and the elevation cue helps them read as "windows over the map".
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.55)',
     display: 'flex',
     flexDirection: 'column',
     color: semantic.fg,
     fontFamily: fonts.sans,
+    // Contain the resize handle in the corner so it doesn't poke past the
+    // rounded border.
+    overflow: 'hidden',
   },
-  panelAnchorLeft: {
-    left: 0,
-  },
-  panelAnchorRight: {
-    right: 0,
+  // Scrollable body that sits between the fixed-height title row and the
+  // resize handle. min-height:0 is required for flex children to actually
+  // scroll instead of expanding past the panel.
+  body: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: 'auto' as const,
   },
 
   titleRow: {
@@ -30,6 +35,20 @@ export const panelStyles: Record<string, CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '10px 12px 8px',
+    gap: 8,
+    cursor: 'grab',
+    userSelect: 'none' as const,
+    touchAction: 'none' as const,
+    flexShrink: 0,
+  },
+  titleRowDragging: {
+    cursor: 'grabbing',
+  },
+  titleActions: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
   },
   title: {
     fontFamily: fonts.mono,
@@ -37,6 +56,62 @@ export const panelStyles: Record<string, CSSProperties> = {
     letterSpacing: '0.08em',
     textTransform: 'uppercase' as const,
     color: semantic.fg,
+  },
+  // 6-dot grab affordance to the left of the title — communicates "drag this".
+  dragHandle: {
+    display: 'inline-block',
+    width: 8,
+    height: 12,
+    marginRight: 8,
+    backgroundImage: `radial-gradient(${semantic.fgDim} 1px, transparent 1px)`,
+    backgroundSize: '4px 4px',
+    backgroundPosition: '0 1px',
+    opacity: 0.7,
+    flexShrink: 0,
+  },
+  // Tear-off/re-dock icon button on the right side of the title row.
+  titleAction: {
+    background: 'transparent',
+    border: 'none',
+    color: semantic.fgDim,
+    cursor: 'pointer',
+    padding: '2px 6px',
+    borderRadius: radii.base,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    lineHeight: 1,
+    fontSize: 13,
+  },
+  // Close (×) — same shape as titleAction, slightly larger glyph.
+  titleClose: {
+    background: 'transparent',
+    border: 'none',
+    color: semantic.fgDim,
+    cursor: 'pointer',
+    padding: '2px 6px',
+    borderRadius: radii.base,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    lineHeight: 1,
+    fontSize: 18,
+    fontWeight: 300,
+  },
+  // Bottom-right resize grip. Pure-CSS diagonal stripes — three slashes in
+  // a 14×14 box at the rounded corner. The handle itself uses
+  // `nwse-resize` cursor and absorbs its own pointer events; the panel's
+  // border-radius clips the corner so the stripes don't escape it.
+  resizeHandle: {
+    position: 'absolute' as const,
+    right: 0,
+    bottom: 0,
+    width: 14,
+    height: 14,
+    cursor: 'nwse-resize',
+    touchAction: 'none' as const,
+    backgroundImage: `linear-gradient(135deg, transparent 0%, transparent 55%, ${semantic.fgDim} 55%, ${semantic.fgDim} 65%, transparent 65%, transparent 75%, ${semantic.fgDim} 75%, ${semantic.fgDim} 85%, transparent 85%)`,
+    opacity: 0.55,
   },
 
   scopeBanner: {
