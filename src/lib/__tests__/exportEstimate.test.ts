@@ -3,7 +3,7 @@ import { estimateJob, estimateQueue } from '../exportEstimate';
 import type { ExportJob } from '../exportFilenames';
 
 function job(id: string, channel: ExportJob['channel']): ExportJob {
-  return { id, aspect: '9_16', channel, outputPath: '' };
+  return { id, aspect: '9_16', channel, quality: '1080p', fps: 30, outputPath: '' };
 }
 
 describe('estimateJob', () => {
@@ -63,7 +63,7 @@ describe('estimateQueue', () => {
     const jobs: ExportJob[] = [];
     for (const aspect of ['9_16', '4_5', '16_9'] as const) {
       for (const channel of channels) {
-        jobs.push({ id: `${aspect}-${channel}`, aspect, channel, outputPath: '' });
+        jobs.push({ id: `${aspect}-${channel}`, aspect, channel, quality: '1080p', fps: 30, outputPath: '' });
       }
     }
     const totalSec = estimateQueue(jobs, 70, 300);

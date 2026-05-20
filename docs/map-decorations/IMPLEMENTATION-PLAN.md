@@ -408,44 +408,28 @@ Waypoint's `shape`. **Acceptance:** mixed-shape scenes render
 correctly (e.g. one diamond among four circles); shape edits survive
 per-clip context.
 
-## Open questions before Step 5
+## [DECIDED] Open questions before Step 5
 
 1. **Active-waypoint highlight color.** Today `#4a9eff` (fixed blue)
-   hardcoded in `paints.ts:19`. Options: (a) keep the blue, (b)
-   derive from `mapSettings.pov.color` (so the active waypoint
-   inherits POV's per-clip override automatically), (c) drop the
-   color highlight entirely and rely on the larger active radius.
-   **Recommend: (b)** per `color-gradient.md` §13 — the active
-   waypoint is the "now" point, same semantic as POV, and (b)
-   automatically respects clip POV overrides.
+   hardcoded in `paints.ts:19`. 
+   **Decision:** Surface an optional parameter for active color in waypoints that defaults to the waypoint's color if empty
 
-2. **Active-waypoint highlight implementation.** The three-arm case
-   expression on `circle-color` works for circles/rings but doesn't
-   generalize to symbol shapes (you'd need a parallel `icon-color`
-   expression and a coordinated radius/size bump). `shapes-pov.md`
-   §"Active treatment" proposes a separate `waypoints-active-halo`
-   circle layer with data-driven `circle-radius` (0 for non-active,
-   `active_radius × 1080` for active) and a fixed white stroke,
-   uniformly across all shapes. **Recommend: halo layer** for
-   robustness across shape variants; ship it in Step 4 or Step 8.
+2. **Active-waypoint highlight implementation.** 
+   **Decision: halo layer** for robustness across shape variants; ship it in Step 4 or Step 8.
 
 3. **Pulse styles in scope?** `shapes-pov.md` Part 2 proposes 4
    styles (steady / throb / sonar / heartbeat) + a `pulse_rate` enum.
    `data-model.md` §2 currently does not include `pulse_style` or
    `pulse_rate` on `PovSettings` (canonical behavior is today's
-   sonar-equivalent). **Options**: (a) defer pulse styles entirely
-   from this PR — POV panel's Pulse section shows steady/throb/sonar
-   as a future-feature placeholder; (b) ship sonar-only with the
-   Pulse section absent; (c) commit to the 4-style roster and add
+   sonar-equivalent).
+   **Decision:** commit to the 4-style roster and add
    `pov.pulse_style` / `pov.pulse_rate` to `MapSettings` +
-   `MapOverrides` in Step 1. **Recommend: (a)** for the first ship;
-   the POV per-clip override capability is the real new behavior
-   here, and adding pulse styles is independently valuable later.
+   `MapOverrides` in Step 1
 
 4. **Endpoint stops draggable position or pinned?** UX agent's mockup
    shows endpoints draggable in color but locked at fractions 0 and
    1. This keeps the gradient covering the whole route by definition.
-   **Recommend: pinned endpoints** per `color-gradient.md` §7b.
+   **Decision: pinned endpoints** per `color-gradient.md` §7b.
 
 If any of these warrant pushback, raise them before Step 5.
 

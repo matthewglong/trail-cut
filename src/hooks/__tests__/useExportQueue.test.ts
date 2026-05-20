@@ -18,6 +18,8 @@ function makeJob(id: string): ExportJob {
     id,
     aspect: '9_16',
     channel: 'composite',
+    quality: '1080p',
+    fps: 30,
     outputPath: `/out/${id}.mp4`,
   };
 }

@@ -98,7 +98,7 @@ export const BUILDINGS_LAYER_SPEC: LayerSpecification = {
  *  `mapSettings.route_mode === 'full'`. Source: `route-full`.
  *
  *  `line-width` is a PLACEHOLDER (1) — the real value is
- *  `mapSettings.overlay_route_full_width × PAINT_REFERENCE_WIDTH`. Both
+ *  `mapSettings.route.size.width × PAINT_REFERENCE_WIDTH`. Both
  *  renderer and preview call `resolveStaticPaints(mapSettings)` after
  *  style.load (and again when any overlay-size or active-clip override
  *  changes) to seed the value. */
@@ -460,8 +460,8 @@ export function resolveStaticPaints(
       ['live-marker-pulse', 'circle-color', mapSettings.pov.color],
       ['live-marker-pulse-b', 'circle-color', mapSettings.pov.color],
       ['live-marker-dot', 'circle-stroke-color', mapSettings.pov.color],
-      ['route-full-line', 'line-width', mapSettings.route.size.full_width * w],
-      ['route-trail-line', 'line-width', mapSettings.route.size.trail_width * w],
+      ['route-full-line', 'line-width', mapSettings.route.size.width * w],
+      ['route-trail-line', 'line-width', mapSettings.route.size.width * w],
       // waypoints-circle: circle-radius and circle-stroke-width. The radius
       // is also overridden per-frame by `buildPerFramePaints` (data-driven
       // case expression) — that per-frame write is the one that wins, but

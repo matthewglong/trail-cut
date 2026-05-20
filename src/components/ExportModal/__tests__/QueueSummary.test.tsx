@@ -41,6 +41,8 @@ function makeJob(overrides: Partial<QueueJob> & Pick<QueueJob, 'id' | 'state'>):
   return {
     aspect: '9_16',
     channel: 'composite',
+    quality: '1080p',
+    fps: 30,
     outputPath: `/out/${overrides.id}.mp4`,
     ...overrides,
   };

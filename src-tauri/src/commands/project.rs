@@ -398,15 +398,16 @@ fn migrate_map_settings_to_v8(ms: &mut serde_json::Map<String, serde_json::Value
 
     // --- route block ---
     let route_mode = take(ms, "route_mode").unwrap_or_else(|| json!("full"));
-    let full_width = take(ms, "overlay_route_full_width").unwrap_or_else(|| json!(0.004));
-    let trail_width = take(ms, "overlay_route_trail_width").unwrap_or_else(|| json!(0.0055));
+    let width = take(ms, "overlay_route_full_width")
+        .or_else(|| take(ms, "overlay_route_trail_width"))
+        .unwrap_or_else(|| json!(0.004));
     if !ms.contains_key("route") {
         ms.insert(
             "route".into(),
             json!({
                 "mode": route_mode,
                 "color": { "mode": "solid", "solid": "#bced09" },
-                "size": { "full_width": full_width, "trail_width": trail_width }
+                "size": { "width": width }
             }),
         );
     }
@@ -501,11 +502,10 @@ fn migrate_map_overrides_to_v8(mo: &mut serde_json::Map<String, serde_json::Valu
         route.insert("mode".into(), v);
     }
     let mut route_size = Map::new();
-    if let Some(v) = take(mo, "overlay_route_full_width") {
-        route_size.insert("full_width".into(), v);
-    }
-    if let Some(v) = take(mo, "overlay_route_trail_width") {
-        route_size.insert("trail_width".into(), v);
+    if let Some(v) = take(mo, "overlay_route_full_width")
+        .or_else(|| take(mo, "overlay_route_trail_width"))
+    {
+        route_size.insert("width".into(), v);
     }
     if !route_size.is_empty() {
         route.insert("size".into(), Value::Object(route_size));
@@ -1504,8 +1504,7 @@ mod tests {
             ms.route.color,
             DecorationColor::Solid { ref solid } if solid == "#bced09"
         ));
-        assert_eq!(ms.route.size.full_width, 0.005);
-        assert_eq!(ms.route.size.trail_width, 0.006);
+        assert_eq!(ms.route.size.width, 0.005);
 
         // waypoints
         assert_eq!(ms.waypoints.mode, "full");

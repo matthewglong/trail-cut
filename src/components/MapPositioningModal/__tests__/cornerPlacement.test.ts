@@ -5,7 +5,6 @@ import type { LayoutConfig } from '../../../lib/layout';
 // Rendered container sizes that roughly match what the Triptych tile actually
 // produces at the layout's default frame height (~440px).
 const SIZE_16_9: [number, number] = [782, 440];
-const SIZE_4_5:  [number, number] = [352, 440];
 const SIZE_9_16: [number, number] = [248, 440];
 
 const pip = (x: number, y: number, w: number, h: number): LayoutConfig => ({

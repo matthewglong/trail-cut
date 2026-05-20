@@ -81,6 +81,7 @@ const PULSE_RATE_OPTIONS: { value: PovPulseRate; label: string; short: string }[
 ];
 
 export type DecorationKind = 'route' | 'waypoints' | 'pov';
+export type DecorationPanelCloseOptions = { restoreFocus?: boolean };
 
 export interface DecorationPanelProps {
   decoration: DecorationKind;
@@ -89,7 +90,7 @@ export interface DecorationPanelProps {
   scope: 'project' | 'clip';
   overriddenKeys: Set<OverridePath> | null;
   onScopeChange: (scope: 'project' | 'clip') => void;
-  onClose: () => void;
+  onClose: (options?: DecorationPanelCloseOptions) => void;
   routeLoaded: boolean;
   currentClip: Clip | null;
   waypoints: Waypoint[];
@@ -132,7 +133,7 @@ export function DecorationPanel({
       const target = e.target as Node;
       if (panelRef.current?.contains(target)) return;
       if (triggerRef.current?.contains(target)) return;
-      onClose();
+      onClose({ restoreFocus: false });
     };
     document.addEventListener('mousedown', onMouseDown);
     return () => document.removeEventListener('mousedown', onMouseDown);
@@ -143,7 +144,7 @@ export function DecorationPanel({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        onClose({ restoreFocus: true });
         triggerRef.current?.focus();
       }
     };
@@ -315,6 +316,9 @@ function RoutePanelBody({
       route: { ...settings.route, size: { ...settings.route.size, ...patch } },
     });
 
+  const setRouteLineWidth = (width: number) =>
+    setSize({ width });
+
   // Copy Route → Waypoints. Effects a one-time deep copy of the stop array.
   // Per §9: when Waypoints is in solid mode, we switch it to gradient mode
   // first and preserve its prior solid value in `color_stops_cache` so a
@@ -402,14 +406,9 @@ function RoutePanelBody({
 
       <Section label="SIZE">
         <SizeRow
-          label="Full line"
-          stored={settings.route.size.full_width}
-          onStoredChange={(v) => setSize({ full_width: v })}
-        />
-        <SizeRow
-          label="Trail line"
-          stored={settings.route.size.trail_width}
-          onStoredChange={(v) => setSize({ trail_width: v })}
+          label="Line"
+          stored={settings.route.size.width}
+          onStoredChange={setRouteLineWidth}
         />
       </Section>
     </>

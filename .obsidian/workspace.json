@@ -20,8 +20,23 @@
               "icon": "lucide-file",
               "title": "color-gradient"
             }
+          },
+          {
+            "id": "30eba115a7891163",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "IMPLEMENTATION-PLAN"
+            }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "vertical"
@@ -94,7 +109,7 @@
             "state": {
               "type": "backlink",
               "state": {
-                "file": "docs/map-decorations/color-gradient.md",
+                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -104,7 +119,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for color-gradient"
+              "title": "Backlinks for IMPLEMENTATION-PLAN"
             }
           },
           {
@@ -113,12 +128,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "docs/map-decorations/color-gradient.md",
+                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from color-gradient"
+              "title": "Outgoing links from IMPLEMENTATION-PLAN"
             }
           },
           {
@@ -156,13 +171,13 @@
             "state": {
               "type": "outline",
               "state": {
-                "file": "docs/map-decorations/color-gradient.md",
+                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of color-gradient"
+              "title": "Outline of IMPLEMENTATION-PLAN"
             }
           }
         ]
@@ -183,8 +198,23 @@
       "bases:Create new base": false
     }
   },
-  "active": "7c022f1d3bb4d621",
+  "active": "30eba115a7891163",
   "lastOpenFiles": [
-    "docs/map-decorations/data-model.md.tmp.56340.868fa66532d9"
+    "src-tauri/target/debug/deps/trail_cut_lib.2vzybpmkyfvoihralrkfenh2w.01pwvjs.rcgu.o",
+    "src-tauri/target/debug/deps/trail_cut_lib.e4ia7v5cb9uja5qn5xx3ym8w1.01pwvjs.rcgu.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7gn578-061md4y.lock",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/f36ht907w2qe00g6zf6dg19u5.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/work-products.bin",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/query-cache.bin",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/metadata.rmeta",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/f338rerfqcmeoa877by9qmad5.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/f2xgas66iwdu9prk6hwaq8kv5.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/f2ocouijxf2ctcmhi77oyeyhz.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-3e521vu6fm0uh/s-hios7cksfk-091urik-working/f2ct0ycg1e37oz79bf8s8bq4y.o",
+    "decoration-buttons-chromium.png",
+    "Untitled.md",
+    "node_modules/react-colorful/README.md",
+    "docs/map-decorations/IMPLEMENTATION-PLAN.md",
+    "docs/map-decorations/color-gradient.md"
   ]
 }

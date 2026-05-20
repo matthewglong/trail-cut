@@ -175,17 +175,14 @@ impl Default for CameraSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteSize {
-    #[serde(default = "default_overlay_route_full_width")]
-    pub full_width: f64,
-    #[serde(default = "default_overlay_route_trail_width")]
-    pub trail_width: f64,
+    #[serde(default = "default_overlay_route_width", alias = "full_width")]
+    pub width: f64,
 }
 
 impl Default for RouteSize {
     fn default() -> Self {
         RouteSize {
-            full_width: default_overlay_route_full_width(),
-            trail_width: default_overlay_route_trail_width(),
+            width: default_overlay_route_width(),
         }
     }
 }
@@ -370,11 +367,8 @@ fn default_bearing_stops() -> u32 {
     3
 }
 
-fn default_overlay_route_full_width() -> f64 {
+fn default_overlay_route_width() -> f64 {
     0.004
-}
-fn default_overlay_route_trail_width() -> f64 {
-    0.0055
 }
 fn default_overlay_waypoint_circle_radius() -> f64 {
     0.015
@@ -440,10 +434,8 @@ pub struct CameraOverrides {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RouteSizeOverrides {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub full_width: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trail_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "full_width")]
+    pub width: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1010,6 +1002,7 @@ mod tests {
             "size": { "full_width": 0.004, "trail_width": 0.0055 }
         }"##;
         let parsed: RouteSettings = serde_json::from_str(raw).expect("must deserialize");
+        assert_eq!(parsed.size.width, 0.004);
         assert!(parsed.color_stops_cache.is_none());
     }
 

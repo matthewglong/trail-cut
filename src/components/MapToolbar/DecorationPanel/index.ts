@@ -1,2 +1,6 @@
 export { DecorationPanel } from './DecorationPanel';
-export type { DecorationKind, DecorationPanelProps } from './DecorationPanel';
+export type {
+  DecorationKind,
+  DecorationPanelCloseOptions,
+  DecorationPanelProps,
+} from './DecorationPanel';

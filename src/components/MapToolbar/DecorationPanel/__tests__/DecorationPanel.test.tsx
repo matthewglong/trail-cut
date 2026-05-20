@@ -123,6 +123,14 @@ describe('DecorationPanel — POV', () => {
 });
 
 describe('DecorationPanel — Route in clip scope', () => {
+  it('renders a single route line width control', () => {
+    render(<DecorationPanel {...baseProps({ decoration: 'route' })} />);
+    const text = document.body.textContent ?? '';
+    expect(/Line/.test(text)).toBe(true);
+    expect(/Full line/.test(text)).toBe(false);
+    expect(/Trail line/.test(text)).toBe(false);
+  });
+
   it('renders read-only color block with a switch-to-project button', () => {
     const onScopeChange = vi.fn();
     render(

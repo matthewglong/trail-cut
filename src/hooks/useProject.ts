@@ -47,12 +47,19 @@ function mergeMapSettings(
   incoming: MapSettings | undefined | null,
 ): MapSettings {
   if (!incoming) return defaults;
+  const incomingRouteSize = incoming.route?.size as
+    | Partial<MapSettings['route']['size']> & { full_width?: number }
+    | undefined;
+  const routeSize =
+    incomingRouteSize && incomingRouteSize.width === undefined && incomingRouteSize.full_width !== undefined
+      ? { ...incomingRouteSize, width: incomingRouteSize.full_width }
+      : incomingRouteSize;
   return {
     camera: { ...defaults.camera, ...incoming.camera },
     route: {
       ...defaults.route,
       ...incoming.route,
-      size: { ...defaults.route.size, ...incoming.route?.size },
+      size: { ...defaults.route.size, ...routeSize },
     },
     waypoints: {
       ...defaults.waypoints,

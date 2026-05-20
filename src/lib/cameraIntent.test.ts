@@ -336,6 +336,7 @@ describe('resolveIntent', () => {
         { timeMs: t0 + 10_000, bearing: 30 },
       ],
       pitch: 0,
+      fallbackGps: null,
     };
     const cam = resolveIntent(intent, { width: 1024, height: 1024 });
 
@@ -363,6 +364,7 @@ describe('resolveIntent', () => {
       padding: 0.06,
       bearingKeyframes: [],
       pitch: 0,
+      fallbackGps: null,
     };
     const cam = resolveIntent(intent, { width: 1024, height: 1024 });
     expect(cam.bearing).toBe(0);
@@ -384,16 +386,19 @@ describe('resolveIntent', () => {
       fixedBearingDegrees: 180,
       bearingKeyframes: [],
       pitch: 60,
+      fallbackGps: null,
     };
     const cam = resolveIntent(intent, { width: 1024, height: 1024 });
     expect(cam.bearing).toBe(180);
     expect(cam.pitch).toBe(60);
   });
 
-  it('follow: locationAt returning null → center falls back to (0, 0)', () => {
-    // playheadMs out of route range and no embedded GPS fallback (resolveIntent
-    // passes `null` to locationAt) → locationAt returns null → resolveIntent
-    // substitutes the documented {lng:0, lat:0} sentinel rather than throwing.
+  it('follow: locationAt returning null AND no fallbackGps → center falls back to (0, 0)', () => {
+    // playheadMs out of route range and `fallbackGps: null` on the intent
+    // → locationAt returns null → resolveIntent substitutes the documented
+    // {lng:0, lat:0} sentinel rather than throwing. Real follow intents
+    // built by `anchorIntentForClip` carry `clip.gps` as the fallback, so
+    // this branch is unreachable for any clip with iPhone GPS metadata.
     const t0 = Date.parse('2026-04-04T15:00:00Z');
     const route = stubIndexedRoute([
       { lat: 37.77, lng: -122.40, timeMs: t0 },
@@ -410,9 +415,39 @@ describe('resolveIntent', () => {
       fixedBearingDegrees: 0,
       bearingKeyframes: [],
       pitch: 0,
+      fallbackGps: null,
     };
     const cam = resolveIntent(intent, { width: 1024, height: 1024 });
     expect(cam.center).toEqual({ lng: 0, lat: 0 });
+  });
+
+  it('follow: locationAt fails but fallbackGps is set → center is the fallback', () => {
+    // Strava-pause scenario: playhead inside the route's time range but
+    // landing inside a gap exceeding MAX_INTERPOLATION_GAP_MS (60s). The
+    // fallback now flows through from the intent (clip.gps in production),
+    // so the camera pins to the iPhone's recorded position — matching the
+    // visible waypoint dot — instead of collapsing to null-island.
+    const t0 = Date.parse('2026-04-04T15:00:00Z');
+    const route = stubIndexedRoute([
+      { lat: 37.77, lng: -122.40, timeMs: t0 },
+      // 5-minute gap (well above MAX_INTERPOLATION_GAP_MS = 60s)
+      { lat: 37.78, lng: -122.39, timeMs: t0 + 300_000 },
+    ]);
+    const intent: CameraIntent = {
+      kind: 'follow',
+      // Mid-gap — locationAt returns null
+      playheadMs: t0 + 120_000,
+      route,
+      targetZoom: 14,
+      bearingMode: 'fixed',
+      padding: 0.06,
+      fixedBearingDegrees: 0,
+      bearingKeyframes: [],
+      pitch: 0,
+      fallbackGps: { lat: 37.775, lng: -122.395 },
+    };
+    const cam = resolveIntent(intent, { width: 1024, height: 1024 });
+    expect(cam.center).toEqual({ lng: -122.395, lat: 37.775 });
   });
 });
 

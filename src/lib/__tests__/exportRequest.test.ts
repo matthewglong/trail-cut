@@ -59,6 +59,7 @@ const baseInputs = () => ({
   clips: [makeClip()],
   route: makeRoute(),
   mapSettings: DEFAULT_MAP_SETTINGS satisfies MapSettings,
+  waypoints: [],
   transitionFeel: 'natural' as const,
 });
 
@@ -455,6 +456,7 @@ describe('buildJobRequest — per-job quality + fps', () => {
     clips: [makeClip()],
     route: makeRoute(),
     mapSettings: DEFAULT_MAP_SETTINGS satisfies MapSettings,
+    waypoints: [],
     transitionFeel: 'natural',
   });
 

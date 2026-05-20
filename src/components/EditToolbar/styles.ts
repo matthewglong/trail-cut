@@ -1,5 +1,3 @@
-import { colors } from '../../theme/tokens';
-
 export const styles: Record<string, React.CSSProperties> = {
   group: {
     display: 'flex',

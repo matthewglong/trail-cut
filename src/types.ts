@@ -160,8 +160,7 @@ export interface CameraSettings {
 }
 
 export interface RouteSize {
-  full_width: number;
-  trail_width: number;
+  width: number;
 }
 
 export interface RouteSettings {
@@ -262,7 +261,7 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   route: {
     mode: 'full',
     color: { mode: 'solid', solid: '#bced09' },
-    size: { full_width: 0.004, trail_width: 0.0055 },
+    size: { width: 0.004 },
   },
   waypoints: {
     mode: 'full',

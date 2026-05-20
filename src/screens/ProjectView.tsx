@@ -93,7 +93,6 @@ interface ProjectViewProps {
 }
 
 export default function ProjectView({
-  projectDir,
   projectName,
   setProjectName,
   editingName,

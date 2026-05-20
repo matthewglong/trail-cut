@@ -148,6 +148,7 @@ function Harness({
       clips={clips ?? []}
       route={route ?? null}
       mapSettings={mapSettings ?? DEFAULT_MAP_SETTINGS}
+      waypoints={[]}
       transitionFeel={transitionFeel}
       projectLayouts={projectLayouts ?? defaultProjectLayouts()}
     />
@@ -350,6 +351,7 @@ describe('ExportModal — prefill on open transition', () => {
           clips={[]}
           route={null}
           mapSettings={DEFAULT_MAP_SETTINGS}
+          waypoints={[]}
           projectLayouts={defaultProjectLayouts()}
         />
       </>

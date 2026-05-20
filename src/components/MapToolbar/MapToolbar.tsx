@@ -6,6 +6,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type RefObject,
   type ReactNode,
 } from 'react';
 import {
@@ -22,7 +23,11 @@ import {
 import Toolbar from '../Toolbar';
 import ModePicker from '../ModePicker';
 import NumberStepper from '../NumberStepper';
-import { DecorationPanel, type DecorationKind } from './DecorationPanel';
+import {
+  DecorationPanel,
+  type DecorationKind,
+  type DecorationPanelCloseOptions,
+} from './DecorationPanel';
 import type {
   Clip,
   MapSettings,
@@ -216,8 +221,42 @@ export default function MapToolbar({
   const waypointsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const povTriggerRef = useRef<HTMLButtonElement | null>(null);
 
+  const triggerRefFor = useCallback(
+    (kind: DecorationKind): RefObject<HTMLButtonElement | null> => {
+      if (kind === 'route') return routeTriggerRef;
+      if (kind === 'waypoints') return waypointsTriggerRef;
+      return povTriggerRef;
+    },
+    [],
+  );
+
+  const scheduleBlur = useCallback((kind: DecorationKind) => {
+    const blur = () => triggerRefFor(kind).current?.blur();
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(blur);
+      return;
+    }
+    setTimeout(blur, 0);
+  }, [triggerRefFor]);
+
+  const closePanel = useCallback(
+    (options?: DecorationPanelCloseOptions) => {
+      setOpenPanel((cur) => {
+        if (cur && !options?.restoreFocus) scheduleBlur(cur);
+        return null;
+      });
+    },
+    [scheduleBlur],
+  );
+
   const toggle = (kind: DecorationKind) =>
-    setOpenPanel((cur) => (cur === kind ? null : kind));
+    setOpenPanel((cur) => {
+      if (cur === kind) {
+        scheduleBlur(kind);
+        return null;
+      }
+      return kind;
+    });
 
   const items: Item[] = [
     {
@@ -257,7 +296,7 @@ export default function MapToolbar({
               scope={scope}
               overriddenKeys={overriddenKeys}
               onScopeChange={onScopeChange}
-              onClose={() => setOpenPanel(null)}
+              onClose={closePanel}
               routeLoaded={routeLoaded}
               currentClip={currentClip}
               waypoints={waypoints}
@@ -292,7 +331,7 @@ export default function MapToolbar({
               scope={scope}
               overriddenKeys={overriddenKeys}
               onScopeChange={onScopeChange}
-              onClose={() => setOpenPanel(null)}
+              onClose={closePanel}
               routeLoaded={routeLoaded}
               currentClip={currentClip}
               waypoints={waypoints}
@@ -327,7 +366,7 @@ export default function MapToolbar({
               scope={scope}
               overriddenKeys={overriddenKeys}
               onScopeChange={onScopeChange}
-              onClose={() => setOpenPanel(null)}
+              onClose={closePanel}
               routeLoaded={routeLoaded}
               currentClip={currentClip}
               waypoints={waypoints}
@@ -679,7 +718,7 @@ const decorationButtonStyle: React.CSSProperties = {
   justifyContent: 'center',
   width: 28,
   height: 24,
-  background: 'transparent',
+  backgroundColor: 'transparent',
   border: 'none',
   color: '#c8c8c8',
   cursor: 'pointer',

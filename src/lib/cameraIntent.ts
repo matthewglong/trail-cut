@@ -4,6 +4,7 @@
 import type {
   Clip,
   ClipEntryTransition,
+  GpsCoord,
   MapSettings,
   ProjectStartCamera,
 } from '../types';
@@ -100,6 +101,15 @@ export type CameraIntent =
       bearingKeyframes: BearingKeyframe[];
       /** Pitch (degrees). Default 0 for 'default' / 'satellite' styles, 60 for '3d'. */
       pitch: number;
+      /** Fallback coordinate when `locationAt(playheadMs, route)` cannot
+       *  resolve (playhead outside the route's time range, or inside a
+       *  trackpoint gap exceeding `MAX_INTERPOLATION_GAP_MS`). Set to
+       *  `clip.gps` by `anchorIntentForClip`, so a Strava-style pause
+       *  during filming pins the camera to the iPhone's recorded
+       *  position — matching the visible waypoint dot — rather than
+       *  collapsing to (0,0). `null` only for clips with no embedded
+       *  GPS metadata. */
+      fallbackGps: GpsCoord | null;
     };
 
 export type TransitionFeel = 'natural' | 'snappy' | 'slow';
@@ -348,6 +358,7 @@ function anchorIntentForClip(
       fixedBearingDegrees: settings.camera.bearing_degrees,
       bearingKeyframes,
       pitch,
+      fallbackGps: clip.gps,
     };
   }
 
@@ -397,7 +408,7 @@ export function resolveIntent(
       });
 
     case 'follow': {
-      const loc = locationAt(intent.playheadMs, intent.route, null);
+      const loc = locationAt(intent.playheadMs, intent.route, intent.fallbackGps);
       const center: LngLat = loc
         ? { lng: loc.lng, lat: loc.lat }
         : { lng: 0, lat: 0 };
