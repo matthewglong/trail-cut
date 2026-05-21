@@ -19,6 +19,7 @@ import {
   resolveStaticPaints,
   buildPerFrameState,
   buildAllShapeIcons,
+  SHAPE_CANONICAL_RADIUS,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_PULSE_B_LAYER,
@@ -29,6 +30,29 @@ import {
   WAYPOINTS_PRIMARY_LAYER,
   WAYPOINTS_SECONDARY_LAYER,
 } from '../lib/mapVisuals';
+
+/** Canvas-space outline thickness (in SDF pixels) for the user-facing
+ *  `stroke_width` and `circle_radius` settings. Derivation:
+ *
+ *    rendered_outline_css_px = stroke_width × PAINT_REFERENCE_WIDTH
+ *    icon_size               = (circle_radius × PAINT_REFERENCE_WIDTH)
+ *                                 / SHAPE_CANONICAL_RADIUS
+ *    canvas_thickness        = rendered_outline_css_px / icon_size
+ *                            = (stroke_width / circle_radius)
+ *                                 × SHAPE_CANONICAL_RADIUS
+ *
+ *  The dependency on `circle_radius` is why this effect must re-run when
+ *  EITHER setting changes — `icon-size` scales the SDF wholesale at draw
+ *  time, so to keep the on-screen outline at the user-requested fixed CSS
+ *  width regardless of the dot's radius, the baked-in canvas thickness has
+ *  to compensate inversely. */
+function outlineThicknessCanvasPx(
+  strokeWidth: number,
+  circleRadius: number,
+): number {
+  if (circleRadius <= 0) return 0;
+  return (strokeWidth / circleRadius) * SHAPE_CANONICAL_RADIUS;
+}
 
 interface MapViewProps {
   /** The compiled project-time timeline. Single source of truth for camera
@@ -292,8 +316,17 @@ export default function MapView({
       // Pixels come from `buildAllShapeIcons` in `shapes.ts` (pure, no
       // DOM/Canvas) so the export renderer ships bit-identical pixels via
       // the `staticImages` field on the InitPayload — preview/export
-      // parity by construction.
-      for (const { id, icon, options } of buildAllShapeIcons()) {
+      // parity by construction. `outlineThickness` is sourced from the
+      // current `mapSettings` ref so a style swap mid-session re-registers
+      // at the right thickness; settings changes between swaps are handled
+      // by the dedicated re-register effect below.
+      const initialThickness = outlineThicknessCanvasPx(
+        mapSettingsRef.current.waypoints.size.stroke_width,
+        mapSettingsRef.current.waypoints.size.circle_radius,
+      );
+      for (const { id, icon, options } of buildAllShapeIcons({
+        outlineThickness: initialThickness,
+      })) {
         if (map.hasImage(id)) map.removeImage(id);
         map.addImage(
           id,
@@ -483,6 +516,44 @@ export default function MapView({
     };
     if (styleReadyRef.current) apply();
   }, [styleVersion, mapSettings]);
+
+  // ---- Re-rasterize SDF outline icons on stroke / radius change ----
+  // The outline thickness is baked into the secondary SDF icon at rasterize
+  // time, not driven by a MapLibre paint property — there is no
+  // `icon-stroke-width` for symbol layers, and parameterizing the stroke
+  // via two stacked icons would double the atlas size. So we rebuild the
+  // affected icons and re-`addImage` them whenever the user changes
+  // `stroke_width` or `circle_radius`. The cost is a one-off ~ms of
+  // canvas-pixel iteration (10 shapes × 128² pixels each, mostly small
+  // bounding boxes) — fine to do on every settings tick during a slider
+  // drag.
+  //
+  // `styleVersion` is in the dep list so a style swap (which clears the
+  // image atlas) also triggers a re-register at the current thickness.
+  const strokeWidth = mapSettings.waypoints.size.stroke_width;
+  const circleRadius = mapSettings.waypoints.size.circle_radius;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      const thickness = outlineThicknessCanvasPx(strokeWidth, circleRadius);
+      for (const { id, icon, options } of buildAllShapeIcons({
+        outlineThickness: thickness,
+      })) {
+        if (map.hasImage(id)) map.removeImage(id);
+        map.addImage(
+          id,
+          { width: icon.width, height: icon.height, data: icon.data },
+          options,
+        );
+      }
+      // Force the symbol layers to re-fetch their icons. MapLibre caches
+      // resolved sprites internally; `triggerRepaint` is enough because
+      // `addImage` already invalidates the atlas for the affected ids.
+      map.triggerRepaint();
+    };
+    if (styleReadyRef.current) apply();
+  }, [strokeWidth, circleRadius, styleVersion]);
 
   // ---- Waypoint static seed ----
   // Whenever waypoints/route/mapSettings/styleVersion changes, push the full

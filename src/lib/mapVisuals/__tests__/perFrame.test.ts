@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buildPerFrameState } from '../perFrame';
-import { PAINT_REFERENCE_WIDTH } from '../styleSpec';
+import { PAINT_REFERENCE_WIDTH, SHAPE_CANONICAL_RADIUS } from '../styleSpec';
 import { compileTimeline, type Viewport } from '../../cameraIntent';
 import {
   DEFAULT_MAP_SETTINGS,
@@ -251,7 +251,8 @@ describe('buildPerFrameState paints', () => {
       VIEWPORT,
     );
     expect(state.paints.waypointIconSize).toBeCloseTo(
-      (settings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) / 18,
+      (settings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) /
+        SHAPE_CANONICAL_RADIUS,
       9,
     );
     // At t=0 the pulse curve emits pov.size.pulse_start_radius × PAINT_REFERENCE_WIDTH.
@@ -285,7 +286,7 @@ describe('buildPerFrameState paints', () => {
       VIEWPORT,
     );
     expect(state.paints.waypointIconSize).toBeCloseTo(
-      (0.04 * PAINT_REFERENCE_WIDTH) / 18,
+      (0.04 * PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS,
       9,
     );
   });
@@ -409,16 +410,16 @@ describe('buildPerFrameState paints', () => {
     expect(predicate[0]).toBe('==');
     expect(predicate[2]).toBe(waypoints[0].id);
     // expr[2] is the active icon-size, expr[3] is the default. Both flow
-    // through `(radius × PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS`
-    // (18), matching the static seed in `resolveStaticPaints`.
+    // through `(radius × PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS`,
+    // matching the static seed in `resolveStaticPaints`.
     expect(expr[2]).toBeCloseTo(
       (POINT_SETTINGS.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH) /
-        18,
+        SHAPE_CANONICAL_RADIUS,
       9,
     );
     expect(expr[3]).toBeCloseTo(
       (POINT_SETTINGS.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) /
-        18,
+        SHAPE_CANONICAL_RADIUS,
       9,
     );
   });

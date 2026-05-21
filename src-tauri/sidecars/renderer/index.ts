@@ -82,7 +82,6 @@ import {
   WAYPOINTS_ACTIVE_HALO_LAYER,
   WAYPOINTS_PRIMARY_LAYER,
   WAYPOINTS_SECONDARY_LAYER,
-  WAYPOINTS_LABEL_LAYER,
 } from '../../../src/lib/mapVisuals';
 import {
   activeClipIdAt,
@@ -457,14 +456,14 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
   // and paints the outline / accent tinted by the secondary color. Shapes
   // without a declared secondary rasterizer register a transparent
   // placeholder so the secondary layer stays valid. The halo sits BELOW
-  // the shape layers; the label sits on top.
+  // the shape layers; the label rides on the secondary symbol layer so
+  // icon + text share one placement unit (see WAYPOINTS_SECONDARY_LAYER).
   const staticLayers: unknown[] = [
     ROUTE_FULL_LAYER,
     ROUTE_TRAIL_LAYER,
     WAYPOINTS_ACTIVE_HALO_LAYER,
     WAYPOINTS_PRIMARY_LAYER,
     WAYPOINTS_SECONDARY_LAYER,
-    WAYPOINTS_LABEL_LAYER,
     LIVE_MARKER_PULSE_LAYER,
     LIVE_MARKER_PULSE_B_LAYER,
     LIVE_MARKER_DOT_LAYER,

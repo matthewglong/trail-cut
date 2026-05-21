@@ -26,23 +26,18 @@ import type {
 } from 'maplibre-gl';
 import type { DecorationColor, GradientStop, MapSettings } from '../../types';
 import { colors } from '../../theme/tokens';
+import { SHAPE_CANONICAL_RADIUS } from './shapes';
 import type { StyleSpecResult } from './types';
 
-/** Canonical primary-shape radius on the 48-px SDF canvas — every shape's
- *  primary rasterizer draws into a roughly 36-px-diameter envelope on the
- *  canonical canvas (circle r=18, ring r=18, square halfSide=16, etc.).
- *  `icon-size = (target_radius / SHAPE_CANONICAL_RADIUS)` gives an icon
- *  whose primary shape's effective radius matches the user-facing
- *  `waypoints.size.circle_radius × PAINT_REFERENCE_WIDTH` value.
- *
- *  Anchored on the circle/ring's drawn radius rather than the canvas size
- *  so existing projects keep their pre-refactor visual size: at the default
- *  `circle_radius = 0.015`, `icon-size = 0.9` renders the circle at 32.4-px
- *  diameter, identical to the pre-refactor native circle layer.
- *
- *  Exported for `paints.ts` — the per-frame builder uses the same constant
- *  to compute the active-state icon-size override. */
-export const SHAPE_CANONICAL_RADIUS = 18;
+// `SHAPE_CANONICAL_RADIUS` lives in `shapes.ts` as a property of the SDF
+// canvas geometry (every primary rasterizer draws into an envelope sized off
+// it). Re-exported here because `paints.ts` and a fair number of tests already
+// import it from this module — keeps callers stable while the definition
+// stays next to the rasterizers that own it. `icon-size = (target_radius /
+// SHAPE_CANONICAL_RADIUS)` is the bridge between the user-facing
+// `waypoints.size.circle_radius × PAINT_REFERENCE_WIDTH` value (CSS px) and
+// MapLibre's `icon-size` multiplier.
+export { SHAPE_CANONICAL_RADIUS };
 
 const TRAIL_COLOR = colors.accent;
 const FULL_ROUTE_COLOR = colors.accent;
@@ -229,18 +224,23 @@ export const WAYPOINTS_SECONDARY_LAYER: LayerSpecification = {
   layout: {
     'icon-image': 'waypoint-circle-secondary',
     'icon-size': 1,
-    // Unlike the primary fill, the outline+label layer relies on MapLibre's
-    // collision detection to hide back waypoints' outlines AND labels when
-    // they overlap the front. The icon and text are co-placed inside this
-    // single layer as one marker — `icon-allow-overlap: false` /
-    // `text-allow-overlap: false` make both subject to collision;
-    // `icon-ignore-placement: false` / `text-ignore-placement: false` make
-    // the marker also BLOCK other markers, so within a cluster the
-    // closest-to-playhead marker wins and the rest are culled. Sort-key
-    // (placement key, lower = wins) is written per frame via
-    // `waypointPlacementKey`.
-    'icon-allow-overlap': false,
-    'icon-ignore-placement': false,
+    // Outline icons opt OUT of collision: `icon-allow-overlap: true` +
+    // `icon-ignore-placement: true` means every waypoint's outline is
+    // drawn, even where it overlaps another waypoint. Combined with this
+    // layer rendering on top of `waypoints-primary`, the back waypoint's
+    // outline paints over the front waypoint's fill in the overlap region
+    // — so neighbors in a cluster read as distinct shapes instead of
+    // melting into a single blob of fill color.
+    //
+    // Labels keep collision via `text-allow-overlap: false` /
+    // `text-ignore-placement: false`: within a cluster a single label
+    // wins (selected by the per-frame `waypointPlacementKey` sort-key)
+    // and the others are culled. The icon and text are still in the same
+    // symbol layer so they remain co-placed; an icon-only / label-only
+    // split would risk the label colliding with its OWN outline at the
+    // same coordinate.
+    'icon-allow-overlap': true,
+    'icon-ignore-placement': true,
     'icon-anchor': 'center',
     'text-field': '',
     'text-font': ['Noto Sans Bold'],
@@ -466,15 +466,33 @@ export function resolveStaticPaints(
     safeShape,
     '-secondary',
   ];
+  // Per-shape `icon-anchor`. Most shapes paint centered on the GPS
+  // coordinate (`icon-anchor: 'center'`), but the pin's tip — not its
+  // centroid — is the semantically-meaningful anchor point. The pin's
+  // SDF places the tip at the bottom-center of the canvas (see
+  // `shapes.ts` → `PIN_TIP_Y_RATIO`), so `icon-anchor: 'bottom'` lands
+  // the tip on the geographic point. Driving this per-shape is what
+  // lets the pin's head fill the canvas (sized to match the other
+  // shapes' SHAPE_CANONICAL_RADIUS) instead of being squeezed into the
+  // top half — and it's that head-size parity that keeps the user's
+  // `stroke_width` setting from producing a comically thick outline on
+  // the pin.
+  const iconAnchorExpr: ExpressionSpecification = [
+    'match',
+    safeShape,
+    'pin', 'bottom',
+    /* default */ 'center',
+  ];
   // Static seed for `icon-size` on both waypoint symbol layers. The renderer
   // anchors paint sizing to `PAINT_REFERENCE_WIDTH` × the relevant
   // `waypoints.size.*` fraction; for SDF symbols the equivalent is
-  // `targetRadius / SHAPE_CANONICAL_RADIUS`, since the canonical primary
-  // shapes are drawn at radius 18 on the 48-px canvas. At default
-  // (`circle_radius = 0.015`) this lands at icon-size 0.9 → the circle
-  // renders at 32.4-px diameter, matching the pre-refactor native-circle
-  // sizing exactly. `buildPerFramePaints` overrides this every frame with
-  // an expression that bumps the active waypoint to `active_radius`. */
+  // `targetRadius / SHAPE_CANONICAL_RADIUS` — the canonical primary shapes
+  // are drawn at that radius on the SDF canvas (see `shapes.ts`). At default
+  // `circle_radius = 0.015` and the current canonical radius (48), this
+  // lands at icon-size 0.3375, rendering the circle at a 32.4-px on-screen
+  // diameter — visual parity with the pre-canvas-bump sizing.
+  // `buildPerFramePaints` overrides this every frame with an expression
+  // that bumps the active waypoint to `active_radius`. */
   const defaultIconSize =
     (mapSettings.waypoints.size.circle_radius * w) / SHAPE_CANONICAL_RADIUS;
   return {
@@ -533,6 +551,11 @@ export function resolveStaticPaints(
       // without a per-`Waypoint.shape` override.
       ['waypoints-primary', 'icon-image', primaryIconImageExpr],
       ['waypoints-secondary', 'icon-image', secondaryIconImageExpr],
+      // Waypoint icon-anchor (per slot). Same expression on both layers
+      // — primary fill and secondary outline must share an anchor or
+      // they'd render at different positions.
+      ['waypoints-primary', 'icon-anchor', iconAnchorExpr],
+      ['waypoints-secondary', 'icon-anchor', iconAnchorExpr],
       // Waypoint icon-size (per slot). Per-frame builder overrides this
       // with a case expression that bumps the active waypoint to
       // `active_radius`; the seed here is the steady-state default size.

@@ -932,13 +932,13 @@ describe('DecorationPanel — Waypoints SIZE rows', () => {
     }
   });
 
-  it('does not render the deprecated Stroke size row', () => {
-    // Stroke width was tied to the native circle layer; outline thickness
-    // is now baked into the secondary SDF icon. The slider was removed
-    // to avoid the "control that does nothing" footgun.
+  it('renders the Stroke size row (outline thickness for the secondary SDF slot)', () => {
+    // Outline thickness is baked into the secondary SDF icon at rasterize
+    // time; MapView re-registers the atlas when `stroke_width` changes.
+    // The Stroke slider drives that field directly.
     render(<DecorationPanel {...baseProps({ decoration: 'waypoints' })} />);
     const text = document.body.textContent ?? '';
-    expect(text.includes('Stroke')).toBe(false);
+    expect(text.includes('Stroke')).toBe(true);
   });
 });
 

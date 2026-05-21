@@ -142,7 +142,7 @@ function buildHaloColor(
  *  Both renderer and preview call this: sizes anchor to
  *  `PAINT_REFERENCE_WIDTH` (1080 CSS px) × the relevant
  *  `mapSettings.waypoints.size.*` fraction, normalized by
- *  `SHAPE_CANONICAL_RADIUS` (18) to land in MapLibre's `icon-size` space.
+ *  `SHAPE_CANONICAL_RADIUS` to land in MapLibre's `icon-size` space.
  *  The renderer's `pixelRatio` lever absorbs the export-resolution shift,
  *  and the preview consumes the same CSS-px values directly (pane-invariant). */
 export function buildPerFramePaints(

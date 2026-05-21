@@ -1051,13 +1051,15 @@ function WaypointsPanelBody({
           stored={settings.waypoints.size.active_radius}
           onStoredChange={(v) => setSize({ active_radius: v })}
         />
-        {/* The Stroke control was tied to the native circle layer's
-         *  `circle-stroke-width`. With shapes now rendering through SDF
-         *  symbols, outline thickness is baked into the secondary icon
-         *  rasterizer; surfacing the stroke slider here is misleading
-         *  because adjusting it would have no visible effect. The
-         *  underlying `waypoints.size.stroke_width` field stays in the
-         *  data model for backward compat. */}
+        {/* Outline thickness for the secondary slot — baked into the
+         *  secondary SDF icon at rasterize time. MapView re-registers the
+         *  atlas on change (see the re-rasterize effect there). One-color
+         *  shapes (today: `ring`) ignore this. */}
+        <SizeRow
+          label="Stroke"
+          stored={settings.waypoints.size.stroke_width}
+          onStoredChange={(v) => setSize({ stroke_width: v })}
+        />
         <SizeRow
           label="Label size"
           stored={settings.waypoints.size.label_size}

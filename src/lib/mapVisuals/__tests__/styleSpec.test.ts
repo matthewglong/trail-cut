@@ -11,6 +11,7 @@ import {
   buildLineGradientExpression,
   resolveStaticPaints,
   PAINT_REFERENCE_WIDTH,
+  SHAPE_CANONICAL_RADIUS,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_DOT_LAYER,
@@ -125,13 +126,13 @@ describe('resolveStaticPaints', () => {
       9,
     );
     // Waypoint size flows as `icon-size` on the SDF symbol layers — the
-    // user-facing radius is normalized by SHAPE_CANONICAL_RADIUS (18) so
-    // a circle_radius of 0.015 lands at icon-size 0.9 (32.4-px diameter
-    // for the circle shape, matching the pre-refactor native sizing).
+    // user-facing radius is normalized by SHAPE_CANONICAL_RADIUS so the
+    // rendered radius matches the pre-canvas-bump appearance (32.4-px
+    // diameter at default `circle_radius = 0.015`).
     const expectedIconSize =
       (DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius *
         PAINT_REFERENCE_WIDTH) /
-      18;
+      SHAPE_CANONICAL_RADIUS;
     expect(layoutBy.get('waypoints-primary/icon-size')).toBeCloseTo(
       expectedIconSize,
       9,
@@ -178,8 +179,8 @@ describe('resolveStaticPaints', () => {
 
   it('project-level edit: a non-default waypoints.size.circle_radius flows through', () => {
     // The renderer must surface a project's overlay-size edits (not just
-    // the seeded constants). 0.04 → icon-size 2.4 — a value far from any
-    // seed so the test fails noisily if the resolver ever ignores the input.
+    // the seeded constants). 0.04 is far from the default so the test
+    // fails noisily if the resolver ever ignores the input.
     const settings: MapSettings = {
       ...DEFAULT_MAP_SETTINGS,
       waypoints: {
@@ -188,7 +189,7 @@ describe('resolveStaticPaints', () => {
       },
     };
     const { layoutBy } = buildMap(resolveStaticPaints(settings));
-    const expected = (0.04 * PAINT_REFERENCE_WIDTH) / 18;
+    const expected = (0.04 * PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS;
     expect(layoutBy.get('waypoints-primary/icon-size')).toBeCloseTo(
       expected,
       9,
@@ -197,12 +198,12 @@ describe('resolveStaticPaints', () => {
       expected,
       9,
     );
-    // Sanity: the seeded default icon-size is (0.015 × 1080) / 18 = 0.9,
-    // far from 2.4 — proves we picked up the override, not the seed.
+    // Sanity: the override-derived icon-size is far from the seeded
+    // default — proves we picked up the override, not the seed.
     expect(layoutBy.get('waypoints-primary/icon-size')).not.toBeCloseTo(
       (DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius *
         PAINT_REFERENCE_WIDTH) /
-        18,
+        SHAPE_CANONICAL_RADIUS,
       3,
     );
   });
@@ -243,7 +244,7 @@ describe('resolveStaticPaints', () => {
       }
       return { layoutBy };
     })(resolveStaticPaints(resolved));
-    const expected = (0.02 * PAINT_REFERENCE_WIDTH) / 18;
+    const expected = (0.02 * PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS;
     expect(layoutBy.get('waypoints-primary/icon-size')).toBeCloseTo(
       expected,
       9,
@@ -391,6 +392,33 @@ describe('resolveStaticPaints', () => {
     expect(JSON.stringify(pinPrimaryTuple?.[2])).not.toContain(
       '"coalesce",["get","override_shape"],"diamond"',
     );
+  });
+
+  it('layouts include icon-anchor expressions that resolve pin → bottom and others → center', () => {
+    // The pin's SDF puts its tip at the bottom-center of the canvas so the
+    // GPS coordinate lands on the tip with `icon-anchor: 'bottom'`; every
+    // other shape stays `icon-anchor: 'center'`. Driving this per-shape via
+    // a `match` expression is what lets the pin's head fill the canvas (and
+    // therefore match the user's `stroke_width` calibration) instead of
+    // being squeezed into the top half.
+    const resolved = resolveStaticPaints(DEFAULT_MAP_SETTINGS);
+    const primaryAnchor = resolved.layouts.find(
+      ([l, p]) => l === 'waypoints-primary' && p === 'icon-anchor',
+    );
+    const secondaryAnchor = resolved.layouts.find(
+      ([l, p]) => l === 'waypoints-secondary' && p === 'icon-anchor',
+    );
+    expect(primaryAnchor).toBeDefined();
+    expect(secondaryAnchor).toBeDefined();
+    // Same expression on both layers — fill and outline must share an
+    // anchor or they'd render at different positions.
+    expect(primaryAnchor?.[2]).toEqual(secondaryAnchor?.[2]);
+    const json = JSON.stringify(primaryAnchor?.[2]);
+    // The match expression carries the pin → 'bottom' arm and a 'center'
+    // default fallback for every other shape.
+    expect(json).toContain('"match"');
+    expect(json).toContain('"pin","bottom"');
+    expect(json).toContain('"center"');
   });
 
   it('live-marker-dot fill is driven by pov.secondary_color', () => {

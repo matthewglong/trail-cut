@@ -4,26 +4,33 @@
 // shape, tinted by the primary color) and an optional SECONDARY slot (the
 // outline / accent element, tinted by the secondary color). Both slots are
 // SDF (Signed Distance Field) icons — bitmaps where the alpha channel
-// encodes coverage and MapLibre applies a per-icon `icon-color` tint at draw
-// time. The whole reason for SDF is that tint: it's what lets a single
-// rasterized white shape paint as any color the user picks, and what lets
-// the same atlas serve every gradient sample / per-feature override.
+// encodes signed distance from the shape boundary, and MapLibre applies a
+// per-icon `icon-color` tint at draw time. The whole reason for SDF is that
+// tint: it's what lets a single rasterized white shape paint as any color
+// the user picks, and what lets the same atlas serve every gradient sample
+// / per-feature override.
 //
-// SDF intuition: imagine the rasterizer pours opaque white "ink" into the
-// shape; alpha 255 = solid ink, alpha 0 = blank, in-between = anti-aliased
-// edge. MapLibre then says "paint this white ink as the requested color"
-// at draw time. A two-color shape is just two stacked SDF icons painting on
-// the same map position — primary first, secondary on top.
+// SDF encoding convention (matches MapLibre's `symbol_sdf.fragment.glsl`):
 //
-// The descriptor model replaces the prior circle-family / symbol-family
-// split (which routed `circle` / `ring` / `numbered-circle` to a native
-// `circle` layer and the rest to a symbol layer). That split conflated
-// "what's the silhouette" with "how is it rendered" — most visibly, picking
-// `ring` rendered a solid circle because `ring` was tagged circle-family
-// and the SDF ring artwork was never used. Every shape now goes through
-// the same two stacked symbol layers (`waypoints-primary` /
-// `waypoints-secondary`) and gets uniform fill + stroke + active-state
-// behaviour by construction.
+//   alpha = clamp(round(255 * (0.75 + signed_dist_inside_px / SDF_PX)), 0, 255)
+//
+// where `signed_dist_inside_px` is positive INSIDE the shape, negative OUTSIDE,
+// in canvas pixels, and `SDF_PX = 8` is the distance-encoding extent on
+// either side of the boundary. With this convention:
+//
+//   alpha = 191 at the boundary (signed_dist = 0) — matches the shader's
+//     `inner_edge = (256-64)/256 = 0.75`.
+//   alpha = 255 at 2 px inside (and beyond).
+//   alpha =   0 at 6 px outside (and beyond).
+//
+// MapLibre's shader then runs `smoothstep(0.75 - gamma, 0.75 + gamma, alpha)`
+// at draw time, where `gamma` shrinks with icon-size. A true SDF produces
+// crisp anti-aliased edges at ANY icon-size because smoothstep gets a
+// well-behaved linear gradient through the boundary value 0.75. A coverage-
+// encoded alpha (255 inside, 0 outside, a 1-px ramp at the boundary) gets
+// the wrong slope through 0.75 and the smoothstep produces visible faceting
+// at small icon-size — that was the source of the previous "grainy circle"
+// problem.
 //
 // Why hand-rasterized and not OffscreenCanvas / node-canvas:
 //
@@ -37,42 +44,60 @@
 //    export by construction — no Canvas-renderer differences (text anti-
 //    aliasing, sub-pixel fill rules) to chase down.
 //
-//  - The shapes are simple geometric primitives that lower cleanly to
-//    nested pixel loops.
-//
-// 48×48 px canonical size per `shapes-pov.md` Part 1. MapLibre scales icons
-// via `icon-size` at draw time, so the canonical raster size only dictates
-// the SDF distance-field resolution (more pixels = sharper at extreme zoom).
+//  - The shapes are simple geometric primitives with analytical signed
+//    distance functions (circle: r - dist; square: half - L∞; diamond:
+//    (half - L1) / √2; ring band: half_stroke - |r - mid_radius|).
 
 import type { WaypointShape } from '../../types';
 
-/** Canonical SDF icon size (px). All shapes rasterize at this size; runtime
- *  scaling happens via the symbol layer's `icon-size` paint property. 48 is
- *  MapLibre's own examples' size and gives plenty of distance-field headroom
- *  at the default waypoint radius (~12 CSS px). */
-export const WAYPOINT_ICON_SIZE = 48;
+/** Canonical SDF canvas size (px). The SDF's distance-encoding range is
+ *  the shader-defined `SDF_PX = 8` canvas pixels on either side of the
+ *  boundary, so the canvas only needs enough texels to hold the shape's
+ *  silhouette plus an 8-px outside fringe. 128 leaves headroom for the
+ *  pin's tall silhouette (tip near the bottom, head at the top) without
+ *  clipping the outside fringe. */
+export const WAYPOINT_ICON_SIZE = 128;
 
-/** Outline thickness used by every shape's secondary (outline) slot, in
- *  canonical 48-px-canvas pixels. The outline scales proportionally with
- *  the rendered icon size — at `icon-size: 0.5` (a typical small marker)
- *  this lands at ~1.25 CSS px on screen, which reads as a clean hairline.
+/** SDF distance-encoding extent (canvas px) on either side of the
+ *  boundary. Matches MapLibre's `symbol_sdf.fragment.glsl` `#define SDF_PX
+ *  8.0` — alpha 0 at +6 px outside, alpha 191 at the boundary, alpha 255
+ *  at -2 px inside. */
+const SDF_PX = 8;
+
+/** Canonical primary-shape radius on the SDF canvas. Every primary
+ *  rasterizer draws into an envelope sized off this constant (circle r =
+ *  SHAPE_CANONICAL_RADIUS, ring outer = SHAPE_CANONICAL_RADIUS, square
+ *  halfSide and diamond halfDiag scaled proportionally).
  *
- *  Today the field `mapSettings.waypoints.size.stroke_width` is no longer
- *  applied to waypoint rendering — outline thickness is baked into the SDF
- *  rather than driven by a paint property, because the alternative (re-
- *  rasterizing every shape's outline icon on every settings change) costs
- *  more in complexity than the user-controllable stroke width is worth at
- *  this stage. Reintroducing the knob is straightforward when it's needed:
- *  parameterize this constant and rebuild + re-`addImage` the outline icons
- *  on the change. */
-const OUTLINE_THICKNESS = 2.5;
+ *  `icon-size = (target_radius / SHAPE_CANONICAL_RADIUS)` at draw time, so
+ *  this constant is the bridge between the user-facing
+ *  `waypoints.size.circle_radius × PAINT_REFERENCE_WIDTH` value (in CSS px)
+ *  and MapLibre's `icon-size` multiplier. Imported by `styleSpec.ts` and
+ *  `paints.ts` — single source of truth for the conversion. */
+export const SHAPE_CANONICAL_RADIUS = 48;
+
+// Per-shape canvas dimensions, all derived from SHAPE_CANONICAL_RADIUS so
+// the relative sizing across shapes (square slightly smaller than circle,
+// diamond slightly larger to compensate for its diagonal silhouette) stays
+// pinned no matter what canvas size the module is set to.
+const RING_STROKE = SHAPE_CANONICAL_RADIUS * (4 / 18); // ~10.67 px
+const SQUARE_HALF_SIDE = SHAPE_CANONICAL_RADIUS * (16 / 18); // ~42.67
+const DIAMOND_HALF_DIAG = SHAPE_CANONICAL_RADIUS * (22 / 18); // ~58.67
+
+/** Default outline thickness (canvas px) used when `buildAllShapeIcons` is
+ *  called without an override. Picked so the default-settings outline lands
+ *  at a sensible appearance for the centered shapes (circle / square /
+ *  diamond) when no explicit thickness is supplied. Real production paths
+ *  (MapView's re-register on settings change) compute thickness from the
+ *  user setting and pass it in explicitly. */
+export const DEFAULT_OUTLINE_THICKNESS = (SHAPE_CANONICAL_RADIUS * 2.5) / 18; // ~6.67
 
 /** Raw pixel data for one SDF icon. Shape matches `map.addImage()`'s `image`
  *  argument verbatim — pass the returned `{ width, height, data }` triple
  *  directly with `{ sdf: true }`. `data` is RGBA8, row-major, top-down,
- *  width*height*4 bytes. Ink pixels are `(255, 255, 255, alpha)`; transparent
- *  pixels are all zeros. Anti-aliased edges use alpha 0..255 against fully-
- *  white RGB. */
+ *  width*height*4 bytes. Ink pixels are `(255, 255, 255, alpha)` where
+ *  alpha is the SDF-encoded distance value; transparent pixels are all
+ *  zeros. */
 export interface SdfIcon {
   width: number;
   height: number;
@@ -85,24 +110,31 @@ export interface SdfIcon {
  *  domain they belong to. */
 export type ShapeDomain = 'waypoint' | 'pov';
 
+/** Build-time inputs piped into every shape rasterizer. Keeping this as a
+ *  single struct (rather than positional args) means future per-shape knobs
+ *  — corner radius, inner-dot ratio, etc. — can land on the struct without
+ *  fanning out every descriptor's signature. */
+export interface ShapeBuildOptions {
+  /** Outline thickness in canvas pixels, applied to every shape that has a
+   *  secondary outline slot (circle, pin, square, diamond). One-color shapes
+   *  (ring) ignore this. */
+  outlineThickness: number;
+}
+
 /** One entry in the shape catalog. Adding a new shape is "write a primary
- *  rasterizer, optionally write a secondary one, append to SHAPES."
- *
- *  `primary` and `secondary` are lazy (called from `buildAllShapeIcons`)
- *  rather than eager so the module's import cost stays tiny — six rasters
- *  × 48² × 4 bytes ≈ 55 KB is small but module-load time matters at HMR. */
+ *  rasterizer, optionally write a secondary one, append to SHAPES." */
 export interface ShapeDescriptor {
   /** Identity. Must match a `WaypointShape` union member. SDF icon ids are
    *  formed as `waypoint-${name}-primary` / `waypoint-${name}-secondary`. */
   name: WaypointShape;
   /** Rasterizer for the primary slot (tinted by the primary color at draw
    *  time). Required — every shape has at least a primary silhouette. */
-  primary: () => SdfIcon;
+  primary: (opts: ShapeBuildOptions) => SdfIcon;
   /** Optional rasterizer for the secondary slot (tinted by the secondary
    *  color). When omitted, the registry substitutes a transparent placeholder
    *  so the secondary symbol layer stays valid; UI is expected to hide the
    *  secondary color picker for shapes that opt out. */
-  secondary?: () => SdfIcon;
+  secondary?: (opts: ShapeBuildOptions) => SdfIcon;
   /** Decoration domains this shape is offered in. */
   domains: readonly ShapeDomain[];
 }
@@ -110,9 +142,8 @@ export interface ShapeDescriptor {
 /** Transparent placeholder SDF icon. Used as the secondary-slot fill for
  *  shapes that don't declare their own `secondary` rasterizer, so the layer
  *  stack stays uniform: every shape registers BOTH a primary and a secondary
- *  icon, even if the secondary is just empty pixels. The alternative —
- *  per-feature `icon-opacity` routing — adds expression evaluation cost on
- *  every draw and complicates the active-state machinery. */
+ *  icon, even if the secondary is just empty pixels (encoded as "infinitely
+ *  outside" via alpha 0). */
 function transparentIcon(): SdfIcon {
   const size = WAYPOINT_ICON_SIZE;
   return {
@@ -122,9 +153,49 @@ function transparentIcon(): SdfIcon {
   };
 }
 
+/** Encode a signed-distance value (canvas px, positive inside) into the
+ *  SDF alpha channel expected by MapLibre's `symbol_sdf.fragment.glsl`:
+ *
+ *    alpha = round(clamp(255 * (0.75 + d / SDF_PX), 0, 255))
+ *
+ *  Boundary (d=0) → alpha 191. Two px inside (d=+2) → alpha 255. Six px
+ *  outside (d=-6) → alpha 0. The shader does a smoothstep around alpha
+ *  0.75, so this linear distance ramp gives crisp AA at any runtime
+ *  icon-size. */
+function sdfAlpha(signedDistInside: number): number {
+  const v = 0.75 + signedDistInside / SDF_PX;
+  if (v <= 0) return 0;
+  if (v >= 1) return 255;
+  return Math.round(v * 255);
+}
+
+/** Run a per-pixel SDF function over a bounding box and write the encoded
+ *  alpha values into the data buffer. The bbox is expected to cover the
+ *  shape's silhouette plus an SDF_PX-wide outside fringe (where alpha
+ *  transitions from 191 down to 0); pixels outside the bbox stay at the
+ *  buffer's initial zero (= "infinitely outside"). */
+function rasterizeSdf(
+  data: Uint8Array,
+  size: number,
+  bbox: { xLo: number; xHi: number; yLo: number; yHi: number },
+  sdf: (px: number, py: number) => number,
+): void {
+  const xLo = Math.max(0, Math.floor(bbox.xLo));
+  const xHi = Math.min(size - 1, Math.ceil(bbox.xHi));
+  const yLo = Math.max(0, Math.floor(bbox.yLo));
+  const yHi = Math.min(size - 1, Math.ceil(bbox.yHi));
+  for (let y = yLo; y <= yHi; y++) {
+    for (let x = xLo; x <= xHi; x++) {
+      const px = x + 0.5;
+      const py = y + 0.5;
+      const a = sdfAlpha(sdf(px, py));
+      if (a > 0) writePixel(data, size, x, y, a);
+    }
+  }
+}
+
 /** Build a new RGBA8 buffer of canonical size, run a draw callback against
- *  it, and return the result wrapped in an `SdfIcon`. Cuts boilerplate at
- *  every descriptor site without committing to a particular drawing API. */
+ *  it, and return the result wrapped in an `SdfIcon`. */
 function rasterize(draw: (data: Uint8Array, size: number) => void): SdfIcon {
   const size = WAYPOINT_ICON_SIZE;
   const data = new Uint8Array(size * size * 4);
@@ -132,29 +203,77 @@ function rasterize(draw: (data: Uint8Array, size: number) => void): SdfIcon {
   return { width: size, height: size, data };
 }
 
+function writePixel(
+  data: Uint8Array,
+  size: number,
+  x: number,
+  y: number,
+  alpha: number,
+): void {
+  if (x < 0 || y < 0 || x >= size || y >= size) return;
+  const i = (y * size + x) * 4;
+  // Take the max of the existing alpha and the new value. For SDF
+  // encoding, a higher alpha means closer to / further inside the shape,
+  // so max-compositing is the right operator when multiple primitives
+  // overlap (e.g., pin head + tail share the head's lower arc region).
+  const prevA = data[i + 3];
+  const a = alpha > prevA ? alpha : prevA;
+  data[i] = 255;
+  data[i + 1] = 255;
+  data[i + 2] = 255;
+  data[i + 3] = a;
+}
+
+/** Compute the outline-band SDF from the primary shape's SDF.
+ *
+ *  The outline is a band of width `thickness` on the INSIDE of the primary
+ *  boundary (so it overlays the primary fill's outermost rim — exactly
+ *  what a "stroke" looks like at a vector shape's boundary). Given the
+ *  primary's signed-inside SDF `d`:
+ *
+ *    sdf_outline = min(d, thickness - d)
+ *
+ *  - d < 0:           outside primary, outside outline → returns d.
+ *  - 0 ≤ d ≤ thick:   inside outline band → min of distance to either
+ *                     band edge (both positive).
+ *  - d > thickness:   deep inside primary, outside outline (past the
+ *                     inner band edge) → returns `thickness - d` (negative).
+ */
+function outlineSdfFrom(primarySdf: number, thickness: number): number {
+  const other = thickness - primarySdf;
+  return primarySdf < other ? primarySdf : other;
+}
+
 // ---------------------------------------------------------------------------
 // Shape catalog. Each entry follows the same pattern: primary = filled
-// silhouette, secondary (when set) = thin outline at the silhouette's edge,
-// `OUTLINE_THICKNESS` px wide. Stacking secondary above primary at the same
-// position paints the outline over the outermost band of the fill — exactly
-// what a "stroke" looks like on a vector shape.
+// silhouette, secondary (when set) = thin outline at the silhouette's edge
+// at the build-time `outlineThickness` canvas-px width. Stacking secondary
+// above primary at the same position paints the outline over the outermost
+// band of the fill — exactly what a "stroke" looks like on a vector shape.
 //
 // Ring is intentionally one-color: its silhouette already reads as a heavy
 // stroke and adding a thin outline on the outer edge would just make the
-// ring look slightly thicker (visually indistinguishable from the no-outline
-// variant). When a "ring with center dot" variant lands later it'll be a
-// distinct shape (e.g. `target`) where the secondary slot is the center dot.
+// ring look slightly thicker. When a "ring with center dot" variant lands
+// later it'll be a distinct shape (e.g. `target`) where the secondary slot
+// is the center dot.
 
 export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
   circle: {
     name: 'circle',
     primary: () =>
       rasterize((data, size) =>
-        drawFilledCircle(data, size, size / 2, size / 2, 18),
+        drawFilledCircle(data, size, size / 2, size / 2, SHAPE_CANONICAL_RADIUS),
       ),
-    secondary: () =>
+    secondary: ({ outlineThickness }) =>
       rasterize((data, size) =>
-        drawCircleOutline(data, size, size / 2, size / 2, 18, OUTLINE_THICKNESS),
+        drawCircleOutline(
+          data,
+          size,
+          size / 2,
+          size / 2,
+          SHAPE_CANONICAL_RADIUS,
+          outlineThickness,
+        ),
       ),
     domains: ['waypoint', 'pov'],
   },
@@ -162,7 +281,7 @@ export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
     name: 'ring',
     primary: () =>
       rasterize((data, size) =>
-        drawRing(data, size, size / 2, size / 2, 18, 4),
+        drawRing(data, size, size / 2, size / 2, SHAPE_CANONICAL_RADIUS, RING_STROKE),
       ),
     // One-color shape — see file-level note above the catalog.
     domains: ['waypoint', 'pov'],
@@ -170,8 +289,8 @@ export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
   pin: {
     name: 'pin',
     primary: () => rasterize((data, size) => drawPin(data, size)),
-    secondary: () =>
-      rasterize((data, size) => drawPinOutline(data, size, OUTLINE_THICKNESS)),
+    secondary: ({ outlineThickness }) =>
+      rasterize((data, size) => drawPinOutline(data, size, outlineThickness)),
     // Pin's needle tip semantic is waypoint-specific ("the tip is at the
     // coordinate"); it doesn't translate to POV, which paints centered.
     domains: ['waypoint'],
@@ -180,11 +299,18 @@ export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
     name: 'square',
     primary: () =>
       rasterize((data, size) =>
-        drawFilledSquare(data, size, size / 2, size / 2, 16),
+        drawFilledSquare(data, size, size / 2, size / 2, SQUARE_HALF_SIDE),
       ),
-    secondary: () =>
+    secondary: ({ outlineThickness }) =>
       rasterize((data, size) =>
-        drawSquareOutline(data, size, size / 2, size / 2, 16, OUTLINE_THICKNESS),
+        drawSquareOutline(
+          data,
+          size,
+          size / 2,
+          size / 2,
+          SQUARE_HALF_SIDE,
+          outlineThickness,
+        ),
       ),
     domains: ['waypoint', 'pov'],
   },
@@ -192,17 +318,17 @@ export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
     name: 'diamond',
     primary: () =>
       rasterize((data, size) =>
-        drawFilledDiamond(data, size, size / 2, size / 2, 22),
+        drawFilledDiamond(data, size, size / 2, size / 2, DIAMOND_HALF_DIAG),
       ),
-    secondary: () =>
+    secondary: ({ outlineThickness }) =>
       rasterize((data, size) =>
         drawDiamondOutline(
           data,
           size,
           size / 2,
           size / 2,
-          22,
-          OUTLINE_THICKNESS,
+          DIAMOND_HALF_DIAG,
+          outlineThickness,
         ),
       ),
     domains: ['waypoint', 'pov'],
@@ -236,9 +362,8 @@ export function shapeHasSecondary(name: string): boolean {
 }
 
 /** One `map.addImage(...)`-ready entry. Both the preview (`MapView.tsx`'s
- *  `onStyleLoad`) and the export renderer (`renderer/index.ts`'s
- *  `applySetup`) iterate the same array so the SDF atlas is bit-identical
- *  across the two pipelines. */
+ *  `onStyleLoad`) and the export renderer (when it lands) iterate the same
+ *  array so the SDF atlas is bit-identical across the two pipelines. */
 export interface ShapeRegistryEntry {
   /** Image id MapLibre stores under. Shape is `waypoint-<shape>-<slot>`. */
   id: string;
@@ -247,24 +372,27 @@ export interface ShapeRegistryEntry {
 }
 
 /** Build the full set of SDF icons needed by the waypoints layers — every
- *  shape × both slots. Shapes without a `secondary` rasterizer contribute
- *  a transparent placeholder icon so the secondary symbol layer is always
- *  resolvable.
+ *  shape × both slots — at the requested outline thickness (canvas px).
+ *  Shapes without a `secondary` rasterizer contribute a transparent
+ *  placeholder icon so the secondary symbol layer is always resolvable.
  *
  *  Returns a fresh array each call (icons are owned `Uint8Array` buffers).
- *  Both sides must register identical entries; drift here means the export
- *  silently renders a different shape than the preview. */
-export function buildAllShapeIcons(): ShapeRegistryEntry[] {
+ *  Both sides (preview + export) must register identical entries; drift here
+ *  means the export silently renders a different shape than the preview, so
+ *  thread the same `outlineThickness` through both pipelines. */
+export function buildAllShapeIcons(
+  opts: ShapeBuildOptions = { outlineThickness: DEFAULT_OUTLINE_THICKNESS },
+): ShapeRegistryEntry[] {
   const out: ShapeRegistryEntry[] = [];
   for (const desc of Object.values(SHAPES)) {
     out.push({
       id: `waypoint-${desc.name}-primary`,
-      icon: desc.primary(),
+      icon: desc.primary(opts),
       options: { sdf: true },
     });
     out.push({
       id: `waypoint-${desc.name}-secondary`,
-      icon: desc.secondary ? desc.secondary() : transparentIcon(),
+      icon: desc.secondary ? desc.secondary(opts) : transparentIcon(),
       options: { sdf: true },
     });
   }
@@ -272,41 +400,9 @@ export function buildAllShapeIcons(): ShapeRegistryEntry[] {
 }
 
 // ---------------------------------------------------------------------------
-// Primitive rasterizers. RGBA8 top-down, ink as (255,255,255,alpha).
-// Anti-aliasing uses a "soft edge" alpha ramp over a 1-pixel boundary:
-// distance < r-0.5 → fully inside (alpha 255); distance > r+0.5 → fully
-// outside (alpha 0); in between → linear ramp. This is the standard
-// trick for crisp circular edges without supersampling.
-
-function writePixel(
-  data: Uint8Array,
-  size: number,
-  x: number,
-  y: number,
-  alpha: number,
-): void {
-  if (x < 0 || y < 0 || x >= size || y >= size) return;
-  const i = (y * size + x) * 4;
-  // Combine with any existing alpha at this pixel — pin uses two
-  // overlapping primitives (circle head + triangle tail) and the seam
-  // would show as a darker line without max-blending.
-  const prevA = data[i + 3];
-  const a = alpha > prevA ? alpha : prevA;
-  data[i] = 255;
-  data[i + 1] = 255;
-  data[i + 2] = 255;
-  data[i + 3] = a;
-}
-
-function softEdgeAlpha(dist: number, radius: number): number {
-  // dist < radius - 0.5 → fully inside; dist > radius + 0.5 → outside;
-  // linear ramp in between. Returns 0..255.
-  const inside = radius - 0.5;
-  const outside = radius + 0.5;
-  if (dist <= inside) return 255;
-  if (dist >= outside) return 0;
-  return Math.round((outside - dist) * 255);
-}
+// SDF rasterizers. Each primary uses the shape's analytical signed-inside
+// distance function; each secondary derives the outline-band SDF from the
+// primary via `outlineSdfFrom(primary_sdf, thickness)`.
 
 function drawFilledCircle(
   data: Uint8Array,
@@ -315,63 +411,23 @@ function drawFilledCircle(
   cy: number,
   radius: number,
 ): void {
-  const min = 0;
-  const max = size - 1;
-  const xLo = Math.max(min, Math.floor(cx - radius - 1));
-  const xHi = Math.min(max, Math.ceil(cx + radius + 1));
-  const yLo = Math.max(min, Math.floor(cy - radius - 1));
-  const yHi = Math.min(max, Math.ceil(cy + radius + 1));
-  for (let y = yLo; y <= yHi; y++) {
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = x + 0.5 - cx;
-      const dy = y + 0.5 - cy;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const a = softEdgeAlpha(d, radius);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - radius - SDF_PX,
+      xHi: cx + radius + SDF_PX,
+      yLo: cy - radius - SDF_PX,
+      yHi: cy + radius + SDF_PX,
+    },
+    (px, py) => {
+      const dx = px - cx;
+      const dy = py - cy;
+      return radius - Math.sqrt(dx * dx + dy * dy);
+    },
+  );
 }
 
-function drawRing(
-  data: Uint8Array,
-  size: number,
-  cx: number,
-  cy: number,
-  outerRadius: number,
-  strokeWidth: number,
-): void {
-  const innerRadius = outerRadius - strokeWidth;
-  const min = 0;
-  const max = size - 1;
-  const xLo = Math.max(min, Math.floor(cx - outerRadius - 1));
-  const xHi = Math.min(max, Math.ceil(cx + outerRadius + 1));
-  const yLo = Math.max(min, Math.floor(cy - outerRadius - 1));
-  const yHi = Math.min(max, Math.ceil(cy + outerRadius + 1));
-  for (let y = yLo; y <= yHi; y++) {
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = x + 0.5 - cx;
-      const dy = y + 0.5 - cy;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const outerA = softEdgeAlpha(d, outerRadius);
-      if (outerA === 0) continue;
-      // Inverse soft-edge for the inner cutout: pixels with d > inner+0.5
-      // are fully inside the ring, pixels with d < inner-0.5 are fully
-      // inside the hole (alpha 0), linear ramp between.
-      let innerCutout = 255;
-      if (d <= innerRadius - 0.5) innerCutout = 0;
-      else if (d < innerRadius + 0.5) {
-        innerCutout = Math.round((d - (innerRadius - 0.5)) * 255);
-      }
-      const a = Math.min(outerA, innerCutout);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
-}
-
-/** Thin circular outline — pixels within `thickness` of the outer edge.
- *  Equivalent to a ring with `strokeWidth = thickness`. Wrapper rather than
- *  call-site duplication so the secondary-slot rasterizers all read as
- *  "draw a thin border of the shape." */
 function drawCircleOutline(
   data: Uint8Array,
   size: number,
@@ -380,9 +436,59 @@ function drawCircleOutline(
   outerRadius: number,
   thickness: number,
 ): void {
-  drawRing(data, size, cx, cy, outerRadius, thickness);
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - outerRadius - SDF_PX,
+      xHi: cx + outerRadius + SDF_PX,
+      yLo: cy - outerRadius - SDF_PX,
+      yHi: cy + outerRadius + SDF_PX,
+    },
+    (px, py) => {
+      const dx = px - cx;
+      const dy = py - cy;
+      const primary = outerRadius - Math.sqrt(dx * dx + dy * dy);
+      return outlineSdfFrom(primary, thickness);
+    },
+  );
 }
 
+/** Ring is a one-color band centered around an outer-radius silhouette,
+ *  with stroke thickness baked into the geometry (not the user-facing
+ *  outline thickness). The signed-inside distance to the band is computed
+ *  via the band's mid-radius and half-stroke: a pixel is inside the band
+ *  iff |r - midRadius| ≤ halfStroke; the SDF is `halfStroke - |r - midRadius|`. */
+function drawRing(
+  data: Uint8Array,
+  size: number,
+  cx: number,
+  cy: number,
+  outerRadius: number,
+  strokeWidth: number,
+): void {
+  const midRadius = outerRadius - strokeWidth / 2;
+  const halfStroke = strokeWidth / 2;
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - outerRadius - SDF_PX,
+      xHi: cx + outerRadius + SDF_PX,
+      yLo: cy - outerRadius - SDF_PX,
+      yHi: cy + outerRadius + SDF_PX,
+    },
+    (px, py) => {
+      const dx = px - cx;
+      const dy = py - cy;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      return halfStroke - Math.abs(r - midRadius);
+    },
+  );
+}
+
+/** Axis-aligned filled square. SDF is L∞ distance to the boundary:
+ *  signedDistInside = halfSide - max(|dx|, |dy|). */
 function drawFilledSquare(
   data: Uint8Array,
   size: number,
@@ -390,38 +496,34 @@ function drawFilledSquare(
   cy: number,
   halfSide: number,
 ): void {
-  const min = 0;
-  const max = size - 1;
-  const xLo = Math.max(min, Math.floor(cx - halfSide - 1));
-  const xHi = Math.min(max, Math.ceil(cx + halfSide + 1));
-  const yLo = Math.max(min, Math.floor(cy - halfSide - 1));
-  const yHi = Math.min(max, Math.ceil(cy + halfSide + 1));
-  for (let y = yLo; y <= yHi; y++) {
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = Math.abs(x + 0.5 - cx);
-      const dy = Math.abs(y + 0.5 - cy);
-      // Chebyshev distance from center; soft-edge against halfSide on
-      // either axis.
-      const ax = softEdgeAxisAlpha(dx, halfSide);
-      const ay = softEdgeAxisAlpha(dy, halfSide);
-      const a = Math.min(ax, ay);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - halfSide - SDF_PX,
+      xHi: cx + halfSide + SDF_PX,
+      yLo: cy - halfSide - SDF_PX,
+      yHi: cy + halfSide + SDF_PX,
+    },
+    (px, py) => {
+      const dx = Math.abs(px - cx);
+      const dy = Math.abs(py - cy);
+      return halfSide - (dx > dy ? dx : dy);
+    },
+  );
 }
 
-function softEdgeAxisAlpha(dist: number, half: number): number {
-  const inside = half - 0.5;
-  const outside = half + 0.5;
-  if (dist <= inside) return 255;
-  if (dist >= outside) return 0;
-  return Math.round((outside - dist) * 255);
-}
-
-/** Thin square outline — pixels inside the outer square AND outside the
- *  inner square. Per-axis soft-edge ramps anti-alias both the outer and
- *  inner edges so the stroke reads as crisp on both sides at any
- *  `icon-size`. */
+/** Axis-aligned square outline. The L∞ SDF for the square interior is
+ *  `halfSide - max(|dx|, |dy|)`; `outlineSdfFrom` derives the band SDF.
+ *
+ *  Note: the L∞ "distance" is the perpendicular distance to the nearest
+ *  axis-aligned side, NOT the Euclidean distance to the nearest boundary
+ *  point — at the corners these diverge (perpendicular to a corner is
+ *  along the diagonal). MapLibre's smoothstep AA reads any monotone
+ *  function as an edge, so this gives the right boundary-AA behavior;
+ *  what would go wrong at corners is the outline-thickness measured
+ *  along the diagonal, which can read slightly off perpendicular. For
+ *  rectilinear primitives in practice this is invisible. */
 function drawSquareOutline(
   data: Uint8Array,
   size: number,
@@ -430,38 +532,28 @@ function drawSquareOutline(
   outerHalf: number,
   thickness: number,
 ): void {
-  const innerHalf = outerHalf - thickness;
-  const min = 0;
-  const max = size - 1;
-  const xLo = Math.max(min, Math.floor(cx - outerHalf - 1));
-  const xHi = Math.min(max, Math.ceil(cx + outerHalf + 1));
-  const yLo = Math.max(min, Math.floor(cy - outerHalf - 1));
-  const yHi = Math.min(max, Math.ceil(cy + outerHalf + 1));
-  for (let y = yLo; y <= yHi; y++) {
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = Math.abs(x + 0.5 - cx);
-      const dy = Math.abs(y + 0.5 - cy);
-      // Outer square coverage (how much of this pixel is inside the outer
-      // boundary). 255 deep inside, 0 well outside, ramped at the edge.
-      const outerA = Math.min(
-        softEdgeAxisAlpha(dx, outerHalf),
-        softEdgeAxisAlpha(dy, outerHalf),
-      );
-      if (outerA === 0) continue;
-      // Inner square coverage. The stroke pixel is "inside outer AND not
-      // inside inner" — alpha-subtraction gives us a soft ring with both
-      // edges anti-aliased. Clamping at 0 handles the degenerate
-      // (innerHalf < 0) case for tiny shapes.
-      const innerA = Math.min(
-        softEdgeAxisAlpha(dx, innerHalf),
-        softEdgeAxisAlpha(dy, innerHalf),
-      );
-      const a = Math.max(0, outerA - innerA);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - outerHalf - SDF_PX,
+      xHi: cx + outerHalf + SDF_PX,
+      yLo: cy - outerHalf - SDF_PX,
+      yHi: cy + outerHalf + SDF_PX,
+    },
+    (px, py) => {
+      const dx = Math.abs(px - cx);
+      const dy = Math.abs(py - cy);
+      const primary = outerHalf - (dx > dy ? dx : dy);
+      return outlineSdfFrom(primary, thickness);
+    },
+  );
 }
 
+/** Axis-aligned filled diamond (rotated square). The diamond's interior is
+ *  |dx| + |dy| ≤ halfDiag; the perpendicular distance from an interior
+ *  point to the nearest edge is `(halfDiag - |dx| - |dy|) / √2` because
+ *  the edges are at 45° to the axes. */
 function drawFilledDiamond(
   data: Uint8Array,
   size: number,
@@ -469,44 +561,23 @@ function drawFilledDiamond(
   cy: number,
   halfDiag: number,
 ): void {
-  // Diamond = points where |x| + |y| <= halfDiag (rotated square). Same
-  // soft-edge treatment, distance metric is the L1 / Manhattan norm.
-  const min = 0;
-  const max = size - 1;
-  const xLo = Math.max(min, Math.floor(cx - halfDiag - 1));
-  const xHi = Math.min(max, Math.ceil(cx + halfDiag + 1));
-  const yLo = Math.max(min, Math.floor(cy - halfDiag - 1));
-  const yHi = Math.min(max, Math.ceil(cy + halfDiag + 1));
-  for (let y = yLo; y <= yHi; y++) {
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = Math.abs(x + 0.5 - cx);
-      const dy = Math.abs(y + 0.5 - cy);
-      const dist = dx + dy;
-      // Soft edge in L1 norm; scale the ramp by sqrt(2)/2 so the
-      // diagonal anti-aliasing matches the rectangle's per-axis ramp
-      // visually (L1 isoline is rotated 45°).
-      const a = softEdgeL1Alpha(dist, halfDiag);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - halfDiag - SDF_PX,
+      xHi: cx + halfDiag + SDF_PX,
+      yLo: cy - halfDiag - SDF_PX,
+      yHi: cy + halfDiag + SDF_PX,
+    },
+    (px, py) => {
+      const dx = Math.abs(px - cx);
+      const dy = Math.abs(py - cy);
+      return (halfDiag - dx - dy) / Math.SQRT2;
+    },
+  );
 }
 
-function softEdgeL1Alpha(dist: number, half: number): number {
-  // Boundary width chosen as ~0.71 (= sqrt(2)/2) so the perceived edge
-  // sharpness matches drawFilledSquare (whose ramp width is 1 px in L∞
-  // which projects to ~0.71 px in L1 along the diagonal).
-  const HALF_RAMP = 0.71;
-  const inside = half - HALF_RAMP;
-  const outside = half + HALF_RAMP;
-  if (dist <= inside) return 255;
-  if (dist >= outside) return 0;
-  return Math.round(((outside - dist) / (2 * HALF_RAMP)) * 255);
-}
-
-/** Thin diamond outline — alpha-subtract an inner diamond from the outer.
- *  Inner half-diagonal shrinks by `thickness × √2` so the stroke width
- *  measured perpendicular to the diamond's edges (the visually meaningful
- *  width) lands at `thickness` rather than `thickness / √2`. */
 function drawDiamondOutline(
   data: Uint8Array,
   size: number,
@@ -515,135 +586,242 @@ function drawDiamondOutline(
   outerHalfDiag: number,
   thickness: number,
 ): void {
-  // The diamond's edge is at 45°; a stroke of perpendicular width
-  // `thickness` corresponds to shrinking the L1 half-diagonal by
-  // `thickness × √2`. Otherwise the visible outline reads thinner than
-  // the equivalent square outline at the same thickness setting.
-  const innerHalfDiag = outerHalfDiag - thickness * Math.SQRT2;
-  const min = 0;
-  const max = size - 1;
-  const xLo = Math.max(min, Math.floor(cx - outerHalfDiag - 1));
-  const xHi = Math.min(max, Math.ceil(cx + outerHalfDiag + 1));
-  const yLo = Math.max(min, Math.floor(cy - outerHalfDiag - 1));
-  const yHi = Math.min(max, Math.ceil(cy + outerHalfDiag + 1));
-  for (let y = yLo; y <= yHi; y++) {
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = Math.abs(x + 0.5 - cx);
-      const dy = Math.abs(y + 0.5 - cy);
-      const dist = dx + dy;
-      const outerA = softEdgeL1Alpha(dist, outerHalfDiag);
-      if (outerA === 0) continue;
-      const innerA = softEdgeL1Alpha(dist, innerHalfDiag);
-      const a = Math.max(0, outerA - innerA);
-      if (a > 0) writePixel(data, size, x, y, a);
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: cx - outerHalfDiag - SDF_PX,
+      xHi: cx + outerHalfDiag + SDF_PX,
+      yLo: cy - outerHalfDiag - SDF_PX,
+      yHi: cy + outerHalfDiag + SDF_PX,
+    },
+    (px, py) => {
+      const dx = Math.abs(px - cx);
+      const dy = Math.abs(py - cy);
+      const primary = (outerHalfDiag - dx - dy) / Math.SQRT2;
+      return outlineSdfFrom(primary, thickness);
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pin — teardrop shape with the tip near the bottom of the canvas. With
+// `icon-anchor: 'bottom'` on the symbol layer (data-driven, set per-shape
+// in `resolveStaticPaints`), the bottom-center of the canvas — i.e. the
+// tip — lands on the GPS coordinate. Other shapes use `icon-anchor:
+// 'center'`, so the pin gets its own anchor and is free to fill the full
+// canvas vertically rather than being squeezed into the top half.
+//
+// Geometry (128-px canvas):
+//
+//   - Head: circle near the top of the canvas. Head radius is sized
+//     comparably to SHAPE_CANONICAL_RADIUS (48) so the user-facing
+//     `stroke_width` setting — which is calibrated against
+//     SHAPE_CANONICAL_RADIUS — produces an outline whose visual weight on
+//     the pin matches the other shapes. Head center sits inset from the
+//     canvas top to leave room for the outline at the default stroke
+//     width.
+//
+//   - Tip: at (size/2, size - 0.5) — the bottom-center pixel. With
+//     `icon-anchor: 'bottom'` this lands exactly on the geographic point.
+//     The very-bottom-row SDF clipping (no canvas pixels below the tip
+//     means no "outside" SDF for the bottom 0.5 px) trades a tiny amount
+//     of tip sharpness for pixel-perfect anchoring; at typical icon-size
+//     ~0.34 the effect is sub-pixel.
+//
+//   - Tail: two straight lines TANGENT to the head circle, converging at
+//     the tip. Tangent geometry — not arbitrary triangle edges — is what
+//     makes the head→tail transition C1-continuous (no visible kink at
+//     the head-tail junction).
+//
+// SDF strategy: the pin's OUTER boundary is the head arc above the tangent
+// line plus the two tangent segments (L→T, T→R). Distance to that
+// boundary is `min(arcDist, leftSegDist, rightSegDist)`; sign is positive
+// when the point lies inside the head disk OR inside the tail triangle
+// (L, T, R). We deliberately do NOT use `max(headSdf, tailTriangleSdf)`
+// — that formulation has the right SIGN at every point but the wrong
+// MAGNITUDE on the head-circle arc that lies INSIDE the tail triangle:
+// at those interior points `headSdf = 0` so `max(0, tailTriangleSdf)` =
+// `tailTriangleSdf`, which is small near the tangent points. The
+// outline-band derivation `min(d, thickness - d)` then paints a visible
+// secondary-color arc along the (interior) head boundary near each
+// tangent point. The proper-distance formulation below has no such
+// internal seam.
+
+const PIN_HEAD_RADIUS_RATIO = 42 / 128;
+/** Pin head center y on the SDF canvas. Inset from the canvas top by ~8 px
+ *  so the outline at default `stroke_width` doesn't clip the top edge. */
+const PIN_HEAD_CENTER_Y_RATIO = 50 / 128;
+/** Pin tip y on the SDF canvas. Bottom-edge centered (half a pixel inset)
+ *  so `icon-anchor: 'bottom'` lands the tip exactly on the geographic
+ *  point with sub-pixel error. */
+const PIN_TIP_Y_RATIO = 127.5 / 128;
+
+interface PinGeometry {
+  cx: number;
+  headCy: number;
+  headR: number;
+  tipY: number;
+  tangentY: number;
+  /** Half-width of the tail at the tangent touch line. Also equals
+   *  R·sin α — the tail tapers linearly from this width at `tangentY` to
+   *  0 at `tipY`. */
+  tangentHalfWidth: number;
+  /** cos α = headR / D where D = tipY − headCy. Cached because the
+   *  arc-vs-vertex test in `pinSdf` is in the per-pixel inner loop. */
+  cosA: number;
+}
+
+function pinGeometry(size: number): PinGeometry {
+  const cx = size / 2;
+  const headCy = size * PIN_HEAD_CENTER_Y_RATIO;
+  const tipY = size * PIN_TIP_Y_RATIO;
+  const headR = size * PIN_HEAD_RADIUS_RATIO;
+  const D = tipY - headCy;
+  if (D <= headR) {
+    // Degenerate — collapse to a circle. cosA = 1 makes the arc test
+    // accept every angle (`dy/dc < 1` for all non-radial-down rays),
+    // and tangentHalfWidth = 0 means the tangent endpoints collapse to
+    // a single point at (cx, headCy + headR).
+    return {
+      cx,
+      headCy,
+      headR,
+      tipY,
+      tangentY: headCy + headR,
+      tangentHalfWidth: 0,
+      cosA: 1,
+    };
+  }
+  const cosA = headR / D;
+  const sinA = Math.sqrt(1 - cosA * cosA);
+  return {
+    cx,
+    headCy,
+    headR,
+    tipY,
+    tangentY: headCy + headR * cosA,
+    tangentHalfWidth: headR * sinA,
+    cosA,
+  };
+}
+
+/** Unsigned distance from a point to a line segment. */
+function distToSegment(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) {
+    const ex = px - ax;
+    const ey = py - ay;
+    return Math.sqrt(ex * ex + ey * ey);
+  }
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  const ex = px - cx;
+  const ey = py - cy;
+  return Math.sqrt(ex * ex + ey * ey);
+}
+
+/** Signed-inside SDF for the pin (head disk ∪ tail triangle). Outer
+ *  boundary = head arc above `tangentY` ∪ left tangent segment (L→T) ∪
+ *  right tangent segment (T→R). Unsigned distance is the `min` over the
+ *  three pieces; sign is positive when the point is inside the head disk
+ *  OR inside the tail triangle (L, R, T). See the long-form comment above
+ *  for why a proper distance is needed instead of `max(headSdf, tailSdf)`. */
+function pinSdf(px: number, py: number, g: PinGeometry): number {
+  const dx = px - g.cx;
+  const dy = py - g.headCy;
+  const dc = Math.sqrt(dx * dx + dy * dy);
+  const Lx = g.cx - g.tangentHalfWidth;
+  const Ly = g.tangentY;
+  const Rx = g.cx + g.tangentHalfWidth;
+  const Ry = g.tangentY;
+  const Tx = g.cx;
+  const Ty = g.tipY;
+
+  // Distance to the head arc (the part of the head circle with y <
+  // tangentY). For a query point with `dc > 0`, the closest point on the
+  // FULL circle has y = headCy + headR · (dy/dc); it's on the arc iff
+  // `dy/dc < cosA`. Otherwise the nearest arc point is one of the two
+  // endpoints (L or R), whichever is closer.
+  let arcDist: number;
+  if (dc > 0 && dy / dc < g.cosA) {
+    arcDist = Math.abs(dc - g.headR);
+  } else {
+    const dxL = px - Lx;
+    const dyL = py - Ly;
+    const dxR = px - Rx;
+    const dyR = py - Ry;
+    const distL = Math.sqrt(dxL * dxL + dyL * dyL);
+    const distR = Math.sqrt(dxR * dxR + dyR * dyR);
+    arcDist = distL < distR ? distL : distR;
+  }
+
+  // Distance to the two tangent segments. `distToSegment` handles the
+  // endpoint cases (L, T, R) so we don't have to special-case the tip.
+  const leftDist = distToSegment(px, py, Lx, Ly, Tx, Ty);
+  const rightDist = distToSegment(px, py, Tx, Ty, Rx, Ry);
+
+  let unsignedDist = arcDist;
+  if (leftDist < unsignedDist) unsignedDist = leftDist;
+  if (rightDist < unsignedDist) unsignedDist = rightDist;
+
+  // Inside-test: inside head disk OR inside tail triangle (linear taper
+  // from `tangentHalfWidth` at `tangentY` down to zero at `tipY`).
+  const insideHead = dc < g.headR;
+  let insideTail = false;
+  if (!insideHead && py >= g.tangentY && py <= g.tipY) {
+    const tailSpan = g.tipY - g.tangentY;
+    if (tailSpan > 0) {
+      const t = (g.tipY - py) / tailSpan;
+      const halfWidth = g.tangentHalfWidth * t;
+      insideTail = Math.abs(px - g.cx) <= halfWidth;
     }
   }
+  return insideHead || insideTail ? unsignedDist : -unsignedDist;
 }
 
 function drawPin(data: Uint8Array, size: number): void {
-  // Teardrop: a circular head centered above the canvas midline plus a
-  // triangular tail tapering to a point at the bottom edge. The tip is
-  // the marker's coordinate (the rest of the icon hangs above), per
-  // shapes-pov.md "the needle tip is at the coordinate."
-  //
-  // We approximate the classic pin silhouette by:
-  //   - Head: filled circle, radius 14, centered at (size/2, size*0.36).
-  //   - Neck/tail: an isoceles triangle whose top edge sits inside the
-  //     head circle and whose apex is at (size/2, size - 2).
-  //
-  // The triangle's top edge is wide enough that the two shapes merge
-  // into a smooth teardrop with no visible seam thanks to alpha-max
-  // blending in writePixel.
-  const cx = size / 2;
-  const headCy = size * 0.36;
-  const headR = 14;
-  drawFilledCircle(data, size, cx, headCy, headR);
-
-  // Triangle from a wide base (chord across the head circle, ~10 px
-  // below the head's center) down to a single-pixel tip near the bottom.
-  const baseY = headCy + headR * 0.45; // chord depth inside the head
-  const tipY = size - 2;
-  const baseHalfWidth = Math.sqrt(headR * headR - (baseY - headCy) ** 2);
-  // Triangle is defined by three vertices: (cx - baseHalfWidth, baseY),
-  // (cx + baseHalfWidth, baseY), (cx, tipY). Rasterize via inside-test
-  // over the triangle's bounding box.
-  const yLo = Math.floor(baseY);
-  const yHi = Math.ceil(tipY);
-  for (let y = yLo; y <= yHi; y++) {
-    // Width at this y by linear interpolation between baseY (full width)
-    // and tipY (zero width).
-    const t = (y - baseY) / (tipY - baseY);
-    if (t < 0 || t > 1) continue;
-    const halfWidth = baseHalfWidth * (1 - t);
-    const xLo = Math.floor(cx - halfWidth - 1);
-    const xHi = Math.ceil(cx + halfWidth + 1);
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = Math.abs(x + 0.5 - cx);
-      // Soft edge against the local triangle half-width — 1 px ramp.
-      const a = softEdgeAxisAlpha(dx, halfWidth);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
+  const g = pinGeometry(size);
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: g.cx - g.tangentHalfWidth - SDF_PX,
+      xHi: g.cx + g.tangentHalfWidth + SDF_PX,
+      yLo: g.headCy - g.headR - SDF_PX,
+      yHi: g.tipY + SDF_PX,
+    },
+    (px, py) => pinSdf(px, py, g),
+  );
 }
 
-/** Thin pin outline. Strategy: rasterize the full pin and a slightly-inset
- *  pin into separate buffers, then per-pixel alpha-subtract — the result
- *  is a band along the silhouette. Buffer subtraction handles the
- *  non-convex teardrop shape without the analytic-distance machinery the
- *  convex shapes use. */
 function drawPinOutline(
   data: Uint8Array,
   size: number,
   thickness: number,
 ): void {
-  const full = new Uint8Array(size * size * 4);
-  drawPin(full, size);
-
-  const inset = new Uint8Array(size * size * 4);
-  drawInsetPin(inset, size, thickness);
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const i = (y * size + x) * 4;
-      const a = Math.max(0, full[i + 3] - inset[i + 3]);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
-}
-
-/** Inset pin — the same teardrop drawn `inset` pixels smaller in every
- *  direction. Subtracted from a full pin to produce the outline. Kept
- *  separate from `drawPin` rather than parameterized so the canonical pin
- *  silhouette stays anchored to the documented dimensions in `shapes-pov.md`
- *  and the outline-specific arithmetic doesn't leak back into it. */
-function drawInsetPin(
-  data: Uint8Array,
-  size: number,
-  inset: number,
-): void {
-  const cx = size / 2;
-  const headCy = size * 0.36;
-  const headR = Math.max(0, 14 - inset);
-  drawFilledCircle(data, size, cx, headCy, headR);
-
-  const baseY = headCy + headR * 0.45;
-  const tipY = size - 2 - inset;
-  const baseHalfWidth =
-    headR > 0
-      ? Math.sqrt(Math.max(0, headR * headR - (baseY - headCy) ** 2))
-      : 0;
-  const yLo = Math.floor(baseY);
-  const yHi = Math.ceil(tipY);
-  for (let y = yLo; y <= yHi; y++) {
-    const t = (y - baseY) / (tipY - baseY);
-    if (t < 0 || t > 1) continue;
-    const halfWidth = baseHalfWidth * (1 - t);
-    const xLo = Math.floor(cx - halfWidth - 1);
-    const xHi = Math.ceil(cx + halfWidth + 1);
-    for (let x = xLo; x <= xHi; x++) {
-      const dx = Math.abs(x + 0.5 - cx);
-      const a = softEdgeAxisAlpha(dx, halfWidth);
-      if (a > 0) writePixel(data, size, x, y, a);
-    }
-  }
+  const g = pinGeometry(size);
+  rasterizeSdf(
+    data,
+    size,
+    {
+      xLo: g.cx - g.tangentHalfWidth - SDF_PX,
+      xHi: g.cx + g.tangentHalfWidth + SDF_PX,
+      yLo: g.headCy - g.headR - SDF_PX,
+      yHi: g.tipY + SDF_PX,
+    },
+    (px, py) => outlineSdfFrom(pinSdf(px, py, g), thickness),
+  );
 }

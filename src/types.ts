@@ -195,12 +195,18 @@ export interface RouteSettings {
 export interface WaypointsSize {
   circle_radius: number;
   active_radius: number;
-  /** @deprecated Not applied to waypoint rendering since the shape-descriptor
-   *  refactor. Outline thickness is now baked into the secondary SDF icon
-   *  (constant `OUTLINE_THICKNESS` in `shapes.ts`). The field is retained
-   *  for backward compatibility with persisted projects — re-introducing
-   *  user-controllable stroke thickness will re-rasterize the outline icons
-   *  on change rather than re-add this number to MapLibre paint properties. */
+  /** Outline (secondary slot) thickness, expressed as a fraction of
+   *  `PAINT_REFERENCE_WIDTH` like every other waypoint size field. The
+   *  rendered outline is `stroke_width × PAINT_REFERENCE_WIDTH` CSS px at
+   *  the canonical 1080p export width — independent of `circle_radius`, so
+   *  enlarging the waypoint doesn't proportionally fatten its outline.
+   *
+   *  Implementation: thickness is baked into the secondary SDF icon at
+   *  rasterize time (canvas-px thickness = `(stroke_width / circle_radius)
+   *  × SHAPE_CANONICAL_RADIUS`). Preview and export each re-run
+   *  `buildAllShapeIcons({ outlineThickness })` and re-register the atlas
+   *  when this value (or `circle_radius`, which co-determines the canvas
+   *  conversion) changes. */
   stroke_width: number;
   label_size: number;
 }

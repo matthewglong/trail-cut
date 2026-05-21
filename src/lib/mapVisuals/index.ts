@@ -7,6 +7,7 @@ export {
   buildStyleSpec,
   resolveStaticPaints,
   PAINT_REFERENCE_WIDTH,
+  SHAPE_CANONICAL_RADIUS,
 } from './styleSpec';
 export {
   BUILDINGS_LAYER_SPEC,
