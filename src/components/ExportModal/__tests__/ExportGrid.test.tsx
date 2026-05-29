@@ -100,8 +100,10 @@ describe('ExportGrid', () => {
     )!;
     const chips = compositeCell.querySelectorAll('[data-testid^="export-chip-"][data-testid$="-label"]');
     expect(chips).toHaveLength(2);
-    expect(chips[0].textContent).toBe('1080·30');
-    expect(chips[1].textContent).toBe('4K·30');
+    // Composite default target resolves to H265; labels include the token
+    // even when `delivery_target` is undefined on disk.
+    expect(chips[0].textContent).toBe('1080·30·H265');
+    expect(chips[1].textContent).toBe('4K·30·H265');
 
     const mapCell = container.querySelector(
       '[data-testid="export-cell-4_5-map_only"]',

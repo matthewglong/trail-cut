@@ -23,20 +23,23 @@ import {
   type RenderExportRequest,
 } from '../../lib/exportRequest';
 import { useExportQueue } from '../../hooks/useExportQueue';
-import type {
-  AspectRatio,
-  CellKey,
-  Clip,
-  ExportChannel,
-  ExportConfig,
-  ExportFps,
-  ExportGrid as ExportGridModel,
-  MapSettings,
-  OutputResolution,
-  ProjectLayouts,
-  Route,
-  TransitionFeel,
-  Waypoint,
+import {
+  defaultDeliveryTargetForChannel,
+  resolveDeliveryTarget,
+  type AspectRatio,
+  type CellKey,
+  type Clip,
+  type DeliveryTarget,
+  type ExportChannel,
+  type ExportConfig,
+  type ExportFps,
+  type ExportGrid as ExportGridModel,
+  type MapSettings,
+  type OutputResolution,
+  type ProjectLayouts,
+  type Route,
+  type TransitionFeel,
+  type Waypoint,
 } from '../../types';
 
 const DISABLED_RENDER_TOOLTIP =
@@ -82,8 +85,15 @@ export interface ExportModalProps {
 
 const EMPTY_GRID: ExportGridModel = { cells: {}, output_dir: null };
 
-/** Default chip when the user opens the secondary modal in add mode. */
-const DEFAULT_INITIAL = { quality: '1080p' as OutputResolution, fps: 30 as ExportFps };
+/** Default chip when the user opens the secondary modal in add mode. The
+ *  delivery target intentionally omits here — `ConfigExportModal` resolves
+ *  the per-channel default (`composite` → social vertical, others →
+ *  ProRes) so the same `DEFAULT_INITIAL` constant works for every cell. */
+const DEFAULT_INITIAL: {
+  quality: OutputResolution;
+  fps: ExportFps;
+  delivery_target?: DeliveryTarget;
+} = { quality: '1080p', fps: 30 };
 
 /** Pixel-height threshold per quality tier — short edge of the output
  *  canvas. Mirrors the comment on `OutputResolution` in `lib/layout.ts`. */
@@ -324,21 +334,45 @@ export function ExportModal({
   );
 
   const handleConfigSave = useCallback(
-    (next: { quality: OutputResolution; fps: ExportFps }) => {
+    (next: {
+      quality: OutputResolution;
+      fps: ExportFps;
+      delivery_target: DeliveryTarget;
+    }) => {
       if (configState === null) return;
       const { aspect, channel } = configState;
+      // Only persist `delivery_target` on the chip when it diverges from the
+      // channel default. Composite + `sdr_h265` is the most-common
+      // case; storing it implicitly keeps `project.json` quiet and lets a
+      // future default change propagate without a migration. Non-default
+      // selections (HDR, ProRes on composite, etc.) round-trip explicitly.
+      const channelDefault = defaultDeliveryTargetForChannel(channel);
+      const explicitTarget =
+        next.delivery_target === channelDefault ? undefined : next.delivery_target;
       if (configState.mode === 'edit') {
         const editingId = configState.editingId;
         updateCell(aspect, channel, (prev) =>
           prev.map((c) =>
-            c.id === editingId ? { ...c, quality: next.quality, fps: next.fps } : c,
+            c.id === editingId
+              ? {
+                  ...c,
+                  quality: next.quality,
+                  fps: next.fps,
+                  delivery_target: explicitTarget,
+                }
+              : c,
           ),
         );
       } else {
         const id = newConfigId();
         updateCell(aspect, channel, (prev) => [
           ...prev,
-          { id, quality: next.quality, fps: next.fps },
+          {
+            id,
+            quality: next.quality,
+            fps: next.fps,
+            delivery_target: explicitTarget,
+          },
         ]);
       }
       setConfigState(null);
@@ -389,17 +423,24 @@ export function ExportModal({
     return { disabledQualities: dq, disabledFps: df };
   }, [configState, sourceSummary]);
 
-  // Conflict combos = (quality, fps) pairs currently present in the target
-  // cell, excluding the chip the user is editing. In add mode every present
-  // pair conflicts. In edit mode the chip's own pair is excluded so the user
-  // can edit other axes without false conflict.
+  // Conflict combos = (quality, fps, delivery_target) tuples currently
+  // present in the target cell, excluding the chip the user is editing. In
+  // add mode every present tuple conflicts. In edit mode the chip's own
+  // tuple is excluded so the user can re-save without modifications. WS5
+  // added `delivery_target` to the tuple — two chips that share
+  // (quality, fps) but differ on target are legal (e.g. same cell rendered
+  // for TikTok and as a ProRes master).
   const conflictingCombos: CellConflict[] = useMemo(() => {
     if (configState == null) return [];
     const key: CellKey = `${configState.aspect}-${configState.channel}`;
     const configs = selection.cells[key] ?? [];
     return configs
       .filter((c) => configState.mode === 'add' || c.id !== configState.editingId)
-      .map((c) => ({ quality: c.quality, fps: c.fps }));
+      .map((c) => ({
+        quality: c.quality,
+        fps: c.fps,
+        delivery_target: resolveDeliveryTarget(c, configState.channel),
+      }));
   }, [configState, selection.cells]);
 
   if (!open) return null;

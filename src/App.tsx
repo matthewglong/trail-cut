@@ -164,6 +164,10 @@ export default function App() {
       onUpdateTrim={project.handleUpdateTrim}
       onUpdateFocalPoint={project.handleUpdateFocalPoint}
       onUpdateEffects={project.handleUpdateEffects}
+      onUpdateSourceFormat={project.handleUpdateSourceFormat}
+      pendingImportClips={media.pendingImportClips}
+      onConfirmSourceFormats={media.confirmPendingImport}
+      onSkipSourceFormats={media.skipPendingImport}
       onImportFiles={media.handleImportFiles}
       onImportFolder={media.handleImportFolder}
       onImportGpx={media.handleImportGpx}

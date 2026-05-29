@@ -88,13 +88,16 @@ interface InitPayload {
    *  layers. `[id, { width, height, data }, options]` tuples where `id` is
    *  `waypoint-<shape>-<slot>` and `data` carries the raw RGBA pixel
    *  buffer. The buffer comes from `buildAllShapeIcons` in
-   *  `src/lib/mapVisuals/shapes.ts` (pure function) on the worker side —
-   *  bit-identical to what the preview registers. JSON serialisation
-   *  through `page.evaluate` converts the Uint8Array to a plain numeric
-   *  object; `__init` reconstructs a Uint8Array before calling
-   *  `map.addImage(id, image, options)`. With 5 shapes × 2 slots ≈ 92 KB
-   *  raw, ~340 KB after JSON expansion — comfortably below CDP's
-   *  argument-size threshold. */
+   *  `src/lib/mapVisuals/shapes.ts` (pure function) on the worker side,
+   *  rasterized at `payload.pixelRatio` so its texel density matches the
+   *  framebuffer. `options.pixelRatio` tells MapLibre the icon's CSS-px
+   *  natural size — without it MapLibre would treat the texture as 1:1
+   *  and silently upscale, producing grainy edges against the natively-
+   *  rendered map tiles. JSON serialisation through `page.evaluate`
+   *  converts the Uint8Array to a plain numeric object; `__init`
+   *  reconstructs a Uint8Array before calling `map.addImage(id, image,
+   *  options)`. Atlas size scales with pixelRatio² (at pixelRatio=2: ~2.5
+   *  MB raw, ~10 MB after JSON expansion — well under CDP's threshold). */
   staticImages: Array<[
     string,
     {

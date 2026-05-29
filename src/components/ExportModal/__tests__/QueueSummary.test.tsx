@@ -43,6 +43,7 @@ function makeJob(overrides: Partial<QueueJob> & Pick<QueueJob, 'id' | 'state'>):
     channel: 'composite',
     quality: '1080p',
     fps: 30,
+    deliveryTarget: 'sdr_h265',
     outputPath: `/out/${overrides.id}.mp4`,
     ...overrides,
   };

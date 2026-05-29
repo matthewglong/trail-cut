@@ -27,8 +27,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
     default_layout, default_pip_layout, default_split_layout, output_dims, render_export_inner,
-    resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, NormalizedRect,
-    OutputResolution, PipInsetSource, RenderExportRequest,
+    resolve_slots, AspectRatio, CodecPreference, DeliveryTarget, LayoutConfig, LayoutDescriptor,
+    NormalizedRect, OutputResolution, PipInsetSource, RenderExportRequest,
 };
 
 fn assert_ffmpeg_on_path() {
@@ -204,6 +204,8 @@ fn build_request(
         layout: layout_descriptor,
         codec_preference: CodecPreference::default(),
         audio_bitrate_kbps: 256,
+        // WS4: video_only is locked to ProresMaster (lossless intermediate).
+        delivery_target: DeliveryTarget::Prores,
         project_state,
     }
 }
@@ -472,6 +474,8 @@ fn build_request_with_layout(
         layout: layout_descriptor,
         codec_preference: CodecPreference::default(),
         audio_bitrate_kbps: 256,
+        // WS4: video_only is locked to ProresMaster (lossless intermediate).
+        delivery_target: DeliveryTarget::Prores,
         project_state,
     }
 }

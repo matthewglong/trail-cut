@@ -312,22 +312,22 @@
         },
         "map_slot": {
           "x": 0,
-          "y": 675,
+          "y": 674,
           "w": 1080,
-          "h": 675
+          "h": 676
         },
         "video_slot": {
           "x": 0,
           "y": 0,
           "w": 1080,
-          "h": 675
+          "h": 674
         },
         "corner_radius_px": 0,
         "corner_radius_slot": "none"
       },
       "expected_canonical_map_viewport": {
         "css_w": 1080,
-        "css_h": 675,
+        "css_h": 676,
         "pixel_ratio": 1.0
       }
     },
@@ -394,7 +394,7 @@
           "x": 702,
           "y": 999,
           "w": 346,
-          "h": 297
+          "h": 296
         },
         "video_slot": {
           "x": 0,
@@ -407,7 +407,7 @@
       },
       "expected_canonical_map_viewport": {
         "css_w": 346,
-        "css_h": 297,
+        "css_h": 296,
         "pixel_ratio": 1.0
       }
     },
@@ -460,22 +460,22 @@
         },
         "map_slot": {
           "x": 0,
-          "y": 675,
+          "y": 674,
           "w": 1080,
-          "h": 675
+          "h": 676
         },
         "video_slot": {
           "x": 0,
           "y": 0,
           "w": 1080,
-          "h": 675
+          "h": 674
         },
         "corner_radius_px": 0,
         "corner_radius_slot": "none"
       },
       "expected_canonical_map_viewport": {
         "css_w": 1080,
-        "css_h": 675,
+        "css_h": 676,
         "pixel_ratio": 1.0
       }
     },
@@ -689,7 +689,7 @@
           "x": 1843,
           "y": 979,
           "w": 640,
-          "h": 389
+          "h": 388
         },
         "video_slot": {
           "x": 0,
@@ -702,7 +702,7 @@
       },
       "expected_canonical_map_viewport": {
         "css_w": 480,
-        "css_h": 292,
+        "css_h": 291,
         "pixel_ratio": 1.3333333333333333
       }
     },

@@ -1,6 +1,15 @@
 import type { QueueJob, QueueState, JobState } from '../../hooks/useExportQueue';
-import type { ExportChannel } from '../../types';
+import { DELIVERY_TARGETS, type DeliveryTarget, type ExportChannel } from '../../types';
 import styles from './ExportModal.module.css';
+
+/** Short label for a delivery target — uses the WS5 catalog's `shortLabel`
+ *  so the queue UI stays in lockstep with the picker without a private
+ *  string table. Pre-WS5 jobs lack the field; we fall back to "—" rather
+ *  than fabricate a label. */
+function targetShortLabel(target: DeliveryTarget | undefined): string {
+  if (!target) return '—';
+  return DELIVERY_TARGETS.find((t) => t.id === target)?.shortLabel ?? target;
+}
 
 export interface QueueViewProps {
   jobs: QueueJob[];
@@ -62,6 +71,14 @@ export function QueueView({ jobs, queueState, onCancel }: QueueViewProps) {
                 <span style={{ color: 'var(--accent)' }}>
                   {QUALITY_LABEL[runningJob.quality]}
                 </span>
+                {runningJob.deliveryTarget && (
+                  <>
+                    {' · '}
+                    <span data-testid="export-queue-banner-target">
+                      {targetShortLabel(runningJob.deliveryTarget)}
+                    </span>
+                  </>
+                )}
               </>
             ) : (
               <>Queued — preparing…</>

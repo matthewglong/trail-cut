@@ -137,7 +137,7 @@ describe('ConfigExportModal — selection', () => {
     expect(summary.textContent).toBe('1080 · 60 fps');
   });
 
-  it('saves the current (quality, fps) when the primary button is clicked', () => {
+  it('saves the current (quality, fps, delivery_target) when the primary button is clicked', () => {
     const onSave = vi.fn();
     render(<ConfigExportModal {...baseProps()} onSave={onSave} />);
     act(() =>
@@ -151,7 +151,13 @@ describe('ConfigExportModal — selection', () => {
         container.querySelector('[data-testid="config-export-modal-save"]')!,
       ),
     );
-    expect(onSave).toHaveBeenCalledWith({ quality: '2160p', fps: 60 });
+    // Composite-channel default seed = 'sdr_h265'; the user
+    // didn't touch the delivery-target row so it carries through.
+    expect(onSave).toHaveBeenCalledWith({
+      quality: '2160p',
+      fps: 60,
+      delivery_target: 'sdr_h265',
+    });
   });
 
   it('resets local state to `initial` when re-opened', () => {
@@ -255,7 +261,9 @@ describe('ConfigExportModal — disabled rules', () => {
     render(
       <ConfigExportModal
         {...baseProps()}
-        conflictingCombos={[{ quality: '1080p', fps: 30 }]}
+        conflictingCombos={[
+          { quality: '1080p', fps: 30, delivery_target: 'sdr_h265' },
+        ]}
       />,
     );
     const save = container.querySelector(
@@ -269,7 +277,9 @@ describe('ConfigExportModal — disabled rules', () => {
     render(
       <ConfigExportModal
         {...baseProps()}
-        conflictingCombos={[{ quality: '1080p', fps: 30 }]}
+        conflictingCombos={[
+          { quality: '1080p', fps: 30, delivery_target: 'sdr_h265' },
+        ]}
       />,
     );
     // Conflict initially
@@ -277,9 +287,35 @@ describe('ConfigExportModal — disabled rules', () => {
       '[data-testid="config-export-modal-save"]',
     ) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
-    // User flips fps to 60 — no conflict on (1080p, 60)
+    // User flips fps to 60 — no conflict on (1080p, 60, sdr_h265)
     act(() =>
       fireEvent.click(container.querySelector('[data-testid="config-fps-60"]')!),
+    );
+    expect(save.disabled).toBe(false);
+  });
+
+  it('clears the conflict when the user flips the delivery target off the conflicting tuple', () => {
+    // Two chips with the same (quality, fps) but different targets must
+    // coexist — WS5 added delivery_target as a third axis of the
+    // duplicate-disable rule.
+    render(
+      <ConfigExportModal
+        {...baseProps()}
+        conflictingCombos={[
+          { quality: '1080p', fps: 30, delivery_target: 'sdr_h265' },
+        ]}
+      />,
+    );
+    const save = container.querySelector(
+      '[data-testid="config-export-modal-save"]',
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    act(() =>
+      fireEvent.click(
+        container.querySelector(
+          '[data-testid="config-delivery-target-hdr_hlg"]',
+        )!,
+      ),
     );
     expect(save.disabled).toBe(false);
   });
@@ -356,8 +392,147 @@ describe('ConfigExportModal — cancel paths', () => {
 });
 
 describe('configToInitial', () => {
-  it('strips the id and returns just (quality, fps)', () => {
-    const chip: ExportConfig = { id: 'abc', quality: '2160p', fps: 60 };
-    expect(configToInitial(chip)).toEqual({ quality: '2160p', fps: 60 });
+  it('strips the id and round-trips (quality, fps, delivery_target)', () => {
+    const chip: ExportConfig = {
+      id: 'abc',
+      quality: '2160p',
+      fps: 60,
+      delivery_target: 'hdr_hlg',
+    };
+    expect(configToInitial(chip)).toEqual({
+      quality: '2160p',
+      fps: 60,
+      delivery_target: 'hdr_hlg',
+    });
+  });
+
+  it('leaves delivery_target undefined when the chip has none (pre-WS5 chips)', () => {
+    const chip: ExportConfig = { id: 'abc', quality: '1080p', fps: 30 };
+    expect(configToInitial(chip)).toEqual({
+      quality: '1080p',
+      fps: 30,
+      delivery_target: undefined,
+    });
+  });
+});
+
+describe('ConfigExportModal — delivery target picker (WS5)', () => {
+  it('renders all 5 delivery targets for a composite cell', () => {
+    render(<ConfigExportModal {...baseProps()} channel="composite" />);
+    for (const id of [
+      'sdr_h265',
+      'sdr_h264',
+      'sdr_h265',
+      'hdr_hlg',
+      'prores',
+    ]) {
+      expect(
+        container.querySelector(`[data-testid="config-delivery-target-${id}"]`),
+      ).not.toBeNull();
+    }
+  });
+
+  it('restricts the picker to ProRes master on a map_only cell', () => {
+    render(<ConfigExportModal {...baseProps()} channel="map_only" />);
+    // Only ProRes is rendered; the other four targets do not appear.
+    expect(
+      container.querySelector('[data-testid="config-delivery-target-prores"]'),
+    ).not.toBeNull();
+    for (const id of [
+      'sdr_h265',
+      'sdr_h264',
+      'sdr_h265',
+      'hdr_hlg',
+    ]) {
+      expect(
+        container.querySelector(`[data-testid="config-delivery-target-${id}"]`),
+      ).toBeNull();
+    }
+  });
+
+  it('restricts the picker to ProRes master on a video_only cell', () => {
+    render(<ConfigExportModal {...baseProps()} channel="video_only" />);
+    expect(
+      container.querySelector('[data-testid="config-delivery-target-prores"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="config-delivery-target-hdr_hlg"]'),
+    ).toBeNull();
+  });
+
+  it('defaults to sdr_h265 on composite', () => {
+    render(<ConfigExportModal {...baseProps()} channel="composite" />);
+    expect(
+      container
+        .querySelector('[data-testid="config-delivery-target-sdr_h265"]')!
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+  });
+
+  it('defaults to prores on map_only / video_only', () => {
+    render(<ConfigExportModal {...baseProps()} channel="map_only" />);
+    expect(
+      container
+        .querySelector('[data-testid="config-delivery-target-prores"]')!
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+  });
+
+  it('shows the educational HDR tooltip on the YouTube HDR row', () => {
+    render(<ConfigExportModal {...baseProps()} channel="composite" />);
+    const hdr = container.querySelector(
+      '[data-testid="config-delivery-target-hdr_hlg"]',
+    ) as HTMLButtonElement;
+    expect(hdr.title).toContain('HDR');
+    expect(hdr.title).toContain('HLG');
+  });
+
+  it('saves the chosen delivery target onto the config payload', () => {
+    const onSave = vi.fn();
+    render(<ConfigExportModal {...baseProps()} channel="composite" onSave={onSave} />);
+    act(() =>
+      fireEvent.click(
+        container.querySelector(
+          '[data-testid="config-delivery-target-hdr_hlg"]',
+        )!,
+      ),
+    );
+    act(() =>
+      fireEvent.click(
+        container.querySelector('[data-testid="config-export-modal-save"]')!,
+      ),
+    );
+    expect(onSave).toHaveBeenCalledWith({
+      quality: '1080p',
+      fps: 30,
+      delivery_target: 'hdr_hlg',
+    });
+  });
+
+  it('seeds initial.delivery_target when explicitly provided', () => {
+    render(
+      <ConfigExportModal
+        {...baseProps()}
+        channel="composite"
+        initial={{
+          quality: '1080p',
+          fps: 30,
+          delivery_target: 'sdr_h265',
+        }}
+      />,
+    );
+    expect(
+      container
+        .querySelector('[data-testid="config-delivery-target-sdr_h265"]')!
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+  });
+
+  it('drops "codec" and "HDR" from the Coming-later pills (WS5 deprecation)', () => {
+    render(<ConfigExportModal {...baseProps()} />);
+    const future = container.querySelector('[data-testid="config-future"]');
+    expect(future).not.toBeNull();
+    expect(future!.textContent ?? '').not.toContain('codec');
+    expect(future!.textContent ?? '').not.toContain('HDR');
   });
 });

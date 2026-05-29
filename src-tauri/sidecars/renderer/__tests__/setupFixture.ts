@@ -64,6 +64,15 @@ const DEFAULT_CLIP: Clip = {
   effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
   visible: true,
   map_overrides: null,
+  pix_fmt: null,
+  color_primaries: null,
+  color_trc: null,
+  color_space: null,
+  color_range: null,
+  has_dolby_vision: false,
+  camera_make: null,
+  camera_model: null,
+  source_color_class: 'unknown',
 };
 
 const DEFAULT_ROUTE: Route = {

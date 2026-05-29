@@ -25,6 +25,7 @@ export {
   WAYPOINT_SHAPE_NAMES,
   WAYPOINT_ICON_SIZE,
   SHAPES,
+  DEFAULT_OUTLINE_THICKNESS,
   shapesFor,
   getShape,
   shapeHasSecondary,

@@ -72,6 +72,7 @@ import {
   buildStaticSourceData,
   buildPerFrameState,
   buildAllShapeIcons,
+  DEFAULT_OUTLINE_THICKNESS,
   resolveStaticPaints,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
@@ -473,20 +474,34 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
   // secondary). Each entry is [id, { width, height, data: Uint8Array },
   // options] — the exact shape `map.addImage(id, image, options)` accepts.
   // Pixels come from `buildAllShapeIcons` in shapes.ts (a pure function
-  // shared with the preview), so the export renderer registers bit-
-  // identical icons to those MapView.tsx registers — preview/export
-  // parity by construction.
+  // shared with the preview); each side passes its own framebuffer
+  // pixelRatio so the resulting texture density matches the framebuffer
+  // it'll be drawn into. MapLibre normalizes back to a constant CSS-px
+  // display size via the matching `options.pixelRatio`.
   //
   // The Uint8Array survives `JSON.stringify` in page.evaluate as a plain
   // {0:n, 1:n, ...} object; page-side __init reconstructs a Uint8Array
-  // from it before handing the buffer to `map.addImage()`. With 5 shapes
-  // × 2 slots × 48×48×4 B ≈ 92 KB plus JSON expansion overhead — still
-  // well under CDP's argument-size threshold.
+  // from it before handing the buffer to `map.addImage()`. Atlas size
+  // scales with pixelRatio²: at pixelRatio=2 each icon is 256×256×4 B =
+  // 256 KB raw (5 shapes × 2 slots = 2.5 MB raw, ~10 MB after JSON
+  // expansion) — well under CDP's argument-size threshold.
+  // Rasterize the SDF atlas at the EXPORT framebuffer's pixelRatio so the
+  // icons get the same texel density the map tiles render at. Without the
+  // matching `pixelRatio` in addImage's options below, MapLibre would treat
+  // the atlas as 1:1 and silently upscale at draw time — the icons would
+  // sample at half (or third) framebuffer density while the vector tiles
+  // render at native density, producing visibly grainy waypoint/POI edges
+  // against a crisp map. The icon-size formula in paints.ts is invariant
+  // under pixelRatio because addImage's `pixelRatio` field normalizes the
+  // icon's natural CSS-px display size back to a constant.
   const staticImages: Array<[
     string,
     { width: number; height: number; data: Uint8Array },
-    { sdf: boolean },
-  ]> = buildAllShapeIcons().map(({ id, icon, options }) => [
+    { sdf: boolean; pixelRatio: number },
+  ]> = buildAllShapeIcons({
+    outlineThickness: DEFAULT_OUTLINE_THICKNESS,
+    pixelRatio: payload.pixelRatio,
+  }).map(({ id, icon, options }) => [
     id,
     { width: icon.width, height: icon.height, data: icon.data },
     options,

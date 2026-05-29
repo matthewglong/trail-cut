@@ -15,3 +15,12 @@ pub fn global_config_dir() -> Result<PathBuf, String> {
 pub fn recent_projects_path() -> Result<PathBuf, String> {
     Ok(global_config_dir()?.join("recent.json"))
 }
+
+/// Path to the global per-camera source-format preset store (WS9). One JSON
+/// file at `~/.trailcut/camera_presets.json`, shared across all projects on
+/// the machine — the brief calls out single-user-app as scope, so no
+/// sync-across-machines concern. The Tauri commands in
+/// `commands::camera_presets` read/write this file directly.
+pub fn camera_presets_path() -> Result<PathBuf, String> {
+    Ok(global_config_dir()?.join("camera_presets.json"))
+}

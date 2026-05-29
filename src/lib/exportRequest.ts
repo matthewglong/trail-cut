@@ -19,6 +19,7 @@ import {
 } from './layout';
 import type {
   Clip,
+  DeliveryTarget,
   MapSettings,
   Project,
   Route,
@@ -31,11 +32,13 @@ import type { ExportJob } from './exportFilenames';
  *  060 implements only `"map_only"`; 070/090 introduce the others. */
 export type ExportChannel = 'map_only' | 'video_only' | 'composite';
 
-/** User-selectable video codec preference (Phase 1 scaffolding, export-controls
- *  plan). The string tags match Rust's `CodecPreference` serde shape
- *  (`rename_all = "snake_case"`). Phase 3 wires the value into the composite
- *  branch's encoder selection; Phase 1 only adds it to the wire protocol with
- *  a sensible default (`"auto"`). */
+/** User-selectable video codec preference. **Deprecated by WS5** — the
+ *  delivery-target picker now drives the composite branch's encoder choice
+ *  (each `DeliveryTarget` maps to one encoder class via
+ *  `select_encoder_for_target` on the Rust side). The field is kept on the
+ *  wire for back-compat — pre-WS5 captures still deserialize — but the UI no
+ *  longer exposes it and `buildExportRequest` always sends the default
+ *  `'auto'`. New callers should pass `deliveryTarget` instead. */
 export type CodecPreference = 'auto' | 'h264' | 'hevc';
 
 /** User-selectable frame rate. `auto` resolves to the max source fps, clamped
@@ -51,6 +54,12 @@ const DEFAULT_RESOLUTION: OutputResolution = '1080p';
 const DEFAULT_CODEC_PREFERENCE: CodecPreference = 'auto';
 const DEFAULT_AUDIO_BITRATE_KBPS = 256;
 const DEFAULT_FRAME_RATE: FrameRateChoice = { kind: 'explicit', fps: 30 };
+/** Delivery-target default at the wire layer. Matches the Rust serde
+ *  default (`DeliveryTarget::Prores`) so a request omitting the field
+ *  deserializes identically on both sides. The composite UI defaults to
+ *  `sdr_h265` for the user, but at the wire layer the conservative default
+ *  is the lossless master — every channel accepts it. */
+const DEFAULT_DELIVERY_TARGET: DeliveryTarget = 'prores';
 
 /** Inputs the builder needs from the live editor state. Matches what
  *  `ProjectView` already keeps around — no extra plumbing required.
@@ -75,7 +84,9 @@ export interface ExportRequestInputs {
   /** Output resolution. Default `'1080p'`. Phase 4 consumes it (canvas
    *  size); Phase 1 only round-trips the value to Rust. */
   resolution?: OutputResolution;
-  /** Video codec preference. Default `'auto'`. Phase 3 consumes it. */
+  /** Video codec preference. Default `'auto'`. Deprecated by WS5 — the UI
+   *  no longer surfaces this, and `delivery_target` drives encoder selection
+   *  in the composite branch. Carried on the wire for back-compat. */
   codecPreference?: CodecPreference;
   /** AAC audio bitrate in kbps. Default `256`. Phase 3 consumes it. */
   audioBitrateKbps?: number;
@@ -84,6 +95,12 @@ export interface ExportRequestInputs {
    *  frame rates and emits a warning when an explicit fps exceeds the max
    *  source fps. */
   frameRate?: FrameRateChoice;
+  /** Delivery target — color regime + codec + container. Default
+   *  `'prores'` at the wire layer so call sites preserve prior behavior.
+   *  Composite accepts all four variants; map_only / video_only accept
+   *  only `'prores'` (the Rust validator enforces this; the UI hides
+   *  invalid options upstream). */
+  deliveryTarget?: DeliveryTarget;
 }
 
 /** The shape Rust's `RenderExportRequest` deserializes. Matches the IPC
@@ -102,6 +119,9 @@ export interface RenderExportRequest {
   layout: LayoutDescriptor;
   codec_preference: CodecPreference;
   audio_bitrate_kbps: number;
+  /** WS5 delivery-target selection. Snake_case key to match the Rust serde
+   *  shape in `src-tauri/src/export/mod.rs`'s `RenderExportRequest`. */
+  delivery_target: DeliveryTarget;
   /** Compile-time warnings (e.g. "fps exceeds source"); Phase 2 populates,
    *  Phase 1 defaults to `[]`. Nothing reads it yet. */
   warnings: string[];
@@ -223,6 +243,7 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     layout,
     codec_preference: inputs.codecPreference ?? DEFAULT_CODEC_PREFERENCE,
     audio_bitrate_kbps: inputs.audioBitrateKbps ?? DEFAULT_AUDIO_BITRATE_KBPS,
+    delivery_target: inputs.deliveryTarget ?? DEFAULT_DELIVERY_TARGET,
     warnings: [...fpsWarnings],
     timeline,
     route: inputs.route,
@@ -250,9 +271,10 @@ export interface ExportRequestContext {
 /** Build a per-job request closure. The compiled timeline doesn't depend on
  *  the chosen aspect/channel, so callers that drive a multi-job queue (270's
  *  `useExportQueue`) get one wrapper that produces a `RenderExportRequest`
- *  per `ExportJob`. Per-job `quality` (→ `resolution`) and `fps` (→
- *  `frameRate: { kind: 'explicit', fps }`) come from the job; everything
- *  else from the shared context. */
+ *  per `ExportJob`. Per-job `quality` (→ `resolution`), `fps` (→
+ *  `frameRate: { kind: 'explicit', fps }`), and `deliveryTarget` (→
+ *  `delivery_target`) come from the job; everything else from the shared
+ *  context. */
 export function buildJobRequest(
   context: ExportRequestContext,
   job: ExportJob,
@@ -269,5 +291,6 @@ export function buildJobRequest(
     layouts: context.layouts,
     resolution: job.quality,
     frameRate: { kind: 'explicit', fps: job.fps },
+    deliveryTarget: job.deliveryTarget,
   });
 }

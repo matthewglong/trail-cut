@@ -66,8 +66,10 @@ describe('ExportCell', () => {
       '[data-testid^="export-chip-"][data-testid$="-label"]',
     );
     expect(chips).toHaveLength(2);
-    expect(chips[0].textContent).toBe('1080·30');
-    expect(chips[1].textContent).toBe('1080·60');
+    // map_only channel resolves the default-target chip to `prores`
+    // → PRORES token in the visible label.
+    expect(chips[0].textContent).toBe('1080·30·PRORES');
+    expect(chips[1].textContent).toBe('1080·60·PRORES');
   });
 
   it('fires onAdd when the + button is clicked', () => {

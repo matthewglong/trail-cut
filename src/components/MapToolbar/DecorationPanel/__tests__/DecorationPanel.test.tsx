@@ -65,6 +65,16 @@ function makeClip(id: string): Clip {
     effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
     visible: true,
     map_overrides: null,
+    // WS0 color metadata defaults.
+    pix_fmt: null,
+    color_primaries: null,
+    color_trc: null,
+    color_space: null,
+    color_range: null,
+    has_dolby_vision: false,
+    camera_make: null,
+    camera_model: null,
+    source_color_class: 'unknown',
   };
 }
 

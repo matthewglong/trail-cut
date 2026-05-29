@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
+import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
+import { effectiveSourceClass } from '../lib/sourceFormat';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 import { defaultPipLayout } from '../lib/layout';
 import {
@@ -126,7 +127,13 @@ export function useProject({
       setProjectName(project.name || fallbackName);
       setProjectThumbnail(project.thumbnail ?? null);
       setClips(project.clips);
-      setRoute(project.route);
+      // `?? null` normalizes the IPC boundary: Rust's `Project.route` is
+      // `Option<Route>` with `#[serde(skip_serializing_if = "Option::is_none")]`,
+      // so a `None` arrives over Tauri as `undefined` (missing key), not `null`.
+      // The frontend Route state is typed `Route | null`; without this guard
+      // `undefined` slips through and any `route !== null` strict check
+      // downstream silently passes, then `.trackpoints` throws.
+      setRoute(project.route ?? null);
       setMapSettings(mergeMapSettings(DEFAULT_MAP_SETTINGS, project.map_settings));
       setTransitionFeel(project.transition_feel);
       // Rust's load_project backfills `layouts` when the bundle has it
@@ -272,6 +279,63 @@ export function useProject({
     updateSelectedClip({ effects });
   }
 
+  /** WS9 — set or clear the per-clip source-format override and trigger a
+   *  proxy regeneration. `override === null` clears
+   *  `user_color_class_override`; any class value writes the override.
+   *
+   *  Proxy regeneration: the cached proxy on disk was rendered against the
+   *  *old* effective class, so it's stale the moment the override changes.
+   *  We delete + re-render via `regenerate_proxy_for_class` so the new
+   *  ingest formula (e.g. LUT-developed D-Log → SDR) applies. The proxy
+   *  map is set to `'generating'` while ffmpeg runs so VideoPreview knows
+   *  to show the spinner instead of a stale frame.
+   *
+   *  No-op when:
+   *    - no clip selected
+   *    - the override didn't actually change (e.g. user re-picked the same
+   *      option from the dropdown — common when reopening a project) */
+  function handleUpdateSourceFormat(override: SourceColorClass | null) {
+    if (!selectedClipId) return;
+    const clip = clips.find((c) => c.id === selectedClipId);
+    if (!clip) return;
+
+    const currentOverride = clip.user_color_class_override ?? null;
+    if (currentOverride === override) return;
+
+    const nextClip: Clip = {
+      ...clip,
+      user_color_class_override: override ?? undefined,
+    };
+    setClips((prev) => prev.map((c) => (c.id === clip.id ? nextClip : c)));
+
+    if (projectDir) {
+      regenerateClipProxy(nextClip, projectDir);
+    }
+  }
+
+  /** Fire a `regenerate_proxy_for_class` for a single clip, marking the
+   *  proxy slot as `'generating'` so the video preview swaps to a spinner.
+   *  Used by `handleUpdateSourceFormat` (single-clip override) after the
+   *  user toggles the per-clip Inspector dropdown. The import-time path
+   *  has its own class-aware initial-proxy run inside `useMediaImport`'s
+   *  `generateProxiesAndThumbnails`, so this is only needed for in-edit
+   *  changes — not for first proxy generation. */
+  function regenerateClipProxy(clip: Clip, dir: string) {
+    const effective = effectiveSourceClass(clip);
+    setProxies((prev) => ({ ...prev, [clip.id]: 'generating' }));
+    invoke<string>('regenerate_proxy_for_class', {
+      sourcePath: clip.path,
+      projectDir: dir,
+      colorClass: effective,
+    })
+      .then((proxyPath) => {
+        setProxies((prev) => ({ ...prev, [clip.id]: proxyPath }));
+      })
+      .catch(() => {
+        setProxies((prev) => ({ ...prev, [clip.id]: null }));
+      });
+  }
+
   /** Split the selected clip at the given media-seconds playhead position
    *  (measured from the start of the underlying source, not from trim.in_ms).
    *  The left half keeps the existing id; the right half gets a new random
@@ -373,6 +437,7 @@ export function useProject({
     handleUpdateTrim,
     handleUpdateFocalPoint,
     handleUpdateEffects,
+    handleUpdateSourceFormat,
     handleSplitClip,
   };
 }

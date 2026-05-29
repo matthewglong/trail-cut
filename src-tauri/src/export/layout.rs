@@ -244,16 +244,32 @@ fn round_to_u32(v: f64) -> u32 {
     }
 }
 
+/// Round down to the nearest even u32. Slot W/H must be even so the
+/// composite filtergraph's yuv420p chroma subsampling (delivery target for
+/// H.264 / H.265 SDR) is well-defined: `zscale` errors with code 1027
+/// ("image dimensions must be divisible by subsampling factor") when asked
+/// to subsample an odd dimension. Mirror of TS `evenFloor` in
+/// `src/lib/layout.ts`.
+fn even_floor(v: u32) -> u32 {
+    v & !1
+}
+
 fn pip_slots(
     inset_source: PipInsetSource,
     inset: NormalizedRect,
     out: OutputDimensions,
 ) -> (PixelRect, PixelRect) {
+    // PiP background is full canvas (always even per `output_dims`); the
+    // inset just overlays. Snap inset W/H to even so the rawvideo piped to
+    // ffmpeg has yuv420p-compatible dims. X/Y are positions and don't affect
+    // codec compatibility, so they keep half-away rounding. Map and video
+    // slots don't tile against each other in PiP (one overlays the other),
+    // so rounding W/H independently can't break a sum invariant.
     let inset_rect = PixelRect {
         x: round_to_u32(inset.x * out.w as f64),
         y: round_to_u32(inset.y * out.h as f64),
-        w: round_to_u32(inset.w * out.w as f64),
-        h: round_to_u32(inset.h * out.h as f64),
+        w: even_floor(round_to_u32(inset.w * out.w as f64)),
+        h: even_floor(round_to_u32(inset.h * out.h as f64)),
     };
     let background = PixelRect { x: 0, y: 0, w: out.w, h: out.h };
     match inset_source {
@@ -264,27 +280,36 @@ fn pip_slots(
 }
 
 fn split_slots(side: SplitSide, divider: f64, out: OutputDimensions) -> (PixelRect, PixelRect) {
+    // Snap the divider position to even BEFORE deriving the two slots so the
+    // sum invariant holds: `map_slot.w + video_slot.w == out.w` (and likewise
+    // for h on horizontal splits). Because `output_dims` is even on both
+    // axes, an even `dx`/`dy` implies the other slot's dim is also even
+    // (`even - even = even`). Rounding each slot's dim independently would
+    // leak or steal a pixel between the two halves; rounding the divider
+    // preserves the invariant by construction. When the float divider lands
+    // on an odd pixel, the half-pixel of width is handed to the slot
+    // opposite the divider — sub-perceptible at any reasonable resolution.
     match side {
         SplitSide::Left => {
-            let dx = round_to_u32(divider * out.w as f64);
+            let dx = even_floor(round_to_u32(divider * out.w as f64));
             let video = PixelRect { x: 0, y: 0, w: dx, h: out.h };
             let map = PixelRect { x: dx, y: 0, w: out.w.saturating_sub(dx), h: out.h };
             (map, video)
         }
         SplitSide::Right => {
-            let dx = round_to_u32(divider * out.w as f64);
+            let dx = even_floor(round_to_u32(divider * out.w as f64));
             let map = PixelRect { x: 0, y: 0, w: dx, h: out.h };
             let video = PixelRect { x: dx, y: 0, w: out.w.saturating_sub(dx), h: out.h };
             (map, video)
         }
         SplitSide::Top => {
-            let dy = round_to_u32(divider * out.h as f64);
+            let dy = even_floor(round_to_u32(divider * out.h as f64));
             let video = PixelRect { x: 0, y: 0, w: out.w, h: dy };
             let map = PixelRect { x: 0, y: dy, w: out.w, h: out.h.saturating_sub(dy) };
             (map, video)
         }
         SplitSide::Bottom => {
-            let dy = round_to_u32(divider * out.h as f64);
+            let dy = even_floor(round_to_u32(divider * out.h as f64));
             let map = PixelRect { x: 0, y: 0, w: out.w, h: dy };
             let video = PixelRect { x: 0, y: dy, w: out.w, h: out.h.saturating_sub(dy) };
             (map, video)
@@ -542,6 +567,127 @@ mod tests {
                 let d = output_dims(aspect, resolution);
                 assert_eq!(d.w % 2, 0, "{:?} {:?} → w={} is odd", aspect, resolution, d.w);
                 assert_eq!(d.h % 2, 0, "{:?} {:?} → h={} is odd", aspect, resolution, d.h);
+            }
+        }
+    }
+
+    // ---- Slot W/H even-dim + Split sum invariants ----
+    //
+    // The composite filtergraph routes the per-clip stream through
+    // `scale={video_slot.w}:{video_slot.h}` and the rawvideo map stream into
+    // `format=yuv420p` at the finishing tail. yuv420p (4:2:0 chroma
+    // subsampling) requires both dims to be even — `zscale` errors with code
+    // 1027 ("image dimensions must be divisible by subsampling factor") on
+    // odd input. `resolve_slots` must therefore produce even W/H for both
+    // slots regardless of layout / aspect / resolution. For Split layouts
+    // the divider snap to even must also preserve the tiling invariant
+    // `map_slot.dim + video_slot.dim == output.dim` so we never leak or
+    // overlap a pixel between the two halves.
+
+    fn all_aspects() -> [AspectRatio; 3] {
+        [
+            AspectRatio::NineSixteen,
+            AspectRatio::FourFive,
+            AspectRatio::SixteenNine,
+        ]
+    }
+
+    fn all_resolutions() -> [OutputResolution; 4] {
+        [
+            OutputResolution::P720,
+            OutputResolution::P1080,
+            OutputResolution::P1440,
+            OutputResolution::P2160,
+        ]
+    }
+
+    #[test]
+    fn resolve_slots_dims_are_even_for_default_layouts_at_every_resolution() {
+        for aspect in all_aspects() {
+            for resolution in all_resolutions() {
+                for layout in [default_pip_layout(aspect), default_split_layout(aspect)] {
+                    let r = resolve_slots(&layout, aspect, resolution);
+                    assert_eq!(
+                        r.map_slot.w % 2, 0,
+                        "map_slot.w is odd ({}) for {:?} {:?} {:?}",
+                        r.map_slot.w, aspect, resolution, layout,
+                    );
+                    assert_eq!(
+                        r.map_slot.h % 2, 0,
+                        "map_slot.h is odd ({}) for {:?} {:?} {:?}",
+                        r.map_slot.h, aspect, resolution, layout,
+                    );
+                    assert_eq!(
+                        r.video_slot.w % 2, 0,
+                        "video_slot.w is odd ({}) for {:?} {:?} {:?}",
+                        r.video_slot.w, aspect, resolution, layout,
+                    );
+                    assert_eq!(
+                        r.video_slot.h % 2, 0,
+                        "video_slot.h is odd ({}) for {:?} {:?} {:?}",
+                        r.video_slot.h, aspect, resolution, layout,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_slots_pip_inset_is_even_for_pathological_normalized_dims() {
+        // A normalized fraction that's deliberately chosen so the raw float
+        // math lands on an odd pixel for the 4_5 P2160 canvas (2160 × 2700):
+        // 0.5625 * 2160 = 1215 (odd); 0.4503... * 2700 = 1216 (odd-adjacent).
+        // The bug report case — a real-world layout that produces an odd-W
+        // slot and triggers `zscale` code 1027. Both inset variants must
+        // resolve to even W/H after the fix.
+        let layout = LayoutConfig::Pip {
+            inset_source: PipInsetSource::Map,
+            inset: NormalizedRect { x: 0.2, y: 0.2, w: 0.5625, h: 0.45 },
+            corner_radius: 0.0,
+        };
+        let r = resolve_slots(&layout, AspectRatio::FourFive, OutputResolution::P2160);
+        assert_eq!(r.map_slot.w % 2, 0, "map_slot.w must be even, got {}", r.map_slot.w);
+        assert_eq!(r.map_slot.h % 2, 0, "map_slot.h must be even, got {}", r.map_slot.h);
+    }
+
+    #[test]
+    fn resolve_slots_split_preserves_sum_invariant_across_divider_sweep() {
+        // For Split layouts, `map_slot + video_slot` must equal the output
+        // canvas on the axis being split — even when the raw divider lands
+        // on an odd pixel. Sweep a handful of dividers including ones that
+        // bisect into odd pixel counts pre-snap.
+        let dividers = [0.1, 0.25, 0.3, 0.31640625, 0.5, 0.5625, 0.7, 0.9];
+        // Each (aspect, side) pair the configurator allows.
+        let cases: &[(AspectRatio, SplitSide)] = &[
+            (AspectRatio::SixteenNine, SplitSide::Left),
+            (AspectRatio::SixteenNine, SplitSide::Right),
+            (AspectRatio::NineSixteen, SplitSide::Top),
+            (AspectRatio::NineSixteen, SplitSide::Bottom),
+            (AspectRatio::FourFive, SplitSide::Top),
+            (AspectRatio::FourFive, SplitSide::Bottom),
+        ];
+        for &(aspect, video_side) in cases {
+            for resolution in all_resolutions() {
+                for &divider in &dividers {
+                    let layout = LayoutConfig::Split { video_side, divider };
+                    let r = resolve_slots(&layout, aspect, resolution);
+                    let vertical = matches!(video_side, SplitSide::Left | SplitSide::Right);
+                    let (sum, expected, axis) = if vertical {
+                        (r.map_slot.w + r.video_slot.w, r.output.w, "W")
+                    } else {
+                        (r.map_slot.h + r.video_slot.h, r.output.h, "H")
+                    };
+                    assert_eq!(
+                        sum, expected,
+                        "{} sum invariant broken: map + video = {} != output {} \
+                         (aspect={:?} side={:?} res={:?} divider={})",
+                        axis, sum, expected, aspect, video_side, resolution, divider,
+                    );
+                    assert_eq!(r.map_slot.w % 2, 0, "map.w odd at divider {}", divider);
+                    assert_eq!(r.map_slot.h % 2, 0, "map.h odd at divider {}", divider);
+                    assert_eq!(r.video_slot.w % 2, 0, "video.w odd at divider {}", divider);
+                    assert_eq!(r.video_slot.h % 2, 0, "video.h odd at divider {}", divider);
+                }
             }
         }
     }

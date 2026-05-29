@@ -46,8 +46,8 @@ use serde_json::{json, Value};
 use tempfile::TempDir;
 use trail_cut_lib::export::{
     default_layout, default_pip_layout, default_split_layout, output_dims, render_export_inner,
-    resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, NormalizedRect,
-    OutputResolution, PipInsetSource, RenderExportRequest, SplitSide,
+    resolve_slots, AspectRatio, CodecPreference, DeliveryTarget, LayoutConfig, LayoutDescriptor,
+    NormalizedRect, OutputResolution, PipInsetSource, RenderExportRequest, SplitSide,
 };
 
 // --- env / fixture helpers --------------------------------------------------
@@ -351,6 +351,10 @@ fn build_request(
         layout: layout_descriptor,
         codec_preference: CodecPreference::default(),
         audio_bitrate_kbps: 256,
+        // WS4: legacy composite integration tests stay on the YouTube SDR
+        // 4K target — the existing assertions on hevc + yuv420p + +faststart
+        // line up with that target's `delivery_encoder_args` output.
+        delivery_target: DeliveryTarget::SdrH265,
         project_state,
     }
 }
@@ -695,6 +699,10 @@ fn build_request_with_aspect(
         layout: layout_descriptor,
         codec_preference: CodecPreference::default(),
         audio_bitrate_kbps: 256,
+        // WS4: legacy composite integration tests stay on the YouTube SDR
+        // 4K target — the existing assertions on hevc + yuv420p + +faststart
+        // line up with that target's `delivery_encoder_args` output.
+        delivery_target: DeliveryTarget::SdrH265,
         project_state,
     }
 }

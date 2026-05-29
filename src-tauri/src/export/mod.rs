@@ -10,6 +10,7 @@
 
 pub mod clip_chain;
 pub mod corner_mask;
+pub mod delivery;
 pub mod encoder;
 pub mod error;
 pub mod ffmpeg_runner;
@@ -25,6 +26,9 @@ pub mod sink;
 pub use clip_chain::{
     build_clip_audio_subgraph, build_clip_chain, build_clip_video_subgraph, chain_atempo,
     compute_focal_crop, ClipChainInputs, ClipChainOutput, CropRect, PixelDims,
+};
+pub use delivery::{
+    delivery_encoder_args, delivery_finishing_filter, select_encoder_for_target, DeliveryTarget,
 };
 pub use encoder::{
     ffmpeg_path, probe_all, select_encoder, set_cache_path_for_test, set_ffmpeg_path,
@@ -104,6 +108,13 @@ pub struct RenderExportRequest {
     /// `build_composite_filtergraph`; this phase only adds the field.
     #[serde(default = "default_audio_bitrate_kbps")]
     pub audio_bitrate_kbps: u32,
+    /// Delivery-target selection. Composite (Channel A) accepts any of the
+    /// four `DeliveryTarget` variants; map_only and video_only accept only
+    /// `Prores` (lossless compositing intermediates). Defaults to `Prores`
+    /// so wire data missing the field deserializes cleanly (B/C unaffected;
+    /// A defaults to the master archival output).
+    #[serde(default = "default_delivery_target")]
+    pub delivery_target: DeliveryTarget,
     /// Same project-state fields as the orchestrator's `SetupPayload` —
     /// pass-through to the workers.
     #[serde(flatten)]
@@ -112,6 +123,10 @@ pub struct RenderExportRequest {
 
 fn default_audio_bitrate_kbps() -> u32 {
     256
+}
+
+fn default_delivery_target() -> DeliveryTarget {
+    DeliveryTarget::Prores
 }
 
 /// Successful return value from `render_export`. `wall_clock_ms` includes
@@ -274,6 +289,8 @@ fn select_channel_encoder(class: EncoderClass) -> Result<EncoderChoice, RenderEx
 /// `NoEncoderForClass(Hevc)` with no auto-retry against H264. So the
 /// "strict" path here only needs to translate that error into a friendlier
 /// message — no behavior bypass is required.
+#[allow(dead_code)] // Superseded by `select_encoder_for_target` (WS4). Kept
+                    // for the Phase-3 codec-preference test fixtures below.
 fn select_composite_encoder(
     pref: CodecPreference,
 ) -> Result<EncoderChoice, RenderExportError> {
@@ -283,6 +300,7 @@ fn select_composite_encoder(
 /// Generic core of `select_composite_encoder`. Parameterized on the
 /// encoder-selection function so unit tests can inject a stub that returns
 /// `NoEncoderForClass(Hevc)` without spawning ffmpeg or touching the cache.
+#[allow(dead_code)] // see `select_composite_encoder` note.
 fn select_composite_encoder_with<F>(
     pref: CodecPreference,
     select: F,
@@ -364,6 +382,7 @@ async fn render_export_map_only(
     on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let validated = validate_request(&req)?;
+    validate_target_for_channel(req.delivery_target, "map_only")?;
 
     let map_slot = req.layout.resolved.map_slot;
     if map_slot.w == 0 || map_slot.h == 0 {
@@ -552,6 +571,7 @@ async fn render_export_video_only(
     on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let validated = validate_request(&req)?;
+    validate_target_for_channel(req.delivery_target, "video_only")?;
 
     let video_slot = req.layout.resolved.video_slot;
     if video_slot.w == 0 || video_slot.h == 0 {
@@ -715,6 +735,7 @@ async fn render_export_composite(
     on_progress: Option<ProgressCallback>,
 ) -> Result<RenderExportSummary, RenderExportError> {
     let validated = validate_request(&req)?;
+    validate_target_for_channel(req.delivery_target, "composite")?;
 
     let map_slot = req.layout.resolved.map_slot;
     let video_slot = req.layout.resolved.video_slot;
@@ -828,12 +849,24 @@ async fn render_export_composite(
         None
     };
 
-    // Channel A's deliverable codec. `CodecPreference` (export-controls plan,
-    // Phase 3) selects between Auto (probe HEVC, same ladder as today), H264
-    // (compatibility mode), and strict HEVC (no silent H264 fallback). B/C
-    // ignore the preference — they use ProResAlpha as an internal
-    // compositing intermediate.
-    let encoder = select_composite_encoder(req.codec_preference)?;
+    // Channel A's deliverable codec — selected by `DeliveryTarget` (WS4).
+    // Each target maps to one `EncoderClass`:
+    //   - Social SDR (vertical / square) → H264 (always libx264)
+    //   - YouTube SDR / HDR 4K          → Hevc (videotoolbox preferred,
+    //                                            libx265 fallback)
+    //   - ProresMaster                   → ProResAlpha (composite archival)
+    //
+    // `CodecPreference` (export-controls plan, Phase 3) is now superseded
+    // for codec choice — the target dictates the codec class. The field
+    // remains on the wire for back-compat but is unused on this path; WS5
+    // will deprecate it on the UI side once the delivery-target picker
+    // lands.
+    let encoder = select_encoder_for_target(req.delivery_target).map_err(|e| {
+        RenderExportError::validation(format!(
+            "select_encoder_for_target({:?}): {}",
+            req.delivery_target, e,
+        ))
+    })?;
 
     let plan = build_composite_filtergraph(
         &visible_inputs,
@@ -846,6 +879,7 @@ async fn render_export_composite(
         validated.total_frames,
         &encoder,
         req.audio_bitrate_kbps,
+        req.delivery_target,
         &validated.output_path_buf,
     )
     .map_err(classify_clip_chain_error)?;
@@ -934,6 +968,25 @@ fn ffprobe_path() -> PathBuf {
     // Sidecar bundling (task 130) will swap this for the bundled binary
     // path the same way `ffmpeg_path()` does. For now: PATH lookup.
     PathBuf::from("ffprobe")
+}
+
+/// Reject channel × target combinations that are out of spec per the WS4
+/// brief's compatibility matrix. Composite accepts all five targets;
+/// map_only and video_only accept only `ProresMaster` (B and C are lossless
+/// compositing intermediates).
+fn validate_target_for_channel(
+    target: DeliveryTarget,
+    channel: &str,
+) -> Result<(), RenderExportError> {
+    if target.is_allowed_for_channel(channel) {
+        Ok(())
+    } else {
+        Err(RenderExportError::validation(format!(
+            "delivery target {:?} is not allowed for channel `{}` — \
+             only `prores` is legal for map_only / video_only",
+            target, channel,
+        )))
+    }
 }
 
 fn classify_clip_chain_error(e: ClipChainError) -> RenderExportError {
@@ -1039,6 +1092,7 @@ mod tests {
             layout: pip_descriptor(),
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1056,6 +1110,7 @@ mod tests {
             layout: pip_descriptor(),
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1083,6 +1138,7 @@ mod tests {
             layout: descriptor,
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1112,6 +1168,7 @@ mod tests {
             layout: pip_descriptor(),
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(0),
         };
         let err = validate_request(&req).expect_err("zero duration must fail");
@@ -1135,6 +1192,7 @@ mod tests {
             layout: descriptor,
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1152,6 +1210,7 @@ mod tests {
             layout: pip_descriptor(),
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1191,6 +1250,7 @@ mod tests {
             layout: pip_descriptor(),
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project,
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1219,6 +1279,7 @@ mod tests {
             layout: descriptor,
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(2000),
         };
         let err = render_export_inner(req, None).await.unwrap_err();
@@ -1239,6 +1300,7 @@ mod tests {
             layout: pip_descriptor(),
             codec_preference: CodecPreference::default(),
             audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
             project_state: project_state_with_duration(0),
         };
         let err = render_export_inner(req, None).await.unwrap_err();

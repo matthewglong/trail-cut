@@ -41,6 +41,7 @@ export function ExportCell({
         <ExportChip
           key={config.id}
           config={config}
+          channel={channel}
           ariaLabel={`Edit ${cellLabel} export — ${config.quality} at ${config.fps} fps`}
           onEdit={() => onEditChip(config)}
           onRemove={() => onRemoveChip(config.id)}

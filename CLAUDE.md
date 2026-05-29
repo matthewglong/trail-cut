@@ -1,93 +1,125 @@
 # TrailCut — Claude Code Context
 
 ## What this is
-macOS desktop app (Tauri 2) for turning iPhone hiking videos + GPS routes into polished map-integrated social media videos. See ARCHITECTURE.md for full design.
+Cross-platform desktop app (Tauri 2) for turning iPhone hiking videos + GPS routes into polished map-integrated social media videos. Ships to thousands of end users; **macOS is the current ship target, Windows is near-term**. Matthew is the developer, not the end user — "fix your environment" answers are dev-only stopgaps, never product solutions. See ARCHITECTURE.md for full design, and the pipeline/export design docs below for active decisions.
 
 ## Tech stack
-- **Frontend**: React + TypeScript + Vite
+- **Frontend**: React + TypeScript + Vite (test runner: Vitest)
 - **Backend**: Rust (Tauri 2 commands)
 - **Map**: MapLibre GL JS + OpenFreeMap tiles
-- **Video processing**: FFmpeg (CLI, proxy generation + thumbnails)
+- **Export map renderer**: headless MapLibre in a Node sidecar (`src-tauri/sidecars/renderer/`), driven over a stdio protocol — renders the same map frames the preview shows, for compositing into the export
+- **Video processing**: FFmpeg (CLI — proxy/thumbnail generation AND the full export filtergraph/compositing pipeline)
 - **Metadata**: ExifTool (CLI, called from Rust — uses `CreationDate` field for accurate iPhone timestamps)
 - **GPX parsing**: roxmltree (Rust)
 
+> External CLI deps (ffmpeg, ffprobe, exiftool) are currently resolved via `PATH` (`Command::new("ffmpeg")`). Sidecar bundling is deferred (tracked as "task 130") but **required before ship** — see `src/util` / `commands/encoder.rs` notes.
+
 ## Project structure
 ```
-src/                    # React frontend
-  App.tsx               # Main app shell — home screen, project view, import/export, auto-save
-  types.ts              # TypeScript types matching Rust models
+src/                       # React frontend
+  App.tsx                  # Thin shell — routes between home and project screens, auto-save
+  types.ts                 # TypeScript types matching Rust models
+  screens/
+    HomeScreen.tsx         # Project gallery + new/open
+    ProjectView.tsx        # 3-pane editor (clip info | preview | map) + timeline
   components/
-    Timeline.tsx        # Horizontal clip strip with thumbnails (bottom)
-    VideoPreview.tsx    # HTML5 video player with controls
-    MapView.tsx         # MapLibre map with markers + route
-    EditToolbar/        # Per-clip edit controls (zoom, speed, crop preview)
-    CollapsibleToolbar.tsx # Shared collapsible toolbar shell
-src-tauri/              # Rust backend
+    Timeline/              # Horizontal clip strip with thumbnails
+    VideoPreview/          # HTML5 video player with controls
+    MapView.tsx            # Live MapLibre preview (applies mapVisuals tuples — see contract below)
+    EditToolbar/           # Per-clip edit controls (zoom, speed, crop preview)
+    MapToolbar/            # Map decoration control panel — ColorSection (+ GradientEditor),
+                           #   ShapeSection, DecorationPanel (Route / Waypoints / POV)
+    WaypointsPanel/        # Waypoint decoration UI
+    LayoutConfigurator/    # Split-layout (map+video) configurator
+    LayoutPreview/         # Layout preview rendering
+    MapPositioningModal/   # Map framing / camera positioning
+    ExportModal/           # Export grid (aspect × channel cells/chips), config modal, queue view
+  lib/
+    mapVisuals/            # SINGLE SOURCE OF TRUTH for map rendering (see contract below)
+                           #   styleSpec.ts (resolveStaticPaints), perFrame.ts (buildPerFrameState),
+                           #   paints.ts, shapes.ts, sources.ts, animations.ts, types.ts
+    layout.ts, cameraIntent.ts, routeLocation.ts, waypoints.ts,
+    exportRequest.ts, exportEstimate.ts, exportFilenames.ts, sourceFormat.ts, livePlayhead.ts
+  hooks/                   # useProject, useMediaImport, useExportQueue, etc.
+  theme/                   # tokens.ts, common.ts
+  shortcuts/               # keyboard shortcut catalog + editor hook
+src-tauri/                 # Rust backend
   src/
-    main.rs             # Entry point
-    lib.rs              # Tauri builder, registers commands
-    models.rs           # Data types (Clip, Route, Project, RecentProject, etc.)
-    commands.rs         # Tauri commands (see below)
-  tauri.conf.json       # Tauri config (asset protocol enabled, scope: $HOME/**)
-  capabilities/         # Tauri permission capabilities
-  icons/                # App icons (placeholder)
+    main.rs                # Entry point
+    lib.rs                 # Tauri builder, registers commands
+    models.rs              # Data types (Clip, Route, Project, MapSettings, etc.); CURRENT_SCHEMA_VERSION = 8
+    commands/              # Tauri commands, one module per area:
+                           #   media, project, recent, gpx, ffmpeg, encoder, camera_presets
+    export/                # Export pipeline: orchestrator, clip_chain, filtergraph, layout,
+                           #   resolution, delivery, encoder, ffmpeg_sink/runner, corner_mask,
+                           #   protocol (sidecar IPC), ffprobe, sink, error
+    util/                  # color, log_detection, hash, exiftool, fs
+  sidecars/renderer/       # Headless MapLibre export renderer (TS → bundled .cjs), shares mapVisuals
+  tauri.conf.json          # asset protocol enabled, scope: $HOME/**
+  capabilities/            # Tauri permission capabilities
 ```
 
-## Rust backend commands
-- `scan_directory(path)` — scan folder for video files, extract metadata via ExifTool
-- `import_media(paths)` — accepts any mix of files and directories, extracts videos and metadata
-- `create_project(project_dir)` — create project bundle directory structure
-- `parse_gpx(file_path, project_dir?)` — parse GPX, optionally copy into bundle
-- `save_project(project, project_dir)` / `load_project(project_dir)` — JSON project persistence
-- `generate_proxy(source_path, project_dir)` — 720p H.264 proxy in bundle
-- `generate_thumbnail(source_path, project_dir)` — thumbnail JPG in bundle
-- `get_recent_projects()` / `register_recent_project(project_dir)` — project registry in `~/.trailcut/recent.json`
+## Rust backend commands (registered in `lib.rs`)
+- **Import / scan**: `scan_directory`, `import_media` (any mix of files/dirs)
+- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v8 migration chain), `rename_project`, `delete_project`
+- **GPX**: `parse_gpx` (optionally copies into bundle)
+- **Proxies / thumbnails**: `generate_proxy`, `regenerate_proxy_for_class`, `generate_thumbnail`, `generate_thumbnail_at`
+- **Recents**: `get_recent_projects`, `register_recent_project` (registry in `~/.trailcut/recent.json`)
+- **Export**: `render_export`, `resolve_output_dir`, `probe_encoders`
+- **Camera presets**: `get_camera_presets`, `set_camera_preset`, `remove_camera_preset`
 
 ## Project bundle format
-Projects are self-contained directories with `.trailcut` extension:
+Self-contained directories with `.trailcut` extension:
 ```
 MyHike.trailcut/
-  project.json          # clip metadata, route, export configs
+  project.json          # schema-versioned (currently v8): clips, route, MapSettings, export grid/configs
   proxies/              # 720p proxy videos (hash-based filenames)
   thumbnails/           # thumbnail JPGs
   route.gpx             # copied GPS data (if imported)
 ```
-Source videos are linked (absolute paths), not copied into the bundle.
+Source videos are linked (absolute paths), not copied. `project.json` is schema-versioned (`CURRENT_SCHEMA_VERSION` in `models.rs`); `load_project` runs the migration chain (`migrate_vN_to_vN+1` in `commands/project.rs`). Known migration scope cuts are tracked in `EXPORT_GAPS.md`.
 
 ## Dev commands
 - `npm run tauri dev` — run in dev mode with hot reload
 - `npm run tauri build --debug` — build debug .app bundle
+- `npm run test:run` — frontend Vitest suite; `cargo test` (in `src-tauri/`) for Rust
 - First Rust compile is slow (~2 min); subsequent builds are incremental
 
 ## Dependencies to have installed
-- Rust (via rustup)
-- Node.js (v22+)
-- Xcode CLI tools
-- FFmpeg (`brew install ffmpeg`)
+- Rust (via rustup), Node.js (v22+), Xcode CLI tools
+- **FFmpeg built with zscale/libzimg** (`brew install ffmpeg`) — the color pipeline requires zscale at every ingest path; the color test suite fails loudly without it (`assert_ffmpeg_has_zscale` in `src-tauri/tests/color_fixtures.rs`)
 - ExifTool (`brew install exiftool`)
 
 ## Phase status
-- **Phase 1 (Foundation)**: COMPLETE — file/folder import via ExifTool, chronological timeline, MapLibre map with clip markers, GPX route drawing, project bundle save/load, home screen with project gallery. Only missing: drag-and-drop import (low priority).
-- **Phase 2 (Editing)**: COMPLETE
-  - Done: proxy generation, video preview player, clip removal, trim UI (in/out handles on seek bar + numeric inputs), focal point UI (draggable crosshair + 9:16 crop preview), speed adjustment (0.25x–4x slider + playbackRate), edit state persistence (Clip[] throughout, survives save/load)
-  - Deferred: stabilization (vidstab) pushed to Phase 4 — requires FFmpeg two-pass, not real-time previewable
-  - Deferred: color grading — to be designed properly with WebGL preview + full slider set + histogram in a later phase
-- **Phase 3 (Export)**: NOT STARTED — map frame rendering, FFmpeg compositing, layout configurator
-- **Phase 4 (Polish)**: NOT STARTED — color grading, audio, map styles, batch export, undo/redo, performance, stabilization, sidecar bundling of FFmpeg/ExifTool
+- **Phase 1 (Foundation)**: COMPLETE — import via ExifTool, chronological timeline, MapLibre map, GPX route, bundle save/load, home gallery. Missing only: drag-and-drop import (low priority).
+- **Phase 2 (Editing)**: COMPLETE — proxy generation, preview player, clip removal, trim UI, focal-point crop, speed adjustment, edit-state persistence.
+- **Phase 3 (Export)**: IN PROGRESS / largely landed — FFmpeg compositing pipeline (`src-tauri/src/export/`), headless map-frame renderer sidecar, split-layout configurator, export-modal redesign (aspect × channel grid + queue), multi-target delivery (incl. `HdrHlg`). Active work: map-export color/sharpness parity (see pipeline docs), control-panel polish (current branch `feat/control-panel`: decoration colors, shapes, tear-away controls).
+- **Phase 4 (Polish)**: PARTIAL — map decorations (Route/Waypoints/POV with gradients + shapes) done; color grading underway (`util/color.rs`, `util/log_detection.rs`). Remaining: audio, additional map styles, undo/redo, performance, stabilization (vidstab two-pass), sidecar bundling of FFmpeg/ExifTool/renderer.
+
+## Design docs (read before touching these areas)
+- `ARCHITECTURE.md` — overall design
+- `MAP_RENDERING_PLAN.md` — map-rendering "lever model" (cssViewport tracks slot shape, pixelRatio absorbs resolution) for preview/export parity
+- `PIPELINE_RESEARCH.md` / `PIPELINE_DECISIONS.md` / `PIPELINE_TEACHING_HANDOFF.md` — color-pipeline research, ACCEPT/REJECT/DEFER decisions
+- `EXPORT_REDESIGN_HANDOFF.md` / `EXPORT_GAPS.md` — export-modal redesign + deliberate scope cuts
 
 ## App flow
-1. **Home screen**: "New Project" button + "Open Project" button + project gallery (all known projects from `~/.trailcut/recent.json`, filtered to still-existing bundles)
-2. **Project view**: toolbar (Import Media dropdown, Import GPX), 3-pane layout (clip info | video preview | map), timeline strip at bottom
-3. **Import Media**: dropdown with "Select Files" and "Select Folder" — both feed into `import_media` which handles any mix of files/directories
-4. **Auto-save**: debounced 1s save to `project.json` on any clip/route change
+1. **Home screen**: New Project / Open Project + project gallery (from `~/.trailcut/recent.json`, filtered to existing bundles)
+2. **Project view**: toolbar (Import Media, Import GPX), 3-pane layout (clip info | video preview | map) + map control panel, timeline strip at bottom
+3. **Import Media**: "Select Files" / "Select Folder" → `import_media` (handles any mix)
+4. **Auto-save**: debounced ~1s save to `project.json` on any clip/route/settings change
+5. **Export**: configure an aspect × channel grid of jobs, render via FFmpeg + the map-renderer sidecar
 
 ## Key design decisions
-- **CreationDate over CreateDate**: ExifTool's `CreationDate` field has the actual iPhone filming timestamp with timezone. `CreateDate`/`MediaCreateDate` can be corrupted by AirDrop/file transfers. Fallback chain: CreationDate → CreateDate → MediaCreateDate.
-- **Project bundles**: self-contained `.trailcut` directories with proxies/thumbnails inside (not a global cache). Each project is independent.
-- **No media copying**: app stores absolute paths to source videos, reads originals only at export time
-- **Auto-ordering by timestamp**: clips sorted by CreationDate, no manual reordering
-- **Import merges**: re-importing same files updates metadata (e.g. fixes timestamps), new files merge into correct chronological position, dedup by path
-- **Map transitions ARE the transitions**: transitions between clips are driven by geography, not a separate editing concept
-- **Proxy-based preview**: 720p H.264 proxies for smooth playback, CSS/browser-based effect preview on top, FFmpeg for real processing at export
-- **Asset protocol**: Tauri `protocol-asset` feature with `$HOME/**` scope serves local files to webview via `convertFileSrc`
-- **Stabilization deferred**: vidstab requires FFmpeg two-pass (not real-time), deferred to later phase as non-essential for MVP
+- **CreationDate over CreateDate**: ExifTool's `CreationDate` has the actual iPhone filming timestamp with timezone; `CreateDate`/`MediaCreateDate` can be corrupted by transfers. Fallback chain: CreationDate → CreateDate → MediaCreateDate.
+- **Project bundles**: self-contained `.trailcut` dirs (proxies/thumbnails inside, not a global cache). Each independent.
+- **No media copying**: store absolute paths to sources; read originals only at export.
+- **Auto-ordering by timestamp**: clips sorted by CreationDate, no manual reordering.
+- **Import merges**: re-importing updates metadata, new files merge chronologically, dedup by path.
+- **Map transitions ARE the transitions**: transitions between clips are driven by geography, not a separate editing concept.
+- **Proxy-based preview**: 720p H.264 proxies + CSS/browser effect preview; FFmpeg for real processing at export.
+- **mapVisuals single-source-of-truth contract**: anything derivable from `MapSettings` flows through `resolveStaticPaints` / `buildPerFrameState` in `src/lib/mapVisuals/`. Both `MapView.tsx` (preview) and the renderer sidecar apply the same returned tuples — never write an ad-hoc `setPaintProperty`/`setLayoutProperty` in `MapView` for `MapSettings`-derived state, or preview and export silently diverge.
+- **Map decorations are independent**: Route / Waypoints / POV each own their color/gradient config (no shared palette); linking is a one-shot copy button, not a binding. Route + Waypoints support gradient (by trail distance); per-clip waypoint overrides and POV are solid-only.
+- **Perceived-scale invariance**: same route + export settings must look the same apparent scale across aspect ratios and resolutions — aspect changes shape/visible-area only, resolution changes pixel density only.
+- **HDR is first-class**: `HdrHlg` delivery is near-term; pipeline decisions must keep BT.2020 working-space primaries. SDR-only simplifications are off the table.
+- **Asset protocol**: Tauri `protocol-asset` with `$HOME/**` scope serves local files to the webview via `convertFileSrc`.
+- **Stabilization deferred**: vidstab requires FFmpeg two-pass (not real-time previewable).

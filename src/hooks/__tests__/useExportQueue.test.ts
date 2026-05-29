@@ -20,6 +20,7 @@ function makeJob(id: string): ExportJob {
     channel: 'composite',
     quality: '1080p',
     fps: 30,
+    deliveryTarget: 'sdr_h265',
     outputPath: `/out/${id}.mp4`,
   };
 }

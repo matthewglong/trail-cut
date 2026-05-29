@@ -37,6 +37,16 @@ function makeClip(): Clip {
     effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
     visible: true,
     map_overrides: null,
+    // WS0 color metadata defaults.
+    pix_fmt: null,
+    color_primaries: null,
+    color_trc: null,
+    color_space: null,
+    color_range: null,
+    has_dolby_vision: false,
+    camera_make: null,
+    camera_model: null,
+    source_color_class: 'unknown',
   };
 }
 
@@ -227,8 +237,20 @@ describe('buildExportRequest — Phase 1 export-controls scaffolding', () => {
     expect(req).toHaveProperty('codec_preference', 'auto');
     expect(req).toHaveProperty('audio_bitrate_kbps', 256);
     expect(req).toHaveProperty('fps', 30);
+    // WS5: delivery_target on the wire. Default mirrors Rust's
+    // `default_delivery_target` (= ProresMaster) so back-compat captures
+    // deserialize identically on both sides.
+    expect(req).toHaveProperty('delivery_target', 'prores');
     expect(req).toHaveProperty('warnings');
     expect(req.warnings).toEqual([]);
+  });
+
+  it('threads an explicit deliveryTarget onto the wire as delivery_target', () => {
+    const req = buildExportRequest({
+      ...baseInputs(),
+      deliveryTarget: 'hdr_hlg',
+    });
+    expect(req.delivery_target).toBe('hdr_hlg');
   });
 });
 
@@ -461,11 +483,12 @@ describe('buildJobRequest — per-job quality + fps', () => {
   });
 
   const job = (overrides: Partial<ExportJob> = {}): ExportJob => ({
-    id: '9_16-map_only-1080p-30-cfg-a',
+    id: '9_16-map_only-1080p-30-prores-cfg-a',
     aspect: '9_16',
     channel: 'map_only',
     quality: '1080p',
     fps: 30,
+    deliveryTarget: 'prores',
     outputPath: '/tmp/out.mov',
     ...overrides,
   });
@@ -524,6 +547,14 @@ describe('buildJobRequest — per-job quality + fps', () => {
     expect(b.fps).toBe(60);
     expect(a.output_path).toBe('/tmp/a.mov');
     expect(b.output_path).toBe('/tmp/b.mov');
+  });
+
+  it('threads job.deliveryTarget onto the wire as delivery_target', () => {
+    const req = buildJobRequest(
+      ctx(),
+      job({ channel: 'composite', deliveryTarget: 'hdr_hlg' }),
+    );
+    expect(req.delivery_target).toBe('hdr_hlg');
   });
 
   it('honors the context layouts override for the job aspect', () => {

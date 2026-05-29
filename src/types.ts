@@ -3,6 +3,127 @@ export interface GpsCoord {
   lng: number;
 }
 
+/** Source color regime — populated at import time by the WS0 color-pipeline
+ *  foundation. Every downstream ingest formula (WS1 proxy, WS2 thumbnail,
+ *  WS3 working-space export) branches on this string to select the right
+ *  transform.
+ *
+ *  Wire format is snake_case to match the Rust `SourceColorClass` enum's
+ *  serde rename in `src-tauri/src/util/color.rs`. The variants:
+ *  - `'sdr_bt709'`     — Standard dynamic range, Rec.709.
+ *  - `'hlg_bt2020'`    — HDR via HLG (ARIB STD-B67) on BT.2020.
+ *  - `'pq_bt2020'`     — HDR via PQ (SMPTE ST 2084) on BT.2020.
+ *  - `'dolby_vision'`  — Dolby Vision (Phase 1 treats as HLG base layer).
+ *  - `'unknown'`       — No usable color metadata; treat as SDR.
+ *
+ *  Phase 2 log variants (defined now, populated only via user override —
+ *  log formats can't be auto-detected, see ARCHITECTURE.md §"Phase 2
+ *  additions"):
+ *  - `'d_log'` | `'c_log'` | `'c_log2'` | `'c_log3'` — DJI / Canon log.
+ *  - `'gp_log'`                                      — GoPro log.
+ *  - `'v_log'`                                       — Panasonic V-Log.
+ *  - `'s_log2'` | `'s_log3'`                         — Sony S-Log. */
+export type SourceColorClass =
+  | 'sdr_bt709'
+  | 'hlg_bt2020'
+  | 'pq_bt2020'
+  | 'dolby_vision'
+  | 'unknown'
+  | 'd_log' | 'c_log' | 'c_log2' | 'c_log3'
+  | 'gp_log' | 'v_log' | 's_log2' | 's_log3';
+
+/** WS9 — Per-camera source-format preset. One entry per
+ *  `(camera_make, camera_model)` pair the user has confirmed via the
+ *  group-level import UI's "Remember this for future X imports" checkbox.
+ *  Persisted to `~/.trailcut/camera_presets.json` by the Rust commands in
+ *  `commands::camera_presets`. Wire shape matches the Rust struct; snake_case
+ *  `color_class` matches the `SourceColorClass` enum's serde rename. */
+export interface CameraPreset {
+  make: string;
+  model: string;
+  color_class: SourceColorClass;
+}
+
+/** Delivery target — color regime + codec + container only. Aspect comes
+ *  from the outer export grid (`9_16 / 4_5 / 16_9`); resolution comes
+ *  from the inner Quality picker (`720p / 1080p / 1440p / 2160p`). The
+ *  output canvas is `outputDims(aspect, resolution)` — see
+ *  `src/lib/layout.ts`.
+ *
+ *  Wire format is snake_case to match the Rust `DeliveryTarget` enum in
+ *  `src-tauri/src/export/delivery.rs`. The variants:
+ *  - `'sdr_h265'` — 8-bit BT.709, HEVC (videotoolbox / libx265) in mp4.
+ *    Default for composite — modern efficiency, native on Apple / modern
+ *    Android / Chrome / Edge.
+ *  - `'sdr_h264'` — 8-bit BT.709, libx264 in mp4. Universal compatibility,
+ *    including Windows default player without the Microsoft Store HEVC
+ *    extension.
+ *  - `'hdr_hlg'`  — 10-bit BT.2020 HLG, HEVC main10 in mp4. YouTube HDR
+ *    convention.
+ *  - `'prores'`   — ProRes 4444 with alpha, yuva444p10le in mov. Archival
+ *    master + the only legal target for map_only / video_only (lossless
+ *    compositing intermediates).
+ *
+ *  Channel × target compatibility (enforced by `validate_target_for_channel`
+ *  in `src-tauri/src/export/mod.rs`):
+ *  - `composite`               → any of the four
+ *  - `map_only` / `video_only` → `'prores'` only */
+export type DeliveryTarget =
+  | 'sdr_h265'
+  | 'sdr_h264'
+  | 'hdr_hlg'
+  | 'prores';
+
+/** Metadata about a single delivery target — picker dropdown row. Mirrors
+ *  the Rust `DeliveryTarget` impl's `label()` / `short_label()` /
+ *  `container_extension()` getters. Post-Issue-2: target carries color
+ *  regime + codec + container only; aspect (outer grid) and resolution
+ *  (Quality picker) are tracked independently and combine into the output
+ *  canvas via `outputDims(aspect, resolution)` in `src/lib/layout.ts`. */
+export interface DeliveryTargetInfo {
+  id: DeliveryTarget;
+  label: string;
+  shortLabel: string;
+  containerExtension: 'mp4' | 'mov';
+  /** Channels this target is legal for. Composite accepts all targets;
+   *  map_only and video_only accept only `'prores'`. */
+  allowedChannels: ReadonlyArray<'composite' | 'map_only' | 'video_only'>;
+}
+
+/** Catalog of all four delivery targets in display order. The export UI
+ *  iterates this and filters by `allowedChannels` to populate the picker.
+ *  Keep in lockstep with `DeliveryTarget::all()` in Rust. */
+export const DELIVERY_TARGETS: ReadonlyArray<DeliveryTargetInfo> = [
+  {
+    id: 'sdr_h265',
+    label: 'SDR · H.265 (modern, smaller files)',
+    shortLabel: 'SDR H.265',
+    containerExtension: 'mp4',
+    allowedChannels: ['composite'],
+  },
+  {
+    id: 'sdr_h264',
+    label: 'SDR · H.264 (universal compatibility)',
+    shortLabel: 'SDR H.264',
+    containerExtension: 'mp4',
+    allowedChannels: ['composite'],
+  },
+  {
+    id: 'hdr_hlg',
+    label: 'HDR · HLG (10-bit BT.2020)',
+    shortLabel: 'HDR HLG',
+    containerExtension: 'mp4',
+    allowedChannels: ['composite'],
+  },
+  {
+    id: 'prores',
+    label: 'ProRes 4444 (master / intermediate)',
+    shortLabel: 'ProRes',
+    containerExtension: 'mov',
+    allowedChannels: ['composite', 'map_only', 'video_only'],
+  },
+] as const;
+
 export interface ClipMetadata {
   id: string;
   path: string;
@@ -12,6 +133,41 @@ export interface ClipMetadata {
   gps: GpsCoord | null;
   resolution: string | null;
   frame_rate: number | null;
+  // ---- Color metadata (WS0) ----
+  //
+  // Populated at import by `import_media` / `scan_directory` after the
+  // ExifTool pass. `source_color_class` is the result of running the raw
+  // fields through `crate::util::color::classify` on the Rust side; the
+  // frontend treats it as the source of truth for the clip's color regime.
+  //
+  // All fields are nullable because legacy clips (imported before WS0) and
+  // any clip whose ffprobe pass failed at import time will carry the
+  // defaults (`source_color_class: 'unknown'`, every raw tag `null`).
+  pix_fmt: string | null;
+  color_primaries: string | null;
+  color_trc: string | null;
+  color_space: string | null;
+  color_range: string | null;
+  has_dolby_vision: boolean;
+  camera_make: string | null;
+  camera_model: string | null;
+  source_color_class: SourceColorClass;
+  /** Phase 2 — user override of the auto-detected class. None/undefined in
+   *  Phase 1; the Phase 2 source-format UI populates it for log formats.
+   *  Consumers should prefer this when set and fall back to
+   *  `source_color_class`. */
+  user_color_class_override?: SourceColorClass;
+  /** WS8 — suggested log encoding for the clip, derived from the camera
+   *  make/model + 10-bit pix_fmt knowledge base on the Rust side
+   *  (`crate::util::log_detection`). UI-only hint: WS9's source-format
+   *  affordance reads this to show "Looks like D-Log — apply?" prompts.
+   *  **Never auto-applied** — the export/preview pipeline ignores this
+   *  field. The user confirms before the suggestion gets promoted to
+   *  `user_color_class_override`.
+   *
+   *  `undefined` (or absent) for the vast majority of clips: iPhone, GoPro
+   *  8-bit, unrecognised cameras, anything already tagged HDR. */
+  suggested_log_class?: SourceColorClass;
 }
 
 export interface TrimRange {
@@ -53,6 +209,29 @@ export interface Clip {
    *  `ClipEntryTransition`. Project-level defaults still apply for unset
    *  fields. */
   entry_transition?: ClipEntryTransition;
+  // ---- Color metadata (WS0) ----
+  //
+  // Mirrors `ClipMetadata`'s color fields. Persisted in `project.json` so
+  // every clip in a saved project carries its color regime. Legacy bundles
+  // (pre-WS0) deserialize with `source_color_class: 'unknown'` and the raw
+  // tags `null` — Rust serde annotations handle the defaults.
+  pix_fmt: string | null;
+  color_primaries: string | null;
+  color_trc: string | null;
+  color_space: string | null;
+  color_range: string | null;
+  has_dolby_vision: boolean;
+  camera_make: string | null;
+  camera_model: string | null;
+  source_color_class: SourceColorClass;
+  /** Phase 2 user override; see `ClipMetadata.user_color_class_override`. */
+  user_color_class_override?: SourceColorClass;
+  /** WS8 — mirror of `ClipMetadata.suggested_log_class`. Persisted in
+   *  `project.json` so the suggestion survives save/load (the Rust import
+   *  pass isn't re-run on project open). WS9's source-format UI reads this
+   *  to surface the "Looks like D-Log — apply?" affordance after a re-open.
+   *  UI-only; never consulted by the ingest pipeline. */
+  suggested_log_class?: SourceColorClass;
 }
 
 export interface TrackPoint {
@@ -685,13 +864,44 @@ export type ExportFps = 24 | 30 | 60;
 
 /** A single configured export within a grid cell. The user can add multiple
  *  of these to one cell to render the same (aspect × channel) at several
- *  quality/fps combinations in one queue. `id` is a UUID minted at chip
- *  creation time so React keys, edit-target lookup, and queue-job ids stay
- *  collision-free even when two configs share `(quality, fps)` mid-edit. */
+ *  quality/fps/delivery-target combinations in one queue. `id` is a UUID
+ *  minted at chip creation time so React keys, edit-target lookup, and
+ *  queue-job ids stay collision-free even when two configs share
+ *  `(quality, fps, delivery_target)` mid-edit.
+ *
+ *  `delivery_target` is the picker selection — color regime + codec +
+ *  container. Optional so projects persisted without an explicit target
+ *  round-trip cleanly; consumers resolve a missing value by mapping the
+ *  cell's channel to its default: composite → `sdr_h265`,
+ *  map_only/video_only → `prores` (the only target legal for those
+ *  channels per the channel × target compatibility matrix). */
 export interface ExportConfig {
   id: string;
   quality: OutputResolution;
   fps: ExportFps;
+  delivery_target?: DeliveryTarget;
+}
+
+/** Default delivery target for a freshly-added chip in the given channel.
+ *  Composite cells default to `sdr_h265` — modern efficiency (roughly
+ *  half the file size of H.264 at equivalent quality), native playback on
+ *  iPhone / modern Android / macOS / Chrome / Edge. Users uploading to
+ *  social platforms hit this default and the platform's server-side
+ *  transcode handles compat for viewers. map_only and video_only cells
+ *  default to (and are locked to) `prores`, the only target legal for
+ *  those channels (lossless compositing intermediates). */
+export function defaultDeliveryTargetForChannel(channel: ExportChannel): DeliveryTarget {
+  return channel === 'composite' ? 'sdr_h265' : 'prores';
+}
+
+/** Resolve a chip's delivery target — explicit value when set, channel
+ *  default otherwise. Single source of truth so the picker, filename
+ *  derivation, and wire builder agree on the fallback. */
+export function resolveDeliveryTarget(
+  config: ExportConfig,
+  channel: ExportChannel,
+): DeliveryTarget {
+  return config.delivery_target ?? defaultDeliveryTargetForChannel(channel);
 }
 
 /** Grid cell key: `"{aspect}-{channel}"`. The flat-string form serializes

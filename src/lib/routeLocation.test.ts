@@ -47,6 +47,18 @@ function mkClip(overrides: Partial<Clip>): Clip {
     effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
     visible: true,
     map_overrides: null,
+    // WS0 color metadata — required on the Clip type as of the color-pipeline
+    // foundation. Test fixtures default to "no signal" (Unknown class,
+    // treated as SDR downstream).
+    pix_fmt: null,
+    color_primaries: null,
+    color_trc: null,
+    color_space: null,
+    color_range: null,
+    has_dolby_vision: false,
+    camera_make: null,
+    camera_model: null,
+    source_color_class: 'unknown',
     ...overrides,
   };
 }
@@ -664,59 +676,35 @@ describe('clipWallClockMs (coverage backfill)', () => {
   });
 
   it('returns null when clip.created_at is null', () => {
-    const clip: Clip = {
+    const clip: Clip = mkClip({
       id: 'c',
       path: '',
       filename: '',
       created_at: null,
       duration_ms: null,
-      gps: null,
-      resolution: null,
-      frame_rate: null,
-      trim: null,
-      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
-      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
-      visible: true,
-      map_overrides: null,
-    };
+    });
     expect(clipWallClockMs(clip, 0)).toBeNull();
   });
 
   it('returns null when created_at is unparseable', () => {
-    const clip: Clip = {
+    const clip: Clip = mkClip({
       id: 'c',
       path: '',
       filename: '',
       created_at: 'gibberish',
       duration_ms: null,
-      gps: null,
-      resolution: null,
-      frame_rate: null,
-      trim: null,
-      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
-      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
-      visible: true,
-      map_overrides: null,
-    };
+    });
     expect(clipWallClockMs(clip, 0)).toBeNull();
   });
 
   it('adds mediaSeconds * 1000 to the parsed start', () => {
-    const clip: Clip = {
+    const clip: Clip = mkClip({
       id: 'c',
       path: '',
       filename: '',
       created_at: '2026-04-04T15:00:00Z',
       duration_ms: null,
-      gps: null,
-      resolution: null,
-      frame_rate: null,
-      trim: null,
-      focal_point: { x: 0.5, y: 0.5, zoom: 1 },
-      effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
-      visible: true,
-      map_overrides: null,
-    };
+    });
     expect(clipWallClockMs(clip, 2.5)).toBe(Date.UTC(2026, 3, 4, 15, 0, 0) + 2500);
   });
 });

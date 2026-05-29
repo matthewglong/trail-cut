@@ -26,8 +26,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 use trail_cut_lib::export::{
     default_layout, default_pip_layout, default_split_layout, output_dims, render_export_inner,
-    resolve_slots, AspectRatio, CodecPreference, LayoutConfig, LayoutDescriptor, OutputResolution,
-    RenderExportRequest,
+    resolve_slots, AspectRatio, CodecPreference, DeliveryTarget, LayoutConfig, LayoutDescriptor,
+    OutputResolution, RenderExportRequest,
 };
 
 fn manifest_dir() -> PathBuf {
@@ -124,6 +124,8 @@ fn build_request(output_path: &str) -> RenderExportRequest {
         layout: layout_descriptor,
         codec_preference: CodecPreference::default(),
         audio_bitrate_kbps: 256,
+        // WS4: map_only is locked to ProresMaster (lossless intermediate).
+        delivery_target: DeliveryTarget::Prores,
         project_state: setup_value,
     }
 }
@@ -328,6 +330,8 @@ fn build_request_with_layout(
         layout: layout_descriptor,
         codec_preference: CodecPreference::default(),
         audio_bitrate_kbps: 256,
+        // WS4: map_only is locked to ProresMaster (lossless intermediate).
+        delivery_target: DeliveryTarget::Prores,
         project_state: setup_value,
     }
 }

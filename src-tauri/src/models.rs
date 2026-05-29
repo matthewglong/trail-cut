@@ -1,5 +1,7 @@
+use crate::export::delivery::DeliveryTarget;
 use crate::export::layout::{default_split_layout, AspectRatio, ProjectLayouts};
 use crate::export::resolution::OutputResolution;
+use crate::util::color::SourceColorClass;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,6 +22,76 @@ pub struct ClipMetadata {
     pub gps: Option<GpsCoord>,
     pub resolution: Option<String>,
     pub frame_rate: Option<f64>,
+    // ---- Color metadata (WS0 — color pipeline foundation) ----
+    //
+    // Populated at import time by `commands::media::import_media` /
+    // `scan_directory` from the ffprobe call in
+    // `crate::export::ffprobe::probe_clip`. Each field round-trips through
+    // serde as-is. `source_color_class` is derived from the raw fields via
+    // `crate::util::color::classify` so the import path commits one decision
+    // and downstream consumers (proxy/thumbnail/export — WS1/WS2/WS3) branch
+    // on the enum rather than re-running the classifier.
+    //
+    // All fields are `#[serde(default)]` so legacy import results (and tests
+    // that hand-build `ClipMetadata` for non-color cases) keep deserialising.
+    #[serde(default)]
+    pub pix_fmt: Option<String>,
+    #[serde(default)]
+    pub color_primaries: Option<String>,
+    #[serde(default)]
+    pub color_trc: Option<String>,
+    #[serde(default)]
+    pub color_space: Option<String>,
+    #[serde(default)]
+    pub color_range: Option<String>,
+    #[serde(default)]
+    pub has_dolby_vision: bool,
+    #[serde(default)]
+    pub camera_make: Option<String>,
+    #[serde(default)]
+    pub camera_model: Option<String>,
+    /// Auto-detected color regime, run through `util::color::classify` at
+    /// import time. Defaults to `Unknown` for legacy bundles via
+    /// `default_unknown_color_class` so `effective_color_class()` always has
+    /// a value to fall back to.
+    #[serde(default = "default_unknown_color_class")]
+    pub source_color_class: SourceColorClass,
+    /// User-set override of the auto-detected class. Phase 1 always leaves
+    /// this `None`; Phase 2's source-format UI populates it for log formats
+    /// (which can't be auto-detected — see ARCHITECTURE.md §"Phase 2
+    /// additions"). `effective_color_class()` reads override first, falls
+    /// back to `source_color_class`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_color_class_override: Option<SourceColorClass>,
+    /// WS8 — suggested log encoding for this clip, derived from the camera
+    /// make/model + 10-bit pix_fmt knowledge base in
+    /// `crate::util::log_detection`. UI-only hint: WS9 surfaces this as a
+    /// "Looks like D-Log — apply?" affordance. **Never auto-applied**;
+    /// `effective_color_class()` ignores this field entirely and reads
+    /// override > source_color_class only. None for the vast majority of
+    /// clips (iPhone, GoPro 8-bit, unrecognised cameras, all HDR-tagged
+    /// footage). Populated at import time by `populate_color_metadata`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_log_class: Option<SourceColorClass>,
+}
+
+/// Serde default for `source_color_class` — used by legacy bundles that
+/// pre-date WS0 and any code path that hand-builds `ClipMetadata` /
+/// `Clip` without populating the field. Treated as SDR by downstream
+/// consumers (see `SourceColorClass::Unknown`'s docs).
+fn default_unknown_color_class() -> SourceColorClass {
+    SourceColorClass::Unknown
+}
+
+impl ClipMetadata {
+    /// Resolved color class — user override wins, falls back to the
+    /// auto-detected value. Every downstream ingest formula (proxy /
+    /// thumbnail / export) MUST branch on this method's result, NOT on
+    /// `source_color_class` directly, so a Phase 2 user override takes
+    /// effect uniformly.
+    pub fn effective_color_class(&self) -> SourceColorClass {
+        self.user_color_class_override.unwrap_or(self.source_color_class)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +149,51 @@ pub struct Clip {
     /// `default_entry_transition` still applies for unset fields.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_transition: Option<ClipEntryTransition>,
+    // ---- Color metadata (WS0 — color pipeline foundation) ----
+    //
+    // Mirrors the fields on `ClipMetadata`. Stored on `Clip` (not just
+    // `ClipMetadata`) because `Clip` is what persists in `project.json` —
+    // `ClipMetadata` is the import-time DTO, then `Clip::from(meta)` lifts
+    // it into the project. Every field is `#[serde(default)]` so legacy
+    // pre-WS0 project bundles deserialize cleanly (no schema bump needed —
+    // the fields are purely additive on disk).
+    #[serde(default)]
+    pub pix_fmt: Option<String>,
+    #[serde(default)]
+    pub color_primaries: Option<String>,
+    #[serde(default)]
+    pub color_trc: Option<String>,
+    #[serde(default)]
+    pub color_space: Option<String>,
+    #[serde(default)]
+    pub color_range: Option<String>,
+    #[serde(default)]
+    pub has_dolby_vision: bool,
+    #[serde(default)]
+    pub camera_make: Option<String>,
+    #[serde(default)]
+    pub camera_model: Option<String>,
+    #[serde(default = "default_unknown_color_class")]
+    pub source_color_class: SourceColorClass,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_color_class_override: Option<SourceColorClass>,
+    /// WS8 — mirror of `ClipMetadata::suggested_log_class`. Persisted on the
+    /// Clip so the suggestion travels with the project across save/load and
+    /// WS9's UI can re-surface it after a re-open (the import-time camera
+    /// metadata isn't re-probed on load — the suggestion has to ride along
+    /// in `project.json`). UI-only; never consulted by the ingest pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_log_class: Option<SourceColorClass>,
+}
+
+impl Clip {
+    /// Resolved color class — user override wins, falls back to the
+    /// auto-detected value. Mirrors `ClipMetadata::effective_color_class`.
+    /// Every downstream ingest formula (WS1 proxy, WS2 thumbnail, WS3
+    /// export) MUST consult this method, not `source_color_class` directly.
+    pub fn effective_color_class(&self) -> SourceColorClass {
+        self.user_color_class_override.unwrap_or(self.source_color_class)
+    }
 }
 
 impl From<ClipMetadata> for Clip {
@@ -103,6 +220,24 @@ impl From<ClipMetadata> for Clip {
             visible: true,
             map_overrides: None,
             entry_transition: None,
+            // WS0 — carry the import-time color signals onto the persisted
+            // clip. Without this propagation `project.json` would carry no
+            // color info and downstream ingest would always see `Unknown`.
+            pix_fmt: meta.pix_fmt,
+            color_primaries: meta.color_primaries,
+            color_trc: meta.color_trc,
+            color_space: meta.color_space,
+            color_range: meta.color_range,
+            has_dolby_vision: meta.has_dolby_vision,
+            camera_make: meta.camera_make,
+            camera_model: meta.camera_model,
+            source_color_class: meta.source_color_class,
+            user_color_class_override: meta.user_color_class_override,
+            // WS8 — carry the import-time log-format suggestion across to
+            // the persisted Clip so WS9's UI can re-surface it after a
+            // project save/load round-trip (we don't re-probe ffprobe on
+            // load — the hint has to ride in project.json).
+            suggested_log_class: meta.suggested_log_class,
         }
     }
 }
@@ -673,11 +808,12 @@ pub enum ExportChannel {
 }
 
 /// One configured chip within a grid cell. The Export modal's secondary
-/// "Configure export" panel writes these — each holds an output resolution
-/// and frame rate. `id` is a UUID minted at chip creation time so multiple
-/// chips can coexist in the same cell without React-key collisions, even
-/// mid-edit when `(quality, fps)` values transiently overlap. Mirrors the
-/// TypeScript `ExportConfig` in `src/types.ts`.
+/// "Configure export" panel writes these — each holds an output resolution,
+/// frame rate, and (WS5) delivery target. `id` is a UUID minted at chip
+/// creation time so multiple chips can coexist in the same cell without
+/// React-key collisions, even mid-edit when `(quality, fps, delivery_target)`
+/// values transiently overlap. Mirrors the TypeScript `ExportConfig` in
+/// `src/types.ts`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExportConfig {
     pub id: String,
@@ -686,6 +822,14 @@ pub struct ExportConfig {
     /// but stored as plain `u32` here for serde simplicity. The TS layer
     /// constrains the literal at the type level.
     pub fps: u32,
+    /// Delivery target (color regime + codec + container). Optional so
+    /// projects persisted without an explicit target round-trip cleanly;
+    /// consumers (the TS picker, `deriveJobs`, `select_encoder_for_target`)
+    /// treat a missing value as the channel default (composite → `sdr_h265`,
+    /// map_only/video_only → `prores`). `skip_serializing_if = "Option::is_none"`
+    /// keeps the on-disk JSON quiet when a chip uses its channel default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_target: Option<DeliveryTarget>,
 }
 
 /// User's last-confirmed Export modal selection — the 3×3 cell grid plus
@@ -894,11 +1038,13 @@ mod tests {
                     id: "cfg-a".to_string(),
                     quality: OutputResolution::P1080,
                     fps: 30,
+                    delivery_target: Some(DeliveryTarget::SdrH264),
                 },
                 ExportConfig {
                     id: "cfg-b".to_string(),
                     quality: OutputResolution::P2160,
                     fps: 60,
+                    delivery_target: Some(DeliveryTarget::HdrHlg),
                 },
             ],
         );
@@ -908,6 +1054,7 @@ mod tests {
                 id: "cfg-c".to_string(),
                 quality: OutputResolution::P1080,
                 fps: 30,
+                delivery_target: None,
             }],
         );
         let grid = ExportGrid {
@@ -925,6 +1072,34 @@ mod tests {
         assert_eq!(
             parsed.cells.get("4_5-map_only").map(|v| v.len()),
             Some(1),
+        );
+        // WS5 — explicit targets round-trip; missing target stays None.
+        let cell = parsed.cells.get("9_16-composite").unwrap();
+        assert_eq!(
+            cell[0].delivery_target,
+            Some(DeliveryTarget::SdrH264),
+        );
+        assert_eq!(
+            cell[1].delivery_target,
+            Some(DeliveryTarget::HdrHlg),
+        );
+        let map_only_cell = parsed.cells.get("4_5-map_only").unwrap();
+        assert_eq!(map_only_cell[0].delivery_target, None);
+    }
+
+    #[test]
+    fn export_config_round_trips_without_delivery_target_field() {
+        // Back-compat: a pre-WS5 ExportConfig JSON lacks `delivery_target`.
+        // serde(default) must accept it and populate `None`, and re-serializing
+        // a `None` value must omit the field (skip_serializing_if).
+        let raw = r#"{"id":"cfg","quality":"1080p","fps":30}"#;
+        let parsed: ExportConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.delivery_target, None);
+        let reserialized = serde_json::to_string(&parsed).unwrap();
+        assert!(
+            !reserialized.contains("delivery_target"),
+            "None target must not appear in JSON: {}",
+            reserialized,
         );
     }
 
@@ -1068,6 +1243,7 @@ mod tests {
                 id: "cfg-1".to_string(),
                 quality: OutputResolution::P1080,
                 fps: 30,
+                delivery_target: Some(DeliveryTarget::SdrH264),
             }],
         );
         let project = Project {
@@ -1084,5 +1260,236 @@ mod tests {
             .expect("last_export_selection must round-trip");
         assert_eq!(sel.output_dir, Some(PathBuf::from("/tmp/exports")));
         assert_eq!(sel.cells.get("9_16-composite").map(|v| v.len()), Some(1));
+    }
+
+    // ---- WS0: color metadata round-trip + effective-class tests ----
+
+    fn color_clip(class: SourceColorClass) -> Clip {
+        Clip {
+            id: "color-clip".to_string(),
+            path: "/tmp/c.mov".to_string(),
+            filename: "c.mov".to_string(),
+            created_at: None,
+            duration_ms: Some(2000),
+            gps: None,
+            resolution: Some("3840x2160".to_string()),
+            frame_rate: Some(30.0),
+            trim: Some(TrimRange { in_ms: 0, out_ms: 2000 }),
+            focal_point: FocalPoint { x: 0.5, y: 0.5, zoom: 1.0 },
+            effects: Effects {
+                stabilize: StabilizeSettings { enabled: false, shakiness: 5 },
+                speed: 1.0,
+            },
+            visible: true,
+            map_overrides: None,
+            entry_transition: None,
+            pix_fmt: Some("yuv420p10le".to_string()),
+            color_primaries: Some("bt2020".to_string()),
+            color_trc: Some("arib-std-b67".to_string()),
+            color_space: Some("bt2020nc".to_string()),
+            color_range: Some("tv".to_string()),
+            has_dolby_vision: matches!(class, SourceColorClass::DolbyVision),
+            camera_make: Some("Apple".to_string()),
+            camera_model: Some("iPhone 15 Pro".to_string()),
+            source_color_class: class,
+            user_color_class_override: None,
+            // WS8 — color_clip is always Apple/iPhone, which the knowledge
+            // base intentionally never suggests a log format for. Leaving
+            // this as None reflects the import-path reality and keeps the
+            // helper a stand-in for the common "no suggestion" case.
+            suggested_log_class: None,
+        }
+    }
+
+    #[test]
+    fn clip_color_fields_round_trip_through_project_json() {
+        // Acceptance criterion: "Saving and reloading a project preserves
+        // the color fields (JSON round-trip works)." Direct serde test —
+        // no filesystem so it stays fast in CI.
+        let mut project = Project::default();
+        project.clips.push(color_clip(SourceColorClass::HlgBt2020));
+
+        let json = serde_json::to_string_pretty(&project).expect("serialize");
+        // Spot-check the on-disk shape carries the new keys.
+        assert!(json.contains("\"source_color_class\": \"hlg_bt2020\""));
+        assert!(json.contains("\"color_trc\": \"arib-std-b67\""));
+        assert!(json.contains("\"has_dolby_vision\": false"));
+
+        let parsed: Project = serde_json::from_str(&json).expect("deserialize");
+        let clip = &parsed.clips[0];
+        assert_eq!(clip.pix_fmt.as_deref(), Some("yuv420p10le"));
+        assert_eq!(clip.color_primaries.as_deref(), Some("bt2020"));
+        assert_eq!(clip.color_trc.as_deref(), Some("arib-std-b67"));
+        assert_eq!(clip.color_space.as_deref(), Some("bt2020nc"));
+        assert_eq!(clip.color_range.as_deref(), Some("tv"));
+        assert!(!clip.has_dolby_vision);
+        assert_eq!(clip.camera_make.as_deref(), Some("Apple"));
+        assert_eq!(clip.camera_model.as_deref(), Some("iPhone 15 Pro"));
+        assert_eq!(clip.source_color_class, SourceColorClass::HlgBt2020);
+        assert!(clip.user_color_class_override.is_none());
+        assert_eq!(clip.effective_color_class(), SourceColorClass::HlgBt2020);
+    }
+
+    #[test]
+    fn clip_deserialises_when_color_fields_absent() {
+        // Backwards compatibility: a clip persisted before WS0 has none of
+        // the new color keys in its JSON. serde defaults must fill them in
+        // and `effective_color_class()` must return `Unknown` (the
+        // documented "treat as SDR downstream" sentinel).
+        let raw = r#"{
+            "id": "legacy",
+            "path": "/tmp/legacy.mov",
+            "filename": "legacy.mov",
+            "created_at": null,
+            "duration_ms": 1000,
+            "gps": null,
+            "resolution": null,
+            "frame_rate": null,
+            "trim": null,
+            "focal_point": {"x": 0.5, "y": 0.5, "zoom": 1.0},
+            "effects": {"stabilize": {"enabled": false, "shakiness": 5}, "speed": 1.0}
+        }"#;
+        let clip: Clip = serde_json::from_str(raw).expect("legacy clip must deserialize");
+        assert!(clip.pix_fmt.is_none());
+        assert!(clip.color_primaries.is_none());
+        assert!(clip.color_trc.is_none());
+        assert!(!clip.has_dolby_vision);
+        assert_eq!(clip.source_color_class, SourceColorClass::Unknown);
+        assert_eq!(clip.effective_color_class(), SourceColorClass::Unknown);
+    }
+
+    #[test]
+    fn effective_color_class_prefers_user_override() {
+        // Phase 2 contract preview: when the user sets a log-format
+        // override on an otherwise-SDR-tagged clip, `effective_color_class`
+        // must surface the override. Every downstream ingest formula
+        // branches on this method, so the override propagates end-to-end.
+        let mut clip = color_clip(SourceColorClass::SdrBt709);
+        assert_eq!(clip.effective_color_class(), SourceColorClass::SdrBt709);
+        clip.user_color_class_override = Some(SourceColorClass::DLog);
+        assert_eq!(clip.effective_color_class(), SourceColorClass::DLog);
+    }
+
+    #[test]
+    fn clip_metadata_to_clip_propagates_color_fields() {
+        // The `From<ClipMetadata> for Clip` impl is the import path's
+        // load-bearing seam: ffprobe lands color fields on `ClipMetadata`,
+        // then the project lifts the metadata into a `Clip`. The lift must
+        // carry color through — otherwise the persisted clip in
+        // `project.json` loses the import-time decision.
+        let meta = ClipMetadata {
+            id: "m".to_string(),
+            path: "/tmp/m.mov".to_string(),
+            filename: "m.mov".to_string(),
+            created_at: None,
+            duration_ms: Some(1500),
+            gps: None,
+            resolution: None,
+            frame_rate: None,
+            pix_fmt: Some("yuv420p10le".to_string()),
+            color_primaries: Some("bt2020".to_string()),
+            color_trc: Some("smpte2084".to_string()),
+            color_space: Some("bt2020nc".to_string()),
+            color_range: Some("tv".to_string()),
+            has_dolby_vision: false,
+            camera_make: Some("Apple".to_string()),
+            camera_model: Some("iPhone 15 Pro".to_string()),
+            source_color_class: SourceColorClass::PqBt2020,
+            user_color_class_override: None,
+            suggested_log_class: None,
+        };
+        let clip = Clip::from(meta);
+        assert_eq!(clip.color_trc.as_deref(), Some("smpte2084"));
+        assert_eq!(clip.source_color_class, SourceColorClass::PqBt2020);
+        assert_eq!(clip.effective_color_class(), SourceColorClass::PqBt2020);
+    }
+
+    // ---- WS8: suggested_log_class round-trip + propagation ----
+
+    #[test]
+    fn suggested_log_class_round_trips_through_project_json() {
+        // The suggestion field must survive project save → load so WS9's UI
+        // can re-surface the "Looks like D-Log — apply?" affordance after a
+        // re-open. ffprobe doesn't re-run on load; the hint has to ride in
+        // project.json.
+        let mut clip = color_clip(SourceColorClass::SdrBt709);
+        clip.suggested_log_class = Some(SourceColorClass::DLog);
+        let mut project = Project::default();
+        project.clips.push(clip);
+
+        let json = serde_json::to_string_pretty(&project).expect("serialize");
+        assert!(
+            json.contains("\"suggested_log_class\": \"d_log\""),
+            "suggested_log_class must appear in JSON: {json}"
+        );
+
+        let parsed: Project = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            parsed.clips[0].suggested_log_class,
+            Some(SourceColorClass::DLog),
+        );
+    }
+
+    #[test]
+    fn suggested_log_class_omitted_from_json_when_none() {
+        // `skip_serializing_if = "Option::is_none"` — the field stays out of
+        // project.json for the common no-suggestion case (iPhone, GoPro
+        // 8-bit, etc.). Keeps the on-disk shape byte-identical to pre-WS8
+        // bundles for everything except clips with an actual suggestion.
+        let mut project = Project::default();
+        project.clips.push(color_clip(SourceColorClass::HlgBt2020));
+        let json = serde_json::to_string(&project).expect("serialize");
+        assert!(
+            !json.contains("suggested_log_class"),
+            "None suggestion must be absent from JSON: {json}"
+        );
+    }
+
+    #[test]
+    fn suggested_log_class_does_not_affect_effective_color_class() {
+        // Contract: the suggestion is a UI hint, never auto-applied.
+        // `effective_color_class()` reads `user_color_class_override` >
+        // `source_color_class` and never consults `suggested_log_class`.
+        let mut clip = color_clip(SourceColorClass::SdrBt709);
+        clip.suggested_log_class = Some(SourceColorClass::DLog);
+        assert_eq!(clip.effective_color_class(), SourceColorClass::SdrBt709);
+        // ...and once the user confirms the suggestion (via WS9's UI), they
+        // set the override explicitly — *then* the pipeline branches on it.
+        clip.user_color_class_override = Some(SourceColorClass::DLog);
+        assert_eq!(clip.effective_color_class(), SourceColorClass::DLog);
+    }
+
+    #[test]
+    fn suggested_log_class_propagates_through_clip_metadata_to_clip() {
+        // The `From<ClipMetadata> for Clip` lift is the import path's seam.
+        // suggest_log_format() lands a value on `ClipMetadata` in
+        // `populate_color_metadata`; the lift must carry it onto the Clip so
+        // it persists in project.json.
+        let meta = ClipMetadata {
+            id: "m".to_string(),
+            path: "/tmp/m.mov".to_string(),
+            filename: "m.mov".to_string(),
+            created_at: None,
+            duration_ms: Some(1500),
+            gps: None,
+            resolution: None,
+            frame_rate: None,
+            pix_fmt: Some("yuv420p10le".to_string()),
+            color_primaries: Some("bt709".to_string()),
+            color_trc: Some("bt709".to_string()),
+            color_space: Some("bt709".to_string()),
+            color_range: Some("tv".to_string()),
+            has_dolby_vision: false,
+            camera_make: Some("DJI".to_string()),
+            camera_model: Some("Mavic 3".to_string()),
+            source_color_class: SourceColorClass::SdrBt709,
+            user_color_class_override: None,
+            suggested_log_class: Some(SourceColorClass::DLog),
+        };
+        let clip = Clip::from(meta);
+        assert_eq!(clip.suggested_log_class, Some(SourceColorClass::DLog));
+        // Pipeline still sees SDR (the auto-detected class) until the user
+        // confirms — propagation doesn't change the effective class.
+        assert_eq!(clip.effective_color_class(), SourceColorClass::SdrBt709);
     }
 }

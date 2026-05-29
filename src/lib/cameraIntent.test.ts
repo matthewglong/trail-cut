@@ -512,6 +512,17 @@ function compilerClip(overrides: Partial<Clip> = {}): Clip {
     effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
     visible: true,
     map_overrides: null,
+    // WS0 color metadata defaults — fixtures land in the "no signal" state
+    // (Unknown class, treated as SDR by downstream consumers).
+    pix_fmt: null,
+    color_primaries: null,
+    color_trc: null,
+    color_space: null,
+    color_range: null,
+    has_dolby_vision: false,
+    camera_make: null,
+    camera_model: null,
+    source_color_class: 'unknown',
     ...overrides,
   };
 }

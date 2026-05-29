@@ -201,15 +201,30 @@ function roundHalfAway(n: number): number {
   return Math.sign(n) * Math.round(Math.abs(n));
 }
 
+/** Round down to the nearest even integer. Slot W/H must be even so the
+ *  composite filtergraph's yuv420p chroma subsampling (delivery target for
+ *  H.264 / H.265 SDR) is well-defined: `zscale` errors with code 1027
+ *  ("image dimensions must be divisible by subsampling factor") when asked
+ *  to subsample an odd dimension. Mirror of Rust `even_floor` in
+ *  `src-tauri/src/export/layout.rs`. */
+function evenFloor(n: number): number {
+  return n & ~1;
+}
+
 function pipSlots(
   layout: PipLayout,
   out: OutputDimensions,
 ): { map_slot: PixelRect; video_slot: PixelRect } {
+  // PiP background is full canvas (always even per `outputDims`); the inset
+  // just overlays. Snap inset W/H to even so the rawvideo piped to ffmpeg
+  // has yuv420p-compatible dims. X/Y are positions and don't affect codec
+  // compatibility. Map and video slots don't tile against each other in PiP
+  // (one overlays the other), so rounding W/H independently is safe.
   const inset: PixelRect = {
     x: roundHalfAway(layout.inset.x * out.w),
     y: roundHalfAway(layout.inset.y * out.h),
-    w: roundHalfAway(layout.inset.w * out.w),
-    h: roundHalfAway(layout.inset.h * out.h),
+    w: evenFloor(roundHalfAway(layout.inset.w * out.w)),
+    h: evenFloor(roundHalfAway(layout.inset.h * out.h)),
   };
   const background: PixelRect = { x: 0, y: 0, w: out.w, h: out.h };
   if (layout.inset_source === 'video') {
@@ -222,30 +237,37 @@ function splitSlots(
   layout: SplitLayout,
   out: OutputDimensions,
 ): { map_slot: PixelRect; video_slot: PixelRect } {
+  // Snap the divider position to even BEFORE deriving the two slots so the
+  // sum invariant holds: `map_slot.w + video_slot.w === out.w` (likewise for
+  // h on horizontal splits). Because `outputDims` is even on both axes, an
+  // even `dx`/`dy` implies the other slot's dim is also even
+  // (`even - even = even`). Rounding each slot's dim independently would
+  // leak or steal a pixel between the two halves; rounding the divider
+  // preserves the invariant by construction.
   switch (layout.video_side) {
     case 'left': {
-      const dx = roundHalfAway(layout.divider * out.w);
+      const dx = evenFloor(roundHalfAway(layout.divider * out.w));
       return {
         video_slot: { x: 0, y: 0, w: dx, h: out.h },
         map_slot: { x: dx, y: 0, w: out.w - dx, h: out.h },
       };
     }
     case 'right': {
-      const dx = roundHalfAway(layout.divider * out.w);
+      const dx = evenFloor(roundHalfAway(layout.divider * out.w));
       return {
         map_slot: { x: 0, y: 0, w: dx, h: out.h },
         video_slot: { x: dx, y: 0, w: out.w - dx, h: out.h },
       };
     }
     case 'top': {
-      const dy = roundHalfAway(layout.divider * out.h);
+      const dy = evenFloor(roundHalfAway(layout.divider * out.h));
       return {
         video_slot: { x: 0, y: 0, w: out.w, h: dy },
         map_slot: { x: 0, y: dy, w: out.w, h: out.h - dy },
       };
     }
     case 'bottom': {
-      const dy = roundHalfAway(layout.divider * out.h);
+      const dy = evenFloor(roundHalfAway(layout.divider * out.h));
       return {
         map_slot: { x: 0, y: 0, w: out.w, h: dy },
         video_slot: { x: 0, y: dy, w: out.w, h: out.h - dy },

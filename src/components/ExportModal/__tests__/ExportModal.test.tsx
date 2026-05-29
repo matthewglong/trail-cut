@@ -398,6 +398,16 @@ describe('ExportModal — render flow', () => {
       effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
       visible: true,
       map_overrides: null,
+      // WS0 color metadata defaults.
+      pix_fmt: null,
+      color_primaries: null,
+      color_trc: null,
+      color_space: null,
+      color_range: null,
+      has_dolby_vision: false,
+      camera_make: null,
+      camera_model: null,
+      source_color_class: 'unknown',
     };
   }
 
@@ -554,7 +564,10 @@ describe('ExportModal — grid wiring (add / edit / remove)', () => {
     expect(findByTestId('config-export-modal')).toBeNull();
     const cell = container.querySelector('[data-testid="export-cell-9_16-composite"]');
     const chipLabel = cell?.querySelector('[data-testid$="-label"]');
-    expect(chipLabel?.textContent).toBe('4K·60');
+    // Composite default target → H265 token is appended even though the
+    // chip stores `delivery_target: undefined` (see
+    // `ExportModal.handleConfigSave`).
+    expect(chipLabel?.textContent).toBe('4K·60·H265');
   });
 
   it('opens the secondary modal in edit mode when an existing chip is clicked', async () => {
@@ -580,9 +593,10 @@ describe('ExportModal — grid wiring (add / edit / remove)', () => {
     act(() => fireEvent.click(findByTestId('export-chip-chip-x') as HTMLElement));
     act(() => fireEvent.click(findByTestId('config-fps-60') as HTMLButtonElement));
     act(() => fireEvent.click(findByTestId('config-export-modal-save') as HTMLButtonElement));
-    // Id preserved → same testid still resolves; label updated.
+    // Id preserved → same testid still resolves; label updated. Composite
+    // default target adds the H265 token.
     const label = container.querySelector('[data-testid="export-chip-chip-x-label"]');
-    expect(label?.textContent).toBe('1080·60');
+    expect(label?.textContent).toBe('1080·60·H265');
     // Cell has exactly 1 chip (not 2).
     const cell = container.querySelector('[data-testid="export-cell-16_9-composite"]');
     expect(
@@ -635,6 +649,16 @@ describe('ExportModal — source-ceiling gating', () => {
       effects: { stabilize: { enabled: false, shakiness: 5 }, speed: 1 },
       visible: true,
       map_overrides: null,
+      // WS0 color metadata defaults.
+      pix_fmt: null,
+      color_primaries: null,
+      color_trc: null,
+      color_space: null,
+      color_range: null,
+      has_dolby_vision: false,
+      camera_make: null,
+      camera_model: null,
+      source_color_class: 'unknown',
     };
   }
 

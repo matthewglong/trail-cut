@@ -15,6 +15,7 @@
 use crate::export::error::ClipChainError;
 use crate::export::layout::PixelRect;
 use crate::models::{Clip, FocalPoint};
+use crate::util::color::{ingest_filter_for, WORKING_SPACE_PIX_FMT};
 
 /// Source pixel dimensions, distinct from `OutputDimensions` so call sites
 /// don't accidentally pass the export dims where the source dims are needed.
@@ -64,14 +65,27 @@ pub struct CropRect {
 /// Build the video sub-graph for one clip. Emits exactly:
 ///
 /// ```text
-/// [{idx}:v]trim=start={in_s}:end={out_s},setpts=(PTS-STARTPTS)/{speed},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},format=yuva444p10le[v{idx}]
+/// [{idx}:v]trim=start={in_s}:end={out_s},setpts=(PTS-STARTPTS)/{speed},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},{F_ingest_{class}}[v{idx}]
 /// ```
 ///
 /// Floats are serialized with 6 decimal places (FFmpeg's parser rejects
-/// scientific notation). `format=yuva444p10le` is load-bearing — concat
-/// requires uniform pixel formats across inputs, and the downstream pad with
-/// `color=#00000000` only produces transparent fill on a stream that already
-/// carries alpha.
+/// scientific notation).
+///
+/// The trailing chain — `F_ingest_{class}` from
+/// [`crate::util::color::ingest_filter_for`] — brings the clip into the
+/// working space (linear-light, BT.2020 primaries, `gbrpf32le`) per the WS3
+/// architecture. Replaces the old `format=yuva444p10le` pixel-only
+/// promotion; that line normalized nothing (no range, no primaries), which
+/// was the structural root cause of the PIP saturation bug — both sides of
+/// `overlay` carried mis-matched color regimes. The output label `[v{idx}]`
+/// now denotes a working-space stream the downstream concat + composite
+/// chain operates on uniformly.
+///
+/// Branches on `Clip::effective_color_class()` (user override wins, falls
+/// back to the auto-detected `source_color_class`). All ingest formulas
+/// end with `format={WORKING_SPACE_PIX_FMT}` so concat sees uniform pixel
+/// formats across clips with mixed source color regimes (SDR + HLG in the
+/// same timeline → both arrive in `gbrpf32le` here).
 pub fn build_clip_video_subgraph(inputs: &ClipChainInputs) -> Result<String, ClipChainError> {
     let clip_id = clip_id(inputs.clip);
     let (in_s, out_s) = trim_seconds(inputs.clip)?;
@@ -86,8 +100,21 @@ pub fn build_clip_video_subgraph(inputs: &ClipChainInputs) -> Result<String, Cli
         clip_id.as_str(),
     )?;
 
+    // Fix #6: thread the original `color_trc` through so the SDR branch
+    // picks the correct `tin=` value for legacy SDR transfers
+    // (`smpte170m`, `bt470bg`). HDR / DV / log variants ignore the hint —
+    // they have unambiguous expected transfers handled in their own arms.
+    // The override path (`user_color_class_override`) is the user telling
+    // us "ignore the file's tags, treat this as X" — but we still pass the
+    // source's actual TRC; it's only consulted when the resolved class is
+    // SDR, so overriding to HLG / a log variant naturally drops the hint.
+    let ingest = ingest_filter_for(
+        inputs.clip.effective_color_class(),
+        inputs.clip.color_trc.as_deref(),
+    );
+
     Ok(format!(
-        "[{idx}:v]trim=start={in_s:.6}:end={out_s:.6},setpts=(PTS-STARTPTS)/{speed:.6},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},format=yuva444p10le[v{idx}]",
+        "[{idx}:v]trim=start={in_s:.6}:end={out_s:.6},setpts=(PTS-STARTPTS)/{speed:.6},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},{ingest},format={pix}[v{idx}]",
         idx = inputs.input_index,
         in_s = in_s,
         out_s = out_s,
@@ -98,6 +125,8 @@ pub fn build_clip_video_subgraph(inputs: &ClipChainInputs) -> Result<String, Cli
         cy = crop.y,
         vw = inputs.video_slot.w,
         vh = inputs.video_slot.h,
+        ingest = ingest,
+        pix = WORKING_SPACE_PIX_FMT,
     ))
 }
 
@@ -313,6 +342,22 @@ mod tests {
             visible: true,
             map_overrides: None,
             entry_transition: None,
+            // WS0 — color fields default to "no signal" for test fixtures.
+            // Downstream consumers treat `Unknown` as SDR Rec.709 so existing
+            // clip_chain assertions stay valid.
+            pix_fmt: None,
+            color_primaries: None,
+            color_trc: None,
+            color_space: None,
+            color_range: None,
+            has_dolby_vision: false,
+            camera_make: None,
+            camera_model: None,
+            source_color_class: crate::util::color::SourceColorClass::Unknown,
+            user_color_class_override: None,
+            // WS8 — test fixtures don't exercise log detection; the field
+            // stays None so these helpers keep building plain SDR clips.
+            suggested_log_class: None,
         }
     }
 
@@ -525,7 +570,15 @@ mod tests {
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(s.starts_with("[0:v]trim=start=0.000000:end=2.000000,"), "got: {}", s);
         assert!(s.contains("setpts=(PTS-STARTPTS)/1.000000"), "got: {}", s);
-        assert!(s.contains(",scale=1080:1920,format=yuva444p10le[v0]"), "got: {}", s);
+        // WS3: the per-clip subgraph now ends with the working-space
+        // ingest chain rather than `format=yuva444p10le`. SDR (Unknown
+        // here, which `ingest_filter_for` routes to the SDR chain) →
+        // `zscale=tin=bt709:t=linear,format=gbrpf32le,zscale=p=bt2020:m=bt2020nc,format=gbrpf32le[v0]`.
+        assert!(s.contains(",scale=1080:1920,"), "got: {}", s);
+        assert!(s.contains("zscale=tin=bt709:t=linear"), "got: {}", s);
+        assert!(s.contains("format=gbrpf32le"), "got: {}", s);
+        assert!(s.contains("zscale=p=bt2020:m=bt2020nc"), "got: {}", s);
+        assert!(s.ends_with("[v0]"), "got: {}", s);
         // Crop ints, not subpixel.
         assert!(!s.contains("crop=607.5"), "subpixel leaked: {}", s);
     }
@@ -696,6 +749,188 @@ mod tests {
         assert_eq!(out.audio_label.as_deref(), Some("a3"));
         assert!(out.video_subgraph.ends_with("[v3]"));
         assert!(out.audio_subgraph.as_ref().unwrap().ends_with("[a3]"));
+    }
+
+    // ---- WS3: per-class working-space ingest in clip subgraphs ----
+
+    fn make_clip_with_class(class: crate::util::color::SourceColorClass) -> Clip {
+        let mut clip = make_clip(
+            1.0,
+            fp(0.5, 0.5, 1.0),
+            Some(TrimRange { in_ms: 0, out_ms: 1000 }),
+            Some(1000),
+        );
+        clip.source_color_class = class;
+        clip
+    }
+
+    #[test]
+    fn video_subgraph_routes_hlg_through_arib_std_b67_ingest() {
+        // HLG iPhone source must enter working space via the inverse HLG
+        // OETF, not the SDR bt709 inverse EOTF. Without this branch, HLG
+        // pixels get linearized as if they were SDR, producing washed-out
+        // luminance in the working space and on through to the final
+        // composite (one half of the PIP saturation bug's surface).
+        let clip = make_clip_with_class(crate::util::color::SourceColorClass::HlgBt2020);
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        let expected = crate::util::color::ingest_filter_for(
+            crate::util::color::SourceColorClass::HlgBt2020,
+            None,
+        );
+        assert!(s.contains(&expected), "expected HLG ingest chain; got: {}", s);
+        assert!(s.contains("zscale=tin=arib-std-b67:t=linear:npl=400"), "got: {}", s);
+        assert!(s.ends_with("[v0]"), "got: {}", s);
+    }
+
+    #[test]
+    fn video_subgraph_routes_pq_through_smpte2084_ingest() {
+        let clip = make_clip_with_class(crate::util::color::SourceColorClass::PqBt2020);
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        let expected = crate::util::color::ingest_filter_for(
+            crate::util::color::SourceColorClass::PqBt2020,
+            None,
+        );
+        assert!(s.contains(&expected), "expected PQ ingest chain; got: {}", s);
+        assert!(s.contains("zscale=tin=smpte2084:t=linear:npl=1000"), "got: {}", s);
+    }
+
+    // ---- Fix #6: legacy SDR transfer threading through clip subgraph ----
+
+    #[test]
+    fn video_subgraph_routes_smpte170m_sdr_through_170m_tin() {
+        // Fix #6 acceptance: a clip whose source carries SMPTE 170M trc
+        // tagging (older DJI / GoPro / NTSC camcorder footage) must enter
+        // the working space via `tin=170m` rather than the default
+        // `tin=bt709`. The classify() function collapses both into
+        // SdrBt709, but the original trc string is threaded through
+        // ingest_filter_for via the Clip's `color_trc` field so the SDR
+        // branch picks the right inverse EOTF.
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.color_trc = Some("smpte170m".to_string());
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(
+            s.contains("zscale=tin=170m:t=linear"),
+            "smpte170m source must thread through to tin=170m: {}",
+            s,
+        );
+        assert!(
+            !s.contains("zscale=tin=bt709"),
+            "smpte170m source must NOT fall through to tin=bt709 (Fix #6): {}",
+            s,
+        );
+    }
+
+    #[test]
+    fn video_subgraph_routes_bt470bg_sdr_through_470bg_tin() {
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.color_trc = Some("bt470bg".to_string());
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(s.contains("zscale=tin=470bg:t=linear"), "got: {}", s);
+        assert!(!s.contains("zscale=tin=bt709"), "got: {}", s);
+    }
+
+    #[test]
+    fn video_subgraph_routes_plain_bt709_sdr_through_bt709_tin_unchanged() {
+        // Regression guard: the common iPhone case (bt709 source TRC)
+        // must still produce the pre-fix chain byte-for-byte.
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.color_trc = Some("bt709".to_string());
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(s.contains("zscale=tin=bt709:t=linear"), "got: {}", s);
+    }
+
+    #[test]
+    fn video_subgraph_user_override_wins_over_source_class() {
+        // `effective_color_class()` consults the override first. A clip
+        // auto-detected as SDR but user-overridden to HLG must take the
+        // HLG ingest chain.
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.user_color_class_override = Some(crate::util::color::SourceColorClass::HlgBt2020);
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(
+            s.contains("zscale=tin=arib-std-b67:t=linear:npl=400"),
+            "override must select HLG ingest, got: {}",
+            s,
+        );
+        assert!(
+            !s.contains("zscale=tin=bt709:t=linear,format=gbrpf32le"),
+            "override must NOT emit the SDR ingest, got: {}",
+            s,
+        );
+    }
+
+    #[test]
+    fn video_subgraph_ends_in_working_space_format() {
+        // WS3 invariant: every per-clip subgraph terminates with the
+        // working-space pixel format `gbrpf32le` immediately before the
+        // output label. Concat downstream requires uniform pixel formats
+        // across N inputs — a regression that lets a non-gbrpf32le format
+        // leak through would silently break mixed-source timelines.
+        for class in [
+            crate::util::color::SourceColorClass::SdrBt709,
+            crate::util::color::SourceColorClass::HlgBt2020,
+            crate::util::color::SourceColorClass::PqBt2020,
+            crate::util::color::SourceColorClass::DolbyVision,
+            crate::util::color::SourceColorClass::Unknown,
+        ] {
+            let clip = make_clip_with_class(class);
+            let inputs = ClipChainInputs {
+                input_index: 0,
+                clip: &clip,
+                source_dims: PixelDims { w: 1920, h: 1080 },
+                video_slot: slot(1080, 1920),
+                fps: 30,
+            };
+            let s = build_clip_video_subgraph(&inputs).unwrap();
+            assert!(
+                s.ends_with(",format=gbrpf32le[v0]"),
+                "class {:?} must terminate in gbrpf32le; got: {}",
+                class,
+                s,
+            );
+        }
     }
 
     #[test]

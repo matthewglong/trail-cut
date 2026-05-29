@@ -13,10 +13,11 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { Clip, Route, TrimRange, FocalPoint, Effects, MapSettings, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
+import type { CameraPreset, Clip, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
 import { resolveMapSettings, computeClipOverrides, leafPaths } from '../types';
 import type { AspectRatio } from '../lib/layout';
-import type { ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
+import type { PendingImport, ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
+import SourceFormatConfirmDialog from '../components/SourceFormatConfirmDialog';
 
 /** Map the preview-toolbar's aspect string (`'16:9' | '9:16' | '1:1' | '4:5'`)
  *  onto the export `AspectRatio` enum. `'1:1'` is preview-only — it isn't a
@@ -87,6 +88,17 @@ interface ProjectViewProps {
   onUpdateTrim: (trim: TrimRange) => void;
   onUpdateFocalPoint: (fp: FocalPoint) => void;
   onUpdateEffects: (effects: Effects) => void;
+  /** WS9 — Per-clip source-format override handler. Wired into EditToolbar's
+   *  source-format dropdown. */
+  onUpdateSourceFormat: (override: SourceColorClass | null) => void;
+  /** WS9 — Staged import waiting for the user to confirm source formats.
+   *  `null` when no dialog should appear. */
+  pendingImportClips: PendingImport | null;
+  onConfirmSourceFormats: (
+    overrides: Map<string, SourceColorClass | null>,
+    presetsToPersist: CameraPreset[],
+  ) => void;
+  onSkipSourceFormats: () => void;
   onImportFiles: () => void;
   onImportFolder: () => void;
   onImportGpx: () => void;
@@ -126,6 +138,10 @@ export default function ProjectView({
   onUpdateTrim,
   onUpdateFocalPoint,
   onUpdateEffects,
+  onUpdateSourceFormat,
+  pendingImportClips,
+  onConfirmSourceFormats,
+  onSkipSourceFormats,
   onImportFiles,
   onImportFolder,
   onImportGpx,
@@ -567,6 +583,7 @@ export default function ProjectView({
               clip={activeClip}
               onUpdateFocalPoint={onUpdateFocalPoint}
               onUpdateEffects={onUpdateEffects}
+              onUpdateSourceFormat={onUpdateSourceFormat}
               previewAspect={previewAspect}
               onChangeAspect={setPreviewAspect}
               cropPreview={cropPreview}
@@ -742,6 +759,13 @@ export default function ProjectView({
         waypoints={waypoints}
         transitionFeel={transitionFeel}
         projectLayouts={projectLayouts}
+      />
+      <SourceFormatConfirmDialog
+        open={pendingImportClips !== null}
+        clips={pendingImportClips?.clips ?? []}
+        presets={pendingImportClips?.presets ?? []}
+        onApply={onConfirmSourceFormats}
+        onSkip={onSkipSourceFormats}
       />
     </div>
   );

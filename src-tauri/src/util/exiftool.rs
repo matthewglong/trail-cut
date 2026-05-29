@@ -85,6 +85,26 @@ pub fn run_exiftool(video_files: &[String]) -> Result<Vec<ClipMetadata>, String>
                 gps,
                 resolution,
                 frame_rate,
+                // ExifTool deliberately doesn't probe color — the brief is
+                // explicit on this ("Existing ExifTool calls stay
+                // scope-limited to timestamps/GPS — do not add color
+                // extraction to ExifTool"). Color fields land at their
+                // defaults here; `commands::media` runs the ffprobe pass and
+                // merges the results in.
+                pix_fmt: None,
+                color_primaries: None,
+                color_trc: None,
+                color_space: None,
+                color_range: None,
+                has_dolby_vision: false,
+                camera_make: None,
+                camera_model: None,
+                source_color_class: crate::util::color::SourceColorClass::Unknown,
+                user_color_class_override: None,
+                // WS8 — suggestion is computed in `commands::media`'s
+                // ffprobe pass, not here (ExifTool doesn't see camera
+                // make/model in the form the knowledge base wants).
+                suggested_log_class: None,
             }
         })
         .collect();

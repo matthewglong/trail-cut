@@ -40,9 +40,13 @@
 //    of geometric primitives is a poor cost/benefit tradeoff (~80 MB
 //    native build, system deps like cairo/pango/giflib).
 //
-//  - Hand-rasterized shapes give bit-identical pixel data in preview and
-//    export by construction — no Canvas-renderer differences (text anti-
-//    aliasing, sub-pixel fill rules) to chase down.
+//  - Hand-rasterized shapes give pure, deterministic pixel data — no
+//    Canvas-renderer differences (text anti-aliasing, sub-pixel fill
+//    rules) to chase down. Preview and export each rasterize at their own
+//    pixelRatio (window.devicePixelRatio vs payload.pixelRatio); when both
+//    sides pass the same pixelRatio to `addImage`'s options, MapLibre
+//    normalizes the two textures to the same CSS-px natural size, so the
+//    rendered appearance matches even though the texel counts differ.
 //
 //  - The shapes are simple geometric primitives with analytical signed
 //    distance functions (circle: r - dist; square: half - L∞; diamond:
@@ -50,37 +54,48 @@
 
 import type { WaypointShape } from '../../types';
 
-/** Canonical SDF canvas size (px). The SDF's distance-encoding range is
- *  the shader-defined `SDF_PX = 8` canvas pixels on either side of the
- *  boundary, so the canvas only needs enough texels to hold the shape's
- *  silhouette plus an 8-px outside fringe. 128 leaves headroom for the
- *  pin's tall silhouette (tip near the bottom, head at the top) without
- *  clipping the outside fringe. */
+/** Canonical SDF canvas size, in CSS-pixel-equivalent units (the icon's
+ *  *natural display size* — what MapLibre renders at when `icon-size = 1`
+ *  on a 1:1 framebuffer). The actual texture is `WAYPOINT_ICON_SIZE *
+ *  pixelRatio` texels on each side. 128 leaves headroom for the pin's
+ *  tall silhouette (tip near the bottom, head at the top) without
+ *  clipping the outside SDF fringe. */
 export const WAYPOINT_ICON_SIZE = 128;
 
-/** SDF distance-encoding extent (canvas px) on either side of the
+/** SDF distance-encoding extent, in TEXTURE pixels on either side of the
  *  boundary. Matches MapLibre's `symbol_sdf.fragment.glsl` `#define SDF_PX
- *  8.0` — alpha 0 at +6 px outside, alpha 191 at the boundary, alpha 255
- *  at -2 px inside. */
+ *  8.0` — alpha 0 at +6 texels outside, alpha 191 at the boundary, alpha
+ *  255 at -2 texels inside.
+ *
+ *  Note this is texels, NOT CSS pixels. At pixelRatio=2 the ramp covers
+ *  4 CSS px on each side of the boundary but with 8 texels of alpha
+ *  precision — twice the gradient resolution per CSS pixel, which is
+ *  what makes the higher pixelRatio actually produce a crisper edge
+ *  through MapLibre's smoothstep AA. */
 const SDF_PX = 8;
 
-/** Canonical primary-shape radius on the SDF canvas. Every primary
- *  rasterizer draws into an envelope sized off this constant (circle r =
- *  SHAPE_CANONICAL_RADIUS, ring outer = SHAPE_CANONICAL_RADIUS, square
- *  halfSide and diamond halfDiag scaled proportionally).
+/** Canonical primary-shape radius in CSS-pixel-equivalent units. Every
+ *  primary rasterizer draws into an envelope sized off this constant
+ *  (circle r = SHAPE_CANONICAL_RADIUS, ring outer = SHAPE_CANONICAL_RADIUS,
+ *  square halfSide and diamond halfDiag scaled proportionally), then the
+ *  rasterizer scales the result by `pixelRatio` at write time.
  *
- *  `icon-size = (target_radius / SHAPE_CANONICAL_RADIUS)` at draw time, so
- *  this constant is the bridge between the user-facing
- *  `waypoints.size.circle_radius × PAINT_REFERENCE_WIDTH` value (in CSS px)
- *  and MapLibre's `icon-size` multiplier. Imported by `styleSpec.ts` and
- *  `paints.ts` — single source of truth for the conversion. */
+ *  `icon-size = (target_radius_css / SHAPE_CANONICAL_RADIUS)` at draw time —
+ *  the bridge between the user-facing `waypoints.size.circle_radius ×
+ *  PAINT_REFERENCE_WIDTH` value (CSS px) and MapLibre's `icon-size`
+ *  multiplier. Invariant under pixelRatio: a higher-pixelRatio atlas has a
+ *  larger texture but the same CSS-px natural size, so the same icon-size
+ *  multiplier produces the same display size. Imported by `styleSpec.ts`
+ *  and `paints.ts`. */
 export const SHAPE_CANONICAL_RADIUS = 48;
 
-// Per-shape canvas dimensions, all derived from SHAPE_CANONICAL_RADIUS so
-// the relative sizing across shapes (square slightly smaller than circle,
-// diamond slightly larger to compensate for its diagonal silhouette) stays
-// pinned no matter what canvas size the module is set to.
-const RING_STROKE = SHAPE_CANONICAL_RADIUS * (4 / 18); // ~10.67 px
+// Per-shape canonical dimensions (CSS-px-equivalent units), all derived
+// from SHAPE_CANONICAL_RADIUS so the relative sizing across shapes (square
+// slightly smaller than circle, diamond slightly larger to compensate for
+// its diagonal silhouette) stays pinned no matter what canvas pixelRatio
+// the module is set to. The rasterizer multiplies these by pixelRatio at
+// write time.
+const RING_STROKE = SHAPE_CANONICAL_RADIUS * (4 / 18); // ~10.67
 const SQUARE_HALF_SIDE = SHAPE_CANONICAL_RADIUS * (16 / 18); // ~42.67
 const DIAMOND_HALF_DIAG = SHAPE_CANONICAL_RADIUS * (22 / 18); // ~58.67
 
@@ -115,10 +130,25 @@ export type ShapeDomain = 'waypoint' | 'pov';
  *  — corner radius, inner-dot ratio, etc. — can land on the struct without
  *  fanning out every descriptor's signature. */
 export interface ShapeBuildOptions {
-  /** Outline thickness in canvas pixels, applied to every shape that has a
-   *  secondary outline slot (circle, pin, square, diamond). One-color shapes
-   *  (ring) ignore this. */
+  /** Outline thickness in CSS-pixel-equivalent units (same scale as
+   *  `SHAPE_CANONICAL_RADIUS`), applied to every shape that has a secondary
+   *  outline slot (circle, pin, square, diamond). One-color shapes (ring)
+   *  ignore this. The rasterizer scales this by `pixelRatio` when writing
+   *  to the texture. */
   outlineThickness: number;
+  /** Texture pixels per CSS pixel for the rasterized SDF atlas. Drives
+   *  both the canvas size (`WAYPOINT_ICON_SIZE * pixelRatio` per side) and
+   *  the in-canvas geometry scaling. Must be reported to MapLibre via
+   *  `addImage(..., { pixelRatio })` so the icon's natural display size
+   *  stays at `WAYPOINT_ICON_SIZE × WAYPOINT_ICON_SIZE` CSS pixels — the
+   *  `icon-size` formula in `paints.ts` is invariant under pixelRatio.
+   *
+   *  Pick this to match (or exceed) the framebuffer DPR the icon will be
+   *  drawn into: preview uses `window.devicePixelRatio`; export uses
+   *  `payload.pixelRatio`. Higher pixelRatio = denser SDF texture = more
+   *  alpha precision through the smoothstep AA window = visibly sharper
+   *  edges next to the underlying map tiles. */
+  pixelRatio: number;
 }
 
 /** One entry in the shape catalog. Adding a new shape is "write a primary
@@ -143,9 +173,11 @@ export interface ShapeDescriptor {
  *  shapes that don't declare their own `secondary` rasterizer, so the layer
  *  stack stays uniform: every shape registers BOTH a primary and a secondary
  *  icon, even if the secondary is just empty pixels (encoded as "infinitely
- *  outside" via alpha 0). */
-function transparentIcon(): SdfIcon {
-  const size = WAYPOINT_ICON_SIZE;
+ *  outside" via alpha 0). Size tracks `pixelRatio` so its texel dimensions
+ *  match the rest of the atlas; MapLibre's atlas packer is happier with a
+ *  consistent footprint per slot. */
+function transparentIcon(pixelRatio: number): SdfIcon {
+  const size = WAYPOINT_ICON_SIZE * pixelRatio;
   return {
     width: size,
     height: size,
@@ -153,27 +185,31 @@ function transparentIcon(): SdfIcon {
   };
 }
 
-/** Encode a signed-distance value (canvas px, positive inside) into the
- *  SDF alpha channel expected by MapLibre's `symbol_sdf.fragment.glsl`:
+/** Encode a signed-distance value (TEXTURE pixels, positive inside) into
+ *  the SDF alpha channel expected by MapLibre's `symbol_sdf.fragment.glsl`:
  *
  *    alpha = round(clamp(255 * (0.75 + d / SDF_PX), 0, 255))
  *
- *  Boundary (d=0) → alpha 191. Two px inside (d=+2) → alpha 255. Six px
- *  outside (d=-6) → alpha 0. The shader does a smoothstep around alpha
- *  0.75, so this linear distance ramp gives crisp AA at any runtime
- *  icon-size. */
-function sdfAlpha(signedDistInside: number): number {
-  const v = 0.75 + signedDistInside / SDF_PX;
+ *  Boundary (d=0) → alpha 191. Two texels inside (d=+2) → alpha 255. Six
+ *  texels outside (d=-6) → alpha 0. The shader does a smoothstep around
+ *  alpha 0.75, so this linear distance ramp gives crisp AA at any
+ *  runtime icon-size. Distance is in *texels* (not CSS px) because that's
+ *  what MapLibre's shader expects in its 8.0 constant. */
+function sdfAlpha(signedDistInsideTexels: number): number {
+  const v = 0.75 + signedDistInsideTexels / SDF_PX;
   if (v <= 0) return 0;
   if (v >= 1) return 255;
   return Math.round(v * 255);
 }
 
 /** Run a per-pixel SDF function over a bounding box and write the encoded
- *  alpha values into the data buffer. The bbox is expected to cover the
- *  shape's silhouette plus an SDF_PX-wide outside fringe (where alpha
- *  transitions from 191 down to 0); pixels outside the bbox stay at the
- *  buffer's initial zero (= "infinitely outside"). */
+ *  alpha values into the data buffer. The bbox is in TEXTURE coordinates
+ *  and is expected to cover the shape's silhouette plus an SDF_PX-wide
+ *  outside fringe (where alpha transitions from 191 down to 0); pixels
+ *  outside the bbox stay at the buffer's initial zero (= "infinitely
+ *  outside"). The SDF function operates in texel space — callers that
+ *  define geometry in CSS-equivalent units must scale by `pixelRatio`
+ *  before invoking. */
 function rasterizeSdf(
   data: Uint8Array,
   size: number,
@@ -194,10 +230,16 @@ function rasterizeSdf(
   }
 }
 
-/** Build a new RGBA8 buffer of canonical size, run a draw callback against
- *  it, and return the result wrapped in an `SdfIcon`. */
-function rasterize(draw: (data: Uint8Array, size: number) => void): SdfIcon {
-  const size = WAYPOINT_ICON_SIZE;
+/** Build a new RGBA8 buffer sized for the requested `pixelRatio`, run a
+ *  draw callback against it, and return the result wrapped in an
+ *  `SdfIcon`. The callback receives the texel size of the buffer so its
+ *  geometry can scale with pixelRatio (canvas dimensions, shape radius,
+ *  outline thickness all multiply by `pixelRatio`). */
+function rasterize(
+  pixelRatio: number,
+  draw: (data: Uint8Array, size: number) => void,
+): SdfIcon {
+  const size = WAYPOINT_ICON_SIZE * pixelRatio;
   const data = new Uint8Array(size * size * 4);
   draw(data, size);
   return { width: size, height: size, data };
@@ -247,7 +289,8 @@ function outlineSdfFrom(primarySdf: number, thickness: number): number {
 // ---------------------------------------------------------------------------
 // Shape catalog. Each entry follows the same pattern: primary = filled
 // silhouette, secondary (when set) = thin outline at the silhouette's edge
-// at the build-time `outlineThickness` canvas-px width. Stacking secondary
+// at the build-time `outlineThickness` (CSS-px-equivalent, scaled by
+// pixelRatio at rasterize time). Stacking secondary
 // above primary at the same position paints the outline over the outermost
 // band of the fill — exactly what a "stroke" looks like on a vector shape.
 //
@@ -260,75 +303,85 @@ function outlineSdfFrom(primarySdf: number, thickness: number): number {
 export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
   circle: {
     name: 'circle',
-    primary: () =>
-      rasterize((data, size) =>
-        drawFilledCircle(data, size, size / 2, size / 2, SHAPE_CANONICAL_RADIUS),
+    primary: ({ pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
+        drawFilledCircle(data, size, size / 2, size / 2, SHAPE_CANONICAL_RADIUS * pixelRatio),
       ),
-    secondary: ({ outlineThickness }) =>
-      rasterize((data, size) =>
+    secondary: ({ outlineThickness, pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
         drawCircleOutline(
           data,
           size,
           size / 2,
           size / 2,
-          SHAPE_CANONICAL_RADIUS,
-          outlineThickness,
+          SHAPE_CANONICAL_RADIUS * pixelRatio,
+          outlineThickness * pixelRatio,
         ),
       ),
     domains: ['waypoint', 'pov'],
   },
   ring: {
     name: 'ring',
-    primary: () =>
-      rasterize((data, size) =>
-        drawRing(data, size, size / 2, size / 2, SHAPE_CANONICAL_RADIUS, RING_STROKE),
+    primary: ({ pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
+        drawRing(
+          data,
+          size,
+          size / 2,
+          size / 2,
+          SHAPE_CANONICAL_RADIUS * pixelRatio,
+          RING_STROKE * pixelRatio,
+        ),
       ),
     // One-color shape — see file-level note above the catalog.
     domains: ['waypoint', 'pov'],
   },
   pin: {
     name: 'pin',
-    primary: () => rasterize((data, size) => drawPin(data, size)),
-    secondary: ({ outlineThickness }) =>
-      rasterize((data, size) => drawPinOutline(data, size, outlineThickness)),
+    primary: ({ pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) => drawPin(data, size)),
+    secondary: ({ outlineThickness, pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
+        drawPinOutline(data, size, outlineThickness * pixelRatio),
+      ),
     // Pin's needle tip semantic is waypoint-specific ("the tip is at the
     // coordinate"); it doesn't translate to POV, which paints centered.
     domains: ['waypoint'],
   },
   square: {
     name: 'square',
-    primary: () =>
-      rasterize((data, size) =>
-        drawFilledSquare(data, size, size / 2, size / 2, SQUARE_HALF_SIDE),
+    primary: ({ pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
+        drawFilledSquare(data, size, size / 2, size / 2, SQUARE_HALF_SIDE * pixelRatio),
       ),
-    secondary: ({ outlineThickness }) =>
-      rasterize((data, size) =>
+    secondary: ({ outlineThickness, pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
         drawSquareOutline(
           data,
           size,
           size / 2,
           size / 2,
-          SQUARE_HALF_SIDE,
-          outlineThickness,
+          SQUARE_HALF_SIDE * pixelRatio,
+          outlineThickness * pixelRatio,
         ),
       ),
     domains: ['waypoint', 'pov'],
   },
   diamond: {
     name: 'diamond',
-    primary: () =>
-      rasterize((data, size) =>
-        drawFilledDiamond(data, size, size / 2, size / 2, DIAMOND_HALF_DIAG),
+    primary: ({ pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
+        drawFilledDiamond(data, size, size / 2, size / 2, DIAMOND_HALF_DIAG * pixelRatio),
       ),
-    secondary: ({ outlineThickness }) =>
-      rasterize((data, size) =>
+    secondary: ({ outlineThickness, pixelRatio }) =>
+      rasterize(pixelRatio, (data, size) =>
         drawDiamondOutline(
           data,
           size,
           size / 2,
           size / 2,
-          DIAMOND_HALF_DIAG,
-          outlineThickness,
+          DIAMOND_HALF_DIAG * pixelRatio,
+          outlineThickness * pixelRatio,
         ),
       ),
     domains: ['waypoint', 'pov'],
@@ -362,38 +415,50 @@ export function shapeHasSecondary(name: string): boolean {
 }
 
 /** One `map.addImage(...)`-ready entry. Both the preview (`MapView.tsx`'s
- *  `onStyleLoad`) and the export renderer (when it lands) iterate the same
- *  array so the SDF atlas is bit-identical across the two pipelines. */
+ *  `onStyleLoad`) and the export renderer iterate the same array so the
+ *  SDF atlas matches across the two pipelines. The `options.pixelRatio`
+ *  field tells MapLibre "this texture is N texels per CSS pixel" — without
+ *  it, MapLibre would treat the icon as 1:1 and upscale on retina /
+ *  high-pixelRatio exports, producing visibly grainy edges next to the
+ *  natively-rendered map tiles. */
 export interface ShapeRegistryEntry {
   /** Image id MapLibre stores under. Shape is `waypoint-<shape>-<slot>`. */
   id: string;
   icon: SdfIcon;
-  options: { sdf: true };
+  options: { sdf: true; pixelRatio: number };
 }
 
 /** Build the full set of SDF icons needed by the waypoints layers — every
- *  shape × both slots — at the requested outline thickness (canvas px).
- *  Shapes without a `secondary` rasterizer contribute a transparent
- *  placeholder icon so the secondary symbol layer is always resolvable.
+ *  shape × both slots — at the requested outline thickness (CSS-px units)
+ *  and pixelRatio (texels per CSS pixel for the rasterized atlas). Shapes
+ *  without a `secondary` rasterizer contribute a transparent placeholder
+ *  icon so the secondary symbol layer is always resolvable.
  *
  *  Returns a fresh array each call (icons are owned `Uint8Array` buffers).
- *  Both sides (preview + export) must register identical entries; drift here
- *  means the export silently renders a different shape than the preview, so
- *  thread the same `outlineThickness` through both pipelines. */
+ *  Preview and export rasterize at their own pixelRatio (window.devicePixel
+ *  Ratio vs payload.pixelRatio); MapLibre's `addImage` then normalizes both
+ *  to the same CSS-px natural size via the matching `options.pixelRatio`,
+ *  so the rendered display size matches on both sides while each side gets
+ *  a texture density appropriate to its framebuffer. */
 export function buildAllShapeIcons(
-  opts: ShapeBuildOptions = { outlineThickness: DEFAULT_OUTLINE_THICKNESS },
+  opts: ShapeBuildOptions = {
+    outlineThickness: DEFAULT_OUTLINE_THICKNESS,
+    pixelRatio: 1,
+  },
 ): ShapeRegistryEntry[] {
   const out: ShapeRegistryEntry[] = [];
   for (const desc of Object.values(SHAPES)) {
     out.push({
       id: `waypoint-${desc.name}-primary`,
       icon: desc.primary(opts),
-      options: { sdf: true },
+      options: { sdf: true, pixelRatio: opts.pixelRatio },
     });
     out.push({
       id: `waypoint-${desc.name}-secondary`,
-      icon: desc.secondary ? desc.secondary(opts) : transparentIcon(),
-      options: { sdf: true },
+      icon: desc.secondary
+        ? desc.secondary(opts)
+        : transparentIcon(opts.pixelRatio),
+      options: { sdf: true, pixelRatio: opts.pixelRatio },
     });
   }
   return out;
@@ -612,15 +677,16 @@ function drawDiamondOutline(
 // 'center'`, so the pin gets its own anchor and is free to fill the full
 // canvas vertically rather than being squeezed into the top half.
 //
-// Geometry (128-px canvas):
+// Geometry (all ratios of the canvas `size`, so they scale automatically
+// with `pixelRatio`):
 //
 //   - Head: circle near the top of the canvas. Head radius is sized
-//     comparably to SHAPE_CANONICAL_RADIUS (48) so the user-facing
-//     `stroke_width` setting — which is calibrated against
-//     SHAPE_CANONICAL_RADIUS — produces an outline whose visual weight on
-//     the pin matches the other shapes. Head center sits inset from the
-//     canvas top to leave room for the outline at the default stroke
-//     width.
+//     comparably to SHAPE_CANONICAL_RADIUS (in CSS-px-equivalent units)
+//     so the user-facing `stroke_width` setting — which is calibrated
+//     against SHAPE_CANONICAL_RADIUS — produces an outline whose visual
+//     weight on the pin matches the other shapes. Head center sits inset
+//     from the canvas top to leave room for the outline at the default
+//     stroke width.
 //
 //   - Tip: at (size/2, size - 0.5) — the bottom-center pixel. With
 //     `icon-anchor: 'bottom'` this lands exactly on the geographic point.

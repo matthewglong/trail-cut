@@ -1,11 +1,15 @@
-import type {
-  AspectRatio,
-  ExportChannel,
-  ExportConfig,
-  ExportFps,
-  ExportGrid,
-  CellKey,
-  OutputResolution,
+import {
+  DELIVERY_TARGETS,
+  resolveDeliveryTarget,
+  type AspectRatio,
+  type DeliveryTarget,
+  type DeliveryTargetInfo,
+  type ExportChannel,
+  type ExportConfig,
+  type ExportFps,
+  type ExportGrid,
+  type CellKey,
+  type OutputResolution,
 } from '../types';
 
 export interface ExportJob {
@@ -14,15 +18,36 @@ export interface ExportJob {
   channel: ExportChannel;
   quality: OutputResolution;
   fps: ExportFps;
+  /** WS5 — resolved delivery target for this job. Drives both the filename
+   *  (target token + container extension) and the wire-level
+   *  `delivery_target`. Resolution happens at `deriveJobs` time via
+   *  `resolveDeliveryTarget(config, channel)`, so consumers never see an
+   *  unresolved value here. */
+  deliveryTarget: DeliveryTarget;
   outputPath: string;
 }
 
 const FALLBACK_SLUG = 'trailcut-export';
 
-const EXTENSIONS: Record<ExportChannel, 'mp4' | 'mov'> = {
-  composite: 'mp4',
-  map_only: 'mov',
-  video_only: 'mov',
+/** Lookup table keyed by `DeliveryTarget` id so filename derivation can read
+ *  the target's container extension and short label without re-scanning
+ *  `DELIVERY_TARGETS` per call. */
+const TARGET_INFO: Record<DeliveryTarget, DeliveryTargetInfo> =
+  DELIVERY_TARGETS.reduce(
+    (acc, info) => {
+      acc[info.id] = info;
+      return acc;
+    },
+    {} as Record<DeliveryTarget, DeliveryTargetInfo>,
+  );
+
+/** Filename-safe slug for each delivery target. Stable short tokens that
+ *  identify the file's color regime + codec at a glance. */
+const TARGET_TOKEN: Record<DeliveryTarget, string> = {
+  sdr_h265: 'sdr-h265',
+  sdr_h264: 'sdr-h264',
+  hdr_hlg: 'hdr-hlg',
+  prores: 'prores',
 };
 
 /** Stable iteration order: cells are walked top-to-bottom in the grid header
@@ -93,19 +118,27 @@ export function slugifyProjectName(projectName: string): string {
 }
 
 /** Derive the deterministic output filename for one (project, aspect,
- *  channel, quality, fps) tuple. Schema:
- *  `{slug}__{aspect}__{quality}__{channel}.{ext}` — double-underscore
- *  separators, no fps in the filename (fps differences within a cell are
- *  rare and the chip UI prevents collisions via the duplicate-disable rule;
- *  if a future axis re-enables collisions, the schema can append `__{fps}`
- *  without disturbing the existing tokens). */
+ *  channel, quality, delivery target) tuple. Schema:
+ *  `{slug}__{aspect}__{quality}__{channel}__{target}.{ext}` —
+ *  double-underscore separators. fps is intentionally absent (the chip UI's
+ *  duplicate-disable rule prevents same-cell fps collisions; the trailing
+ *  `delivery_target` is the WS5 axis that distinguishes a TikTok export from
+ *  a YouTube HDR export of the same (aspect, quality, channel) cell).
+ *
+ *  Container extension comes from the **target**, not the channel — TikTok
+ *  / IG / YouTube targets emit `.mp4`, ProRes master emits `.mov`. This
+ *  diverges from the pre-WS5 channel-keyed extension (composite was always
+ *  `.mp4`; B/C were always `.mov`); WS4's `DeliveryTarget::container_extension`
+ *  is the authoritative source. */
 export function deriveFilename(
   projectName: string,
   aspect: AspectRatio,
   channel: ExportChannel,
   quality: OutputResolution,
+  deliveryTarget: DeliveryTarget,
 ): string {
-  return `${slugifyProjectName(projectName)}__${aspectToken(aspect)}__${qualityToken(quality)}__${channelToken(channel)}.${EXTENSIONS[channel]}`;
+  const ext = TARGET_INFO[deliveryTarget].containerExtension;
+  return `${slugifyProjectName(projectName)}__${aspectToken(aspect)}__${qualityToken(quality)}__${channelToken(channel)}__${TARGET_TOKEN[deliveryTarget]}.${ext}`;
 }
 
 /** Walk the grid in (aspect-row, channel-column) order, emit one job per
@@ -124,13 +157,21 @@ export function deriveJobs(
       const configs = grid.cells[key];
       if (!configs) continue;
       for (const config of configs) {
-        const filename = deriveFilename(projectName, aspect, channel, config.quality);
+        const deliveryTarget = resolveDeliveryTarget(config, channel);
+        const filename = deriveFilename(
+          projectName,
+          aspect,
+          channel,
+          config.quality,
+          deliveryTarget,
+        );
         jobs.push({
-          id: `${aspect}-${channel}-${config.quality}-${config.fps}-${config.id}`,
+          id: `${aspect}-${channel}-${config.quality}-${config.fps}-${deliveryTarget}-${config.id}`,
           aspect,
           channel,
           quality: config.quality,
           fps: config.fps,
+          deliveryTarget,
           outputPath: `${outputDir}${sep}${filename}`,
         });
       }

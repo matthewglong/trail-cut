@@ -60,4 +60,53 @@ export const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#6abf7b',
     flexShrink: 0,
   },
+
+  // WS9 — source-format badges. The three colours correspond to
+  // `SourceFormatBadge` in lib/sourceFormat.ts:
+  //   detected → calm green
+  //   suggested → amber (action prompt)
+  //   overridden → blue (user intent)
+  badgeDetected: {
+    display: 'inline-block',
+    padding: '2px 6px',
+    fontSize: '9px',
+    fontWeight: 600,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase' as const,
+    borderRadius: '3px',
+    color: '#7fc89a',
+    backgroundColor: 'rgba(74, 124, 89, 0.18)',
+    border: '1px solid rgba(74, 124, 89, 0.45)',
+    whiteSpace: 'nowrap' as const,
+    userSelect: 'none' as const,
+  },
+  badgeSuggested: {
+    display: 'inline-block',
+    padding: '2px 6px',
+    fontSize: '9px',
+    fontWeight: 600,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase' as const,
+    borderRadius: '3px',
+    color: '#e8b86a',
+    backgroundColor: 'rgba(180, 130, 50, 0.18)',
+    border: '1px solid rgba(180, 130, 50, 0.55)',
+    whiteSpace: 'nowrap' as const,
+    cursor: 'help' as const,
+    userSelect: 'none' as const,
+  },
+  badgeOverridden: {
+    display: 'inline-block',
+    padding: '2px 6px',
+    fontSize: '9px',
+    fontWeight: 600,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase' as const,
+    borderRadius: '3px',
+    color: '#7fb3e8',
+    backgroundColor: 'rgba(70, 120, 180, 0.18)',
+    border: '1px solid rgba(70, 120, 180, 0.45)',
+    whiteSpace: 'nowrap' as const,
+    userSelect: 'none' as const,
+  },
 };

@@ -32,3 +32,5 @@ src-tauri/binaries/
 *.sw?
 
 .playwright-mcp
+# Color-pipeline teaching lab (rendered frames, swatches, montages)
+pipeline-visuals/

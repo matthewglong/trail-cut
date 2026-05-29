@@ -1,56 +1,37 @@
 {
   "main": {
-    "id": "3de48dd62e375f4e",
+    "id": "78df61e9f12387ce",
     "type": "split",
     "children": [
       {
-        "id": "0c9af28284d51ec2",
+        "id": "851ea49fa03c27e8",
         "type": "tabs",
         "children": [
           {
-            "id": "7c022f1d3bb4d621",
+            "id": "7e17282afe5f269a",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "docs/map-decorations/color-gradient.md",
-                "mode": "preview",
-                "source": false
-              },
+              "type": "empty",
+              "state": {},
               "icon": "lucide-file",
-              "title": "color-gradient"
-            }
-          },
-          {
-            "id": "30eba115a7891163",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "IMPLEMENTATION-PLAN"
+              "title": "New tab"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "vertical"
   },
   "left": {
-    "id": "e92ca36d01bc13c6",
+    "id": "cb08821242a3054e",
     "type": "split",
     "children": [
       {
-        "id": "960cd31e39cb94b5",
+        "id": "2244b483e1ca09d5",
         "type": "tabs",
         "children": [
           {
-            "id": "1790d9bb4e981598",
+            "id": "1b9e6ca66e45abe9",
             "type": "leaf",
             "state": {
               "type": "file-explorer",
@@ -63,7 +44,7 @@
             }
           },
           {
-            "id": "6631b46b0af1685f",
+            "id": "6664838e2e3fb4f6",
             "type": "leaf",
             "state": {
               "type": "search",
@@ -80,7 +61,7 @@
             }
           },
           {
-            "id": "fcb25192dcc12a9b",
+            "id": "0fe486c9676b0e91",
             "type": "leaf",
             "state": {
               "type": "bookmarks",
@@ -96,20 +77,19 @@
     "width": 300
   },
   "right": {
-    "id": "79bee7460fafd4c8",
+    "id": "80602078a4737ac3",
     "type": "split",
     "children": [
       {
-        "id": "57ff49ddb2db52b1",
+        "id": "8b688266356d6008",
         "type": "tabs",
         "children": [
           {
-            "id": "76bf4dfd58212601",
+            "id": "b368788bd9f40c20",
             "type": "leaf",
             "state": {
               "type": "backlink",
               "state": {
-                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -119,25 +99,24 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Backlinks for IMPLEMENTATION-PLAN"
+              "title": "Backlinks"
             }
           },
           {
-            "id": "418e7957368174b6",
+            "id": "f041f10c43e950e4",
             "type": "leaf",
             "state": {
               "type": "outgoing-link",
               "state": {
-                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Outgoing links from IMPLEMENTATION-PLAN"
+              "title": "Outgoing links"
             }
           },
           {
-            "id": "25e06743518573eb",
+            "id": "211cc79e5f136c0d",
             "type": "leaf",
             "state": {
               "type": "tag",
@@ -152,7 +131,7 @@
             }
           },
           {
-            "id": "2e9dc086c7efed55",
+            "id": "16d6b27cc2296034",
             "type": "leaf",
             "state": {
               "type": "all-properties",
@@ -166,18 +145,17 @@
             }
           },
           {
-            "id": "1fc3779619895fd0",
+            "id": "05eaf11124401549",
             "type": "leaf",
             "state": {
               "type": "outline",
               "state": {
-                "file": "docs/map-decorations/IMPLEMENTATION-PLAN.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Outline of IMPLEMENTATION-PLAN"
+              "title": "Outline"
             }
           }
         ]
@@ -198,38 +176,8 @@
       "bases:Create new base": false
     }
   },
-  "active": "30eba115a7891163",
+  "active": "7e17282afe5f269a",
   "lastOpenFiles": [
-    "docs/color-pipeline/phase-2/WS10-log-luts.md",
-    "docs/color-pipeline/phase-2/WS9-source-format-ui.md",
-    "docs/color-pipeline/phase-2/WS8-log-detection.md",
-    "docs/color-pipeline/phase-1/WS7-validation.md",
-    "docs/color-pipeline/phase-1/WS6-tests-fixtures.md",
-    "docs/color-pipeline/phase-1/WS5-export-ui.md",
-    "docs/color-pipeline/phase-1/WS4-delivery-transforms.md",
-    "docs/color-pipeline/phase-1/WS3-working-space-export.md",
-    "docs/color-pipeline/phase-1/WS2-thumbnail-pipeline.md",
-    "docs/color-pipeline/phase-1/WS1-proxy-pipeline.md",
-    "docs/color-pipeline/phase-1/WS0-foundation.md",
-    "docs/color-pipeline/background/design-decisions.md",
-    "docs/color-pipeline/background/investigation-findings.md",
-    "docs/color-pipeline/EXECUTION.md",
-    "docs/color-pipeline/ARCHITECTURE.md",
-    "docs/color-pipeline/README.md",
-    "docs/color-pipeline/phase-2",
-    "docs/color-pipeline/phase-1",
-    "docs/color-pipeline/background",
-    "docs/color-pipeline",
-    "src/components/Dropdown.tsx",
-    "src/components/GridPicker.tsx",
-    "src/lib/mapVisuals/perFrame.ts.tmp.17957.cdb734ef140a",
-    "selector-explorations-v2.html",
-    "src-tauri/target/debug/incremental/trail_cut-2i5rke35sdxmj/s-hipg15iuaf-0hnuyt7-6z6qiaurjgcux9kflz9m6h6jo/work-products.bin",
-    "src-tauri/target/debug/incremental/trail_cut-2i5rke35sdxmj/s-hipg15iuaf-0hnuyt7-6z6qiaurjgcux9kflz9m6h6jo/query-cache.bin",
-    "decoration-buttons-chromium.png",
-    "Untitled.md",
-    "node_modules/react-colorful/README.md",
-    "docs/map-decorations/IMPLEMENTATION-PLAN.md",
-    "docs/map-decorations/color-gradient.md"
+    "PIPELINE_DECISIONS.md"
   ]
 }

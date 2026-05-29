@@ -124,6 +124,27 @@ export default function MapView({
   const [styleVersion, setStyleVersion] = useState(0);
   const mapStyleId = mapSettings.camera.map_style;
 
+  // Track window.devicePixelRatio so SDF shape icons can be re-rasterized at
+  // the new density when the user drags the app between monitors of
+  // different DPR (retina laptop ↔ standard external). MapLibre's framebuffer
+  // already tracks DPR for vector tiles, but custom `addImage` SDF atlases
+  // are baked at register time — without this listener, the atlas stays at
+  // the original DPR and looks soft on the higher-DPR screen.
+  //
+  // `matchMedia('(resolution: Ndppx)')` flips `matches` to false when DPR
+  // changes; we re-read `window.devicePixelRatio` and propagate via state so
+  // the re-rasterize effect below re-runs.
+  const [devicePixelRatio, setDevicePixelRatio] = useState(() =>
+    typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    const onChange = () => setDevicePixelRatio(window.devicePixelRatio || 1);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [devicePixelRatio]);
+
   // Tracks the last route reference we framed via the region-intent jumpTo
   // below. Idempotence guard: we only refit once per unique route.
   const appliedRouteRef = useRef<Route | null>(null);
@@ -137,6 +158,15 @@ export default function MapView({
   const waypointsRef = useRef(waypoints);
   const routeRef = useRef(route);
   const aspectRef = useRef(aspect);
+  // Mirror devicePixelRatio onto a ref so the initial-style-load closure
+  // (which runs inside the once-on-mount map init effect, and only reads
+  // refs to avoid restarting the whole map on every prop tick) can register
+  // SDF icons at the current DPR. The re-rasterize effect below reads the
+  // state value directly and includes it in its dep list.
+  const devicePixelRatioRef = useRef(devicePixelRatio);
+  useEffect(() => {
+    devicePixelRatioRef.current = devicePixelRatio;
+  }, [devicePixelRatio]);
   const currentProjectMsRef = useRef<number | null>(null);
   useEffect(() => {
     mapSettingsRef.current = mapSettings;
@@ -326,6 +356,7 @@ export default function MapView({
       );
       for (const { id, icon, options } of buildAllShapeIcons({
         outlineThickness: initialThickness,
+        pixelRatio: devicePixelRatioRef.current,
       })) {
         if (map.hasImage(id)) map.removeImage(id);
         map.addImage(
@@ -539,6 +570,7 @@ export default function MapView({
       const thickness = outlineThicknessCanvasPx(strokeWidth, circleRadius);
       for (const { id, icon, options } of buildAllShapeIcons({
         outlineThickness: thickness,
+        pixelRatio: devicePixelRatio,
       })) {
         if (map.hasImage(id)) map.removeImage(id);
         map.addImage(
@@ -553,7 +585,7 @@ export default function MapView({
       map.triggerRepaint();
     };
     if (styleReadyRef.current) apply();
-  }, [strokeWidth, circleRadius, styleVersion]);
+  }, [strokeWidth, circleRadius, styleVersion, devicePixelRatio]);
 
   // ---- Waypoint static seed ----
   // Whenever waypoints/route/mapSettings/styleVersion changes, push the full

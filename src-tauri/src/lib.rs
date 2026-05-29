@@ -1,7 +1,7 @@
 mod commands;
 pub mod export;
 mod models;
-mod util;
+pub mod util;
 
 pub use commands::*;
 pub use models::*;
@@ -21,6 +21,7 @@ pub fn run() {
             commands::save_project,
             commands::load_project,
             commands::generate_proxy,
+            commands::regenerate_proxy_for_class,
             commands::generate_thumbnail,
             commands::generate_thumbnail_at,
             commands::get_recent_projects,
@@ -29,6 +30,9 @@ pub fn run() {
             commands::delete_project,
             commands::resolve_output_dir,
             commands::probe_encoders,
+            commands::get_camera_presets,
+            commands::set_camera_preset,
+            commands::remove_camera_preset,
             export::render_export,
         ])
         .run(tauri::generate_context!())
