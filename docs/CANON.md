@@ -31,7 +31,8 @@ Where the rest of the truth lives:
   and encode tables there are stale — code in `src-tauri/src/export/` wins).
 - **Map rendering**: `MAP_RENDERING_PLAN.md` (implemented; historical record of the lever model).
 - **Migration history**: `docs/migration/` (closed; the compiled-timeline model it built is live).
-- **Decorations**: `docs/map-decorations/` (implemented; `data-model.md` has drifted — `src/types.ts` wins).
+- **Decorations**: `docs/map-decorations/` (implemented; `data-model.md` has drifted —
+  `src/types.ts` wins, and its "schema v8 terminal" claims are stale: **v9 is current**, §1.8).
 - **Spikes**: `docs/spikes/` (rescued spike docs: HDR port build spec, native-gl jitter findings).
 - **Deliberate scope cuts**: `EXPORT_GAPS.md` (live gap registry — keep maintained).
 
