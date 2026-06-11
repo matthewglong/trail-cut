@@ -41,6 +41,30 @@ write_atomic tests + 15 color_fixtures + 4 project_parity new + 2
 encoder_probe + 2 layout-parity + 1 other). Any failure from here is a
 regression. (Pre-Phase-2 baseline was 915/7 + 349.)
 
+## Deferred follow-ups ledger (standing — check when opening any phase)
+
+Every deliberately-deferred item must have a forward owner here; never let one
+live only inside a historical phase record.
+
+- **Flush-on-close auto-save drop** (debounced save pending within 1s of
+  closing a project is cancelled, edit lost) — owner: Phase 5 Soup-zones lane.
+- **`rename_project` non-atomic write** (`std::fs::write`, same hazard class
+  Phase 2a fixed for `save_project`) — owner: Phase 5 Soup-zones lane.
+- **pip-vs-split seeded-layout divergence** (`App.makeSeededLayouts` seeds
+  split, load-path `seededLayouts` seeds pip; preserved verbatim in 2a) —
+  owner: Phase 5 Soup-zones lane.
+- **docs/ subtree staleness** (`docs/map-decorations/data-model.md` +
+  `IMPLEMENTATION-PLAN.md` v8-terminal claims; split-brained task ledgers in
+  `docs/export/tasks/` + `docs/migration/`; duplicated body in
+  `large-clip-count-composite.md`) — owner: Phase 5 Doc-lifecycle lane
+  (added to ACTION_PLAN 2026-06-11).
+- **Parity-test `working_color_space` exception** — self-removing: delete the
+  exception when a second `WorkingColorSpaceId` variant lands (instructions in
+  `src-tauri/tests/project_parity.rs`).
+- npl=203 ref-white, task 130 sidecar bundling, task 120 parity gate, three
+  silent test skips — already owned by Phases 4 / 5 Ship-deps / 3 + 5 Oracle
+  lanes; also recorded in `docs/CANON.md` §6.
+
 ## Phase 2a record (done 2026-06-11)
 
 - **Branch `fix/data-loss-save`, commit `e41c675`, merged to main `2be86ae`.**

@@ -165,8 +165,9 @@ these lanes are independent:*
 |---|---|---|
 | **Oracle hardening** | 1 (rest) | Decorations + pin in the golden-frame fixture; parity test for the per-frame paint seam (`MapView.tsx` ↔ `renderer/index.ts`); `-loglevel verbose` auto_scale assertion in CI |
 | **Renderer strangle** | 5 | Quick wins in current renderer first (`--force-color-profile=srgb`, fractional-pixelRatio SDF fix, painterPatch flag parity), then maplibre-native vector-basemap prototype behind the now-decorated golden gate; comment jitter data on upstream PR #4137 |
-| **Soup zones** | 6 | Resurrect `integration_export_parity` (B+C≡A) *first*, then typed composite IR for `filtergraph.rs:597-899`; frontend state redesign around Phase 2a's canonical Project object |
+| **Soup zones** | 6 | Resurrect `integration_export_parity` (B+C≡A) *first*, then typed composite IR for `filtergraph.rs:597-899`; frontend state redesign around Phase 2a's canonical Project object — incl. the 2a deferred fixes: flush-on-close auto-save, atomic `rename_project`, pip-vs-split seeded-layout unification |
 | **Ship deps** | 7 | Own-CI LGPL FFmpeg build gated on `assert_ffmpeg_has_zscale` + encoder probe; `nom-exif` replacing ExifTool (parity vs iPhone fixture corpus); notarization gate |
+| **Doc lifecycle** | 4 (rest) | Per docs-tree.md §7: refresh or supersession-banner `docs/map-decorations/data-model.md` + `IMPLEMENTATION-PLAN.md` (v8-terminal claims — repo is v9), fix the split-brained task ledgers in `docs/export/tasks/` + `docs/migration/`, de-duplicate `large-clip-count-composite.md` |
 
 Each lane opens with its smallest end-to-end proof (the tracer pattern) before
 widening; each strangle gets an explicit completion gate (SHIP_REVIEW §6,
