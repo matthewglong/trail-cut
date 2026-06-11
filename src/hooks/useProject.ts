@@ -4,11 +4,10 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
 import { effectiveSourceClass } from '../lib/sourceFormat';
 import { DEFAULT_MAP_SETTINGS } from '../types';
-import { defaultPipLayout } from '../lib/layout';
+import { hydrateProjectState, seededLayouts } from '../lib/projectPersistence';
 import {
   appendClipWaypoints,
   removeClipWaypoints,
-  seedWaypointsFromClips,
   syncClipWaypointTrim,
 } from '../lib/waypoints';
 
@@ -20,6 +19,12 @@ const SPLIT_MIN_GAP_MS = 100;
 interface UseProjectParams {
   projectDir: string | null;
   setProjectDir: React.Dispatch<React.SetStateAction<string | null>>;
+  /** Full deserialized `Project` as `load_project` returned it (`null` when
+   *  no project is open / not yet hydrated). Auto-save spreads this as the
+   *  canonical payload base so persisted fields the UI doesn't manage
+   *  round-trip; it also gates auto-save until hydration completes. See
+   *  `src/lib/projectPersistence.ts`. */
+  setBaseProject: React.Dispatch<React.SetStateAction<Project | null>>;
   clips: Clip[];
   setClips: React.Dispatch<React.SetStateAction<Clip[]>>;
   selectedClipId: string | null;
@@ -39,59 +44,10 @@ interface UseProjectParams {
   loadRecentProjects: () => Promise<void>;
 }
 
-/** Block-aware merge of project map settings from disk with the canonical
- *  defaults. Mirrors `resolveMapSettings` (which is for clip overrides) but
- *  drops in for the v8 nested shape — `project.map_settings` may be `null`
- *  or a partially-populated nested record from a hand-edited bundle. */
-function mergeMapSettings(
-  defaults: MapSettings,
-  incoming: MapSettings | undefined | null,
-): MapSettings {
-  if (!incoming) return defaults;
-  const incomingRouteSize = incoming.route?.size as
-    | Partial<MapSettings['route']['size']> & { full_width?: number }
-    | undefined;
-  const routeSize =
-    incomingRouteSize && incomingRouteSize.width === undefined && incomingRouteSize.full_width !== undefined
-      ? { ...incomingRouteSize, width: incomingRouteSize.full_width }
-      : incomingRouteSize;
-  return {
-    camera: { ...defaults.camera, ...incoming.camera },
-    route: {
-      ...defaults.route,
-      ...incoming.route,
-      size: { ...defaults.route.size, ...routeSize },
-    },
-    waypoints: {
-      ...defaults.waypoints,
-      ...incoming.waypoints,
-      size: { ...defaults.waypoints.size, ...incoming.waypoints?.size },
-    },
-    pov: {
-      ...defaults.pov,
-      ...incoming.pov,
-      size: { ...defaults.pov.size, ...incoming.pov?.size },
-    },
-  };
-}
-
-/** Defensive backfill mirroring the Rust `seeded_layouts()` (task 080 / 100).
- *  The Rust load path already populates `layouts` for every project; this
- *  TS-side guard handles the (theoretical) case where Rust hands us a missing
- *  field — hand-edited bundles, IPC bugs, future Rust regressions — so the
- *  editor always has a real value to render and persist. 100 expanded the
- *  seeded shape to all three aspects. */
-function seededLayouts(): ProjectLayouts {
-  return {
-    '9_16': defaultPipLayout('9_16'),
-    '4_5': defaultPipLayout('4_5'),
-    '16_9': defaultPipLayout('16_9'),
-  };
-}
-
 export function useProject({
   projectDir,
   setProjectDir,
+  setBaseProject,
   clips,
   setClips,
   selectedClipId,
@@ -123,40 +79,30 @@ export function useProject({
       const project = await invoke<Project>('load_project', { projectDir: dir });
       setProjectDir(dir);
 
+      // All load-time normalization (route `?? null` IPC guard, map-settings
+      // merge, layout/aspect backfills, legacy waypoint seeding) lives in
+      // `hydrateProjectState` — the single inverse of the auto-save payload.
       const fallbackName = dir.split('/').pop()?.replace('.trailcut', '') ?? 'Untitled';
-      setProjectName(project.name || fallbackName);
-      setProjectThumbnail(project.thumbnail ?? null);
-      setClips(project.clips);
-      // `?? null` normalizes the IPC boundary: Rust's `Project.route` is
-      // `Option<Route>` with `#[serde(skip_serializing_if = "Option::is_none")]`,
-      // so a `None` arrives over Tauri as `undefined` (missing key), not `null`.
-      // The frontend Route state is typed `Route | null`; without this guard
-      // `undefined` slips through and any `route !== null` strict check
-      // downstream silently passes, then `.trackpoints` throws.
-      setRoute(project.route ?? null);
-      setMapSettings(mergeMapSettings(DEFAULT_MAP_SETTINGS, project.map_settings));
-      setTransitionFeel(project.transition_feel);
-      // Rust's load_project backfills `layouts` when the bundle has it
-      // unset; this guard covers the edge case where the IPC payload still
-      // arrives without it (older Rust binaries, hand-edited bundles).
-      setProjectLayouts(project.layouts ?? seededLayouts());
-      // selected_export_aspect is supplied by serde's default annotation on
-      // pre-100 bundles; the `?? '9_16'` covers the same edge cases as the
-      // layouts fallback above.
-      setSelectedExportAspect(project.selected_export_aspect ?? '9_16');
-      // Pre-280 bundles lack `last_export_selection`; the Rust serde default
-      // surfaces `null`. Either way, hydrating App-level state here is the
-      // sole load-time entry point — the modal reads from this on open.
-      setLastExportSelection(project.last_export_selection ?? null);
-      // v7 waypoints. Legacy bundles arrive with `waypoints: []` from Rust
-      // (serde default on a missing field); seed from clips so the user
-      // doesn't open a project and find every map waypoint missing. The
-      // first auto-save persists the seeded list.
-      setWaypoints(
-        project.waypoints && project.waypoints.length > 0
-          ? project.waypoints
-          : seedWaypointsFromClips(project.clips),
-      );
+      const hydrated = hydrateProjectState(project, fallbackName);
+      setProjectName(hydrated.projectName);
+      setProjectThumbnail(hydrated.projectThumbnail);
+      setClips(hydrated.clips);
+      setRoute(hydrated.route);
+      setMapSettings(hydrated.mapSettings);
+      setTransitionFeel(hydrated.transitionFeel);
+      setProjectLayouts(hydrated.projectLayouts);
+      setSelectedExportAspect(hydrated.selectedExportAspect);
+      // Hydrating App-level state here is the sole load-time entry point —
+      // the Export modal reads from this on open.
+      setLastExportSelection(hydrated.lastExportSelection);
+      setWaypoints(hydrated.waypoints);
+      // Keep the full deserialized Project as the auto-save base: persisted
+      // fields the editor doesn't manage (working_color_space, start_camera,
+      // default_entry_transition, future schema additions) round-trip to
+      // disk through it. Setting it is also the auto-save arming switch —
+      // until it lands, useAutoSave refuses to write, so a half-hydrated
+      // session can never clobber a real project.json.
+      setBaseProject(project);
 
       await invoke('register_recent_project', { projectDir: dir });
 
@@ -181,6 +127,11 @@ export function useProject({
 
       await invoke('create_project', { projectDir: selected });
       await invoke('register_recent_project', { projectDir: selected });
+      // Read back the canonical `Project::default()` that create_project
+      // just wrote — it becomes the auto-save payload base (and arms
+      // auto-save). Loading from disk instead of hand-building a TS default
+      // keeps Rust the single source of truth for the fresh-project shape.
+      const project = await invoke<Project>('load_project', { projectDir: selected });
       setProjectDir(selected);
       setProjectName(selected.split('/').pop()?.replace('.trailcut', '') ?? 'Untitled');
       setProjectThumbnail(null);
@@ -196,6 +147,7 @@ export function useProject({
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
+      setBaseProject(project);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -221,6 +173,9 @@ export function useProject({
 
   function handleCloseProject() {
     setProjectDir(null);
+    // Disarm auto-save first thing: with the base cleared, no debounced
+    // write can fire against the next project's (or no project's) state.
+    setBaseProject(null);
     setProjectName('');
     setProjectThumbnail(null);
     setClips([]);
