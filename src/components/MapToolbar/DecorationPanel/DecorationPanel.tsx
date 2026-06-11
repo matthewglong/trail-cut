@@ -1211,7 +1211,7 @@ function SizeRow({
       <NumberStepper
         value={displayed}
         min={0.5}
-        max={30}
+        max={120}
         step={0.5}
         unit="px"
         decimals={1}

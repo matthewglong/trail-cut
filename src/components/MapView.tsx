@@ -19,7 +19,7 @@ import {
   resolveStaticPaints,
   buildPerFrameState,
   buildAllShapeIcons,
-  SHAPE_CANONICAL_RADIUS,
+  outlineThicknessCanvasPx,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_PULSE_B_LAYER,
@@ -30,29 +30,6 @@ import {
   WAYPOINTS_PRIMARY_LAYER,
   WAYPOINTS_SECONDARY_LAYER,
 } from '../lib/mapVisuals';
-
-/** Canvas-space outline thickness (in SDF pixels) for the user-facing
- *  `stroke_width` and `circle_radius` settings. Derivation:
- *
- *    rendered_outline_css_px = stroke_width × PAINT_REFERENCE_WIDTH
- *    icon_size               = (circle_radius × PAINT_REFERENCE_WIDTH)
- *                                 / SHAPE_CANONICAL_RADIUS
- *    canvas_thickness        = rendered_outline_css_px / icon_size
- *                            = (stroke_width / circle_radius)
- *                                 × SHAPE_CANONICAL_RADIUS
- *
- *  The dependency on `circle_radius` is why this effect must re-run when
- *  EITHER setting changes — `icon-size` scales the SDF wholesale at draw
- *  time, so to keep the on-screen outline at the user-requested fixed CSS
- *  width regardless of the dot's radius, the baked-in canvas thickness has
- *  to compensate inversely. */
-function outlineThicknessCanvasPx(
-  strokeWidth: number,
-  circleRadius: number,
-): number {
-  if (circleRadius <= 0) return 0;
-  return (strokeWidth / circleRadius) * SHAPE_CANONICAL_RADIUS;
-}
 
 interface MapViewProps {
   /** The compiled project-time timeline. Single source of truth for camera
@@ -344,9 +321,11 @@ export default function MapView({
       // style load when the source-add branch above also took place.
       //
       // Pixels come from `buildAllShapeIcons` in `shapes.ts` (pure, no
-      // DOM/Canvas) so the export renderer ships bit-identical pixels via
-      // the `staticImages` field on the InitPayload — preview/export
-      // parity by construction. `outlineThickness` is sourced from the
+      // DOM/Canvas). The export renderer runs the SAME function in its own
+      // Chrome page (init.ts) with the same outlineThickness + pixelRatio
+      // inputs, so both sides bake a bit-identical atlas — preview/export
+      // parity by construction, with no pixel buffers crossing the wire.
+      // `outlineThickness` is sourced from the
       // current `mapSettings` ref so a style swap mid-session re-registers
       // at the right thickness; settings changes between swaps are handled
       // by the dedicated re-register effect below.

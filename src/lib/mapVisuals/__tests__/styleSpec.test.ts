@@ -76,19 +76,20 @@ describe('BUILDINGS_LAYER_SPEC', () => {
 });
 
 describe('DEFAULT_MAP_SETTINGS overlay seeds', () => {
-  it('matches the lowered defaults from the refactor spec', () => {
+  it('matches the seeded defaults (bumped ~30% larger across the board)', () => {
     // Pin the seeded fractions verbatim so a deliberate change is reviewable.
     // Numbers are unitless ratios of `PAINT_REFERENCE_WIDTH` (1080 CSS px).
-    expect(DEFAULT_MAP_SETTINGS.route.size.width).toBe(0.004);
-    expect(DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius).toBe(0.015);
-    expect(DEFAULT_MAP_SETTINGS.waypoints.size.active_radius).toBe(0.019);
-    expect(DEFAULT_MAP_SETTINGS.waypoints.size.stroke_width).toBe(0.003);
-    expect(DEFAULT_MAP_SETTINGS.waypoints.size.label_size).toBe(0.014);
-    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_radius).toBe(0.012);
-    expect(DEFAULT_MAP_SETTINGS.pov.size.dot_radius).toBe(0.013);
-    expect(DEFAULT_MAP_SETTINGS.pov.size.dot_stroke_width).toBe(0.004);
-    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_start_radius).toBe(0.012);
-    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_end_radius).toBe(0.033);
+    // Kept in lockstep with the Rust `default_overlay_*` fns in models.rs.
+    expect(DEFAULT_MAP_SETTINGS.route.size.width).toBe(0.006);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius).toBe(0.02);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.active_radius).toBe(0.025);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.stroke_width).toBe(0.004);
+    expect(DEFAULT_MAP_SETTINGS.waypoints.size.label_size).toBe(0.018);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_radius).toBe(0.016);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.dot_radius).toBe(0.017);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.dot_stroke_width).toBe(0.005);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_start_radius).toBe(0.016);
+    expect(DEFAULT_MAP_SETTINGS.pov.size.pulse_end_radius).toBe(0.044);
   });
 });
 

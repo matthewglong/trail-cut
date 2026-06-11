@@ -94,7 +94,9 @@ function targetToken(target: NonNullable<ExportConfig['delivery_target']>): stri
     case 'sdr_h264':
       return 'H264';
     case 'hdr_hlg':
-      return 'HDR';
+      return 'HLG';
+    case 'hdr_pq':
+      return 'PQ';
     case 'prores':
       return 'PRORES';
   }

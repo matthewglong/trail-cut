@@ -26,6 +26,12 @@
 import maplibregl from 'maplibre-gl';
 
 import { applyPainterPatch } from './painterPatch';
+// Shared, pure SDF rasterizer — the SAME function the preview (MapView.tsx)
+// runs in its browser. Imported into the page bundle so the export renderer
+// rasterizes shape icons in-context instead of receiving them over CDP. Pure
+// math (no DOM/canvas dep), browser-safe globals only, so it bundles + type-
+// checks cleanly under the page's DOM-only tsconfig.
+import { buildAllShapeIcons } from '../../../../src/lib/mapVisuals/shapes';
 
 // ---------------------------------------------------------------------------
 // Types — local copies of the shapes the worker passes in. Keep them small
@@ -99,20 +105,15 @@ interface InitPayload {
    *  framebuffer. `options.pixelRatio` tells MapLibre the icon's CSS-px
    *  natural size — without it MapLibre would treat the texture as 1:1
    *  and silently upscale, producing grainy edges against the natively-
-   *  rendered map tiles. JSON serialisation through `page.evaluate`
-   *  converts the Uint8Array to a plain numeric object; `__init`
-   *  reconstructs a Uint8Array before calling `map.addImage(id, image,
-   *  options)`. Atlas size scales with pixelRatio² (at pixelRatio=2: ~2.5
-   *  MB raw, ~10 MB after JSON expansion — well under CDP's threshold). */
-  staticImages: Array<[
-    string,
-    {
-      width: number;
-      height: number;
-      data: Uint8Array | { [k: string]: number } | number[];
-    },
-    { sdf?: boolean; pixelRatio?: number; stretchX?: AnyJSON; stretchY?: AnyJSON; content?: AnyJSON },
-  ]>;
+   *  rendered map tiles.
+   *
+   *  Outline thickness (canvas px) for the shapes' secondary (outline) slot,
+   *  resolved by the worker from the active MapSettings (stroke_width /
+   *  circle_radius) — the same derivation MapView uses. `__init` rasterizes
+   *  the SDF atlas page-side via `buildAllShapeIcons({ outlineThickness, pixelRatio })`,
+   *  so no pixel buffers cross CDP (they did, as a JSON-stringified Uint8Array,
+   *  until they blew the 100 MB inbound cap at 4K). */
+  shapeOutlineThickness: number;
   /** Just the BUILDINGS_LAYER_SPEC if add3dBuildings; null otherwise. */
   buildingsLayer: AnyJSON | null;
   /** When true, page-side __init/__applyFrame log diagnostic breadcrumbs
@@ -473,45 +474,32 @@ window.__init = async (payload: InitPayload): Promise<void> => {
     // ordering on both sides means same atlas layout, same per-feature
     // SDF distance fields, same export pixels.
     //
-    // The worker ships raw Uint8Array buffers in `staticImages`; CDP's
-    // JSON serialization round-trip turns each into a plain numeric object
-    // ({0: 255, 1: 255, 2: 255, 3: 200, ...}), so we reconstruct a
-    // Uint8Array here before handing it to `map.addImage()` — MapLibre's
-    // image-validation rejects plain objects with a confusing "image data
-    // must be a Uint8Array or ImageData" message otherwise.
-    if (payload.staticImages) {
-      for (const [name, image, options] of payload.staticImages) {
-        const raw = image.data;
-        let bytes: Uint8Array;
-        if (raw instanceof Uint8Array) {
-          bytes = raw;
-        } else if (Array.isArray(raw)) {
-          bytes = new Uint8Array(raw);
-        } else {
-          // Plain numeric object {0:n, 1:n, ...} — typical of JSON-roundtripped
-          // typed arrays. Build a length-sized Uint8Array by reading sequential
-          // integer keys; faster than Object.values().sort() for the same
-          // result and predictable across V8 versions.
-          const len = image.width * image.height * 4;
-          bytes = new Uint8Array(len);
-          for (let i = 0; i < len; i++) bytes[i] = (raw as { [k: string]: number })[i] | 0;
-        }
-        const img = { width: image.width, height: image.height, data: bytes };
-        try {
-          // hasImage guards a redundant re-add when __init somehow re-runs
-          // on the same Page (defensive — the page lifecycle is one __init
-          // per Page in the worker today).
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          if ((map as any).hasImage(name)) (map as any).removeImage(name);
-          map.addImage(name, img as AnyJSON, options);
-          bc(`addImage ${name} ${image.width}x${image.height}`);
-        } catch (e) {
-          // Surface but don't tear down — a single missing SDF icon paints
-          // as the MapLibre fallback marker, which is visible-but-not-fatal.
-          console.error(
-            `[__init addImage ${name}] failed: ${(e as Error).message}`,
-          );
-        }
+    // Rasterize the waypoint SDF shape icons HERE, in the page's Chrome
+    // context, via the same pure `buildAllShapeIcons` the preview (MapView's
+    // onStyleLoad) runs in its browser. Generating the pixels where they're
+    // consumed means none cross CDP — the worker ships only the scalar
+    // `shapeOutlineThickness` + `pixelRatio`. Rasterizing at `payload.pixelRatio`
+    // gives the icons the same texel density the export framebuffer renders
+    // tiles at; the matching `options.pixelRatio` (set by buildAllShapeIcons)
+    // normalizes the natural display size back to a constant, so the icon-size
+    // formula in paints.ts stays pixelRatio-invariant. Same inputs + same
+    // function as the preview → bit-identical atlas, no preview/export drift.
+    for (const { id, icon, options } of buildAllShapeIcons({
+      outlineThickness: payload.shapeOutlineThickness,
+      pixelRatio: payload.pixelRatio,
+    })) {
+      try {
+        // hasImage guards a redundant re-add when __init somehow re-runs on
+        // the same Page (defensive — the page lifecycle is one __init per
+        // Page in the worker today).
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((map as any).hasImage(id)) (map as any).removeImage(id);
+        map.addImage(id, icon as AnyJSON, options);
+        bc(`addImage ${id} ${icon.width}x${icon.height}`);
+      } catch (e) {
+        // Surface but don't tear down — a single missing SDF icon paints as
+        // the MapLibre fallback marker, which is visible-but-not-fatal.
+        console.error(`[__init addImage ${id}] failed: ${(e as Error).message}`);
       }
     }
 

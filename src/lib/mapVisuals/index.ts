@@ -30,6 +30,7 @@ export {
   getShape,
   shapeHasSecondary,
   buildAllShapeIcons,
+  outlineThicknessCanvasPx,
 } from './shapes';
 export type {
   SdfIcon,

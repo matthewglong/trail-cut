@@ -170,7 +170,18 @@ describe('chipLabel', () => {
         },
         'composite',
       ),
-    ).toBe('4K·30·HDR');
+    ).toBe('4K·30·HLG');
+    expect(
+      chipLabel(
+        {
+          id: 'x',
+          quality: '2160p',
+          fps: 30,
+          delivery_target: 'hdr_pq',
+        },
+        'composite',
+      ),
+    ).toBe('4K·30·PQ');
   });
 
   it('ProRes chip on map_only / video_only shows the PRORES token', () => {

@@ -103,9 +103,36 @@ const DIAMOND_HALF_DIAG = SHAPE_CANONICAL_RADIUS * (22 / 18); // ~58.67
  *  called without an override. Picked so the default-settings outline lands
  *  at a sensible appearance for the centered shapes (circle / square /
  *  diamond) when no explicit thickness is supplied. Real production paths
- *  (MapView's re-register on settings change) compute thickness from the
- *  user setting and pass it in explicitly. */
+ *  (MapView's preview re-register and the export renderer's page-side build)
+ *  compute thickness from the user setting via `outlineThicknessCanvasPx`
+ *  and pass it in explicitly. */
 export const DEFAULT_OUTLINE_THICKNESS = (SHAPE_CANONICAL_RADIUS * 2.5) / 18; // ~6.67
+
+/** Canvas-space outline thickness (in SDF/texel-canonical px) for the
+ *  user-facing `stroke_width` and `circle_radius` settings. Shared by the
+ *  preview (`MapView`) and the export renderer (page-side in `init.ts`) so
+ *  both bake the same outline band into the SDF atlas — preview/export parity
+ *  by construction. Derivation:
+ *
+ *    rendered_outline_css_px = stroke_width × PAINT_REFERENCE_WIDTH
+ *    icon_size               = (circle_radius × PAINT_REFERENCE_WIDTH)
+ *                                 / SHAPE_CANONICAL_RADIUS
+ *    canvas_thickness        = rendered_outline_css_px / icon_size
+ *                            = (stroke_width / circle_radius)
+ *                                 × SHAPE_CANONICAL_RADIUS
+ *
+ *  The dependency on `circle_radius` is why callers that cache the atlas must
+ *  re-rasterize when EITHER setting changes — `icon-size` scales the SDF
+ *  wholesale at draw time, so to keep the on-screen outline at the
+ *  user-requested fixed CSS width regardless of the dot's radius, the
+ *  baked-in canvas thickness has to compensate inversely. */
+export function outlineThicknessCanvasPx(
+  strokeWidth: number,
+  circleRadius: number,
+): number {
+  if (circleRadius <= 0) return 0;
+  return (strokeWidth / circleRadius) * SHAPE_CANONICAL_RADIUS;
+}
 
 /** Raw pixel data for one SDF icon. Shape matches `map.addImage()`'s `image`
  *  argument verbatim — pass the returned `{ width, height, data }` triple

@@ -71,8 +71,7 @@ import {
   buildStyleSpec,
   buildStaticSourceData,
   buildPerFrameState,
-  buildAllShapeIcons,
-  DEFAULT_OUTLINE_THICKNESS,
+  outlineThicknessCanvasPx,
   resolveStaticPaints,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
@@ -476,42 +475,26 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     LIVE_MARKER_DOT_LAYER,
   ];
 
-  // SDF icon payload — every waypoint shape × both slots (primary +
-  // secondary). Each entry is [id, { width, height, data: Uint8Array },
-  // options] — the exact shape `map.addImage(id, image, options)` accepts.
-  // Pixels come from `buildAllShapeIcons` in shapes.ts (a pure function
-  // shared with the preview); each side passes its own framebuffer
-  // pixelRatio so the resulting texture density matches the framebuffer
-  // it'll be drawn into. MapLibre normalizes back to a constant CSS-px
-  // display size via the matching `options.pixelRatio`.
-  //
-  // The Uint8Array survives `JSON.stringify` in page.evaluate as a plain
-  // {0:n, 1:n, ...} object; page-side __init reconstructs a Uint8Array
-  // from it before handing the buffer to `map.addImage()`. Atlas size
-  // scales with pixelRatio²: at pixelRatio=2 each icon is 256×256×4 B =
-  // 256 KB raw (5 shapes × 2 slots = 2.5 MB raw, ~10 MB after JSON
-  // expansion) — well under CDP's argument-size threshold.
-  // Rasterize the SDF atlas at the EXPORT framebuffer's pixelRatio so the
-  // icons get the same texel density the map tiles render at. Without the
-  // matching `pixelRatio` in addImage's options below, MapLibre would treat
-  // the atlas as 1:1 and silently upscale at draw time — the icons would
-  // sample at half (or third) framebuffer density while the vector tiles
-  // render at native density, producing visibly grainy waypoint/POI edges
-  // against a crisp map. The icon-size formula in paints.ts is invariant
-  // under pixelRatio because addImage's `pixelRatio` field normalizes the
-  // icon's natural CSS-px display size back to a constant.
-  const staticImages: Array<[
-    string,
-    { width: number; height: number; data: Uint8Array },
-    { sdf: boolean; pixelRatio: number },
-  ]> = buildAllShapeIcons({
-    outlineThickness: DEFAULT_OUTLINE_THICKNESS,
-    pixelRatio: payload.pixelRatio,
-  }).map(({ id, icon, options }) => [
-    id,
-    { width: icon.width, height: icon.height, data: icon.data },
-    options,
-  ]);
+  // SDF shape icons are rasterized PAGE-SIDE (in __init), not here. Earlier
+  // the worker called `buildAllShapeIcons` and shipped the raw RGBA buffers
+  // in the setup payload, but `page.evaluate` serializes each `Uint8Array`
+  // as a JSON {0:n,1:n,...} object — a ~12× text blowup whose index keys
+  // dominate. At a 2160p export (pixelRatio 4 → 512×512 icons) the 10-icon
+  // atlas serialized to ~127 MB and tripped Chrome's 100 MB inbound-message
+  // cap, killing the browser mid-setup. The renderer page is a full Chrome
+  // context (same as the preview's), so it rasterizes via the same pure
+  // `buildAllShapeIcons` the preview uses and `addImage`s the result — no
+  // pixels cross CDP. We only ship the scalar inputs the rasterizer needs:
+  // `pixelRatio` (already in the payload) and the outline thickness, resolved
+  // here from the active `MapSettings` so it tracks the user's stroke-width /
+  // dot-radius — same derivation MapView uses, keeping the baked outline band
+  // identical across preview and export. (Previously the worker hardcoded
+  // DEFAULT_OUTLINE_THICKNESS, silently ignoring the user's stroke width on
+  // export.)
+  const shapeOutlineThickness = outlineThicknessCanvasPx(
+    payload.mapSettings.waypoints.size.stroke_width,
+    payload.mapSettings.waypoints.size.circle_radius,
+  );
 
   // Static paint sizing + layouts — layer specs ship placeholder values for
   // every paint/layout property that derives from `mapSettings`
@@ -546,16 +529,15 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     // these against the active clip's `MapSettings`, so per-clip overrides
     // (none today, but the wiring stays consistent with paints/layouts).
     staticGradients: staticPaintResolution.gradients,
-    // SDF icons for the waypoint primary + secondary symbol layers.
-    // [id, { width, height, data },
-    // options] tuples. Built once here from `buildAllWaypointSdfIcons()` —
-    // the same pure function MapView.tsx calls in onStyleLoad — so preview
-    // and export register bit-identical pixels. The page's __init loops
-    // over this AFTER static layers are added and calls
-    // `map.addImage(name, image, options)`. Re-shipped on every applySetup
-    // (including post-recycle) so the SDF atlas is restored when a fresh
-    // page is constructed.
-    staticImages,
+    // Outline thickness (canvas px) for the waypoint shapes' secondary
+    // (outline) slot. The page rasterizes the SDF icons itself via
+    // `buildAllShapeIcons({ outlineThickness: shapeOutlineThickness,
+    // pixelRatio })` AFTER static layers are added — same pure function +
+    // same inputs as MapView's onStyleLoad, so preview and export bake
+    // bit-identical pixels without shipping any over CDP. Re-resolved on
+    // every applySetup (including post-recycle) so a fresh page rebuilds
+    // the atlas from current settings.
+    shapeOutlineThickness,
     buildingsLayer: payload.mapSettings.camera.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
     // Page-side opts. `verbose` gates the page's __init/__applyFrame
     // breadcrumbs and the in-flight idle-wait diagnostic. `transport`
@@ -589,7 +571,7 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     `staticLayers=${staticLayers.length} ` +
     `staticPaints=${staticPaintResolution.paints.length} ` +
     `staticLayouts=${staticPaintResolution.layouts.length} ` +
-    `staticImages=${staticImages.length}`,
+    `shapeOutlineThickness=${shapeOutlineThickness.toFixed(2)}`,
   );
 
   // Set up the signal-based handshake BEFORE kicking off __init so we

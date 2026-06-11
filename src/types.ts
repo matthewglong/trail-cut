@@ -539,7 +539,7 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
   route: {
     mode: 'full',
     color: { mode: 'solid', solid: '#bced09' },
-    size: { width: 0.004 },
+    size: { width: 0.006 },
   },
   waypoints: {
     mode: 'full',
@@ -550,10 +550,10 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
     secondary_color: { mode: 'solid', solid: '#ffffff' },
     shape: 'circle',
     size: {
-      circle_radius: 0.015,
-      active_radius: 0.019,
-      stroke_width: 0.003,
-      label_size: 0.014,
+      circle_radius: 0.02,
+      active_radius: 0.025,
+      stroke_width: 0.004,
+      label_size: 0.018,
     },
     label_mode: 'numbered',
     active_mode: 'latest_passed',
@@ -563,11 +563,11 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
     // Matches the pre-refactor hard-coded white dot fill on `live-marker-dot`.
     secondary_color: '#ffffff',
     size: {
-      pulse_radius: 0.012,
-      dot_radius: 0.013,
-      dot_stroke_width: 0.004,
-      pulse_start_radius: 0.012,
-      pulse_end_radius: 0.033,
+      pulse_radius: 0.016,
+      dot_radius: 0.017,
+      dot_stroke_width: 0.005,
+      pulse_start_radius: 0.016,
+      pulse_end_radius: 0.044,
     },
     pulse_style: 'sonar',
     pulse_rate: 'medium',
