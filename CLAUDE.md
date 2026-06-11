@@ -1,7 +1,7 @@
 # TrailCut — Claude Code Context
 
 ## What this is
-Cross-platform desktop app (Tauri 2) for turning iPhone hiking videos + GPS routes into polished map-integrated social media videos. Ships to thousands of end users; **macOS is the current ship target, Windows is near-term**. Matthew is the developer, not the end user — "fix your environment" answers are dev-only stopgaps, never product solutions. See ARCHITECTURE.md for full design, and the pipeline/export design docs below for active decisions.
+Cross-platform desktop app (Tauri 2) for turning iPhone hiking videos + GPS routes into polished map-integrated social media videos. Ships to thousands of end users; **macOS is the current ship target, Windows is near-term**. Matthew is the developer, not the end user — "fix your environment" answers are dev-only stopgaps, never product solutions. See `docs/CANON.md` for the living decision canon, ARCHITECTURE.md for the founding design, and the design docs listed below.
 
 ## Ship-review execution (check before starting work)
 - **Progress tracker: `docs/ship-review/PROGRESS.md`** — cross-session state for the ship-review execution (plan: `docs/ship-review/ACTION_PLAN.md`, findings: `SHIP_REVIEW.md`). Read it at session start to pick up where the last session left off; update it whenever a phase advances or a decision lands.
@@ -51,13 +51,14 @@ src-tauri/                 # Rust backend
   src/
     main.rs                # Entry point
     lib.rs                 # Tauri builder, registers commands
-    models.rs              # Data types (Clip, Route, Project, MapSettings, etc.); CURRENT_SCHEMA_VERSION = 8
+    models.rs              # Data types (Clip, Route, Project, MapSettings, etc.); CURRENT_SCHEMA_VERSION = 9
     commands/              # Tauri commands, one module per area:
                            #   media, project, recent, gpx, ffmpeg, encoder, camera_presets
     export/                # Export pipeline: orchestrator, clip_chain, filtergraph, layout,
                            #   resolution, delivery, encoder, ffmpeg_sink/runner, corner_mask,
                            #   protocol (sidecar IPC), ffprobe, sink, error
-    util/                  # color, log_detection, hash, exiftool, fs
+    util/                  # color, color_space (atomic color-space registry — see docs/CANON.md),
+                           #   log_detection, hash, exiftool, fs
   sidecars/renderer/       # Headless MapLibre export renderer (TS → bundled .cjs), shares mapVisuals
   tauri.conf.json          # asset protocol enabled, scope: $HOME/**
   capabilities/            # Tauri permission capabilities
@@ -65,7 +66,7 @@ src-tauri/                 # Rust backend
 
 ## Rust backend commands (registered in `lib.rs`)
 - **Import / scan**: `scan_directory`, `import_media` (any mix of files/dirs)
-- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v8 migration chain), `rename_project`, `delete_project`
+- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v9 migration chain), `rename_project`, `delete_project`
 - **GPX**: `parse_gpx` (optionally copies into bundle)
 - **Proxies / thumbnails**: `generate_proxy`, `regenerate_proxy_for_class`, `generate_thumbnail`, `generate_thumbnail_at`
 - **Recents**: `get_recent_projects`, `register_recent_project` (registry in `~/.trailcut/recent.json`)
@@ -76,7 +77,7 @@ src-tauri/                 # Rust backend
 Self-contained directories with `.trailcut` extension:
 ```
 MyHike.trailcut/
-  project.json          # schema-versioned (currently v8): clips, route, MapSettings, export grid/configs
+  project.json          # schema-versioned (currently v9): clips, route, MapSettings, export grid/configs
   proxies/              # 720p proxy videos (hash-based filenames)
   thumbnails/           # thumbnail JPGs
   route.gpx             # copied GPS data (if imported)
@@ -97,14 +98,16 @@ Source videos are linked (absolute paths), not copied. `project.json` is schema-
 ## Phase status
 - **Phase 1 (Foundation)**: COMPLETE — import via ExifTool, chronological timeline, MapLibre map, GPX route, bundle save/load, home gallery. Missing only: drag-and-drop import (low priority).
 - **Phase 2 (Editing)**: COMPLETE — proxy generation, preview player, clip removal, trim UI, focal-point crop, speed adjustment, edit-state persistence.
-- **Phase 3 (Export)**: IN PROGRESS / largely landed — FFmpeg compositing pipeline (`src-tauri/src/export/`), headless map-frame renderer sidecar, split-layout configurator, export-modal redesign (aspect × channel grid + queue), multi-target delivery (incl. `HdrHlg`). Active work: map-export color/sharpness parity (see pipeline docs), control-panel polish (current branch `feat/control-panel`: decoration colors, shapes, tear-away controls).
+- **Phase 3 (Export)**: IN PROGRESS / largely landed — FFmpeg compositing pipeline (`src-tauri/src/export/`), headless map-frame renderer sidecar, split-layout configurator, export-modal redesign (aspect × channel grid + queue), multi-target delivery — `SdrH264`, `SdrH265`, `HdrHlg`, `HdrPq`, `ProresAlpha` all shipped. Active work: map-export color/sharpness parity (see `docs/CANON.md` open items, e.g. npl=203 HDR map reference white).
 - **Phase 4 (Polish)**: PARTIAL — map decorations (Route/Waypoints/POV with gradients + shapes) done; color grading underway (`util/color.rs`, `util/log_detection.rs`). Remaining: audio, additional map styles, undo/redo, performance, stabilization (vidstab two-pass), sidecar bundling of FFmpeg/ExifTool/renderer.
 
 ## Design docs (read before touching these areas)
-- `ARCHITECTURE.md` — overall design
-- `MAP_RENDERING_PLAN.md` — map-rendering "lever model" (cssViewport tracks slot shape, pixelRatio absorbs resolution) for preview/export parity
-- `PIPELINE_RESEARCH.md` / `PIPELINE_DECISIONS.md` / `PIPELINE_TEACHING_HANDOFF.md` — color-pipeline research, ACCEPT/REJECT/DEFER decisions
-- `EXPORT_REDESIGN_HANDOFF.md` / `EXPORT_GAPS.md` — export-modal redesign + deliberate scope cuts
+- **`docs/CANON.md` — the living decision canon.** Every still-binding decision from the retired root pipeline docs lives here (DECIDED/BINDING/OPEN/REJECTED, with code citations). For DECIDED items the cited code is the authority. The old root PIPELINE_* / COLOR_PIPELINE_SPEC / UNIVERSAL_WORKING_SPACE_REPORT docs are quarantined in `attic/` — never reference them as live.
+- **Color authority**: `src-tauri/src/util/color_space.rs` (atomic-axes registry) + `docs/color-pipeline/` + `docs/CANON.md` §1.
+- `ARCHITECTURE.md` — founding design (Apr 2026; product decisions bind, tech sections largely superseded — cross-check against code)
+- `MAP_RENDERING_PLAN.md` — map-rendering "lever model" (cssViewport tracks slot shape, pixelRatio absorbs resolution) for preview/export parity; implemented, kept as the record (SSAA extension recorded in `docs/CANON.md` §2.2)
+- `EXPORT_REDESIGN_HANDOFF.md` / `EXPORT_GAPS.md` — export-modal redesign + deliberate scope cuts (EXPORT_GAPS.md is the live gap registry)
+- `docs/spikes/` — rescued spike docs (HDR port build spec, native-gl jitter findings)
 
 ## App flow
 1. **Home screen**: New Project / Open Project + project gallery (from `~/.trailcut/recent.json`, filtered to existing bundles)
@@ -124,6 +127,6 @@ Source videos are linked (absolute paths), not copied. `project.json` is schema-
 - **mapVisuals single-source-of-truth contract**: anything derivable from `MapSettings` flows through `resolveStaticPaints` / `buildPerFrameState` in `src/lib/mapVisuals/`. Both `MapView.tsx` (preview) and the renderer sidecar apply the same returned tuples — never write an ad-hoc `setPaintProperty`/`setLayoutProperty` in `MapView` for `MapSettings`-derived state, or preview and export silently diverge.
 - **Map decorations are independent**: Route / Waypoints / POV each own their color/gradient config (no shared palette); linking is a one-shot copy button, not a binding. Route + Waypoints support gradient (by trail distance); per-clip waypoint overrides and POV are solid-only.
 - **Perceived-scale invariance**: same route + export settings must look the same apparent scale across aspect ratios and resolutions — aspect changes shape/visible-area only, resolution changes pixel density only.
-- **HDR is first-class**: `HdrHlg` delivery is near-term; pipeline decisions must keep BT.2020 working-space primaries. SDR-only simplifications are off the table.
+- **HDR is first-class and CURRENT**: `HdrHlg` and `HdrPq` delivery are shipped today, co-equal with SDR — never reason from an SDR default. Pipeline decisions must keep BT.2020 working-space primaries; SDR-only simplifications are off the table (see `docs/CANON.md` §1.9/§5.2).
 - **Asset protocol**: Tauri `protocol-asset` with `$HOME/**` scope serves local files to the webview via `convertFileSrc`.
 - **Stabilization deferred**: vidstab requires FFmpeg two-pass (not real-time previewable).
