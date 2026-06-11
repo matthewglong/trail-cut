@@ -982,6 +982,11 @@ fn default_schema_version() -> u32 {
     1
 }
 
+fn default_project_version() -> u32 {
+    // The vestigial `version` field has been 1 since the first release.
+    1
+}
+
 impl Default for MapSettings {
     fn default() -> Self {
         MapSettings {
@@ -1001,6 +1006,11 @@ pub struct Project {
     /// deserialize so legacy bundles read as v1 and get migrated.
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
+    /// Vestigial pre-`schema_version` marker — every bundle and the TS
+    /// mirror carry `version: 1` and nothing reads it. Serde-defaulted so a
+    /// wire payload without it no longer hard-fails deserialization (it had
+    /// no default, making the meaningless field load-bearing for IPC).
+    #[serde(default = "default_project_version")]
     pub version: u32,
     #[serde(default)]
     pub name: String,

@@ -5,7 +5,7 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, ProjectLayouts, TransitionFeel, Waypoint } from './types';
+import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, Project, ProjectLayouts, TransitionFeel, Waypoint } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
 import { defaultSplitLayout } from './lib/layout';
 
@@ -26,6 +26,14 @@ export default function App() {
   // Shared state lifted here to break the circular dependency
   // between useProject and useMediaImport
   const [projectDir, setProjectDir] = useState<string | null>(null);
+  // Full deserialized Project as load_project returned it — the canonical
+  // auto-save payload base (and the auto-save arming switch: null = don't
+  // save). Owned here next to projectDir; useProject sets it on open/new and
+  // clears it on close. See src/lib/projectPersistence.ts.
+  const [baseProject, setBaseProject] = useState<Project | null>(null);
+  // Last auto-save failure, surfaced in the shared error banner. Cleared by
+  // the next successful save (self-healing) or by user dismissal.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
@@ -50,6 +58,7 @@ export default function App() {
   const project = useProject({
     projectDir,
     setProjectDir,
+    setBaseProject,
     clips,
     setClips,
     selectedClipId,
@@ -71,6 +80,7 @@ export default function App() {
 
   useAutoSave({
     projectDir,
+    baseProject,
     clips,
     route,
     projectName: project.projectName,
@@ -81,6 +91,7 @@ export default function App() {
     selectedExportAspect,
     lastExportSelection,
     waypoints,
+    onSaveError: setSaveError,
   });
 
   // Auto-default project thumbnail to first clip's thumbnail
@@ -98,11 +109,12 @@ export default function App() {
   const hasProject = projectDir !== null;
 
   // Combine errors
-  const error = project.error || media.error || recent.error;
+  const error = project.error || media.error || recent.error || saveError;
   const dismissError = () => {
     project.setError(null);
     media.setError(null);
     recent.setError(null);
+    setSaveError(null);
   };
 
   if (!hasProject) {

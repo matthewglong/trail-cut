@@ -1,6 +1,6 @@
 use crate::export::layout::{default_pip_layout, AspectRatio};
 use crate::models::*;
-use crate::util::fs::ensure_dir;
+use crate::util::fs::{ensure_dir, write_atomic};
 use std::path::Path;
 
 /// Create a new project bundle directory
@@ -32,8 +32,10 @@ pub fn save_project(mut project: Project, project_dir: String) -> Result<(), Str
     let path = Path::new(&project_dir).join("project.json");
     let json = serde_json::to_string_pretty(&project)
         .map_err(|e| format!("Failed to serialize project: {}", e))?;
-    std::fs::write(&path, json).map_err(|e| format!("Failed to write project file: {}", e))?;
-    Ok(())
+    // Atomic replace (temp file + rename in the bundle directory): a crash
+    // or full disk mid-save must never leave a truncated project.json — it
+    // is the only copy of the user's edit state.
+    write_atomic(&path, json.as_bytes())
 }
 
 /// Load project from project bundle. Reads the `schema_version` field, runs
