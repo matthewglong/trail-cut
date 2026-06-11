@@ -10,19 +10,15 @@ cross-session state. Keep entries terse and dated.
 
 ## NEXT ACTION
 
-**Phases 2a + 2b — run as PARALLEL agents (disjoint files, no shared state):**
+**Phase 3 — Tracer oracle (Thread 1, thin slice).** Stand up the first
+end-to-end oracle slice: CI on every push; the HDR signal test red-by-design
+(npl=203 reference-white fix not yet landed — see `docs/CANON.md` §6 open
+items); zero silent skips (incl. fixing the known `golden_frame_parity.rs`
+TRAILCUT_CHROME_BIN silent-skip violation, flagged in CANON §1 BINDING
+loud-failures entry). See ACTION_PLAN Thread 1 for scope.
 
-- **Phase 2a — Data-loss fix (Thread 2).** Atomic project saves, canonical
-  save payload, TS↔Rust parity test. Touches save/load code
-  (`commands/project.rs` save path, `useProject`/`useAutoSave`, models) — no
-  doc files. Gate: atomic saves, canonical payload, TS↔Rust parity test.
-- **Phase 2b — Doc canon (Thread 4).** Establish the canonical doc set;
-  **harvest stale docs BEFORE moving them to attic**. Touches docs/ + root
-  *.md only — no source files. Gate: a fresh agent answers schema/HDR/canon
-  questions correctly.
-
-Both phases branch from `main` @ `2f63d90` (post-Phase-1; schema v9 is on
-main). See ACTION_PLAN for thread details.
+Branch from `main` (post-Phase-2: merges `2be86ae` + `95a0df5`, plus this
+tracker commit). Test baseline updated below.
 
 ## Phase status
 
@@ -30,18 +26,96 @@ main). See ACTION_PLAN for thread details.
 |---|---|---|
 | 0 — Quarantine (attic) | ✅ done 2026-06-11 | See Phase 0 record below |
 | 1 — Unstrand engine (Thread 0) | ✅ done 2026-06-11 | See Phase 1 record below |
-| 2a — Data-loss fix (Thread 2) | ⬜ next (parallel w/ 2b) | Gate: atomic saves, canonical payload, TS↔Rust parity test |
-| 2b — Doc canon (Thread 4) | ⬜ next (parallel w/ 2a) | Gate: fresh agent answers schema/HDR/canon questions correctly; harvest BEFORE moving stale docs to attic |
-| 3 — Tracer oracle (Thread 1 thin) | ⬜ pending | Gate: CI on every push; HDR signal test red-by-design; zero silent skips |
+| 2a — Data-loss fix (Thread 2) | ✅ done 2026-06-11 | See Phase 2a record below |
+| 2b — Doc canon (Thread 4) | ✅ done 2026-06-11 | See Phase 2b record below |
+| 3 — Tracer oracle (Thread 1 thin) | ⬜ next | Gate: CI on every push; HDR signal test red-by-design; zero silent skips |
 | 4 — HDR port (Thread 3) | ⬜ pending | Gate: tracer green; SDR unchanged; Matthew eyeball checklist (ACTION_PLAN decision log #3) |
 | 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending | Per-lane tracer slices, see ACTION_PLAN |
 
-## Test baseline (canonical, post-Phase-1, on `main` @ 2f63d90)
+## Test baseline (canonical, post-Phase-2a, on `main` @ 95a0df5)
 
-`npm run test:run` → **915 passed | 7 skipped (922), 0 failed**.
-`cargo test` → **349 passed, 0 failed** (329 lib + 15 color_fixtures + 2
-encoder_probe + 2 protocol/layout-parity + 1 other; 1 ignored). Any failure
-from here is a regression.
+`npm run test:run` → **928 passed | 7 skipped (935), 0 failed** (baseline
+915 + 13 new projectPersistence tests).
+`cargo test` → **356 passed, 0 failed, 1 ignored** (332 lib incl. 3 new
+write_atomic tests + 15 color_fixtures + 4 project_parity new + 2
+encoder_probe + 2 layout-parity + 1 other). Any failure from here is a
+regression. (Pre-Phase-2 baseline was 915/7 + 349.)
+
+## Phase 2a record (done 2026-06-11)
+
+- **Branch `fix/data-loss-save`, commit `e41c675`, merged to main `2be86ae`.**
+  10 files: new `src/lib/projectPersistence.ts` (canonical module:
+  `hydrateProjectState` / `buildSavePayload` / `mergeMapSettings` moved from
+  useProject incl. the `full_width→width` shim), rewritten `useAutoSave.ts`,
+  `useProject.ts` load path, `App.tsx` (owns `baseProject` + `saveError`),
+  `commands/project.rs` (atomic save), new `util/fs.rs::write_atomic` (temp
+  file same dir + fsync + rename, +3 tests), `models.rs` (vestigial
+  `Project.version` now `#[serde(default)]`), new shared fixture
+  `src-tauri/tests/fixtures/project_parity.json` + `tests/project_parity.rs`
+  (4 tests) + `src/lib/__tests__/projectPersistence.test.ts` (13 tests).
+- **Canonical payload**: App holds the full deserialized `Project` as loaded
+  (`baseProject`); save = spread base, overlay only the 10 live-edited
+  fields. `working_color_space` / `start_camera` / `default_entry_transition`
+  / unknown future fields ride the spread untouched. `baseProject` is also
+  the arming switch: auto-save refuses to run pre-hydration (kills
+  overwrite-with-empty hazard) and the `clips.length === 0` guard is gone, so
+  removing the last clip persists.
+- **Parity test**: fixture populates every persisted field non-default; Rust
+  side does per-key exact round-trip + real load→save tempdir round-trip
+  (extra/missing keys fail by name; fixture `schema_version` asserted ==
+  `CURRENT_SCHEMA_VERSION` so bumps force re-authoring); TS side runs the
+  fixture through the real hydrate→buildSavePayload path with deep equality +
+  `PROJECT_WIRE_KEYS satisfies Record<keyof Project, true>` compile-time
+  exhaustiveness. Documented exception: `working_color_space` (single-variant
+  enum, `skip_serializing_if` always drops it; delete exception when a second
+  working space lands).
+- **Save errors surface** in the shared error banner (same as import errors)
+  in both ProjectView and HomeScreen; self-clears on next successful save.
+- **Verified**: both suites green on main post-merge (counts above);
+  independent sonnet audit of the full diff: **PASS on all six gate items**
+  (canonical payload, no premature save, atomic write, loud errors, parity
+  fails loud with no silent skips, no regression risk; migration chain
+  untouched).
+- Known follow-ups (pre-existing, deliberately not done here): flush-on-close
+  for a debounced save pending within 1s of closing a project;
+  `rename_project` still uses non-atomic `std::fs::write`; pip-vs-split
+  seeded-layout divergence preserved verbatim.
+
+## Phase 2b record (done 2026-06-11)
+
+- **Branch `docs/canon`, commits `b7c34bf` (harvest + CLAUDE.md) → `72b3034`
+  (quarantine) → `53883ee` (staleness flag), merged to main `95a0df5`.**
+- **`docs/CANON.md` created** (~540 lines, the living decision canon): §1
+  color pipeline (9 DECIDED + 2 BINDING), §2 map rendering (2 DECIDED + 2
+  BINDING), §3 export (2 DECIDED), §4 gems (8 BINDING), §5 rejected (8
+  anti-decisions incl. dither debunk, SDR simplification, npl=1000-on-delivery,
+  literal pixel_ratio=2.0), §6 open items (npl=203 ref-white, task 130
+  sidecar bundling, task 120 parity gate, EXPORT_GAPS pointer), §7 references
+  (PIPELINE_RESEARCH §7 bibliography + UWSR [1]–[27] verbatim). Totals: 13
+  DECIDED, 12 BINDING, 8 REJECTED, 4 OPEN.
+- **CLAUDE.md corrected**: v8→v9 at 3 sites; HDR bullet → "first-class and
+  CURRENT" with all five DeliveryTargets shipped; `color_space` added to
+  util/ listing; design-docs section now points at CANON.md as canon +
+  color-authority statement + `docs/spikes/`; stale `feat/control-panel`
+  branch mention dropped.
+- **Harvest-then-quarantine order held**: only after CANON.md+CLAUDE.md were
+  committed were the five stale docs (PIPELINE_RESEARCH, PIPELINE_DECISIONS,
+  PIPELINE_TEACHING_HANDOFF, COLOR_PIPELINE_SPEC,
+  UNIVERSAL_WORKING_SPACE_REPORT) moved to `attic/superseded-docs/`
+  (deletions staged; content recoverable from git history; attic copies
+  restored in the main checkout via `git show 0eaf709:<file>`).
+- **Gate verified by a FRESH sonnet agent given only CLAUDE.md + CANON.md**:
+  answered schema = v9, HDR = shipped/current (HdrHlg + HdrPq co-equal),
+  color authority = `util/color_space.rs` + `docs/color-pipeline/` +
+  CANON §1 — all correct, zero contradictions found. Independent haiku
+  contradiction scan: **PASS** (no live references to the five moved docs;
+  no v8-as-current or HDR-near-term claims in reachable docs; the five files
+  gone from `git ls-files`). Known residual, by design: `docs/map-decorations/
+  data-model.md` + `IMPLEMENTATION-PLAN.md` still say "v8 terminal" — that doc
+  set is a later phase's scope, flagged stale in CANON's pointer.
+- Phase 1 backups (`/tmp/trailcut-pre-phase1.patch`,
+  `/tmp/color_space.rs.phase1-backup`) are now disposable (sandbox denies
+  `rm`; left in /tmp for OS cleanup).
 
 ## Phase 1 record (done 2026-06-11)
 
@@ -100,3 +174,12 @@ from here is a regression.
   `b5ce396` + UI commit `2f63d90`, both audited clean (sonnet PASS);
   `feat/control-panel` fast-forward-merged to `main`; both suites fully green
   on main; gate verified. Next: Phases 2a + 2b as parallel agents.
+- **2026-06-11** — Phases 2a + 2b executed as parallel worktree agents off
+  main `0eaf709`. 2a (`e41c675` → merge `2be86ae`): canonical save payload,
+  atomic writes, loud save errors, TS↔Rust project parity test; suites
+  928/7/0 + 356/0 on main; sonnet audit PASS (all 6 gate items). 2b
+  (`b7c34bf`..`53883ee` → merge `95a0df5`): docs/CANON.md harvested from the
+  five stale pipeline docs, CLAUDE.md drift fixed (v9, HDR current), docs
+  quarantined to attic/superseded-docs/; fresh-agent gate quiz PASS, haiku
+  contradiction scan PASS. Next: Phase 3 — tracer oracle (Thread 1 thin
+  slice).
