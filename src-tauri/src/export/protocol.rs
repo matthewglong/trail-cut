@@ -29,15 +29,20 @@ pub struct Viewport {
 ///
 /// `css_viewport` is the CSS-pixel viewport size the renderer page is laid
 /// out at (matches `canonicalMapCssWidth(aspect)` on the W axis). `framebuffer`
-/// is the actual pixel buffer the worker writes back — equal to the map slot
-/// pixel dims. `pixel_ratio = framebuffer.w / css_viewport.w` (a float;
-/// < 1 for downscaled insets, > 1 for high-res exports).
+/// is the WebGL drawing-buffer the renderer paints into — the map slot dims ×
+/// the SSAA supersample factor. `readback` is the dims the renderer
+/// downsamples that buffer to (on-GPU) and writes back — equal to the map
+/// slot pixel dims, which is what `frame_bytes_per_input` validates against.
+/// `pixel_ratio = framebuffer.w / css_viewport.w` (a float; carries the
+/// supersample factor, so > 1 for every supersampled export).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupPayload {
     #[serde(rename = "cssViewport")]
     pub css_viewport: Viewport,
     #[serde(rename = "framebuffer")]
     pub framebuffer: Viewport,
+    #[serde(rename = "readback")]
+    pub readback: Viewport,
     #[serde(rename = "pixelRatio")]
     pub pixel_ratio: f64,
     pub fps: u32,
@@ -52,6 +57,8 @@ struct SetupWire<'a> {
     css_viewport: Viewport,
     #[serde(rename = "framebuffer")]
     framebuffer: Viewport,
+    #[serde(rename = "readback")]
+    readback: Viewport,
     #[serde(rename = "pixelRatio")]
     pixel_ratio: f64,
     fps: u32,
@@ -72,6 +79,7 @@ pub fn setup_line(payload: &SetupPayload) -> serde_json::Result<String> {
         cmd: "setup",
         css_viewport: payload.css_viewport,
         framebuffer: payload.framebuffer,
+        readback: payload.readback,
         pixel_ratio: payload.pixel_ratio,
         fps: payload.fps,
         project_state: &payload.project_state,
@@ -222,6 +230,7 @@ mod tests {
         let payload = SetupPayload {
             css_viewport: Viewport { w: 200, h: 400 },
             framebuffer: Viewport { w: 100, h: 200 },
+            readback: Viewport { w: 50, h: 100 },
             pixel_ratio: 0.5,
             fps: 30,
             project_state: serde_json::json!({
@@ -242,6 +251,8 @@ mod tests {
         assert_eq!(parsed["cssViewport"]["h"], 400);
         assert_eq!(parsed["framebuffer"]["w"], 100);
         assert_eq!(parsed["framebuffer"]["h"], 200);
+        assert_eq!(parsed["readback"]["w"], 50);
+        assert_eq!(parsed["readback"]["h"], 100);
         assert_eq!(parsed["pixelRatio"], 0.5);
         assert_eq!(parsed["fps"], 30);
         assert_eq!(parsed["mapSettings"]["map_style"], "default");

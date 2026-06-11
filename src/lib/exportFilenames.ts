@@ -47,6 +47,7 @@ const TARGET_TOKEN: Record<DeliveryTarget, string> = {
   sdr_h265: 'sdr-h265',
   sdr_h264: 'sdr-h264',
   hdr_hlg: 'hdr-hlg',
+  hdr_pq: 'hdr-pq',
   prores: 'prores',
 };
 

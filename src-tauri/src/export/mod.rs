@@ -48,7 +48,8 @@ pub use filtergraph::{
 };
 pub use layout::{
     canonical_map_css_width, canonical_map_viewport, clamp_layout, default_layout,
-    default_pip_layout, default_split_layout, legal_split_sides, output_dims, resolve_slots,
+    default_pip_layout, default_split_layout, legal_split_sides, map_supersample_factor,
+    output_dims, resolve_slots,
     AspectRatio, CanonicalMapViewport, CornerRadiusSlot, LayoutConfig, LayoutDescriptor,
     NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts,
     SlotResolution, SplitSide,
@@ -474,12 +475,19 @@ async fn render_export_map_only(
 /// output resolution.
 ///
 /// Computes the renderer-worker's three viewport-shape fields under the
-/// multiplier model (MAP_RENDERING_PLAN.md §"The lever model"):
-/// - `framebuffer` = map slot pixel dims (what gets read back into RGBA).
-/// - `pixel_ratio = multiplier = output_dims(aspect, resolution).w /
-///   output_dims(aspect, P1080).w` — purely a function of (aspect,
-///   resolution), independent of slot shape. `pixel_ratio ∈ {2/3, 1, 4/3, 2}`
-///   for the four `OutputResolution` variants.
+/// multiplier model (MAP_RENDERING_PLAN.md §"The lever model"), then applies
+/// the SSAA supersample factor on top of the framebuffer/pixelRatio:
+/// - `framebuffer` = map slot pixel dims × `map_supersample_factor` — the
+///   high-res WebGL buffer the renderer paints into.
+/// - `readback` = map slot pixel dims — the buffer the renderer downsamples
+///   that framebuffer to ON-GPU and writes back, so supersampling never
+///   inflates the wire (the readback bytes match `frame_bytes_per_input`).
+/// - `pixel_ratio = multiplier × factor`, where `multiplier =
+///   output_dims(aspect, resolution).w / output_dims(aspect, P1080).w` is
+///   purely a function of (aspect, resolution) (∈ {2/3, 1, 4/3, 2}) and
+///   `factor` is the SSAA factor (∈ {2, 3} for the exposed exports).
+///   Multiplying only framebuffer/pixelRatio supersamples without changing
+///   apparent scale (zoom is interpreted at `css_viewport`).
 /// - `css_viewport = (round(slot_w / multiplier), round(slot_h /
 ///   multiplier))`. The CSS viewport aspect matches the **slot** aspect (not
 ///   `canonical_map_css_width` on the W axis any more) so MapLibre paints
@@ -499,24 +507,43 @@ fn build_setup_payload(
     fps: u32,
     project_state: Value,
 ) -> SetupPayload {
-    let framebuffer = Viewport { w: map_slot.w, h: map_slot.h };
-    // Delegate the pure math to `canonical_map_viewport` in layout.rs so the
-    // renderer worker, this orchestrator helper, and the TS↔Rust parity tests
-    // all share one derivation. See `canonical_map_viewport`'s doc for the
-    // contract.
-    let canonical = canonical_map_viewport(aspect, framebuffer.w, framebuffer.h, resolution);
-    let drift_bound = canonical.pixel_ratio * 0.5 + 1e-9;
+    // Delegate the zoom-invariant lever math to `canonical_map_viewport` in
+    // layout.rs so the renderer worker, this orchestrator helper, and the
+    // TS↔Rust parity tests all share one derivation. See
+    // `canonical_map_viewport`'s doc for the contract.
+    let canonical = canonical_map_viewport(aspect, map_slot.w, map_slot.h, resolution);
+
+    // SSAA: render the map into a framebuffer `factor`× the slot, then
+    // downsample it back to slot dims ON-GPU in the renderer (see the
+    // renderer's `captureFramebufferIntoBuf`) — so supersampling never inflates
+    // the frame-transport bytes. `framebuffer` is the high-res GPU render
+    // buffer; `readback` is the slot-sized buffer the renderer returns, which
+    // is what `frame_bytes_per_input` validates. `cssViewport` is untouched —
+    // zoom is interpreted at the CSS viewport, so multiplying ONLY the
+    // framebuffer/pixelRatio supersamples without changing apparent scale.
+    // `framebuffer = slot * factor` is exact (integer factor), so `css *
+    // (pixel_ratio*factor)` tracks it within the same per-axis rounding drift
+    // the renderer page already pads/crops.
+    let factor = map_supersample_factor(map_slot.w, map_slot.h);
+    let framebuffer = Viewport {
+        w: map_slot.w * factor,
+        h: map_slot.h * factor,
+    };
+    let readback = Viewport {
+        w: map_slot.w,
+        h: map_slot.h,
+    };
+    let pixel_ratio = canonical.pixel_ratio * factor as f64;
+    let drift_bound = pixel_ratio * 0.5 + 1e-9;
     debug_assert!(
-        (canonical.css_w as f64 * canonical.pixel_ratio - framebuffer.w as f64).abs()
-            <= drift_bound,
+        (canonical.css_w as f64 * pixel_ratio - framebuffer.w as f64).abs() <= drift_bound,
         "cssViewport.w * pixelRatio drifted from framebuffer.w by more than pr/2: css_w={} pr={} fb_w={}",
-        canonical.css_w, canonical.pixel_ratio, framebuffer.w,
+        canonical.css_w, pixel_ratio, framebuffer.w,
     );
     debug_assert!(
-        (canonical.css_h as f64 * canonical.pixel_ratio - framebuffer.h as f64).abs()
-            <= drift_bound,
+        (canonical.css_h as f64 * pixel_ratio - framebuffer.h as f64).abs() <= drift_bound,
         "cssViewport.h * pixelRatio drifted from framebuffer.h by more than pr/2: css_h={} pr={} fb_h={}",
-        canonical.css_h, canonical.pixel_ratio, framebuffer.h,
+        canonical.css_h, pixel_ratio, framebuffer.h,
     );
     let css_viewport = Viewport {
         w: canonical.css_w,
@@ -525,7 +552,8 @@ fn build_setup_payload(
     SetupPayload {
         css_viewport,
         framebuffer,
-        pixel_ratio: canonical.pixel_ratio,
+        readback,
+        pixel_ratio,
         fps,
         project_state,
     }

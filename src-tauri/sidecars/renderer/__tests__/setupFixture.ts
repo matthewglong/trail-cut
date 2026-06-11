@@ -24,6 +24,7 @@ import {
   type Clip,
   type Route,
   type MapSettings,
+  type Waypoint,
 } from '../../../../src/types';
 
 export interface SetupFixtureOptions {
@@ -48,6 +49,10 @@ export interface SetupFixtureOptions {
   route?: Route | null;
   /** Merged into the default mapSettings. */
   mapSettings?: Partial<MapSettings>;
+  /** First-class waypoints (schema v7). The renderer's `buildStaticSourceData`
+   *  requires this list; the orchestrator always sends it (`[]` when none).
+   *  Defaults to `[]`. */
+  waypoints?: Waypoint[];
 }
 
 const DEFAULT_CLIP: Clip = {
@@ -154,12 +159,20 @@ export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
     cmd: 'setup' as const,
     cssViewport: { w: cssViewportW, h: cssViewportH },
     framebuffer: { w: framebufferW, h: framebufferH },
+    // This fixture models no SSAA supersampling (pixelRatio carries only the
+    // output-resolution multiplier, framebuffer == the input dims), so the
+    // readback target equals the framebuffer — the page's downsample path
+    // stays inactive (downsampleActive = framebuffer != readback).
+    readback: { w: framebufferW, h: framebufferH },
     pixelRatio,
     fps,
     timeline,
     route,
     clips,
     mapSettings,
+    // Always present per the SetupCmd contract; the orchestrator sends `[]`
+    // when the project has no waypoints. `buildStaticSourceData` iterates it.
+    waypoints: opts.waypoints ?? [],
   };
 }
 

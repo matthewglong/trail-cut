@@ -105,12 +105,18 @@ interface SetupCmd {
    *  (which can differ from the full export's aspect in composite layouts)
    *  is preserved. */
   cssViewport: { w: number; h: number };
-  /** Actual pixel buffer the renderer writes — equals the map slot pixel
-   *  dims. Readback (`gl.readPixels` / PNG decode) is sized to these. */
+  /** High-res WebGL drawing buffer the renderer paints into — the map slot
+   *  pixel dims × the SSAA supersample factor. */
   framebuffer: { w: number; h: number };
-  /** `framebuffer.w / cssViewport.w` (a float; < 1 for downscaled insets,
-   *  > 1 for high-res exports). Fed to MapLibre's `pixelRatio` constructor
-   *  arg and to `page.setViewport`'s `deviceScaleFactor`. */
+  /** Dims the renderer downsamples `framebuffer` to (on-GPU) and writes back
+   *  — equals the map slot pixel dims. The returned RGBA buffer is sized to
+   *  these (`readback.w * readback.h * 4`), so supersampling never inflates
+   *  the wire. */
+  readback: { w: number; h: number };
+  /** `framebuffer.w / cssViewport.w` (a float; carries the supersample
+   *  factor, so > 1 for every supersampled export). Fed to MapLibre's
+   *  `pixelRatio` constructor arg and to `page.setViewport`'s
+   *  `deviceScaleFactor`. */
   pixelRatio: number;
   fps: number;
   timeline: CompiledTimeline;
@@ -525,6 +531,7 @@ async function applySetup(p: Page, payload: SetupCmd): Promise<void> {
     style,
     cssViewport: payload.cssViewport,
     framebuffer: payload.framebuffer,
+    readback: payload.readback,
     pixelRatio: payload.pixelRatio,
     add3dBuildings: payload.mapSettings.camera.map_style === '3d',
     staticSources,
@@ -873,17 +880,30 @@ async function renderFrame(cmd: RenderCmd): Promise<void> {
     const decodeStart = Date.now();
     rgba = Buffer.from(applyResult.rgbaB64, 'base64');
     decodeMs = Date.now() - decodeStart;
-    const expected = payload.framebuffer.w * payload.framebuffer.h * 4;
+    // The page downsamples the supersampled framebuffer to `readback` (slot)
+    // dims on-GPU before returning, so the buffer is readback-sized.
+    const expected = payload.readback.w * payload.readback.h * 4;
     if (rgba.length !== expected) {
       throw new Error(
-        `readpixels: got ${rgba.length}B, expected ${expected}B (${payload.framebuffer.w}x${payload.framebuffer.h}*4)`,
+        `readpixels: got ${rgba.length}B, expected ${expected}B (${payload.readback.w}x${payload.readback.h}*4)`,
       );
     }
     fstamp(`readpixels decode ${rgba.length}B in ${decodeMs}ms`);
   } else {
     // Legacy PNG transport — Page.captureScreenshot then pngjs. The clip
     // rect is in CSS-pixel space; Chrome's screenshot encodes at the page's
-    // device-scale-factor, so the decoded PNG is framebuffer-sized.
+    // device-scale-factor, so the decoded PNG is framebuffer-sized. The
+    // on-GPU SSAA downsample lives only in the readpixels path's
+    // captureFramebufferIntoBuf, so PNG can't produce readback-sized frames
+    // when supersampling is active — fail loudly rather than emit wrong dims.
+    if (payload.framebuffer.w !== payload.readback.w
+      || payload.framebuffer.h !== payload.readback.h) {
+      throw new Error(
+        'PNG transport does not support SSAA supersampling '
+        + `(framebuffer ${payload.framebuffer.w}x${payload.framebuffer.h} != `
+        + `readback ${payload.readback.w}x${payload.readback.h}); use the default readpixels transport`,
+      );
+    }
     const shotStart = Date.now();
     const pngBuf = (await page.screenshot({
       type: 'png',

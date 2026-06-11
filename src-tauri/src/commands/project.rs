@@ -68,7 +68,7 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 
     let mut project = match version {
         1 => {
-            // Chain v1 → v2 → … → v8. Each step is value-level until the
+            // Chain v1 → v2 → … → v9. Each step is value-level until the
             // final `from_value` so a partially-migrated bundle (e.g. an
             // interrupted save) reads through cleanly.
             let v2 = migrate_v1_to_v2_value(raw)?;
@@ -77,7 +77,8 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
             let v5 = migrate_v4_to_v5_value(v4)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
-            migrate_v7_to_v8(v7)?
+            let v8 = migrate_v7_to_v8_value(v7)?;
+            migrate_v8_to_v9(v8)?
         }
         2 => {
             let v3 = migrate_v2_to_v3_value(raw)?;
@@ -85,36 +86,45 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
             let v5 = migrate_v4_to_v5_value(v4)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
-            migrate_v7_to_v8(v7)?
+            let v8 = migrate_v7_to_v8_value(v7)?;
+            migrate_v8_to_v9(v8)?
         }
         3 => {
             let v4 = migrate_v3_to_v4_value(raw)?;
             let v5 = migrate_v4_to_v5_value(v4)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
-            migrate_v7_to_v8(v7)?
+            let v8 = migrate_v7_to_v8_value(v7)?;
+            migrate_v8_to_v9(v8)?
         }
         4 => {
             let v5 = migrate_v4_to_v5_value(raw)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
-            migrate_v7_to_v8(v7)?
+            let v8 = migrate_v7_to_v8_value(v7)?;
+            migrate_v8_to_v9(v8)?
         }
         5 => {
             let v6 = migrate_v5_to_v6_value(raw)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
-            migrate_v7_to_v8(v7)?
+            let v8 = migrate_v7_to_v8_value(v7)?;
+            migrate_v8_to_v9(v8)?
         }
         6 => {
             let v7 = migrate_v6_to_v7_value(raw)?;
-            migrate_v7_to_v8(v7)?
+            let v8 = migrate_v7_to_v8_value(v7)?;
+            migrate_v8_to_v9(v8)?
         }
-        7 => migrate_v7_to_v8(raw)?,
-        8 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v8 project: {}", e))?,
+        7 => {
+            let v8 = migrate_v7_to_v8_value(raw)?;
+            migrate_v8_to_v9(v8)?
+        }
+        8 => migrate_v8_to_v9(raw)?,
+        9 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v9 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1–v8)",
+                "Unknown project schema version {} (this app supports v1–v9)",
                 version
             ));
         }
@@ -337,7 +347,7 @@ fn migrate_v6_to_v7(raw: serde_json::Value) -> Result<Project, String> {
 /// into 4 nested blocks (`camera` / `route` / `waypoints` / `pov`) per the
 /// table in `docs/map-decorations/data-model.md` §8. Most projects have
 /// `map_settings: null` and migrate as no-ops.
-fn migrate_v7_to_v8(mut raw: serde_json::Value) -> Result<Project, String> {
+fn migrate_v7_to_v8_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Some(obj) = raw.as_object_mut() {
         if let Some(ms) = obj.get_mut("map_settings") {
             if let Some(map) = ms.as_object_mut() {
@@ -356,15 +366,47 @@ fn migrate_v7_to_v8(mut raw: serde_json::Value) -> Result<Project, String> {
                 }
             }
         }
+        obj.insert("schema_version".into(), serde_json::Value::from(8u32));
+    } else {
+        return Err("v7 project root is not a JSON object".into());
+    }
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v7 → v8 migration that returns a parsed Project at
+/// v8. Wraps `migrate_v7_to_v8_value`.
+#[cfg(test)]
+fn migrate_v7_to_v8(raw: serde_json::Value) -> Result<Project, String> {
+    let v8 = migrate_v7_to_v8_value(raw)?;
+    let mut project: Project = serde_json::from_value(v8)
+        .map_err(|e| format!("Failed to parse v7 project during v8 migration: {}", e))?;
+    project.schema_version = 8;
+    Ok(project)
+}
+
+/// v8 → v9 migration (value-form). Purely additive: v9 introduces the
+/// project-level `working_color_space` and the per-clip `color_space_override`,
+/// both of which serde supplies via `#[serde(default)]` when absent. Existing
+/// exports are byte-identical (the default working space matches the pre-v9
+/// hardcoded constants), so the migration only stamps the version.
+fn migrate_v8_to_v9_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
+    if let Some(obj) = raw.as_object_mut() {
         obj.insert(
             "schema_version".into(),
             serde_json::Value::from(CURRENT_SCHEMA_VERSION),
         );
     } else {
-        return Err("v7 project root is not a JSON object".into());
+        return Err("v8 project root is not a JSON object".into());
     }
-    let mut project: Project = serde_json::from_value(raw)
-        .map_err(|e| format!("Failed to parse v7 project during v8 migration: {}", e))?;
+    Ok(raw)
+}
+
+/// v8 → v9 migration returning a parsed Project. Used as the final step of the
+/// load chain for every version path.
+fn migrate_v8_to_v9(raw: serde_json::Value) -> Result<Project, String> {
+    let v9 = migrate_v8_to_v9_value(raw)?;
+    let mut project: Project = serde_json::from_value(v9)
+        .map_err(|e| format!("Failed to parse v8 project during v9 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
@@ -1426,7 +1468,7 @@ mod tests {
             "waypoints": []
         });
         let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 8);
         assert!(project.map_settings.is_none());
 
         // A subsequent serde load with a populated map_settings yields the
@@ -1485,7 +1527,7 @@ mod tests {
             "waypoints": []
         });
         let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 8);
         let ms = project
             .map_settings
             .expect("map_settings must round-trip into the nested shape");
@@ -1564,7 +1606,7 @@ mod tests {
             "waypoints": []
         });
         let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 8);
         let overrides = project.clips[0]
             .map_overrides
             .as_ref()
@@ -1613,7 +1655,7 @@ mod tests {
             "waypoints": []
         });
         let project = migrate_v7_to_v8(v7).expect("v7 → v8 migration must succeed");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 8);
         let overrides = project.clips[0]
             .map_overrides
             .as_ref()
@@ -1628,6 +1670,30 @@ mod tests {
             .expect("pov.size block must be populated");
         assert_eq!(size.pulse_radius, Some(0.018));
         assert!(size.dot_radius.is_none());
+    }
+
+    #[test]
+    fn migrate_v8_to_v9_stamps_version_and_defaults_working_color_space() {
+        // v8 → v9 is purely additive: a v8 bundle with no `working_color_space`
+        // and no per-clip `color_space_override` migrates to v9 with the
+        // default working space (byte-identical to the pre-v9 pipeline).
+        let v8 = serde_json::json!({
+            "schema_version": 8,
+            "version": 1,
+            "name": "v8 project",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": null,
+            "waypoints": []
+        });
+        let project = migrate_v8_to_v9(v8).expect("v8 → v9 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 9);
+        assert_eq!(
+            project.working_color_space,
+            crate::models::WorkingColorSpaceId::LinearBt2020Full,
+        );
     }
 
     #[test]

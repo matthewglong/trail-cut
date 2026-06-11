@@ -133,6 +133,54 @@ pub fn canonical_map_viewport(
     }
 }
 
+/// Hard upper bound on the supersampled map render's longest edge, in pixels.
+///
+/// Caps `slot_edge * factor` so the WebGL drawing buffer the headless renderer
+/// allocates stays within the `MAX_TEXTURE_SIZE` / `MAX_RENDERBUFFER_SIZE`
+/// budget of the GPUs we ship to. 8192 is a safe floor on the macOS ship
+/// target (Apple GPUs report 16384; modern Intel Macs ≥ 8192) and on
+/// near-term Windows discrete/integrated GPUs; 7680 (= 2× a 4K-wide slot)
+/// leaves headroom under that floor.
+pub const MAP_SUPERSAMPLE_MAX_EDGE: u32 = 7680;
+
+/// `3×` is reserved for slots whose supersampled render stays within this
+/// longest-edge budget — i.e. small/inset map slots, where the extra
+/// supersampling is cheap. Full-frame exports (whose 3× would blow past this)
+/// fall back to `2×`. Set to 4320 (a 4K *short* edge) so a full-frame 1440p
+/// or 2160p slot lands on 2×, but PiP insets up to ~1440 px get 3×.
+pub const MAP_SUPERSAMPLE_TRIPLE_MAX_EDGE: u32 = 4320;
+
+/// Supersampling (SSAA) factor for the export map render.
+///
+/// The headless renderer paints the map at `slot_dims * factor` on the GPU,
+/// then downsamples back to `slot_dims` **inside the renderer** (gamma-space,
+/// matching the preview's compositor) before the frame ever crosses the wire
+/// — so supersampling costs GPU render time but does NOT inflate the
+/// frame-transport bytes (see the renderer's `captureFramebufferIntoBuf`).
+/// This closes the preview/export crispness gap: the **live preview** is
+/// already supersampled for free on a Retina display (MapLibre renders into a
+/// `devicePixelRatio≈2` framebuffer the OS downsamples), which is exactly what
+/// left export decoration edges aliased — and, after the final 4:2:0 chroma
+/// subsampling, "grainy" and color-muted.
+///
+/// Tiers (bounded by GPU render cost, not transport):
+/// - **2×** for full-frame 1080p/1440p/2160p — matches the Retina preview at
+///   a sensible render cost; every supported export is supersampled ≥2×.
+/// - **3×** for small/inset slots (`edge*3 <= `[`MAP_SUPERSAMPLE_TRIPLE_MAX_EDGE`])
+///   where the extra detail is cheap.
+/// - **1×** only for hypothetical slots wider than 4K (`edge*2 > `
+///   [`MAP_SUPERSAMPLE_MAX_EDGE`]), which the app does not expose.
+pub fn map_supersample_factor(slot_w: u32, slot_h: u32) -> u32 {
+    let edge = slot_w.max(slot_h).max(1);
+    if edge.saturating_mul(3) <= MAP_SUPERSAMPLE_TRIPLE_MAX_EDGE {
+        3
+    } else if edge.saturating_mul(2) <= MAP_SUPERSAMPLE_MAX_EDGE {
+        2
+    } else {
+        1
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct NormalizedRect {
     pub x: f64,
@@ -471,6 +519,45 @@ fn clamp_f64(n: f64, lo: f64, hi: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- SSAA supersample factor -----------------------------------------
+
+    /// The supersampled GPU framebuffer must never exceed the WebGL
+    /// edge budget on any (aspect, resolution, layout) the app exposes.
+    #[test]
+    fn supersample_factor_never_exceeds_gpu_edge_budget() {
+        for &(w, h) in &[
+            (1080u32, 1920u32),
+            (1920, 1080),
+            (2560, 1440),
+            (3840, 2160),
+            (2160, 3840),
+            (480, 270),
+            (960, 1080),
+            (1, 1),
+        ] {
+            let f = map_supersample_factor(w, h);
+            assert!(
+                w.max(h) * f <= MAP_SUPERSAMPLE_MAX_EDGE,
+                "({w}x{h}) factor {f} exceeds GPU edge budget",
+            );
+            // Every supported export is supersampled (≥2×).
+            assert!(f >= 2, "({w}x{h}) should be supersampled, got {f}");
+        }
+    }
+
+    #[test]
+    fn supersample_factor_tiers() {
+        // Full-frame 1080p / 1440p / 2160p → 2× (matches the Retina preview;
+        // the renderer downsamples on-GPU so this no longer touches the wire).
+        assert_eq!(map_supersample_factor(1920, 1080), 2);
+        assert_eq!(map_supersample_factor(1080, 1920), 2);
+        assert_eq!(map_supersample_factor(2560, 1440), 2);
+        assert_eq!(map_supersample_factor(3840, 2160), 2);
+        // Small inset slots → 3× (cheap supersampling headroom).
+        assert_eq!(map_supersample_factor(480, 270), 3);
+        assert_eq!(map_supersample_factor(1280, 720), 3);
+    }
 
     // Output-dimension math per the Phase 4 short-edge table (export-controls
     // plan). Every (aspect, resolution) pair must produce even W and H so the

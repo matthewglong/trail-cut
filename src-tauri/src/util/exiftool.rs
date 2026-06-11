@@ -105,6 +105,9 @@ pub fn run_exiftool(video_files: &[String]) -> Result<Vec<ClipMetadata>, String>
                 // ffprobe pass, not here (ExifTool doesn't see camera
                 // make/model in the form the knowledge base wants).
                 suggested_log_class: None,
+                // v9 per-axis override — populated (if ever) by a UI action,
+                // never at import; defaults to None like the color fields.
+                color_space_override: None,
             }
         })
         .collect();

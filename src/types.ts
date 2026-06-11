@@ -32,6 +32,35 @@ export type SourceColorClass =
   | 'd_log' | 'c_log' | 'c_log2' | 'c_log3'
   | 'gp_log' | 'v_log' | 's_log2' | 's_log3';
 
+/** Per-clip color-space override (schema v9). Each axis is an optional zscale
+ *  token (e.g. `'bt709'`, `'arib-std-b67'`, `'tv'`, `'bt2020nc'`) that patches
+ *  that single axis of the clip's auto-detected source color space on the Rust
+ *  side (`Clip::effective_color_space`). This is the "automatic from metadata,
+ *  but overridable" surface — detection populates the base, the user corrects
+ *  individual mistagged axes without disturbing the rest. The `inferred_*`
+ *  flags record which axes detection guessed (the file tag was absent) so the
+ *  UI can badge them for review. Mirrors the Rust `PerAxisOverride` struct. */
+export interface PerAxisOverride {
+  primaries?: string;
+  transfer?: string;
+  range?: string;
+  matrix?: string;
+  inferred_primaries?: boolean;
+  inferred_transfer?: boolean;
+  inferred_range?: boolean;
+  inferred_matrix?: boolean;
+}
+
+/** Project-level working-color-space discriminant (schema v9). The export
+ *  pipeline composites in this space. Today the only value is
+ *  `'linear_bt2020_full'` (linear-light BT.2020 full-range float —
+ *  byte-identical to the pre-v9 hardcoded working space). Absent on disk when
+ *  equal to the default; consumers treat absent/undefined as
+ *  `'linear_bt2020_full'`. A future wider working space (e.g. an ACEScg AP1
+ *  tier) is one more union member here. Mirrors the Rust `WorkingColorSpaceId`
+ *  enum. */
+export type WorkingColorSpaceId = 'linear_bt2020_full';
+
 /** WS9 — Per-camera source-format preset. One entry per
  *  `(camera_make, camera_model)` pair the user has confirmed via the
  *  group-level import UI's "Remember this for future X imports" checkbox.
@@ -60,18 +89,22 @@ export interface CameraPreset {
  *    extension.
  *  - `'hdr_hlg'`  — 10-bit BT.2020 HLG, HEVC main10 in mp4. YouTube HDR
  *    convention.
+ *  - `'hdr_pq'`   — 10-bit BT.2020 PQ / HDR10 (SMPTE ST 2084), HEVC main10 in
+ *    mp4. Streaming / HDR10 convention. Same encoder shape as HLG, differing
+ *    only in the color regime.
  *  - `'prores'`   — ProRes 4444 with alpha, yuva444p10le in mov. Archival
  *    master + the only legal target for map_only / video_only (lossless
  *    compositing intermediates).
  *
  *  Channel × target compatibility (enforced by `validate_target_for_channel`
  *  in `src-tauri/src/export/mod.rs`):
- *  - `composite`               → any of the four
+ *  - `composite`               → any codec target
  *  - `map_only` / `video_only` → `'prores'` only */
 export type DeliveryTarget =
   | 'sdr_h265'
   | 'sdr_h264'
   | 'hdr_hlg'
+  | 'hdr_pq'
   | 'prores';
 
 /** Metadata about a single delivery target — picker dropdown row. Mirrors
@@ -112,6 +145,13 @@ export const DELIVERY_TARGETS: ReadonlyArray<DeliveryTargetInfo> = [
     id: 'hdr_hlg',
     label: 'HDR · HLG (10-bit BT.2020)',
     shortLabel: 'HDR HLG',
+    containerExtension: 'mp4',
+    allowedChannels: ['composite'],
+  },
+  {
+    id: 'hdr_pq',
+    label: 'HDR · PQ / HDR10 (10-bit BT.2020)',
+    shortLabel: 'HDR PQ',
     containerExtension: 'mp4',
     allowedChannels: ['composite'],
   },
@@ -168,6 +208,8 @@ export interface ClipMetadata {
    *  `undefined` (or absent) for the vast majority of clips: iPhone, GoPro
    *  8-bit, unrecognised cameras, anything already tagged HDR. */
   suggested_log_class?: SourceColorClass;
+  /** Per-axis color-space override (schema v9). See {@link PerAxisOverride}. */
+  color_space_override?: PerAxisOverride;
 }
 
 export interface TrimRange {
@@ -232,6 +274,10 @@ export interface Clip {
    *  to surface the "Looks like D-Log — apply?" affordance after a re-open.
    *  UI-only; never consulted by the ingest pipeline. */
   suggested_log_class?: SourceColorClass;
+  /** Per-axis color-space override (schema v9). See {@link PerAxisOverride}.
+   *  When set, the export ingest resolves this clip's source color space from
+   *  the patched axes instead of the auto-detected class. */
+  color_space_override?: PerAxisOverride;
 }
 
 export interface TrackPoint {
@@ -1008,6 +1054,10 @@ export interface Project {
    *  no waypoints. Legacy bundles arrive with `[]` from Rust; the load path
    *  seeds from clips before first use. */
   waypoints: Waypoint[];
+  /** Project-level working color space (schema v9). Omitted on disk when
+   *  equal to the default (`'linear_bt2020_full'`); consumers treat
+   *  absent/undefined as the default. See {@link WorkingColorSpaceId}. */
+  working_color_space?: WorkingColorSpaceId;
 }
 
 export interface RecentProject {

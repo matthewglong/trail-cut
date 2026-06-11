@@ -1,7 +1,8 @@
 use crate::export::delivery::DeliveryTarget;
 use crate::export::layout::{default_split_layout, AspectRatio, ProjectLayouts};
 use crate::export::resolution::OutputResolution;
-use crate::util::color::SourceColorClass;
+use crate::util::color::{source_color_space_for, SourceColorClass};
+use crate::util::color_space::ColorSpace;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,6 +11,85 @@ use std::path::PathBuf;
 pub struct GpsCoord {
     pub lat: f64,
     pub lng: f64,
+}
+
+/// Per-clip color-space override (schema v9). Each axis is an optional zscale
+/// token; when present it patches that single axis of the clip's auto-detected
+/// source [`ColorSpace`] (see `Clip::effective_color_space`). This is the
+/// "automatic from metadata, but overridable" surface: detection populates the
+/// base, the user corrects individual axes for mistagged clips without
+/// disturbing the others. The `inferred_*` flags record which axes detection
+/// GUESSED (the file tag was absent) so the UI can badge them for review.
+///
+/// Unrecognized tokens are ignored at apply time (the base axis is kept) — no
+/// unvalidated string ever reaches FFmpeg (see `ColorSpace::with_overrides`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerAxisOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primaries: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<String>,
+    #[serde(default)]
+    pub inferred_primaries: bool,
+    #[serde(default)]
+    pub inferred_transfer: bool,
+    #[serde(default)]
+    pub inferred_range: bool,
+    #[serde(default)]
+    pub inferred_matrix: bool,
+}
+
+impl PerAxisOverride {
+    /// `true` iff at least one color axis is actually overridden. A `Some`
+    /// override with every axis `None` (e.g. a UI that set then cleared all
+    /// axes, or a hand-edited `"color_space_override": {}`) is treated as "no
+    /// override" so the export ingest keeps the class-based path (and its
+    /// log-LUT development) instead of silently reinterpreting the clip.
+    pub fn has_any_axis(&self) -> bool {
+        self.primaries.is_some()
+            || self.transfer.is_some()
+            || self.range.is_some()
+            || self.matrix.is_some()
+    }
+}
+
+/// Project-level working-color-space discriminant (schema v9). The pipeline
+/// composites in this space; today the only value is `LinearBt2020Full`
+/// (linear-light BT.2020 full-range GBR float — byte-identical to the
+/// pre-v9 hardcoded working space). A future wider working space (e.g. an
+/// ACEScg AP1 tier for cinema-log projects) is one more enum arm here plus its
+/// `to_color_space` mapping, and nothing else changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkingColorSpaceId {
+    LinearBt2020Full,
+}
+
+impl Default for WorkingColorSpaceId {
+    fn default() -> Self {
+        WorkingColorSpaceId::LinearBt2020Full
+    }
+}
+
+impl WorkingColorSpaceId {
+    /// Resolve to the concrete [`ColorSpace`] the export pipeline composites in.
+    pub fn to_color_space(self) -> ColorSpace {
+        match self {
+            WorkingColorSpaceId::LinearBt2020Full => ColorSpace::WORKING,
+        }
+    }
+}
+
+fn default_working_color_space() -> WorkingColorSpaceId {
+    WorkingColorSpaceId::LinearBt2020Full
+}
+
+fn is_default_working_color_space(id: &WorkingColorSpaceId) -> bool {
+    *id == WorkingColorSpaceId::LinearBt2020Full
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +153,9 @@ pub struct ClipMetadata {
     /// footage). Populated at import time by `populate_color_metadata`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_log_class: Option<SourceColorClass>,
+    /// Per-axis color-space override (schema v9). See [`PerAxisOverride`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_space_override: Option<PerAxisOverride>,
 }
 
 /// Serde default for `source_color_class` — used by legacy bundles that
@@ -184,6 +267,9 @@ pub struct Clip {
     /// in `project.json`). UI-only; never consulted by the ingest pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_log_class: Option<SourceColorClass>,
+    /// Per-axis color-space override (schema v9). See [`PerAxisOverride`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_space_override: Option<PerAxisOverride>,
 }
 
 impl Clip {
@@ -193,6 +279,24 @@ impl Clip {
     /// export) MUST consult this method, not `source_color_class` directly.
     pub fn effective_color_class(&self) -> SourceColorClass {
         self.user_color_class_override.unwrap_or(self.source_color_class)
+    }
+
+    /// Resolved source [`ColorSpace`] the export pipeline ingests this clip
+    /// from. Starts from the auto-detected class (+ the legacy-transfer hint),
+    /// then applies any per-axis [`PerAxisOverride`]. This is the load-bearing
+    /// "automatic, but overridable" resolution the clip ingest consumes — the
+    /// coarse `effective_color_class()` remains for the UI / log-LUT routing.
+    pub fn effective_color_space(&self) -> ColorSpace {
+        let base = source_color_space_for(self.effective_color_class(), self.color_trc.as_deref());
+        match &self.color_space_override {
+            Some(ov) => base.with_overrides(
+                ov.primaries.as_deref(),
+                ov.transfer.as_deref(),
+                ov.range.as_deref(),
+                ov.matrix.as_deref(),
+            ),
+            None => base,
+        }
     }
 }
 
@@ -238,6 +342,7 @@ impl From<ClipMetadata> for Clip {
             // project save/load round-trip (we don't re-probe ffprobe on
             // load — the hint has to ride in project.json).
             suggested_log_class: meta.suggested_log_class,
+            color_space_override: meta.color_space_override,
         }
     }
 }
@@ -527,34 +632,34 @@ fn default_bearing_stops() -> u32 {
 }
 
 fn default_overlay_route_width() -> f64 {
-    0.004
+    0.006
 }
 fn default_overlay_waypoint_circle_radius() -> f64 {
-    0.015
+    0.02
 }
 fn default_overlay_waypoint_active_radius() -> f64 {
-    0.019
+    0.025
 }
 fn default_overlay_waypoint_stroke_width() -> f64 {
-    0.003
-}
-fn default_overlay_waypoint_label_size() -> f64 {
-    0.014
-}
-fn default_overlay_live_marker_pulse_radius() -> f64 {
-    0.012
-}
-fn default_overlay_live_marker_dot_radius() -> f64 {
-    0.013
-}
-fn default_overlay_live_marker_dot_stroke_width() -> f64 {
     0.004
 }
+fn default_overlay_waypoint_label_size() -> f64 {
+    0.018
+}
+fn default_overlay_live_marker_pulse_radius() -> f64 {
+    0.016
+}
+fn default_overlay_live_marker_dot_radius() -> f64 {
+    0.017
+}
+fn default_overlay_live_marker_dot_stroke_width() -> f64 {
+    0.005
+}
 fn default_overlay_pulse_start_radius() -> f64 {
-    0.012
+    0.016
 }
 fn default_overlay_pulse_end_radius() -> f64 {
-    0.033
+    0.044
 }
 fn default_label_mode() -> String {
     "numbered".to_string()
@@ -865,7 +970,12 @@ pub struct ExportGrid {
 /// v7 promotes waypoints to a first-class project entity (was: derived from
 /// clip starts at render time). Purely additive: the v6→v7 migration stamps
 /// the version, and load_project seeds `waypoints` from clips when absent.
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+/// v9 adds the project-level `working_color_space` and the per-clip
+/// `color_space_override` (atomic-axes color matrix). Purely additive: both
+/// default to their pre-v9 behavior (linear BT.2020 working space; no
+/// override), so the v8→v9 migration just stamps the version and existing
+/// exports stay byte-identical.
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -952,6 +1062,15 @@ pub struct Project {
     /// for the sync rules on the frontend side.
     #[serde(default)]
     pub waypoints: Vec<Waypoint>,
+    /// Project-level working color space (schema v9). The pipeline composites
+    /// in this space. Omitted from on-disk JSON when equal to the default
+    /// (`linear_bt2020_full`) so existing bundles are untouched; consumers
+    /// treat absent as the default. See [`WorkingColorSpaceId`].
+    #[serde(
+        default = "default_working_color_space",
+        skip_serializing_if = "is_default_working_color_space"
+    )]
+    pub working_color_space: WorkingColorSpaceId,
 }
 
 impl Default for Project {
@@ -976,6 +1095,7 @@ impl Default for Project {
             default_entry_transition: None,
             last_export_selection: None,
             waypoints: Vec::new(),
+            working_color_space: WorkingColorSpaceId::LinearBt2020Full,
         }
     }
 }
@@ -1298,6 +1418,7 @@ mod tests {
             // this as None reflects the import-path reality and keeps the
             // helper a stand-in for the common "no suggestion" case.
             suggested_log_class: None,
+            color_space_override: None,
         }
     }
 
@@ -1371,6 +1492,31 @@ mod tests {
     }
 
     #[test]
+    fn effective_color_space_applies_per_axis_override() {
+        use crate::util::color_space::{Matrix, Primaries, Range, Transfer};
+        // No override: derive from the detected class. SDR ⇒ BT.709 limited.
+        let mut clip = color_clip(SourceColorClass::SdrBt709);
+        let base = clip.effective_color_space();
+        assert_eq!(base.primaries, Primaries::Bt709);
+        assert_eq!(base.transfer, Transfer::Bt709);
+        assert_eq!(base.range, Range::Limited);
+        assert_eq!(base.matrix, Matrix::Bt709);
+
+        // User corrects a mistagged clip: it's actually full-range. ONLY the
+        // range axis changes; the others stay at the detected base.
+        clip.color_space_override = Some(PerAxisOverride {
+            range: Some("full".to_string()),
+            inferred_range: true,
+            ..Default::default()
+        });
+        let patched = clip.effective_color_space();
+        assert_eq!(patched.range, Range::Full);
+        assert_eq!(patched.primaries, Primaries::Bt709);
+        assert_eq!(patched.transfer, Transfer::Bt709);
+        assert_eq!(patched.matrix, Matrix::Bt709);
+    }
+
+    #[test]
     fn clip_metadata_to_clip_propagates_color_fields() {
         // The `From<ClipMetadata> for Clip` impl is the import path's
         // load-bearing seam: ffprobe lands color fields on `ClipMetadata`,
@@ -1397,6 +1543,7 @@ mod tests {
             source_color_class: SourceColorClass::PqBt2020,
             user_color_class_override: None,
             suggested_log_class: None,
+            color_space_override: None,
         };
         let clip = Clip::from(meta);
         assert_eq!(clip.color_trc.as_deref(), Some("smpte2084"));
@@ -1485,6 +1632,7 @@ mod tests {
             source_color_class: SourceColorClass::SdrBt709,
             user_color_class_override: None,
             suggested_log_class: Some(SourceColorClass::DLog),
+            color_space_override: None,
         };
         let clip = Clip::from(meta);
         assert_eq!(clip.suggested_log_class, Some(SourceColorClass::DLog));

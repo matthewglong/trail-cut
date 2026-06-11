@@ -37,6 +37,7 @@ use crate::export::encoder::{
     select_encoder, EncoderChoice, EncoderClass, EncoderError, EncoderKind,
 };
 use crate::util::color::WORKING_SPACE_PIX_FMT;
+use crate::util::color_space::{delivery_zscale_chain, ColorSpace};
 
 /// Delivery target — color regime + codec + container only. Aspect and
 /// resolution are NOT encoded here: the outer export grid owns aspect (one
@@ -69,6 +70,11 @@ pub enum DeliveryTarget {
     /// in mp4. HLG is the YouTube HDR convention; H.265 is mandatory at
     /// 10-bit (H.264 high10 is rarely shipped).
     HdrHlg,
+    /// HDR via PQ / HDR10 (SMPTE ST 2084) BT.2020 limited, 10-bit 4:2:0
+    /// yuv420p10le, HEVC main10 in mp4. The streaming / HDR10 convention;
+    /// the same encoder shape as HLG, differing only in the color regime —
+    /// added as one registry/table entry to prove the matrix is extensible.
+    HdrPq,
     /// ProRes 4444 with alpha, BT.709 limited, yuva444p10le in mov. The
     /// only legal target for `map_only` / `video_only` (lossless
     /// compositing intermediates) and the archival master for composite.
@@ -83,6 +89,7 @@ impl DeliveryTarget {
             DeliveryTarget::SdrH265,
             DeliveryTarget::SdrH264,
             DeliveryTarget::HdrHlg,
+            DeliveryTarget::HdrPq,
             DeliveryTarget::Prores,
         ]
     }
@@ -93,6 +100,7 @@ impl DeliveryTarget {
             DeliveryTarget::SdrH265 => "SDR · H.265 (modern, smaller files)",
             DeliveryTarget::SdrH264 => "SDR · H.264 (universal compatibility)",
             DeliveryTarget::HdrHlg => "HDR · HLG (10-bit BT.2020)",
+            DeliveryTarget::HdrPq => "HDR · PQ / HDR10 (10-bit BT.2020)",
             DeliveryTarget::Prores => "ProRes 4444 (master / intermediate)",
         }
     }
@@ -103,7 +111,30 @@ impl DeliveryTarget {
             DeliveryTarget::SdrH265 => "SDR H.265",
             DeliveryTarget::SdrH264 => "SDR H.264",
             DeliveryTarget::HdrHlg => "HDR HLG",
+            DeliveryTarget::HdrPq => "HDR PQ",
             DeliveryTarget::Prores => "ProRes",
+        }
+    }
+
+    /// The output [`ColorSpace`] this target delivers to — the single point
+    /// where a target's color regime is declared. The finishing filter and
+    /// the encoder color flags both derive from it.
+    pub fn output_color_space(self) -> ColorSpace {
+        match self {
+            DeliveryTarget::SdrH264 | DeliveryTarget::SdrH265 | DeliveryTarget::Prores => {
+                ColorSpace::SDR_BT709
+            }
+            DeliveryTarget::HdrHlg => ColorSpace::HDR_HLG_BT2020,
+            DeliveryTarget::HdrPq => ColorSpace::HDR_PQ_BT2020,
+        }
+    }
+
+    /// Final-encode pixel format for this target.
+    fn finishing_pix_fmt(self) -> &'static str {
+        match self {
+            DeliveryTarget::SdrH264 | DeliveryTarget::SdrH265 => "yuv420p",
+            DeliveryTarget::HdrHlg | DeliveryTarget::HdrPq => "yuv420p10le",
+            DeliveryTarget::Prores => "yuva444p10le",
         }
     }
 
@@ -142,26 +173,15 @@ impl DeliveryTarget {
 /// override bug; removing the scale+pad makes the outer grid the single
 /// source of truth for aspect and the Quality picker for resolution.
 pub fn delivery_finishing_filter(target: DeliveryTarget) -> String {
-    match target {
-        DeliveryTarget::HdrHlg => {
-            // HLG BT.2020 limited, 10-bit 4:2:0.
-            "zscale=t=arib-std-b67:m=bt2020nc:p=bt2020:r=limited,format=yuv420p10le"
-                .to_string()
-        }
-        DeliveryTarget::Prores => {
-            // BT.709 limited, but preserve alpha + bit depth (yuva444p10le).
-            // Channel A composite gets the full working-space → BT.709
-            // conversion here; B and C round-trip through working space
-            // earlier (per WS3) and don't reach this path.
-            "zscale=t=bt709:m=bt709:p=bt709:r=limited,format=yuva444p10le".to_string()
-        }
-        // SDR family (H.264 and H.265 share color/pixel format —
-        // codec/container differences happen at encoder time, not in the
-        // finishing filter).
-        DeliveryTarget::SdrH264 | DeliveryTarget::SdrH265 => {
-            "zscale=t=bt709:m=bt709:p=bt709:r=limited,format=yuv420p".to_string()
-        }
-    }
+    // Color-only: working space → the target's output color space, then the
+    // target's final pixel format. Both pieces come from the registry — the
+    // per-target match arms of hardcoded zscale strings are gone (a new target
+    // is an `output_color_space` + `finishing_pix_fmt` entry, nothing more).
+    format!(
+        "{chain},format={pix}",
+        chain = delivery_zscale_chain(&ColorSpace::WORKING, &target.output_color_space()),
+        pix = target.finishing_pix_fmt(),
+    )
 }
 
 /// Encoder argv for the given target. Spliced into the FFmpeg invocation
@@ -182,22 +202,20 @@ pub fn delivery_finishing_filter(target: DeliveryTarget) -> String {
 /// so the `-x264-params` splice is unconditional.
 pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+    // The target's color regime — color flags + the VUI duplicate string both
+    // derive from this one ColorSpace, so a new target carries its own color
+    // tags automatically with no per-target flag code.
+    let out_cs = target.output_color_space();
     match target {
         DeliveryTarget::SdrH264 => {
             // H.264 via libx264 (always available — software encoder).
             push(&mut out, ["-c:v", "libx264"]);
             push(&mut out, ["-preset", "medium", "-crf", "18"]);
             push(&mut out, ["-pix_fmt", "yuv420p"]);
-            push_color_flags_bt709(&mut out);
+            push_color_flags_from_cs(&mut out, &out_cs);
             // libx264 drops `-color_primaries`/`-color_trc` from the VUI
             // unless we duplicate them in `-x264-params`. WS6 regression.
-            push(
-                &mut out,
-                [
-                    "-x264-params",
-                    "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-                ],
-            );
+            push_vui_params(&mut out, "-x264-params", &out_cs);
             push_aac_audio(&mut out);
             push(&mut out, ["-movflags", "+faststart"]);
         }
@@ -212,22 +230,19 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
                 push(&mut out, ["-tag:v", "hvc1", "-preset", "medium", "-crf", "18"]);
             }
             push(&mut out, ["-pix_fmt", "yuv420p"]);
-            push_color_flags_bt709(&mut out);
+            push_color_flags_from_cs(&mut out, &out_cs);
             if encoder.name != "hevc_videotoolbox" {
                 // libx265 / x265 software path — VUI duplicate.
-                push(
-                    &mut out,
-                    [
-                        "-x265-params",
-                        "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-                    ],
-                );
+                push_vui_params(&mut out, "-x265-params", &out_cs);
             }
             push_aac_audio(&mut out);
             push(&mut out, ["-movflags", "+faststart"]);
         }
-        DeliveryTarget::HdrHlg => {
-            // HEVC 10-bit HDR (HLG BT.2020).
+        // HDR 10-bit (HLG and PQ share the entire encoder shape — main10 HEVC,
+        // yuv420p10le — and differ ONLY in the color regime, which flows from
+        // `out_cs`. This is the extensibility payoff: PQ delivery is "free"
+        // here, just another `output_color_space` entry.)
+        DeliveryTarget::HdrHlg | DeliveryTarget::HdrPq => {
             out.push("-c:v".into());
             out.push(encoder.name.clone());
             if encoder.name == "hevc_videotoolbox" {
@@ -252,16 +267,10 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
                 );
             }
             push(&mut out, ["-pix_fmt", "yuv420p10le"]);
-            push_color_flags_hlg_bt2020(&mut out);
+            push_color_flags_from_cs(&mut out, &out_cs);
             if encoder.name != "hevc_videotoolbox" {
                 // libx265 — VUI duplicate for HDR.
-                push(
-                    &mut out,
-                    [
-                        "-x265-params",
-                        "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
-                    ],
-                );
+                push_vui_params(&mut out, "-x265-params", &out_cs);
             }
             push_aac_audio(&mut out);
             push(&mut out, ["-movflags", "+faststart"]);
@@ -274,7 +283,7 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
             for a in &encoder.codec_args {
                 out.push(a.clone());
             }
-            push_color_flags_bt709(&mut out);
+            push_color_flags_from_cs(&mut out, &out_cs);
             push(&mut out, ["-c:a", "pcm_s16le"]);
             // ProRes lives in .mov; the QuickTime muxer accepts (and ignores
             // unknown bits of) `-movflags +faststart` but DOES honor the
@@ -302,7 +311,9 @@ pub fn select_encoder_for_target(
 ) -> Result<EncoderChoice, EncoderError> {
     let class = match target {
         DeliveryTarget::SdrH264 => EncoderClass::H264,
-        DeliveryTarget::SdrH265 | DeliveryTarget::HdrHlg => EncoderClass::Hevc,
+        DeliveryTarget::SdrH265 | DeliveryTarget::HdrHlg | DeliveryTarget::HdrPq => {
+            EncoderClass::Hevc
+        }
         DeliveryTarget::Prores => EncoderClass::ProResAlpha,
     };
     select_encoder(class)
@@ -316,36 +327,35 @@ fn push<const N: usize>(out: &mut Vec<String>, parts: [&str; N]) {
     }
 }
 
-fn push_color_flags_bt709(out: &mut Vec<String>) {
-    push(
-        out,
-        [
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-colorspace",
-            "bt709",
-            "-color_range",
-            "tv",
-        ],
-    );
+/// Emit the global `-color_primaries / -color_trc / -colorspace / -color_range`
+/// flags from a [`ColorSpace`]. The single definition that replaces the former
+/// per-regime `push_color_flags_bt709` / `push_color_flags_hlg_bt2020` (and the
+/// duplicate in `filtergraph::push_prores_color_flags`). `pub(crate)` so the
+/// filtergraph builders share it.
+pub(crate) fn push_color_flags_from_cs(out: &mut Vec<String>, cs: &ColorSpace) {
+    out.push("-color_primaries".into());
+    out.push(cs.primaries.ffmpeg_flag().into());
+    out.push("-color_trc".into());
+    out.push(cs.transfer.ffmpeg_flag().into());
+    out.push("-colorspace".into());
+    out.push(cs.matrix.ffmpeg_flag().into());
+    out.push("-color_range".into());
+    out.push(cs.range.ffmpeg_flag().into());
 }
 
-fn push_color_flags_hlg_bt2020(out: &mut Vec<String>) {
-    push(
-        out,
-        [
-            "-color_primaries",
-            "bt2020",
-            "-color_trc",
-            "arib-std-b67",
-            "-colorspace",
-            "bt2020nc",
-            "-color_range",
-            "tv",
-        ],
-    );
+/// Emit the encoder-specific VUI duplicate (`-x264-params` / `-x265-params
+/// colorprim=…:transfer=…:colormatrix=…`) from a [`ColorSpace`]. libx264 and
+/// libx265 silently drop the VUI color tags without this duplicate (WS6
+/// regression guard). The `colorprim`/`transfer`/`colormatrix` syntax is
+/// identical for both encoders, so one builder serves both.
+fn push_vui_params(out: &mut Vec<String>, flag: &str, cs: &ColorSpace) {
+    out.push(flag.into());
+    out.push(format!(
+        "colorprim={}:transfer={}:colormatrix={}",
+        cs.primaries.ffmpeg_flag(),
+        cs.transfer.ffmpeg_flag(),
+        cs.matrix.ffmpeg_flag(),
+    ));
 }
 
 fn push_aac_audio(out: &mut Vec<String>) {
@@ -430,6 +440,7 @@ mod tests {
             (DeliveryTarget::SdrH264, "\"sdr_h264\""),
             (DeliveryTarget::SdrH265, "\"sdr_h265\""),
             (DeliveryTarget::HdrHlg, "\"hdr_hlg\""),
+            (DeliveryTarget::HdrPq, "\"hdr_pq\""),
             (DeliveryTarget::Prores, "\"prores\""),
         ] {
             let json = serde_json::to_string(&variant).unwrap();
@@ -440,14 +451,37 @@ mod tests {
     }
 
     #[test]
-    fn catalog_lists_all_four_in_display_order() {
+    fn catalog_lists_all_targets_in_display_order() {
         let all: Vec<DeliveryTarget> = DeliveryTarget::all().to_vec();
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), 5);
         // SDR H.265 first — default for composite (most users), modern
         // efficiency + native playback on Apple/Chrome/Edge.
         assert_eq!(all[0], DeliveryTarget::SdrH265);
         // ProRes last — archival/intermediate, not the typical pick.
-        assert_eq!(all[3], DeliveryTarget::Prores);
+        assert_eq!(all[4], DeliveryTarget::Prores);
+    }
+
+    #[test]
+    fn hdr_pq_target_generates_pq_bt2020_finishing_and_encoder_flags() {
+        // Extensibility proof: PQ delivery was added as registry table entries
+        // (one DeliveryTarget arm + output_color_space) with NO new filter or
+        // flag code, and produces a correct PQ / BT.2020 chain end-to-end.
+        let f = delivery_finishing_filter(DeliveryTarget::HdrPq);
+        assert_eq!(
+            f, "zscale=t=smpte2084:m=bt2020nc:p=bt2020:r=limited,format=yuv420p10le",
+        );
+        let args = delivery_encoder_args(DeliveryTarget::HdrPq, &libx265());
+        let joined = args.join(" ");
+        assert!(joined.contains("-profile:v main10"), "{}", joined);
+        assert!(joined.contains("-pix_fmt yuv420p10le"), "{}", joined);
+        assert!(joined.contains("-color_primaries bt2020"), "{}", joined);
+        assert!(joined.contains("-color_trc smpte2084"), "{}", joined);
+        assert!(joined.contains("-colorspace bt2020nc"), "{}", joined);
+        assert!(
+            joined.contains("-x265-params colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"),
+            "{}",
+            joined,
+        );
     }
 
     #[test]
@@ -481,6 +515,7 @@ mod tests {
         assert_eq!(DeliveryTarget::SdrH264.container_extension(), "mp4");
         assert_eq!(DeliveryTarget::SdrH265.container_extension(), "mp4");
         assert_eq!(DeliveryTarget::HdrHlg.container_extension(), "mp4");
+        assert_eq!(DeliveryTarget::HdrPq.container_extension(), "mp4");
         assert_eq!(DeliveryTarget::Prores.container_extension(), "mov");
     }
 
@@ -677,6 +712,8 @@ mod tests {
             (DeliveryTarget::SdrH265, videotoolbox_hevc(), false),
             (DeliveryTarget::HdrHlg, libx265(), true),
             (DeliveryTarget::HdrHlg, videotoolbox_hevc(), false),
+            (DeliveryTarget::HdrPq, libx265(), true),
+            (DeliveryTarget::HdrPq, videotoolbox_hevc(), false),
         ];
         for (target, enc, expect_dup) in cases {
             let args = delivery_encoder_args(target, &enc);

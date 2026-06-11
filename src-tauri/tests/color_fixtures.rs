@@ -433,12 +433,33 @@ fn is_sample_entry(kind: &[u8]) -> bool {
 /// Assert exactly one `colr` atom in `path`. The QuickTime per-frame
 /// warning regression test — pointed at every WS1 proxy and every WS4
 /// delivery output by the per-pipeline test suites below.
+///
+/// Used for the H.264/H.265 mp4 targets, where the container `colr` atom is
+/// the *only* place color is signaled, so it must be present exactly once.
 fn assert_single_colr_atom(path: &Path) {
     let atoms = find_colr_atoms(path);
     assert_eq!(
         atoms.len(),
         1,
         "expected exactly one `colr` atom in {}, found {}: {:#?}",
+        path.display(),
+        atoms.len(),
+        atoms,
+    );
+}
+
+/// Assert *at most* one `colr` atom in `path`. For ProRes 4444: color is
+/// carried in the per-frame ProRes bitstream headers (ffprobe surfaces it and
+/// `assert_color_tags` verifies it), so a container-level `colr` atom is
+/// optional. FFmpeg 8's mov muxer writes none for prores_ks (FFmpeg ≤7 wrote
+/// one); the encoded color data is identical either way. The hazard
+/// `assert_single_colr_atom` guards against is *conflicting* color signaling —
+/// more than one `colr` atom — which zero atoms cannot trigger.
+fn assert_at_most_one_colr_atom(path: &Path) {
+    let atoms = find_colr_atoms(path);
+    assert!(
+        atoms.len() <= 1,
+        "expected at most one `colr` atom in {}, found {}: {:#?}",
         path.display(),
         atoms.len(),
         atoms,
@@ -1048,7 +1069,14 @@ fn expected_tags_for_target(
             has_dolby_vision: false,
         },
         T::Prores => ExpectedColorTags {
-            pix_fmt: Some("yuva444p10le"),
+            // We feed prores_ks `-pix_fmt yuva444p10le` (its only accepted
+            // 4:4:4+alpha input — supported formats are yuv422p10le /
+            // yuv444p10le / yuva444p10le, no 12-bit input). ProRes 4444 is
+            // natively a 12-bit codec, so this is the *decoded read-back*, not
+            // the input: FFmpeg 8's ProRes decoder reports the stored stream as
+            // yuva444p12le (bits_per_raw_sample=12). FFmpeg ≤7 reported 10le.
+            // Same encoded bytes either way; only ffprobe's description moved.
+            pix_fmt: Some("yuva444p12le"),
             primaries: Some("bt709"),
             transfer: Some("bt709"),
             matrix: Some("bt709"),
@@ -1063,6 +1091,15 @@ fn expected_tags_for_target(
             matrix: Some("bt2020nc"),
             range: Some("tv"),
             class: SourceColorClass::HlgBt2020,
+            has_dolby_vision: false,
+        },
+        T::HdrPq => ExpectedColorTags {
+            pix_fmt: Some("yuv420p10le"),
+            primaries: Some("bt2020"),
+            transfer: Some("smpte2084"),
+            matrix: Some("bt2020nc"),
+            range: Some("tv"),
+            class: SourceColorClass::PqBt2020,
             has_dolby_vision: false,
         },
     }
@@ -1108,9 +1145,16 @@ async fn ws4_each_delivery_target_emits_expected_color_tags() {
         }
         let expected = expected_tags_for_target(target);
         assert_color_tags(&out, expected);
-        // Single-`colr` atom: every mp4 / mov must have exactly one.
-        // ProRes (mov) and the mp4 targets both go through this assertion.
-        assert_single_colr_atom(&out);
+        // `colr`-atom guard against conflicting container color signaling. The
+        // mp4 targets signal color *only* via the container atom, so they must
+        // have exactly one. ProRes 4444 self-describes in its frame headers
+        // (verified by `assert_color_tags` above), so its container atom is
+        // optional — FFmpeg 8 writes none — and we only forbid more than one.
+        if target == trail_cut_lib::export::DeliveryTarget::Prores {
+            assert_at_most_one_colr_atom(&out);
+        } else {
+            assert_single_colr_atom(&out);
+        }
     }
 }
 

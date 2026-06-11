@@ -48,12 +48,18 @@ interface InitPayload {
    *  = framebuffer`. The page sizes the container in CSS pixels; MapLibre
    *  scales internally by its `pixelRatio` constructor arg. */
   cssViewport: { w: number; h: number };
-  /** Actual WebGL drawing-buffer pixel dims. Equal to the map slot pixel
-   *  dims; the readback path is sized to these. */
+  /** High-res WebGL drawing-buffer pixel dims — the map slot dims × the SSAA
+   *  supersample factor. The map is painted at this resolution. */
   framebuffer: { w: number; h: number };
+  /** Dims the supersampled framebuffer is downsampled to (on-GPU) before
+   *  readback — equal to the map slot pixel dims. The returned RGBA buffer is
+   *  sized to these, so supersampling never inflates the CDP/stdout transport.
+   *  When equal to `framebuffer`, no downsample happens (factor 1). */
+  readback: { w: number; h: number };
   /** `framebuffer.w / cssViewport.w`. Passed to MapLibre's `pixelRatio`
    *  constructor arg so map tile selection + label sizing honor the export's
-   *  effective DPR. Can be < 1 (downscaled insets) or > 1 (high-res). */
+   *  effective DPR. Carries the supersample factor (> 1 for every
+   *  supersampled export). */
   pixelRatio: number;
   /** True if `mapSettings.map_style === '3d'`. Toggles
    *  BUILDINGS_LAYER_SPEC addition post-style-load. */
@@ -257,6 +263,18 @@ let expectedFbW = 0;
 let expectedFbH = 0;
 let mismatchWarned = false;
 
+// SSAA downsample target. The map is painted at the high-res `framebuffer`
+// dims, then drawn onto this slot-sized 2D canvas (GPU-accelerated, gamma-
+// space — matching the preview's compositor downsample) before readback, so
+// the buffer we return is `readbackW × readbackH` regardless of the
+// supersample factor. `downsampleActive` is false when framebuffer == readback
+// (factor 1), in which case the readpixels path reads the buffer directly.
+let readbackW = 0;
+let readbackH = 0;
+let downsampleActive = false;
+let downCanvas: HTMLCanvasElement | null = null;
+let downCtx: CanvasRenderingContext2D | null = null;
+
 // ---------------------------------------------------------------------------
 // __init — construct map with transformRequest + addProtocol, apply patch,
 // seed sources/layers.
@@ -268,6 +286,27 @@ window.__init = async (payload: InitPayload): Promise<void> => {
   window.__transport = payload.transport ?? 'readpixels';
   expectedFbW = payload.framebuffer.w;
   expectedFbH = payload.framebuffer.h;
+  readbackW = payload.readback.w;
+  readbackH = payload.readback.h;
+  downsampleActive =
+    payload.framebuffer.w !== payload.readback.w
+    || payload.framebuffer.h !== payload.readback.h;
+  if (downsampleActive) {
+    // Slot-sized 2D canvas the high-res WebGL canvas is drawn onto to
+    // downsample. willReadFrequently keeps getImageData on the CPU-readback
+    // fast path; high smoothing quality gives a proper multi-tap resample.
+    downCanvas = document.createElement('canvas');
+    downCanvas.width = readbackW;
+    downCanvas.height = readbackH;
+    downCtx = downCanvas.getContext('2d', { willReadFrequently: true });
+    if (downCtx) {
+      downCtx.imageSmoothingEnabled = true;
+      downCtx.imageSmoothingQuality = 'high';
+    }
+  } else {
+    downCanvas = null;
+    downCtx = null;
+  }
   mismatchWarned = false;
 
   const t0 = Date.now();
@@ -638,6 +677,33 @@ let readScratch: Uint8Array | null = null;
  *  left aligned after row flip); any extra rows/cols stay zero-filled. */
 function captureFramebufferIntoBuf(map: AnyJSON): void {
   const canvas = map.getCanvas() as HTMLCanvasElement;
+
+  // SSAA path: downsample the high-res WebGL canvas onto the slot-sized 2D
+  // canvas, then read that back. `drawImage(webglCanvas, …)` is valid here
+  // because we're synchronous inside maplibre's 'render' event (the same
+  // window in which the direct gl.readPixels below is valid) — the drawing
+  // buffer holds the just-painted pixels before any compositor sweep. The
+  // browser does the scale on the GPU; getImageData is top-down (no row flip).
+  if (downsampleActive && downCtx) {
+    const sw = canvas.width;
+    const sh = canvas.height;
+    if (sw === 0 || sh === 0) return; // pre-load tick — buffer not yet sized.
+    const expLen = readbackW * readbackH * 4;
+    if (!readbackBuf || readbackBufW !== readbackW || readbackBufH !== readbackH) {
+      readbackBuf = new Uint8Array(expLen);
+      readbackBufW = readbackW;
+      readbackBufH = readbackH;
+    }
+    // clearRect first: the map canvas can carry alpha, and drawImage composites
+    // source-over, so without it transparent regions would show the prior frame.
+    downCtx.clearRect(0, 0, readbackW, readbackH);
+    downCtx.drawImage(canvas, 0, 0, sw, sh, 0, 0, readbackW, readbackH);
+    const img = downCtx.getImageData(0, 0, readbackW, readbackH);
+    readbackBuf.set(img.data);
+    return;
+  }
+
+
   // The map's WebGL context was created in maplibre's _setupPainter; we
   // ask the same canvas for it again. Asking with no attributes returns
   // the existing context regardless of attributes; passing 'webgl2' or

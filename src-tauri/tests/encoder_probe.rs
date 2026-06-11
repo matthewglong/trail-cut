@@ -122,16 +122,19 @@ fn probe_caches_and_reprobes_on_version_mismatch() {
         cache_path.display()
     );
 
-    // --- 3. Second select_encoder hits the cache (sub-50ms) ---
+    // --- 3. Second select_encoder hits the cache ---
+    // A cache hit still spawns `ffmpeg -version` once (freshness validation —
+    // that single spawn is how step 4's version-mismatch re-probe is detected),
+    // but it skips the expensive full probe: `ffmpeg -encoders` plus a
+    // test-encode per candidate class. So the invariant is NOT an absolute
+    // wall-clock — one process spawn is hardware-dependent (~55ms here) — but
+    // that a cache hit is materially faster than a cold re-probe. We measure the
+    // hit here and assert against the forced re-probe timed in step 4 (same
+    // machine, so the ratio is stable across hardware).
     let start = Instant::now();
     let choice = select_encoder(EncoderClass::Hevc).expect("cached select");
     let cached_elapsed_ms = start.elapsed().as_millis();
     assert_eq!(choice.class, EncoderClass::Hevc);
-    assert!(
-        cached_elapsed_ms < 50,
-        "cached select_encoder should be <50ms, was {}ms",
-        cached_elapsed_ms
-    );
 
     // --- 4. Mutating ffmpeg_version forces a re-probe on next select ---
     let raw = std::fs::read(&cache_path).expect("read cache");
@@ -145,7 +148,22 @@ fn probe_caches_and_reprobes_on_version_mismatch() {
     std::fs::write(&cache_path, serde_json::to_vec_pretty(&mutated).unwrap())
         .expect("write mutated cache");
 
+    let reprobe_start = Instant::now();
     let _ = select_encoder(EncoderClass::Hevc).expect("re-probe on stale cache");
+    let reprobe_elapsed_ms = reprobe_start.elapsed().as_millis();
+
+    // The cache-hit timing from step 3 must be materially faster than this cold
+    // re-probe. A hit spawns one `ffmpeg -version`; a re-probe spawns that plus
+    // `-encoders` plus a test-encode per candidate class. If caching silently
+    // broke (step 3 had re-probed), the two timings would converge and the 2×
+    // margin would fail. Same-machine ratio, so no absolute-threshold fragility.
+    assert!(
+        cached_elapsed_ms * 2 < reprobe_elapsed_ms,
+        "cache hit ({}ms) should be far faster than a cold re-probe ({}ms): a \
+         hit only spawns `ffmpeg -version`, a re-probe runs the full probe",
+        cached_elapsed_ms,
+        reprobe_elapsed_ms,
+    );
 
     let raw_after = std::fs::read(&cache_path).expect("read re-probed cache");
     let after: EncoderProbe =

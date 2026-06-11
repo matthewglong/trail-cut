@@ -238,7 +238,9 @@ pub async fn render_map_frames(
     }
 
     let n = config.worker_count.max(1).min(total_frames as usize);
-    let ranges = split_range(total_frames, n);
+    // Interleaved (round-robin) assignment: worker `w` renders every frame
+    // where `frame_index % n == w`. `stride == n`. See `worker_frame_indices`.
+    let stride = n as u32;
 
     // Bounded channel: backpressure on workers when the ordering buffer fills.
     // PLAN.md §"Frame-pipeline ordering" — ~64 frames * N is enough to absorb
@@ -250,7 +252,7 @@ pub async fn render_map_frames(
     let setup_line_bytes = setup_line(&setup)?;
 
     let mut set: JoinSet<Result<(), OrchestratorError>> = JoinSet::new();
-    for (worker_id, range) in ranges.into_iter().enumerate() {
+    for worker_id in 0..n {
         let tx_clone = tx.clone();
         let setup_line_bytes = setup_line_bytes.clone();
         let node_path = config.node_path.clone();
@@ -259,7 +261,8 @@ pub async fn render_map_frames(
         set.spawn(async move {
             run_worker(
                 worker_id,
-                range,
+                stride,
+                total_frames,
                 fps,
                 recycle_every,
                 setup_line_bytes,
@@ -366,30 +369,35 @@ pub async fn render_map_frames(
     Ok(emitted)
 }
 
-/// Pre-split `0..total` into `n` contiguous ranges. The last range absorbs any
-/// remainder. Pre-split (vs. work-stealing) is chosen for simplicity and
-/// reproducibility — per-frame render time dominates scheduling jitter at the
-/// granularities we care about.
-fn split_range(total: u32, n: usize) -> Vec<std::ops::Range<u32>> {
-    debug_assert!(n > 0 && total > 0);
-    let n_u = n as u32;
-    let chunk = total / n_u;
-    let remainder = total % n_u;
-    let mut out = Vec::with_capacity(n);
-    let mut start = 0u32;
-    for i in 0..n_u {
-        let extra = if i + 1 == n_u { remainder } else { 0 };
-        let end = start + chunk + extra;
-        out.push(start..end);
-        start = end;
-    }
-    out
+/// Frame indices assigned to worker `worker_id` under INTERLEAVED (round-robin)
+/// assignment across `stride` workers: worker `w` renders `w, w+stride,
+/// w+2*stride, ...` while `< total`.
+///
+/// Interleaving (vs. contiguous ranges) bounds the reorder buffer. Because the
+/// drain loop must emit frames in strict ascending order and the map render is
+/// the pipeline bottleneck (the sink rarely backpressures), a contiguous split
+/// forces every frame a higher-numbered worker produces to park in the
+/// `BTreeMap` until the lower-numbered workers finish their whole ranges — at
+/// the midpoint that buffer holds ~`(N-1)/N` of ALL frames (RGBA, slot-sized),
+/// an OOM risk on long high-res exports. With interleaving every worker stays
+/// within ~N frames of the drain loop's `next_to_emit`, so the buffer holds at
+/// most O(N) frames regardless of total length.
+///
+/// The union of `worker_frame_indices(w, n, total)` over `w in 0..n` is exactly
+/// `0..total`, each index once — no gaps, no duplicates (the completeness
+/// invariant `render_map_frames` enforces).
+fn worker_frame_indices(worker_id: usize, stride: u32, total: u32) -> Vec<u32> {
+    debug_assert!(stride > 0 && (worker_id as u32) < stride);
+    ((worker_id as u32)..total)
+        .step_by(stride as usize)
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_worker(
     worker_id: usize,
-    range: std::ops::Range<u32>,
+    stride: u32,
+    total_frames: u32,
     fps: u32,
     recycle_every: u32,
     setup_line_bytes: String,
@@ -454,7 +462,7 @@ async fn run_worker(
     // unwinds before we'd reach it, and SIGKILL is sufficient cleanup since
     // the worker holds no on-disk state.
     let mut since_recycle: u32 = 0;
-    for frame_index in range.clone() {
+    for frame_index in worker_frame_indices(worker_id, stride, total_frames) {
         let project_time_ms = (frame_index as u64) * 1000 / (fps as u64);
         let cmd = match render_line(frame_index, project_time_ms) {
             Ok(s) => s,
@@ -506,7 +514,10 @@ async fn run_worker(
         }
 
         since_recycle += 1;
-        let is_last = frame_index + 1 == range.end;
+        // "Last frame THIS worker will render": its strided indices end once
+        // `frame_index + stride` would overflow `total_frames`. Don't recycle
+        // after the final frame — the worker is about to shut down.
+        let is_last = frame_index + stride >= total_frames;
         if since_recycle >= recycle_every && !is_last {
             if let Err(e) = stdin.write_all(recycle_line().as_bytes()).await {
                 return Err(finalize_worker_error(
@@ -647,18 +658,79 @@ impl StderrRing {
 mod tests {
     use super::*;
 
-    #[test]
-    fn split_range_distributes_evenly() {
-        assert_eq!(split_range(8, 2), vec![0..4, 4..8]);
-        assert_eq!(split_range(10, 5), vec![0..2, 2..4, 4..6, 6..8, 8..10]);
-        assert_eq!(split_range(1, 1), vec![0..1]);
+    // Mirror the worker-count clamp `render_map_frames` applies before deriving
+    // the stride, so coverage tests exercise the same `n` the orchestrator uses.
+    fn clamp_workers(worker_count: usize, total: u32) -> usize {
+        worker_count.max(1).min(total as usize)
     }
 
     #[test]
-    fn split_range_remainder_to_last() {
-        assert_eq!(split_range(7, 2), vec![0..3, 3..7]);
-        assert_eq!(split_range(10, 3), vec![0..3, 3..6, 6..10]);
-        assert_eq!(split_range(5, 2), vec![0..2, 2..5]);
+    fn worker_frame_indices_interleaves() {
+        // n = 2: worker 0 -> evens, worker 1 -> odds.
+        assert_eq!(worker_frame_indices(0, 2, 8), vec![0, 2, 4, 6]);
+        assert_eq!(worker_frame_indices(1, 2, 8), vec![1, 3, 5, 7]);
+        // n = 3 over 10 frames (3 does not divide 10).
+        assert_eq!(worker_frame_indices(0, 3, 10), vec![0, 3, 6, 9]);
+        assert_eq!(worker_frame_indices(1, 3, 10), vec![1, 4, 7]);
+        assert_eq!(worker_frame_indices(2, 3, 10), vec![2, 5, 8]);
+        // n = 1: the single worker renders the whole range, in order.
+        assert_eq!(worker_frame_indices(0, 1, 5), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn worker_frame_indices_are_congruent_mod_stride() {
+        // Every index worker `w` renders satisfies `idx % n == w`.
+        for n in 1u32..=6 {
+            for w in 0..n {
+                for idx in worker_frame_indices(w as usize, n, 50) {
+                    assert_eq!(idx % n, w, "worker {w} (n={n}) got off-residue index {idx}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn worker_assignment_is_complete_and_disjoint() {
+        // For a range of (total, worker_count) pairs — including n not dividing
+        // total, n == 1, and n clamped down to total — the union of every
+        // worker's assigned indices is exactly `0..total`, each index once.
+        let cases: &[(u32, usize)] = &[
+            (8, 2),   // even split
+            (10, 3),  // n does not divide total
+            (7, 4),   // n does not divide total
+            (5, 1),   // single worker
+            (3, 8),   // worker_count > total: clamped to n == total
+            (1, 1),   // single frame
+            (100, 6), // larger, uneven
+        ];
+        for &(total, worker_count) in cases {
+            let n = clamp_workers(worker_count, total);
+            let stride = n as u32;
+            let mut seen: Vec<u32> = Vec::new();
+            for w in 0..n {
+                seen.extend(worker_frame_indices(w, stride, total));
+            }
+            seen.sort_unstable();
+            let expected: Vec<u32> = (0..total).collect();
+            assert_eq!(
+                seen, expected,
+                "(total={total}, worker_count={worker_count}, n={n}) union must be 0..{total} exactly once",
+            );
+        }
+    }
+
+    #[test]
+    fn worker_count_clamps_to_total_frames() {
+        // When worker_count exceeds total_frames, n clamps to total so no
+        // worker is assigned an empty range and the stride still tiles 0..total.
+        let n = clamp_workers(8, 3);
+        assert_eq!(n, 3);
+        for w in 0..n {
+            assert!(
+                !worker_frame_indices(w, n as u32, 3).is_empty(),
+                "clamped worker {w} should still own at least one frame",
+            );
+        }
     }
 
     #[test]

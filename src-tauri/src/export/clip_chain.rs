@@ -100,18 +100,43 @@ pub fn build_clip_video_subgraph(inputs: &ClipChainInputs) -> Result<String, Cli
         clip_id.as_str(),
     )?;
 
-    // Fix #6: thread the original `color_trc` through so the SDR branch
-    // picks the correct `tin=` value for legacy SDR transfers
-    // (`smpte170m`, `bt470bg`). HDR / DV / log variants ignore the hint —
-    // they have unambiguous expected transfers handled in their own arms.
-    // The override path (`user_color_class_override`) is the user telling
-    // us "ignore the file's tags, treat this as X" — but we still pass the
-    // source's actual TRC; it's only consulted when the resolved class is
-    // SDR, so overriding to HLG / a log variant naturally drops the hint.
-    let ingest = ingest_filter_for(
-        inputs.clip.effective_color_class(),
-        inputs.clip.color_trc.as_deref(),
-    );
+    // Ingest the clip into the working space. Two paths:
+    //
+    //  - Per-axis override with at least one axis set (`color_space_override`):
+    //    the user has corrected one or more color axes on a mistagged clip.
+    //    We FORCE the input interpretation explicitly (`pin/tin/min/rin`, the
+    //    same explicit-source-tags form validated for the map canvas) so EVERY
+    //    overridden axis takes effect — not just the transfer. This is the
+    //    whole point of an override: "the container tags lie; read the pixels
+    //    as exactly these axes." It bypasses log-LUT development by design (an
+    //    explicit axis override is incompatible with assuming a log curve).
+    //    Guarded by `has_any_axis()` so an empty `Some({})` override does NOT
+    //    silently bypass the class path (and its log-LUT development).
+    //
+    //  - Otherwise (the overwhelmingly common case): the class-based
+    //    `ingest_filter_for`, which owns log-LUT development and the HDR
+    //    branches. Fix #6: the original `color_trc` is threaded through so the
+    //    SDR branch picks the right `tin=` for legacy transfers (`smpte170m`,
+    //    `bt470bg`); HDR / DV / log variants have unambiguous transfers and
+    //    ignore the hint. Byte-identical to pre-v9 output for every existing
+    //    clip (none carry an override yet).
+    let has_override = inputs
+        .clip
+        .color_space_override
+        .as_ref()
+        .is_some_and(|ov| ov.has_any_axis());
+    let ingest = if has_override {
+        crate::util::color_space::ingest_zscale_chain(
+            &inputs.clip.effective_color_space(),
+            &crate::util::color_space::ColorSpace::WORKING,
+            true,
+        )
+    } else {
+        ingest_filter_for(
+            inputs.clip.effective_color_class(),
+            inputs.clip.color_trc.as_deref(),
+        )
+    };
 
     Ok(format!(
         "[{idx}:v]trim=start={in_s:.6}:end={out_s:.6},setpts=(PTS-STARTPTS)/{speed:.6},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},{ingest},format={pix}[v{idx}]",
@@ -358,6 +383,7 @@ mod tests {
             // WS8 — test fixtures don't exercise log detection; the field
             // stays None so these helpers keep building plain SDR clips.
             suggested_log_class: None,
+            color_space_override: None,
         }
     }
 
@@ -787,6 +813,62 @@ mod tests {
         assert!(s.contains(&expected), "expected HLG ingest chain; got: {}", s);
         assert!(s.contains("zscale=tin=arib-std-b67:t=linear:npl=400"), "got: {}", s);
         assert!(s.ends_with("[v0]"), "got: {}", s);
+    }
+
+    #[test]
+    fn video_subgraph_per_axis_override_forces_explicit_source_tags() {
+        // A per-clip range override on a (mistagged-as-limited) SDR clip must
+        // FORCE the input interpretation explicitly so the override actually
+        // takes effect: the subgraph must carry `rin=full` (+ the rest of the
+        // explicit pin/tin/min input tags), NOT the inferred clip form that
+        // only emits `tin=`. Validated against real FFmpeg in the color
+        // verbose dry-run (no zimg 3074, no silent chroma downconvert).
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.color_space_override = Some(crate::models::PerAxisOverride {
+            range: Some("full".to_string()),
+            inferred_range: true,
+            ..Default::default()
+        });
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(s.contains("rin=full"), "override must force rin=full; got: {}", s);
+        assert!(s.contains("pin=bt709"), "override must state pin; got: {}", s);
+        assert!(s.contains("tin=bt709"), "override must state tin; got: {}", s);
+        assert!(s.contains("min=bt709"), "override must state min; got: {}", s);
+        assert!(s.contains("zscale=p=bt2020:m=bt2020nc"), "got: {}", s);
+    }
+
+    #[test]
+    fn video_subgraph_empty_override_keeps_class_path() {
+        // An override object with NO axis set must NOT bypass the class-based
+        // ingest path (which owns log-LUT development). Byte-identical to the
+        // no-override class path.
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.color_space_override = Some(crate::models::PerAxisOverride::default());
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        let class_expected = crate::util::color::ingest_filter_for(
+            crate::util::color::SourceColorClass::SdrBt709,
+            None,
+        );
+        assert!(
+            s.contains(&class_expected),
+            "empty override must keep the class ingest path; got: {}",
+            s,
+        );
+        assert!(!s.contains("rin="), "empty override must NOT force explicit input tags; got: {}", s);
     }
 
     #[test]

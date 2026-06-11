@@ -28,6 +28,10 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use crate::util::color_space::{
+    ingest_zscale_chain, working_pix_fmt, ColorSpace, Transfer,
+};
+
 // ---------------------------------------------------------------------------
 // Working-space contract (WS3 — working-space architecture in export).
 //
@@ -48,20 +52,26 @@ use std::sync::OnceLock;
 // single seam that WS3 and WS4 agree on.
 // ---------------------------------------------------------------------------
 
+// These three constants are kept as the names the rest of the backend reaches
+// for, but they are now DERIVED from the atomic-axes registry
+// (`ColorSpace::WORKING`) rather than free-standing literals — the registry is
+// the single source of truth. Adding/changing the working space is a registry
+// edit; these aliases follow automatically.
+
 /// FFmpeg `format=…` pixel format used everywhere inside the working space.
 /// Planar GBR, 32-bit float per channel, little-endian. No alpha — composite
 /// transparency lives elsewhere (final delivery transforms, mask compositing
 /// via a parallel chain). Chosen so HDR sources (HLG, PQ) sit comfortably
 /// without crushing range and SDR sources sit without distortion.
-pub const WORKING_SPACE_PIX_FMT: &str = "gbrpf32le";
+pub const WORKING_SPACE_PIX_FMT: &str = working_pix_fmt(&ColorSpace::WORKING);
 
 /// zscale `p=…` (primaries) argument for the working space. BT.2020 wide
 /// gamut so HDR delivery comes for free from any project.
-pub const WORKING_SPACE_PRIMARIES: &str = "bt2020";
+pub const WORKING_SPACE_PRIMARIES: &str = ColorSpace::WORKING.primaries.zscale();
 
 /// zscale `m=…` (matrix coefficients) argument for the working space.
 /// `bt2020nc` — non-constant luminance. Mate to `WORKING_SPACE_PRIMARIES`.
-pub const WORKING_SPACE_MATRIX: &str = "bt2020nc";
+pub const WORKING_SPACE_MATRIX: &str = ColorSpace::WORKING.matrix.zscale();
 
 /// FFmpeg filter chain that brings a clip with the given source color class
 /// into the working space (linear-light, BT.2020 primaries, `gbrpf32le`).
@@ -102,72 +112,55 @@ pub const WORKING_SPACE_MATRIX: &str = "bt2020nc";
 /// fallback path — those are a separate workstream when those users
 /// request it.
 pub fn ingest_filter_for(class: SourceColorClass, source_trc: Option<&str>) -> String {
-    // Map the original `color_transfer` ffprobe string onto the zscale
-    // `tin=` value for the SDR family. Only the three legacy SDR transfers
-    // need disambiguation — anything else routes to `bt709` (the safest
-    // default, matches Phase 1 behaviour and `Unknown`'s contract). zscale's
-    // canonical names per its docs / libzimg: `170m` for SMPTE 170M, `470bg`
-    // for BT.470BG, `bt709` for BT.709.
-    let sdr_tin = match source_trc {
-        Some("smpte170m") => "170m",
-        Some("bt470bg") => "470bg",
-        // Everything else (`bt709`, missing, garbage, unrecognised) ->
-        // canonical bt709. Matches the pre-fix behaviour exactly for the
-        // common cases.
-        _ => "bt709",
-    };
-    let sdr_chain = || {
-        format!(
-            "zscale=tin={tin}:t=linear,format={pix},zscale=p={p}:m={m}",
-            tin = sdr_tin,
-            pix = WORKING_SPACE_PIX_FMT,
-            p = WORKING_SPACE_PRIMARIES,
-            m = WORKING_SPACE_MATRIX,
-        )
-    };
-    // `lut3d` development tail: every vendor LUT converts log → BT.709
-    // SDR (full-range internally), so after the LUT the chain matches
-    // the SDR ingest exactly — linearise via inverse BT.709 EOTF, hop
-    // to the working-space pixel format, retag primaries + matrix to
-    // BT.2020 / BT.2020-NC. Centralised so the per-class arms stay one
-    // line each and so the LUT-vs-SDR fallback only diverges at the
-    // single `bundled_lut_path` point.
+    ingest_filter_into(class, source_trc, &ColorSpace::WORKING)
+}
+
+/// Working-space-parameterized form of [`ingest_filter_for`]. The pipeline's
+/// working space is a project-level value (see `Project::working_color_space`,
+/// schema v9); today it always resolves to [`ColorSpace::WORKING`], but every
+/// generator threads it explicitly so a future non-default working space is a
+/// model change, not a filtergraph rewrite.
+///
+/// All per-class color knowledge now flows through the registry generator
+/// [`ingest_zscale_chain`] — the only per-class logic left here is (a) which
+/// source [`ColorSpace`] a class maps to and (b) the `lut3d` development
+/// prefix for log variants. The legacy hardcoded zscale strings are gone.
+pub fn ingest_filter_into(
+    class: SourceColorClass,
+    source_trc: Option<&str>,
+    working: &ColorSpace,
+) -> String {
+    // SDR (and `Unknown`) ingest, honoring the legacy-transfer disambiguation
+    // (smpte170m → tin=170m, bt470bg → tin=470bg) via `source_color_space_for`.
+    let sdr_chain =
+        || ingest_zscale_chain(&source_color_space_for(SourceColorClass::SdrBt709, source_trc), working, false);
+
+    // `lut3d` development tail: every vendor LUT converts log → BT.709 SDR
+    // (full-range internally), so after the LUT the chain is the plain SDR
+    // ingest (`tin=bt709` — legacy hints don't apply to the LUT's output).
+    // Centralised so the LUT-vs-SDR fallback only diverges at the single
+    // `bundled_lut_path` point.
     let lut_chain = |bundled: BundledLut| match bundled_lut_path(bundled) {
         Some(path) => format!(
-            "lut3d='{lut}',zscale=tin=bt709:t=linear,format={pix},zscale=p={p}:m={m}",
+            "lut3d='{lut}',{tail}",
             lut = escape_lut3d_filename(&path.to_string_lossy()),
-            pix = WORKING_SPACE_PIX_FMT,
-            p = WORKING_SPACE_PRIMARIES,
-            m = WORKING_SPACE_MATRIX,
+            tail = ingest_zscale_chain(&ColorSpace::SDR_BT709, working, false),
         ),
-        // No usable LUT (file missing or placeholder) — fall back to
-        // SDR so the pipeline still produces a frame. Matches the
-        // Phase 1 behaviour the WS10 brief asks us to preserve as a
-        // graceful-degradation floor.
+        // No usable LUT (file missing or placeholder) — fall back to SDR so
+        // the pipeline still produces a frame. Matches the Phase 1 behaviour
+        // the WS10 brief asks us to preserve as a graceful-degradation floor.
         None => sdr_chain(),
     };
+
     match class {
-        SourceColorClass::HlgBt2020 => format!(
-            "zscale=tin=arib-std-b67:t=linear:npl=400,format={pix},zscale=p={p}:m={m}",
-            pix = WORKING_SPACE_PIX_FMT,
-            p = WORKING_SPACE_PRIMARIES,
-            m = WORKING_SPACE_MATRIX,
-        ),
-        SourceColorClass::PqBt2020 => format!(
-            "zscale=tin=smpte2084:t=linear:npl=1000,format={pix},zscale=p={p}:m={m}",
-            pix = WORKING_SPACE_PIX_FMT,
-            p = WORKING_SPACE_PRIMARIES,
-            m = WORKING_SPACE_MATRIX,
-        ),
-        // Dolby Vision: Phase 1 collapses to the HLG base layer (the
-        // enhancement-layer RPU is discarded — full DV handling lives in a
-        // later phase). Same chain as HLG.
-        SourceColorClass::DolbyVision => format!(
-            "zscale=tin=arib-std-b67:t=linear:npl=400,format={pix},zscale=p={p}:m={m}",
-            pix = WORKING_SPACE_PIX_FMT,
-            p = WORKING_SPACE_PRIMARIES,
-            m = WORKING_SPACE_MATRIX,
-        ),
+        // Dolby Vision collapses to its HLG base layer in Phase 1 (the RPU is
+        // discarded — nothing here reads it), so it shares the HLG source space.
+        SourceColorClass::HlgBt2020 | SourceColorClass::DolbyVision => {
+            ingest_zscale_chain(&ColorSpace::HDR_HLG_BT2020, working, false)
+        }
+        SourceColorClass::PqBt2020 => {
+            ingest_zscale_chain(&ColorSpace::HDR_PQ_BT2020, working, false)
+        }
         SourceColorClass::SdrBt709 | SourceColorClass::Unknown => sdr_chain(),
         // ---- Phase 2 log variants ----
         SourceColorClass::DLog => lut_chain(BundledLut::DjiDLog),
@@ -175,13 +168,39 @@ pub fn ingest_filter_for(class: SourceColorClass, source_trc: Option<&str>) -> S
         SourceColorClass::CLog => lut_chain(BundledLut::CanonCLog),
         SourceColorClass::CLog2 => lut_chain(BundledLut::CanonCLog2),
         SourceColorClass::CLog3 => lut_chain(BundledLut::CanonCLog3),
-        // Sony S-Log2 / S-Log3 and Panasonic V-Log: no bundled LUT in
-        // scope for WS10 (per the brief's out-of-scope list). Fall back
-        // to the SDR chain — the WS9 UI surfaces this as "no LUT
-        // bundled, footage will look flat" so the user can drop in
-        // their own LUT against the BundledLut slot in a later
-        // workstream.
+        // Sony S-Log2 / S-Log3 and Panasonic V-Log: no bundled LUT in scope
+        // for WS10. Fall back to the SDR chain — the WS9 UI surfaces this as
+        // "no LUT bundled, footage will look flat".
         SourceColorClass::VLog | SourceColorClass::SLog2 | SourceColorClass::SLog3 => sdr_chain(),
+    }
+}
+
+/// Map a coarse [`SourceColorClass`] (+ the original ffprobe `color_transfer`
+/// hint) onto the atomic-axes [`ColorSpace`] the export pipeline ingests from.
+///
+/// This is the seam between the legacy coarse-label world (`SourceColorClass`,
+/// still used for the UI, log-LUT routing, and camera-preset hints) and the
+/// atomic-axes pipeline. HDR classes map to their canonical source spaces; the
+/// SDR family (and log variants, which develop to BT.709 SDR) disambiguate the
+/// legacy transfer via `source_trc` so SMPTE 170M / BT.470BG sources get the
+/// correct inverse EOTF.
+pub fn source_color_space_for(class: SourceColorClass, source_trc: Option<&str>) -> ColorSpace {
+    match class {
+        SourceColorClass::HlgBt2020 | SourceColorClass::DolbyVision => ColorSpace::HDR_HLG_BT2020,
+        SourceColorClass::PqBt2020 => ColorSpace::HDR_PQ_BT2020,
+        // SDR family + log variants (treated as BT.709 SDR after development /
+        // fallback). The three legacy SDR transfers carry distinct gammas.
+        _ => {
+            let transfer = match source_trc {
+                Some("smpte170m") => Transfer::Smpte170m,
+                Some("bt470bg") => Transfer::Bt470bg,
+                _ => Transfer::Bt709,
+            };
+            ColorSpace {
+                transfer,
+                ..ColorSpace::SDR_BT709
+            }
+        }
     }
 }
 
@@ -437,14 +456,17 @@ pub fn log_development_lut_prefix(class: SourceColorClass) -> Option<String> {
 /// (same chromaticities), so `pin=bt709` is the canonical pairing with
 /// `tin=iec61966-2-1`.
 pub fn map_ingest_filter() -> String {
-    format!(
-        "zscale=pin=bt709:tin=iec61966-2-1:min=gbr:rin=full:\
-         p=bt709:t=linear:m=gbr:r=full,\
-         format={pix},zscale=p={p}:m={m}",
-        pix = WORKING_SPACE_PIX_FMT,
-        p = WORKING_SPACE_PRIMARIES,
-        m = WORKING_SPACE_MATRIX,
-    )
+    map_ingest_filter_into(&ColorSpace::WORKING)
+}
+
+/// Working-space-parameterized form of [`map_ingest_filter`]. The map canvas
+/// is just a known source [`ColorSpace`] ([`ColorSpace::SRGB`]: BT.709
+/// primaries, sRGB transfer, full range, RGB-identity matrix), so it flows
+/// through the SAME generator as clip ingest — with `explicit_source_tags`
+/// set, because the bare `rawvideo` RGBA input carries no stream tags for zimg
+/// to infer from (the load-bearing asymmetry documented above).
+pub fn map_ingest_filter_into(working: &ColorSpace) -> String {
+    ingest_zscale_chain(&ColorSpace::SRGB, working, true)
 }
 
 /// Coarse classification of a source clip's color regime. Drives ingest
@@ -580,6 +602,98 @@ pub fn classify(meta: &ColorMetadata) -> SourceColorClass {
         Some("smpte2084") => SourceColorClass::PqBt2020,
         Some("bt709") | Some("smpte170m") | Some("bt470bg") => SourceColorClass::SdrBt709,
         _ => SourceColorClass::Unknown,
+    }
+}
+
+/// A detected source [`ColorSpace`] plus per-axis flags marking which axes were
+/// INFERRED (the file tag was absent) versus read directly from the stream.
+/// The UI badges inferred axes so the user knows which to sanity-check; the
+/// per-clip override (see `Clip::color_space_override`) lets them correct any
+/// axis without affecting the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InferredColorSpace {
+    pub cs: ColorSpace,
+    pub inferred_primaries: bool,
+    pub inferred_transfer: bool,
+    pub inferred_range: bool,
+    pub inferred_matrix: bool,
+}
+
+/// Resolve probed metadata into a concrete [`ColorSpace`], inferring ONLY the
+/// axes whose stream tag is absent — present tags are never overridden (the
+/// Premiere antipattern). Inference rules, applied only on absence:
+///
+/// - **transfer**: the primary signal; HLG/PQ/legacy-SDR recognized directly,
+///   otherwise default BT.709.
+/// - **primaries**: from the transfer when absent (HLG/PQ ⇒ BT.2020, else
+///   BT.709).
+/// - **range**: limited (`tv`) by default — H.264/HEVC convention; full is
+///   normally declared explicitly.
+/// - **matrix**: from the primaries when absent (BT.2020 ⇒ bt2020nc, else
+///   bt709).
+///
+/// HDR `npl` follows the transfer (HLG 400, PQ 1000) per the ingest convention.
+pub fn inferred_color_space(meta: &ColorMetadata) -> InferredColorSpace {
+    let (transfer, inferred_transfer) = match meta.color_trc.as_deref() {
+        Some("arib-std-b67") => (Transfer::Hlg, false),
+        Some("smpte2084") => (Transfer::Pq, false),
+        Some("smpte170m") => (Transfer::Smpte170m, false),
+        Some("bt470bg") => (Transfer::Bt470bg, false),
+        Some("bt709") => (Transfer::Bt709, false),
+        _ => (Transfer::Bt709, true),
+    };
+
+    let (primaries, inferred_primaries) = match meta.color_primaries.as_deref() {
+        Some("bt2020") => (crate::util::color_space::Primaries::Bt2020, false),
+        Some("bt709") | Some("smpte170m") | Some("bt470bg") => {
+            (crate::util::color_space::Primaries::Bt709, false)
+        }
+        _ => {
+            let p = if transfer.is_hdr() {
+                crate::util::color_space::Primaries::Bt2020
+            } else {
+                crate::util::color_space::Primaries::Bt709
+            };
+            (p, true)
+        }
+    };
+
+    let (range, inferred_range) = match meta.color_range.as_deref() {
+        Some("tv") | Some("limited") => (crate::util::color_space::Range::Limited, false),
+        Some("pc") | Some("full") => (crate::util::color_space::Range::Full, false),
+        _ => (crate::util::color_space::Range::Limited, true),
+    };
+
+    let (matrix, inferred_matrix) = match meta.color_space.as_deref() {
+        Some("bt2020nc") => (crate::util::color_space::Matrix::Bt2020nc, false),
+        Some("bt709") => (crate::util::color_space::Matrix::Bt709, false),
+        Some("smpte170m") => (crate::util::color_space::Matrix::Smpte170m, false),
+        Some("gbr") => (crate::util::color_space::Matrix::Gbr, false),
+        _ => {
+            let m = match primaries {
+                crate::util::color_space::Primaries::Bt2020 => {
+                    crate::util::color_space::Matrix::Bt2020nc
+                }
+                crate::util::color_space::Primaries::Bt709 => {
+                    crate::util::color_space::Matrix::Bt709
+                }
+            };
+            (m, true)
+        }
+    };
+
+    InferredColorSpace {
+        cs: ColorSpace {
+            primaries,
+            transfer,
+            range,
+            matrix,
+            npl: crate::util::color_space::default_npl_for(transfer),
+        },
+        inferred_primaries,
+        inferred_transfer,
+        inferred_range,
+        inferred_matrix,
     }
 }
 

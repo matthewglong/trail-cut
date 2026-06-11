@@ -21,7 +21,9 @@ use crate::export::encoder::EncoderChoice;
 use crate::export::error::ClipChainError;
 use crate::export::layout::{OutputDimensions, PixelRect};
 use crate::models::Clip;
+use crate::export::delivery::push_color_flags_from_cs;
 use crate::util::color::{map_ingest_filter, WORKING_SPACE_PIX_FMT};
+use crate::util::color_space::{delivery_zscale_chain, ColorSpace};
 
 /// Argv chunks ready to splat into the full FFmpeg invocation, plus the
 /// per-frame byte count the orchestrator's sink uses to validate frames.
@@ -69,7 +71,9 @@ pub fn build_map_only_filtergraph(
     let mut argv: Vec<String> = Vec::new();
     push(&mut argv, ["-hide_banner", "-y"]);
 
-    // Input 0: rawvideo on stdin sized to the slot (worker renders at slot dims).
+    // Input 0: rawvideo on stdin sized to the slot. The worker renders the map
+    // supersampled and downsamples it back to slot dims on-GPU before sending,
+    // so the frames arriving here are already slot-sized.
     push(&mut argv, ["-f", "rawvideo", "-pix_fmt", "rgba"]);
     argv.push("-s".to_string());
     argv.push(format!("{}x{}", slot.w, slot.h));
@@ -91,7 +95,11 @@ pub fn build_map_only_filtergraph(
 
     // filter_complex
     argv.push("-filter_complex".to_string());
-    argv.push(build_filter_complex(slot, output, corner_mask_png_path.is_some()));
+    argv.push(build_filter_complex(
+        slot,
+        output,
+        corner_mask_png_path.is_some(),
+    ));
 
     push(&mut argv, ["-map", "[v]", "-an"]);
 
@@ -123,22 +131,17 @@ pub fn build_map_only_filtergraph(
 /// color flags — and those come from the encoder's `codec_args` (which
 /// already has them) — whereas `delivery_encoder_args` builds the full argv.
 fn push_prores_color_flags(argv: &mut Vec<String>) {
-    push(
-        argv,
-        [
-            "-color_primaries",
-            "bt709",
-            "-color_trc",
-            "bt709",
-            "-colorspace",
-            "bt709",
-            "-color_range",
-            "tv",
-        ],
-    );
+    // ProRes intermediates (Channels B/C) are tagged BT.709 limited — the same
+    // color flags any SDR delivery emits, generated from the registry so the
+    // tag set lives in exactly one place (`push_color_flags_from_cs`).
+    push_color_flags_from_cs(argv, &ColorSpace::SDR_BT709);
 }
 
-fn build_filter_complex(slot: PixelRect, output: OutputDimensions, with_mask: bool) -> String {
+fn build_filter_complex(
+    slot: PixelRect,
+    output: OutputDimensions,
+    with_mask: bool,
+) -> String {
     let pad = format!(
         "pad={out_w}:{out_h}:{x}:{y}:color=#00000000",
         out_w = output.w,
@@ -147,30 +150,34 @@ fn build_filter_complex(slot: PixelRect, output: OutputDimensions, with_mask: bo
         y = slot.y,
     );
     let map_ingest = map_ingest_filter();
+    // WS4 delivery transform for the map-only ProRes 4444 intermediate.
+    // `map_ingest` lands the canvas in working space (linear-light BT.2020
+    // primaries); this converts it to the BT.709 limited regime the encoder
+    // tags it with (`push_prores_color_flags` → SDR_BT709). Without it the
+    // pixels stay BT.2020-primaries but get tagged BT.709 — a gamut mismatch
+    // any player/NLE reads as desaturated/muted decorations. Mirrors the
+    // working→delivery hand-off the composite path does via
+    // `delivery_finishing_filter`. (SSAA supersampling is downsampled on-GPU
+    // in the renderer, so the map already arrives at slot dims here.)
+    let deliver = delivery_zscale_chain(&ColorSpace::WORKING, &ColorSpace::SDR_BT709);
     if with_mask {
         // WS3: bring the raw RGBA8 map canvas into working space (linear
-        // light, BT.2020 primaries, gbrpf32le) FIRST. Then convert back to
-        // yuva444p10le so the downstream `alphamerge` + `pad` chain
-        // continues to compose alpha correctly (gbrpf32le has no alpha
-        // channel; Channel B's masked positional output contract requires
-        // alpha all the way through to the ProRes 4444 encoder).
-        //
-        // The working-space round-trip is load-bearing: it ensures the map
-        // pixels enter the rest of the pipeline normalized (full-range
-        // sRGB → linear → BT.2020 retag), matching the per-clip ingest in
-        // `clip_chain.rs`. WS4 will replace the final `yuva444p10le`
-        // hand-off with a proper delivery transform.
+        // light, BT.2020 primaries, gbrpf32le) FIRST, apply the delivery
+        // transform, then convert back to yuva444p10le so the downstream
+        // `alphamerge` + `pad` chain composes alpha correctly (gbrpf32le has
+        // no alpha channel; Channel B's masked positional output contract
+        // requires alpha all the way through to the ProRes 4444 encoder).
         format!(
-            "[0:v]{map_ingest},format=yuva444p10le[map];\
+            "[0:v]{map_ingest},{deliver},format=yuva444p10le[map];\
              [1:v]format=gray[mask];\
              [map][mask]alphamerge[masked];\
              [masked]{pad}[v]"
         )
     } else {
-        // No mask: working-space ingest, back to yuva444p10le for the pad
-        // (alpha-bearing format required so `color=#00000000` actually
-        // paints transparent — see module docstring).
-        format!("[0:v]{map_ingest},format=yuva444p10le,{pad}[v]")
+        // No mask: working-space ingest, delivery transform, back to
+        // yuva444p10le for the pad (alpha-bearing format required so
+        // `color=#00000000` actually paints transparent — see module docstring).
+        format!("[0:v]{map_ingest},{deliver},format=yuva444p10le,{pad}[v]")
     }
 }
 
@@ -464,8 +471,9 @@ pub enum CompositeMode {
 ///   (`-x264-params colorprim=...` / `-x265-params colorprim=...`), AAC
 ///   audio (or PCM for ProRes), and `+faststart`.
 ///
-/// `frame_bytes_per_input == map_slot.w * map_slot.h * 4` — the
-/// orchestrator writes RGBA frames at the map slot dims.
+/// `frame_bytes_per_input == map_slot.w * map_slot.h * 4` — the orchestrator
+/// writes RGBA frames at the map slot dims. (The renderer supersamples then
+/// downsamples to slot dims on-GPU, so the wire stays slot-sized.)
 ///
 /// Per-clip subgraphs are built via `clip_chain::build_clip_video_subgraph`
 /// and `clip_chain::build_clip_audio_subgraph` — *not* re-derived inline.
@@ -500,8 +508,10 @@ pub fn build_composite_filtergraph(
         argv.push(vc.source_path.to_string_lossy().into_owned());
     }
 
-    // Input `N`: rawvideo on stdin (map render stream from the worker)
-    // sized to map_slot (the worker renders at slot dims).
+    // Input `N`: rawvideo on stdin (map render stream from the worker) sized
+    // to map_slot. The worker renders the map supersampled and downsamples it
+    // back to map_slot dims on-GPU before sending, so the frames arriving here
+    // are already slot-sized.
     push(&mut argv, ["-f", "rawvideo", "-pix_fmt", "rgba"]);
     argv.push("-s".to_string());
     argv.push(format!("{}x{}", map_slot.w, map_slot.h));
@@ -560,7 +570,8 @@ pub fn build_composite_filtergraph(
 
     Ok(FiltergraphPlan {
         argv,
-        // RGBA frames at the map slot dims (the rawvideo input geometry).
+        // RGBA frames at the map slot dims (the rawvideo input geometry). The
+        // renderer downsamples its supersampled buffer to slot dims on-GPU.
         frame_bytes_per_input: (map_slot.w as usize) * (map_slot.h as usize) * 4,
     })
 }
@@ -636,6 +647,10 @@ fn build_composite_filter_complex(
     // sRGB map with limited-range Y'CbCr video. See
     // `docs/color-pipeline/background/investigation-findings.md`
     // §"PIP saturation (Symptom 2)" for the root cause.
+    //
+    // The map arrives at map_slot dims (the renderer supersamples then
+    // downsamples to slot dims on-GPU), so `[map]` is slot-sized — exactly
+    // what the overlay positions below expect.
     let map_ingest = map_ingest_filter();
     parts.push(format!("[{n}:v]{map_ingest}[map]"));
 
@@ -952,6 +967,13 @@ mod tests {
         argv.join(" ")
     }
 
+    /// Expected per-frame RGBA byte count for a map slot. The renderer
+    /// supersamples but downsamples to slot dims on-GPU before sending, so the
+    /// rawvideo frames the orchestrator feeds are slot-sized.
+    fn expected_map_frame_bytes(w: u32, h: u32) -> usize {
+        (w as usize) * (h as usize) * 4
+    }
+
     #[test]
     fn no_corner_radius_full_bleed_map() {
         // Full-bleed map: slot fills the output. (PiP-with-map-as-background.)
@@ -1000,7 +1022,7 @@ mod tests {
         // Output path at the tail.
         assert_eq!(plan.argv.last().unwrap(), "/tmp/out.mov");
 
-        assert_eq!(plan.frame_bytes_per_input, 1080 * 1920 * 4);
+        assert_eq!(plan.frame_bytes_per_input, expected_map_frame_bytes(1080, 1920));
     }
 
     #[test]
@@ -1031,7 +1053,7 @@ mod tests {
             "fc was: {}",
             fc,
         );
-        assert_eq!(plan.frame_bytes_per_input, 346 * 346 * 4);
+        assert_eq!(plan.frame_bytes_per_input, expected_map_frame_bytes(346, 346));
     }
 
     #[test]
@@ -1105,11 +1127,11 @@ mod tests {
             fc,
         );
 
-        assert_eq!(plan.frame_bytes_per_input, 346 * 346 * 4);
+        assert_eq!(plan.frame_bytes_per_input, expected_map_frame_bytes(346, 346));
     }
 
     #[test]
-    fn frame_bytes_matches_slot_area_x4() {
+    fn frame_bytes_matches_supersampled_slot_area_x4() {
         for (w, h) in &[(540u32, 960u32), (1080, 1920), (1920, 1080), (1, 1)] {
             let slot = PixelRect { x: 0, y: 0, w: *w, h: *h };
             let output = OutputDimensions { w: *w, h: *h };
@@ -1122,7 +1144,7 @@ mod tests {
                 &prores_choice(),
                 out_path(),
             );
-            assert_eq!(plan.frame_bytes_per_input, (*w as usize) * (*h as usize) * 4);
+            assert_eq!(plan.frame_bytes_per_input, expected_map_frame_bytes(*w, *h));
         }
     }
 
@@ -1205,6 +1227,7 @@ mod tests {
             // WS8 — test fixtures don't exercise log detection; the field
             // stays None so these helpers keep building plain SDR clips.
             suggested_log_class: None,
+            color_space_override: None,
         }
     }
 
@@ -1531,7 +1554,8 @@ mod tests {
         let joined = argv_to_string(&plan.argv);
         assert!(joined.contains("-f rawvideo"), "joined: {}", joined);
         assert!(joined.contains("-pix_fmt rgba"), "joined: {}", joined);
-        // Rawvideo geometry matches the map slot dims.
+        // Rawvideo geometry matches the map slot dims (renderer downsamples
+        // its supersampled buffer to slot dims on-GPU).
         assert!(joined.contains("-s 346x346"), "joined: {}", joined);
         assert!(joined.contains("-r 30"), "joined: {}", joined);
         assert!(joined.contains("-i pipe:0"), "joined: {}", joined);
@@ -1649,10 +1673,11 @@ mod tests {
         // -movflags +faststart.
         assert!(joined.contains("-movflags +faststart"), "joined: {}", joined);
 
-        // frame_bytes_per_input matches map_slot area × 4 (RGBA).
+        // frame_bytes_per_input matches the supersampled map render area × 4
+        // (RGBA) — slot dims × SSAA factor.
         assert_eq!(
             plan.frame_bytes_per_input,
-            (map_slot.w as usize) * (map_slot.h as usize) * 4,
+            expected_map_frame_bytes(map_slot.w, map_slot.h),
         );
 
         // Output path at the tail.
@@ -1944,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn composite_frame_bytes_matches_map_slot_area_x4() {
+    fn composite_frame_bytes_matches_supersampled_map_slot_area_x4() {
         let video_slot = PixelRect { x: 0, y: 0, w: 1080, h: 1920 };
         let output = OutputDimensions { w: 1080, h: 1920 };
         let inputs = vec![vc("a", 2000, true)];
@@ -1967,7 +1992,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 plan.frame_bytes_per_input,
-                (*w as usize) * (*h as usize) * 4,
+                expected_map_frame_bytes(*w, *h),
                 "(w, h) = ({}, {})",
                 w,
                 h,
