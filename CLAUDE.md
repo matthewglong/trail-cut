@@ -3,6 +3,10 @@
 ## What this is
 Cross-platform desktop app (Tauri 2) for turning iPhone hiking videos + GPS routes into polished map-integrated social media videos. Ships to thousands of end users; **macOS is the current ship target, Windows is near-term**. Matthew is the developer, not the end user — "fix your environment" answers are dev-only stopgaps, never product solutions. See ARCHITECTURE.md for full design, and the pipeline/export design docs below for active decisions.
 
+## Ship-review execution (check before starting work)
+- **Progress tracker: `docs/ship-review/PROGRESS.md`** — cross-session state for the ship-review execution (plan: `docs/ship-review/ACTION_PLAN.md`, findings: `SHIP_REVIEW.md`). Read it at session start to pick up where the last session left off; update it whenever a phase advances or a decision lands.
+- **`attic/` is quarantined cruft** — preserved (never deleted), gitignored, and deny-listed in `.claude/settings.json`. Never read, search, cite, or restore from it.
+
 ## Tech stack
 - **Frontend**: React + TypeScript + Vite (test runner: Vitest)
 - **Backend**: Rust (Tauri 2 commands)

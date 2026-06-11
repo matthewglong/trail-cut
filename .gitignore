@@ -34,3 +34,6 @@ src-tauri/binaries/
 .playwright-mcp
 # Color-pipeline teaching lab (rendered frames, swatches, montages)
 pipeline-visuals/
+
+# Quarantined cruft — preserved on disk, never read (deny-listed in .claude/settings.json)
+attic/
