@@ -144,9 +144,9 @@ Hard-won conformance rules that are easy to get wrong (was: PIPELINE_RESEARCH §
 
 Tests fail loudly when a precondition is missing (zscale-capable FFmpeg, sidecars, etc.) —
 never silent skip-with-warning. Reference implementation: `assert_ffmpeg_has_zscale` at
-`src-tauri/tests/color_fixtures.rs:63` (called at :728). Known violation to fix when
-touched: `src-tauri/tests/golden_frame_parity.rs` silently skips when
-`TRAILCUT_CHROME_BIN` is unset.
+`src-tauri/tests/color_fixtures.rs:63`. The three known violations (golden_frame_parity's
+`TRAILCUT_CHROME_BIN` silent skip, 2× ffmpeg_runner eprintln+return) were converted to
+loud panics in ship-review Phase 3 — zero silent skips remain.
 
 ---
 
@@ -393,6 +393,12 @@ bug — signal 0.58). Fix = `npl=203` anchoring at the map→working seam. Not a
 subsampling, or hue problem. This is the single most valuable undone item the doc
 reconciliation surfaced. (See §4.8 for the underlying convention.)
 
+**Pinned by the Phase 3 tracer oracle (2026-06-11):** the
+`hdr_reference_white_tracer_{hlg,pq}` tests in `src-tauri/tests/color_fixtures.rs` push
+map-white through the real delivery chain and decode the result — measured 0.630 HLG /
+0.509 PQ against the 0.75 / 0.58 reference. They are red-by-design in CI (dedicated
+`hdr-tracer` job in `.github/workflows/ci.yml`) and go green when the Phase 4 fix lands.
+
 ### 6.2 Sidecar bundling (task 130) — OPEN, required before ship
 
 ffmpeg/ffprobe/exiftool/node resolve via `PATH` today; only chrome-headless-shell is
@@ -406,8 +412,8 @@ The only end-to-end check that export visually matches preview has been deferred
 2026-05-02 across a supersession chain (migration task 640 → export task 120 → never
 authored) — while preview/export divergence became the headline quality pain. The golden-
 frame test (`src-tauri/tests/golden_frame_parity.rs`) is a renderer-regression guard
-against fixtures, not a preview-vs-export comparison, and it silently skips without
-`TRAILCUT_CHROME_BIN` (violates §1.11).
+against fixtures, not a preview-vs-export comparison. (Its former `TRAILCUT_CHROME_BIN`
+silent skip was converted to a loud panic in ship-review Phase 3 — see §1.11.)
 
 ### 6.4 Live gap registry — OPEN (tracked elsewhere)
 

@@ -10,15 +10,19 @@ cross-session state. Keep entries terse and dated.
 
 ## NEXT ACTION
 
-**Phase 3 — Tracer oracle (Thread 1, thin slice).** Stand up the first
-end-to-end oracle slice: CI on every push; the HDR signal test red-by-design
-(npl=203 reference-white fix not yet landed — see `docs/CANON.md` §6 open
-items); zero silent skips (incl. fixing the known `golden_frame_parity.rs`
-TRAILCUT_CHROME_BIN silent-skip violation, flagged in CANON §1 BINDING
-loud-failures entry). See ACTION_PLAN Thread 1 for scope.
-
-Branch from `main` (post-Phase-2: merges `2be86ae` + `95a0df5`, plus this
-tracker commit). Test baseline updated below.
+**Phase 4 — HDR port (Thread 3).** Work order: `docs/spikes/IMPLEMENTATION.md`
+(A+B+C+D, atomic per the spike's own warning — partial landing darkens camera
+footage ~2×). `npl=203` WORKING_NPL anchor at every HDR ingest AND delivery,
+×2.03 SDR-origin gain, 10-bit headroom, HQ subsample, BT.2446-A tone map for
+SDR targets. Gated on the Phase 3 tracer: the two
+`hdr_reference_white_tracer_*` tests (red today: 0.630 HLG / 0.509 PQ vs
+0.75 / 0.58 expected) must go GREEN — then graduate them into the main CI
+job (drop the `--skip hdr_reference_white_tracer` in `.github/workflows/
+ci.yml`'s test job and delete the `hdr-tracer` job; its report step goes red
+on unexpected-green precisely to force this). Deliberately retire the
+byte-pins that encode the bug (`delivery_never_emits_npl`; pre-fix PQ string
+in delivery.rs tests) — each re-baseline documented. Sign-off: Matthew's
+eyeball checklist, ACTION_PLAN decision log #3.
 
 ## Phase status
 
@@ -28,18 +32,22 @@ tracker commit). Test baseline updated below.
 | 1 — Unstrand engine (Thread 0) | ✅ done 2026-06-11 | See Phase 1 record below |
 | 2a — Data-loss fix (Thread 2) | ✅ done 2026-06-11 | See Phase 2a record below |
 | 2b — Doc canon (Thread 4) | ✅ done 2026-06-11 | See Phase 2b record below |
-| 3 — Tracer oracle (Thread 1 thin) | ⬜ next | Gate: CI on every push; HDR signal test red-by-design; zero silent skips |
-| 4 — HDR port (Thread 3) | ⬜ pending | Gate: tracer green; SDR unchanged; Matthew eyeball checklist (ACTION_PLAN decision log #3) |
+| 3 — Tracer oracle (Thread 1 thin) | ✅ done 2026-06-11 | See Phase 3 record below; green CI run 27386190883 with verified red-by-design tracer |
+| 4 — HDR port (Thread 3) | ⬜ next | Gate: tracer green; SDR unchanged; Matthew eyeball checklist (ACTION_PLAN decision log #3) |
 | 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending | Per-lane tracer slices, see ACTION_PLAN |
 
-## Test baseline (canonical, post-Phase-2a, on `main` @ 95a0df5)
+## Test baseline (canonical, post-Phase-3, on `main` @ b44ae9a)
 
-`npm run test:run` → **928 passed | 7 skipped (935), 0 failed** (baseline
-915 + 13 new projectPersistence tests).
-`cargo test` → **356 passed, 0 failed, 1 ignored** (332 lib incl. 3 new
-write_atomic tests + 15 color_fixtures + 4 project_parity new + 2
-encoder_probe + 2 layout-parity + 1 other). Any failure from here is a
-regression. (Pre-Phase-2 baseline was 915/7 + 349.)
+`npm run test:run` → **928 passed | 7 skipped (935), 0 failed**.
+`cargo test -- --skip hdr_reference_white_tracer` → **356 passed, 0 failed,
+1 ignored, 2 filtered** (332 lib + 15 color_fixtures + 1 encoder_probe + 2
+layout_parity + 2 orchestrator + 4 project_parity). The 2 filtered are the
+`hdr_reference_white_tracer_*` tests — **red-by-design until Phase 4**
+(plain `cargo test` shows them as the only 2 failures; that is correct, not
+a regression). Any other failure is a regression. CI reproduces exactly
+these counts (run 27386190883). Note: the suites now PANIC (by design) on
+machines missing ffmpeg / zscale / TRAILCUT_CHROME_BIN-with-feature — local
+ffmpeg must be `ffmpeg-full` (plain brew `ffmpeg` bottle has no libzimg).
 
 ## Deferred follow-ups ledger (standing — check when opening any phase)
 
@@ -61,9 +69,55 @@ live only inside a historical phase record.
 - **Parity-test `working_color_space` exception** — self-removing: delete the
   exception when a second `WorkingColorSpaceId` variant lands (instructions in
   `src-tauri/tests/project_parity.rs`).
-- npl=203 ref-white, task 130 sidecar bundling, task 120 parity gate, three
-  silent test skips — already owned by Phases 4 / 5 Ship-deps / 3 + 5 Oracle
-  lanes; also recorded in `docs/CANON.md` §6.
+- npl=203 ref-white, task 130 sidecar bundling, task 120 parity gate —
+  already owned by Phases 4 / 5 Ship-deps / 5 Oracle lanes; also recorded in
+  `docs/CANON.md` §6. (The three silent test skips were resolved in Phase 3.)
+- **CI chrome-glob stub in the `hdr-tracer` job** (placeholder dir satisfies
+  tauri.conf.json's `binaries/chrome-*/**/*` bundle.resources glob; the test
+  job provisions the real thing via `npm run build:renderer`) — remove when
+  task 130 lands real sidecar provisioning. Owner: Phase 5 Ship-deps lane.
+- **Tracer graduation** (when Phase 4 lands: drop `--skip
+  hdr_reference_white_tracer` from the CI test job, delete the `hdr-tracer`
+  job) — owner: Phase 4; mechanically enforced (the job goes red on
+  unexpected-green).
+
+## Phase 3 record (done 2026-06-11)
+
+- **Commits on `main` (pushed to origin — push approved for this phase):**
+  `60a4c9a` (tracer test + loud-skip conversions + CI workflow), `9f7ad36`
+  (ffmpeg-full provisioning + CLAUDE.md dev-deps fix), `97897b5` (chrome-glob
+  stub + tracer-report hardening), `b44ae9a` (renderer-sidecar provisioning
+  for orchestrator tests).
+- **Gate met — evidence: green CI run `27386190883`**
+  (https://github.com/matthewglong/trail-cut/actions/runs/27386190883):
+  `Tests (macOS)` job green (Vitest 928/7 + cargo 356/0/1, identical to
+  local); `hdr-tracer` job green with the loud "HDR tracer RED (expected)"
+  warning annotation, grep-verified against the actual BT.2408 assertion
+  text (a build failure can no longer masquerade as the expected red — that
+  false positive happened on run 27385745706 and is now a hard job failure).
+- **Tracer oracle** (`hdr_reference_white_tracer_{hlg,pq}` in
+  `src-tauri/tests/color_fixtures.rs`): pure-white map frame →
+  `map_ingest_filter()` → `delivery_finishing_filter(target)` → the encoder
+  `select_encoder_for_target` actually picks → decode → central-region luma
+  vs BT.2408 reference white (0.75 HLG / 0.58 PQ ±0.02). **Red-by-design:
+  measures 0.630 HLG / 0.509 PQ** — exactly CANON §6.1's diagnosed npl=203
+  defect ("~62% HLG"). Never `#[ignore]`d; runs visibly in CI's dedicated
+  `hdr-tracer` job (allowed to fail with annotation; goes RED itself on
+  unexpected-green or non-documented failure).
+- **Zero silent skips**: `golden_frame_parity.rs` now panics without
+  `TRAILCUT_CHROME_BIN` (was return-green); both `ffmpeg_runner.rs` tests
+  panic without ffmpeg (were eprintln+return). CANON §1.11 / §6.3 updated.
+- **Also fixed en route**: pre-existing compile break in the feature-gated
+  golden-frame tests (`SetupPayload.readback` added in Phase 1; fixture
+  predates SSAA → `readback == framebuffer`); CLAUDE.md's wrong
+  `brew install ffmpeg` dev instruction (core bottle has no libzimg —
+  proven by CI run 27385616028; correct formula is `ffmpeg-full`).
+- **CI shape** (`.github/workflows/ci.yml`): macOS runner, every push + PR.
+  Provisioning: `ffmpeg-full` (keg-only → GITHUB_PATH) + exiftool via brew,
+  fail-fast zscale assert, Node 22 + npm ci, stable Rust + rust-cache,
+  `npm run build:renderer` (renderer bundles + pinned Chrome for Testing —
+  the orchestrator integration tests drive the real chromium worker and
+  PASS on the runner, incl. real OpenFreeMap tile fetches).
 
 ## Phase 2a record (done 2026-06-11)
 
@@ -207,3 +261,18 @@ live only inside a historical phase record.
   quarantined to attic/superseded-docs/; fresh-agent gate quiz PASS, haiku
   contradiction scan PASS. Next: Phase 3 — tracer oracle (Thread 1 thin
   slice).
+- **2026-06-11** — Phase 3 executed: red-by-design HDR reference-white tracer
+  (`hdr_reference_white_tracer_{hlg,pq}`, measured 0.630/0.509 vs 0.75/0.58),
+  three silent skips → loud panics, GitHub Actions CI on every push (macOS,
+  ffmpeg-full + exiftool + renderer sidecar provisioned). Four pushes to get
+  CI green — each failure was the loud-failure machinery working: run
+  …616028 caught brew `ffmpeg` shipping without libzimg (→ ffmpeg-full +
+  CLAUDE.md fix), …745706 caught the empty chrome bundle-resources glob AND
+  a tracer false positive (build failure masqueraded as expected-red → report
+  step now grep-verifies the BT.2408 assertion), …966063 caught the missing
+  renderer bundles (→ provision via build:renderer, orchestrator tests drive
+  real Chrome on the runner). **Green: run 27386190883** — gate met, zero
+  silent skips, tracer visibly red for the documented reason. Also fixed
+  pre-existing integration_export compile break (SetupPayload.readback).
+  Next: Phase 4 — HDR port (Thread 3), work order docs/spikes/
+  IMPLEMENTATION.md, gated on the tracer flipping green.
