@@ -1500,31 +1500,28 @@ fn ws3_masked_pip_composite_overlay_inputs_share_format_family() {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// HDR reference-white tracer — EXPECTED RED until the Phase 4 npl=203 fix.
+// HDR reference-white tracer — the Phase 4 gate (GREEN since the HDR port).
 //
-// The diagnosed live defect (docs/CANON.md §6.1): HDR map exports are dark
-// because SDR map graphics enter the working space scene-linear (sRGB white
-// → linear 1.0) and the delivery chain encodes that without a reference-white
-// anchor, so map white lands at ~62% HLG signal instead of the BT.2408
-// graphics-white level (203 nit = 75% HLG signal; PQ verified the same bug —
-// correct level is 58% PQ signal). The fix is `npl=203` anchoring at the
-// map→working seam, which lands in ship-review Phase 4 — NOT alongside this
-// test.
+// History: docs/CANON.md §6.1 diagnosed HDR map exports as dark because SDR
+// map graphics entered the working space scene-linear (sRGB white → linear
+// 1.0) and the delivery chain encoded that without a reference-white anchor —
+// map white landed at ~63% HLG / ~51% PQ signal instead of the BT.2408
+// graphics-white level (203 nit = 75% HLG / 58% PQ). These two tests were
+// authored RED-BY-DESIGN in ship-review Phase 3 (measured 0.630 / 0.509) to
+// prove the instrument could see the defect before anyone trusted it as a
+// gate.
 //
-// These two tests are the ship-review tracer oracle: they push a pure-white
-// map frame through the REAL production chain (`map_ingest_filter()` →
-// `delivery_finishing_filter(target)` → the real selected encoder), decode
-// the delivered frame, and assert white sits at the BT.2408 reference-white
-// signal level. They MUST fail today — that is the point: they prove the
-// instrument can see the known defect before anyone trusts it as a gate.
+// Phase 4 (the HDR port, docs/spikes/IMPLEMENTATION.md) fixed the defect:
+// SDR-origin sources delivered to HDR now carry a ×2.03 linear anchor gain at
+// the ingest tail (`sdr_origin_anchor_gain`, proven equivalent to npl=203
+// finishing), applied to the map via `map_ingest_filter_for_delivery` — the
+// same delivery-aware chain the composite builder splices. The tracer
+// measures that production chain and must stay GREEN; a regression here is
+// the npl=203 defect coming back.
 //
-// DO NOT mark these `#[ignore]`, skip them, or loosen the tolerance to make
-// them pass. CI runs them in a dedicated visible job
-// (`.github/workflows/ci.yml`, job `hdr-tracer`) that is allowed to fail and
-// annotates the run loudly; the main test job excludes them by the
-// `hdr_reference_white_tracer` name prefix. When Phase 4 lands the npl=203
-// fix these go green — at that point fold them into the main CI job and
-// delete the tracer job.
+// DO NOT mark these `#[ignore]`, skip them, or loosen the tolerance. They
+// run in the main CI test job (graduated from the retired `hdr-tracer`
+// expected-red job when Phase 4 landed).
 // ---------------------------------------------------------------------------
 
 /// BT.2408 graphics white ("reference white", 203 cd/m²) expressed as a
@@ -1547,17 +1544,20 @@ const REFERENCE_WHITE_TOLERANCE: f64 = 0.02;
 /// (0.0 = 10-bit limited-range black 64, 1.0 = white 940).
 ///
 /// Production-faithful path: the white frame enters exactly as map canvas
-/// frames do (bare rawvideo RGBA, no stream color tags) through
-/// `map_ingest_filter()` into `[vout_w]`, then `delivery_finishing_filter`
-/// + `delivery_encoder_args` with the encoder `select_encoder_for_target`
-/// actually picks on this machine — the same splice `render_export`'s
-/// composite branch performs. The delivered file is then decoded back and
-/// the luma plane averaged over the central region (borders excluded to
-/// keep encoder edge ringing out of the measurement).
+/// frames do (bare rawvideo RGBA, no stream color tags) through the
+/// delivery-aware `map_ingest_filter_for_delivery` (Phase 4: appends the
+/// ×2.03 BT.2408 anchor for HDR targets — the same chain
+/// `build_composite_filter_complex` splices) into `[vout_w]`, then
+/// `delivery_finishing_filter` + `delivery_encoder_args` with the encoder
+/// `select_encoder_for_target` actually picks on this machine. The delivered
+/// file is then decoded back and the luma plane averaged over the central
+/// region (borders excluded to keep encoder edge ringing out of the
+/// measurement).
 fn measure_delivered_map_white_signal(target: trail_cut_lib::export::DeliveryTarget) -> f64 {
     use trail_cut_lib::export::{
         delivery_encoder_args, delivery_finishing_filter, select_encoder_for_target,
     };
+    use trail_cut_lib::util::color::map_ingest_filter_for_delivery;
 
     const W: usize = 256;
     const H: usize = 256;
@@ -1568,7 +1568,7 @@ fn measure_delivered_map_white_signal(target: trail_cut_lib::export::DeliveryTar
         .path()
         .join(format!("tracer_white.{}", target.container_extension()));
 
-    let map_ingest = map_ingest_filter();
+    let map_ingest = map_ingest_filter_for_delivery(&target.output_color_space());
     let finishing = delivery_finishing_filter(target);
     let filter_complex = format!("[0:v]{map_ingest}[vout_w];[vout_w]{finishing}[vout]");
 
@@ -1695,12 +1695,12 @@ fn assert_map_white_at_reference_signal(
         (measured - expected_signal).abs() <= REFERENCE_WHITE_TOLERANCE,
         "map-graphics white is NOT at BT.2408 reference white in the {:?} delivery: \
          measured signal {:.4}, expected {:.2} ±{:.2}.\n\
-         This is the diagnosed npl=203 reference-white defect (docs/CANON.md §6.1): \
-         SDR map graphics enter the working space scene-linear and the HDR delivery \
-         encodes them without a 203-nit anchor, so the map renders dark next to \
-         camera footage. EXPECTED RED until ship-review Phase 4 lands the npl=203 \
-         anchoring at the map→working seam. Do not ignore/skip this test — when the \
-         fix lands it goes green and graduates into the main CI job.",
+         This is the npl=203 reference-white defect (docs/CANON.md §6.1) COMING BACK: \
+         Phase 4 fixed it by anchoring SDR-origin sources at 203 nit via the ×2.03 \
+         ingest gain (`sdr_origin_anchor_gain` / `map_ingest_filter_for_delivery`). \
+         A miss here means the anchor was dropped, mis-gated, or the npl=100 \
+         absolute-working-space convention was broken (e.g. ingest npl reverted to \
+         400/1000). Do not ignore/skip this test or loosen the tolerance.",
         target,
         measured,
         expected_signal,
@@ -1789,4 +1789,395 @@ fn map_ingest_filter_runs_on_bare_rawvideo_rgba() {
          `code 3074: no path between colorspaces` regression. \
          filter=`{filter_chain}`\nffmpeg stderr:\n{stderr}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 (HDR port) — empirical integration gates.
+//
+// These tests make the docs/spikes/IMPLEMENTATION.md §6.3/§6.4 matrix
+// executable against REAL FFmpeg encodes (no `#[ignore]`, no silent skips —
+// every test panics loudly on missing ffmpeg/zscale):
+//
+//   - SDR map → SDR delivery: white stays at SDR white (no anchor — the
+//     "unchanged" cell of the matrix).
+//   - HDR video → HDR delivery: round-trip identity (npl=100 — the cell the
+//     old npl=400/1000 convention broke by darkening camera footage; the
+//     spike's atomic-landing warning is exactly about this regressing).
+//   - Composite verbose dry-run: every composite shape × delivery target
+//     runs the REAL production argv end-to-end; the overlay must report a
+//     4:4:4 10-bit internal format (FFmpeg's silently auto-inserted 4:2:0
+//     scaler is the failure mode textual tests can't see), and zimg planning
+//     must succeed (no `code 3074`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sdr_delivery_map_white_stays_at_sdr_white() {
+    // The map→SDR cell of the Phase 4 matrix: SDR delivery gets NO anchor —
+    // a pure-white map frame must still decode at nominal SDR white
+    // (signal 1.0). Catches an over-eager anchor (gating bug) that would
+    // brighten/clip SDR exports.
+    assert_map_white_at_reference_signal(trail_cut_lib::export::DeliveryTarget::SdrH265, 1.0);
+}
+
+/// Drive a synthetic HDR-tagged gray frame through the REAL production
+/// ingest (`ingest_filter_for(class)`) + finishing + encoder for `target`,
+/// decode it back, and return (input_signal, output_signal) as normalized
+/// 10-bit limited-range luma.
+fn measure_hdr_video_round_trip(
+    class: SourceColorClass,
+    target: trail_cut_lib::export::DeliveryTarget,
+    y_in_10bit: u16,
+) -> (f64, f64) {
+    use trail_cut_lib::export::{
+        delivery_encoder_args, delivery_finishing_filter, select_encoder_for_target,
+    };
+    use trail_cut_lib::util::color::ingest_filter_for;
+
+    const W: usize = 64;
+    const H: usize = 64;
+    const FRAMES: usize = 10;
+
+    let temp = TempDir::new().expect("temp dir");
+    let out = temp
+        .path()
+        .join(format!("rt.{}", target.container_extension()));
+
+    // Build a flat yuv420p10le gray frame: Y = y_in_10bit, U = V = 512.
+    let mut frame: Vec<u8> = Vec::with_capacity(W * H * 2 + (W * H / 2));
+    for _ in 0..(W * H) {
+        frame.extend_from_slice(&y_in_10bit.to_le_bytes());
+    }
+    for _ in 0..(W * H / 4 * 2) {
+        frame.extend_from_slice(&512u16.to_le_bytes());
+    }
+
+    // Tag the bare rawvideo frames as the HDR source regime via setparams
+    // (rawvideo carries no tags), then the production ingest + finishing.
+    let (trc, _tin) = match class {
+        SourceColorClass::HlgBt2020 => ("arib-std-b67", "arib-std-b67"),
+        SourceColorClass::PqBt2020 => ("smpte2084", "smpte2084"),
+        other => panic!("round-trip harness is for HDR classes, got {other:?}"),
+    };
+    let ingest = ingest_filter_for(class, None);
+    let finishing = delivery_finishing_filter(target);
+    let filter_complex = format!(
+        "[0:v]setparams=range=tv:color_primaries=bt2020:color_trc={trc}:colorspace=bt2020nc,\
+         {ingest}[vout_w];[vout_w]{finishing}[vout]"
+    );
+
+    let encoder = select_encoder_for_target(target)
+        .unwrap_or_else(|e| panic!("select_encoder_for_target({target:?}): {e}"));
+    let enc_args = delivery_encoder_args(target, &encoder);
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "yuv420p10le",
+        "-s",
+        &format!("{W}x{H}"),
+        "-r",
+        "30",
+        "-i",
+        "pipe:0",
+        "-filter_complex",
+        &filter_complex,
+        "-map",
+        "[vout]",
+        "-an",
+    ]);
+    for a in &enc_args {
+        cmd.arg(a);
+    }
+    cmd.arg(&out);
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg round-trip encode");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("ffmpeg stdin");
+        for _ in 0..FRAMES {
+            stdin.write_all(&frame).expect("write hdr frame");
+        }
+    }
+    let enc_out = child.wait_with_output().expect("await ffmpeg encode");
+    assert!(
+        enc_out.status.success(),
+        "round-trip encode failed for {class:?}→{target:?} (encoder {}):\n\
+         filter_complex=`{filter_complex}`\nstderr:\n{}",
+        encoder.name,
+        String::from_utf8_lossy(&enc_out.stderr),
+    );
+
+    // Decode one frame back and average central-region luma.
+    let dec = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(&out)
+        .args([
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p10le",
+            "pipe:1",
+        ])
+        .output()
+        .expect("spawn ffmpeg decode");
+    assert!(
+        dec.status.success(),
+        "decode of round-trip {class:?}→{target:?} output failed: {}",
+        String::from_utf8_lossy(&dec.stderr),
+    );
+    let raw = &dec.stdout;
+    assert!(raw.len() >= W * H * 2, "decoded frame too short");
+
+    let (x0, x1) = (W / 4, 3 * W / 4);
+    let (y0, y1) = (H / 4, 3 * H / 4);
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let off = (y * W + x) * 2;
+            let v = u16::from_le_bytes([raw[off], raw[off + 1]]);
+            sum += v as u64;
+            count += 1;
+        }
+    }
+    let y_avg = sum as f64 / count as f64;
+    let to_signal = |v: f64| (v - 64.0) / (940.0 - 64.0);
+    (to_signal(y_in_10bit as f64), to_signal(y_avg))
+}
+
+fn assert_hdr_round_trip_identity(
+    class: SourceColorClass,
+    target: trail_cut_lib::export::DeliveryTarget,
+) {
+    assert_ffmpeg_on_path();
+    assert_ffprobe_on_path();
+    assert_ffmpeg_has_zscale();
+
+    // A bright-but-legal HDR signal level (≈78% of the 10-bit limited
+    // range — the spike's 8-bit 240 probe scaled up).
+    let (input, output) = measure_hdr_video_round_trip(class, target, 800);
+    // npl=100 ingest → npl=100 (default) finishing must be identity within
+    // codec noise. The old npl=400/1000 convention missed by ~24% of signal
+    // on this probe (HLG 240→183 in the spike) — ±0.015 cleanly separates
+    // identity from the darkening regression while absorbing 10-bit
+    // quantization + flat-field encoder noise.
+    assert!(
+        (output - input).abs() <= 0.015,
+        "HDR video does NOT round-trip {class:?}→{target:?}: input signal {input:.4}, \
+         output signal {output:.4}. The npl=100 absolute-working-space convention is \
+         broken (ingest npl reverted to 400/1000, a stray gain hit the HDR branch, or \
+         the finishing chain gained an npl) — this is the 'camera footage darkened' \
+         regression the Phase 4 atomic-landing warning is about.",
+    );
+}
+
+#[test]
+fn hdr_video_round_trip_hlg_to_hlg_is_identity() {
+    assert_hdr_round_trip_identity(
+        SourceColorClass::HlgBt2020,
+        trail_cut_lib::export::DeliveryTarget::HdrHlg,
+    );
+}
+
+#[test]
+fn hdr_video_round_trip_pq_to_pq_is_identity() {
+    assert_hdr_round_trip_identity(
+        SourceColorClass::PqBt2020,
+        trail_cut_lib::export::DeliveryTarget::HdrPq,
+    );
+}
+
+#[test]
+fn composite_chains_verbose_dry_run_no_silent_chroma_downconvert() {
+    // The feedback_ffmpeg_filter_empirical_validation rule made executable:
+    // textual filter tests cannot see FFmpeg's silently auto-inserted
+    // scalers, so every composite shape × delivery target runs the REAL
+    // production argv (build_composite_filtergraph output, verbatim) against
+    // real inputs at `-loglevel verbose`, and the verbose log's overlay
+    // negotiation lines must report 4:4:4 10-bit — never a yuv420 family
+    // format (which would mean chroma was subsampled BEFORE compositing,
+    // the WS3 bug the Phase 4 headroom splice must not reintroduce).
+    // zimg planning failures (`code 3074`) surface as encode failures.
+    use trail_cut_lib::export::{
+        build_composite_filtergraph, CompositeMode, DeliveryTarget, PixelDims, PixelRect,
+        VisibleClipInput,
+    };
+    use trail_cut_lib::export::OutputDimensions;
+
+    assert_ffmpeg_on_path();
+    assert_ffprobe_on_path();
+    assert_ffmpeg_has_zscale();
+
+    let temp = TempDir::new().expect("temp dir");
+
+    // Real SDR clip on disk (the per-clip chain needs a decodable input).
+    let clip_path = temp.path().join("clip.mp4");
+    make_synthetic_bt709_clip(&clip_path, 0.5);
+
+    // White corner-mask PNG for the masked shape.
+    let mask_path = temp.path().join("mask.png");
+    let mask_status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=white:size=128x128",
+            "-frames:v",
+            "1",
+        ])
+        .arg(&mask_path)
+        .status()
+        .expect("spawn ffmpeg mask builder");
+    assert!(mask_status.success(), "mask PNG build failed");
+
+    let clip_json = serde_json::json!({
+        "id": "c1",
+        "path": clip_path.to_string_lossy(),
+        "filename": "clip.mp4",
+        "duration_ms": 500,
+        "trim": {"in_ms": 0, "out_ms": 500},
+        "focal_point": {"x": 0.5, "y": 0.5, "zoom": 1.0},
+        "effects": {"stabilize": {"enabled": false, "shakiness": 5}, "speed": 1.0},
+        "visible": true,
+    });
+
+    let map_slot = PixelRect { x: 64, y: 64, w: 128, h: 128 };
+    let video_slot = PixelRect { x: 0, y: 0, w: 256, h: 256 };
+    let output_dims = OutputDimensions { w: 256, h: 256 };
+    const FRAMES: u32 = 6;
+
+    let shapes: Vec<(&str, CompositeMode, bool)> = vec![
+        ("pip_map_inset", CompositeMode::PipMapInset, false),
+        ("pip_map_inset_masked", CompositeMode::PipMapInset, true),
+        ("pip_video_inset", CompositeMode::PipVideoInset, false),
+        ("split", CompositeMode::Split, false),
+    ];
+    let targets = [
+        DeliveryTarget::SdrH265,
+        DeliveryTarget::HdrHlg,
+        DeliveryTarget::HdrPq,
+    ];
+
+    for (label, mode, with_mask) in &shapes {
+        // Split tiles the frame; PiP insets the map. Slots are pure values —
+        // pick non-overlapping ones for Split.
+        let (m_slot, v_slot) = match mode {
+            CompositeMode::Split => (
+                PixelRect { x: 0, y: 0, w: 128, h: 256 },
+                PixelRect { x: 128, y: 0, w: 128, h: 256 },
+            ),
+            CompositeMode::PipVideoInset => (video_slot, map_slot),
+            _ => (map_slot, video_slot),
+        };
+        for target in targets {
+            let encoder =
+                trail_cut_lib::export::select_encoder_for_target(target).unwrap_or_else(|e| {
+                    panic!("select_encoder_for_target({target:?}): {e}")
+                });
+            let out_path = temp.path().join(format!(
+                "dryrun_{label}_{target:?}.{}",
+                target.container_extension()
+            ));
+            let clip: trail_cut_lib::Clip =
+                serde_json::from_value(clip_json.clone()).expect("clip stub");
+            let visible = vec![VisibleClipInput {
+                source_path: clip_path.clone(),
+                clip,
+                source_dims: PixelDims { w: 256, h: 256 },
+                has_audio: true,
+            }];
+            let plan = build_composite_filtergraph(
+                &visible,
+                m_slot,
+                v_slot,
+                output_dims,
+                *mode,
+                with_mask.then_some(mask_path.as_path()),
+                30,
+                FRAMES,
+                &encoder,
+                192,
+                target,
+                &out_path,
+            )
+            .expect("composite plan");
+
+            // Run the production argv verbatim, at verbose, feeding white
+            // RGBA map frames on stdin.
+            let mut cmd = Command::new("ffmpeg");
+            cmd.arg("-loglevel").arg("verbose");
+            for a in &plan.argv {
+                cmd.arg(a);
+            }
+            let mut child = cmd
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn ffmpeg dry run");
+            {
+                use std::io::Write;
+                let white = vec![255u8; plan.frame_bytes_per_input];
+                let stdin = child.stdin.as_mut().expect("ffmpeg stdin");
+                for _ in 0..(FRAMES + 2) {
+                    // A couple of extra frames so the -frames:v cap, not
+                    // stdin EOF, ends the encode. Broken-pipe after the cap
+                    // fires is expected — ignore write errors.
+                    let _ = stdin.write_all(&white);
+                }
+            }
+            let run = child.wait_with_output().expect("await ffmpeg dry run");
+            let stderr = String::from_utf8_lossy(&run.stderr);
+            assert!(
+                run.status.success(),
+                "{label}/{target:?}: composite encode failed (zimg 3074 / filter \
+                 planning / encoder error):\nargv: {:?}\nstderr:\n{stderr}",
+                plan.argv,
+            );
+
+            // Every overlay negotiation line must be 4:4:4 10-bit. The
+            // verbose log prints e.g.
+            //   [Parsed_overlay_N @ …] main w:… h:… fmt:yuva444p10le … overlay w:… h:… fmt:yuva444p10le …
+            let mut overlay_lines = 0;
+            for line in stderr.lines() {
+                if !(line.contains("overlay") && line.contains("fmt:")) {
+                    continue;
+                }
+                overlay_lines += 1;
+                for piece in line.split_whitespace().filter(|p| p.starts_with("fmt:")) {
+                    assert!(
+                        piece.contains("444p10"),
+                        "{label}/{target:?}: overlay negotiated `{piece}` instead of \
+                         4:4:4 10-bit — FFmpeg silently inserted a chroma-subsampling \
+                         scaler before the composite. Line: `{line}`",
+                    );
+                }
+            }
+            assert!(
+                overlay_lines > 0,
+                "{label}/{target:?}: no overlay fmt lines found in verbose log — \
+                 the dry-run instrument lost its teeth (verbose format changed?). \
+                 stderr:\n{stderr}",
+            );
+        }
+    }
 }

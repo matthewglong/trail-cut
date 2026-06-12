@@ -1,26 +1,18 @@
 # TrailCut CI — the ship-review tracer oracle (Phase 3, Thread 1 thin slice).
 #
-# Two jobs, both on macOS (the current ship target):
+# One job on macOS (the current ship target): Vitest + cargo test, with
+# nothing allowed to skip silently — the suites panic loudly on missing
+# preconditions (ffmpeg, zscale, exiftool), so the job provisions all of
+# them up front and fails fast if the runner image can't supply them.
 #
-#   test        — the gate. Vitest + cargo test, with the two
-#                 `hdr_reference_white_tracer_*` tests excluded by name —
-#                 they run in the dedicated job below instead. Nothing in
-#                 this job is allowed to skip silently: the suites panic
-#                 loudly on missing preconditions (ffmpeg, zscale, exiftool),
-#                 so this job provisions all of them up front and fails fast
-#                 if the runner image can't supply them.
-#
-#   hdr-tracer  — the EXPECTED-RED tracer (docs/CANON.md §6.1): map-graphics
-#                 white through the real HDR delivery chain must land at
-#                 BT.2408 reference white (75% HLG / 58% PQ signal), and
-#                 today it doesn't — the npl=203 anchoring fix lands in
-#                 ship-review Phase 4. The job runs the tests visibly,
-#                 annotates the run loudly, and stays green while they fail
-#                 for the documented reason. If the tracer unexpectedly goes
-#                 GREEN this job goes red — that forces whoever lands the fix
-#                 to graduate the tests into the main job (delete the
-#                 exclusion there and this job) rather than leaving a stale
-#                 allowed-to-fail lane behind.
+# History: until ship-review Phase 4 (the HDR port) this workflow carried a
+# second `hdr-tracer` job that ran the two `hdr_reference_white_tracer_*`
+# tests as EXPECTED RED (the diagnosed npl=203 reference-white defect,
+# docs/CANON.md §6.1) and went red itself on unexpected-green to force
+# graduation. Phase 4 landed the fix (×2.03 SDR-origin anchor at ingest,
+# npl=100 absolute working space); the tracers are green and now run in the
+# main job below like any other test — a regression on them is a hard CI
+# failure.
 
 name: CI
 
@@ -85,67 +77,7 @@ jobs:
 
       - name: Rust tests (cargo)
         working-directory: src-tauri
-        # The two hdr_reference_white_tracer_* tests are red-by-design until
-        # the Phase 4 npl=203 fix lands; they run VISIBLY in the hdr-tracer
-        # job below — this is a relocation, not a silent skip. Everything
-        # else must pass.
-        run: cargo test -- --skip hdr_reference_white_tracer
-
-  hdr-tracer:
-    name: "HDR reference-white tracer — EXPECTED RED until Phase 4 (CANON §6.1)"
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install ffmpeg-full (zscale-capable)
-        run: |
-          brew install ffmpeg-full
-          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
-
-      - name: Assert ffmpeg has zscale (libzimg)
-        run: |
-          if ! ffmpeg -hide_banner -filters | grep -q ' zscale '; then
-            echo '::error title=Bad runner ffmpeg::runner ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
-            exit 1
-          fi
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Stub Tauri bundle resources (chrome glob)
-        # Same placeholder as the test job — see the comment there.
-        run: |
-          mkdir -p src-tauri/binaries/chrome-ci-stub/stub
-          echo "CI placeholder — satisfies the tauri.conf.json bundle.resources glob; not a real Chrome" > src-tauri/binaries/chrome-ci-stub/stub/PLACEHOLDER
-
-      - name: Run HDR reference-white tracer (allowed to fail)
-        id: tracer
-        continue-on-error: true
-        working-directory: src-tauri
-        run: |
-          set -o pipefail
-          cargo test --test color_fixtures hdr_reference_white_tracer -- --nocapture 2>&1 | tee "$RUNNER_TEMP/tracer.log"
-
-      - name: Report tracer status
-        # Three outcomes, all loud:
-        #   - failed WITH the documented reference-white assertion → the
-        #     expected red; warn and stay green.
-        #   - passed → Phase 4 landed or the test lost its teeth; job goes
-        #     RED to force graduating the tests into the main job.
-        #   - failed for ANY OTHER reason (build error, harness fault) → job
-        #     goes RED; a broken tracer must never masquerade as the
-        #     expected red (this exact false positive happened on CI run
-        #     27385745706 when the Tauri build script failed).
-        run: |
-          if [ "${{ steps.tracer.outcome }}" = "success" ]; then
-            echo "::error title=HDR tracer GREEN (unexpected)::The expected-red tracer passed. Either the Phase 4 npl=203 fix landed (graduate the tests: drop the --skip in the test job and delete this hdr-tracer job) or the test lost its teeth. Do not leave this job in place."
-            exit 1
-          elif grep -q "map-graphics white is NOT at BT.2408 reference white" "$RUNNER_TEMP/tracer.log"; then
-            echo "::warning title=HDR tracer RED (expected)::hdr_reference_white_tracer_* failed as designed: HDR map white is not anchored at BT.2408 reference white (the diagnosed npl=203 defect, docs/CANON.md §6.1). The fix is ship-review Phase 4; when it lands these tests go green and must graduate into the main test job."
-          else
-            echo "::error title=HDR tracer BROKE (not the documented red)::The tracer failed for a reason OTHER than the npl=203 reference-white assertion (build error, missing tool, harness fault). The instrument is broken, not measuring the defect — fix it."
-            exit 1
-          fi
+        # Includes the hdr_reference_white_tracer_* tests — green since the
+        # Phase 4 HDR port (graduated from the retired expected-red
+        # hdr-tracer job). Everything must pass.
+        run: cargo test

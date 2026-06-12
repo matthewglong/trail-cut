@@ -157,11 +157,13 @@ impl Matrix {
 }
 
 /// A complete color-space description: the four atomic axes plus an optional
-/// nominal peak luminance (nits) that is meaningful only for HDR transfers
-/// (HLG reference 400, PQ reference 1000). `npl` participates in the INGEST
-/// chain (inverse-EOTF needs it); it is intentionally NOT emitted on the
-/// delivery chain (the `-color_trc` flag carries the signaling there, matching
-/// the pre-registry behavior exactly).
+/// nominal peak luminance (nits) that is meaningful only for HDR transfers.
+/// HDR ingest uses npl=100 — the absolute working-space convention (linear
+/// 1.0 = 100 nits, Session 4 / PORT_DESIGN §4A): zimg's HLG/PQ finishing
+/// default is npl=100, so ingest at 100 makes HDR video round-trip as
+/// identity instead of darkening. `npl` participates in the INGEST chain
+/// (inverse-EOTF needs it); it is intentionally NOT emitted on the delivery
+/// chain (the `-color_trc` flag carries the signaling there).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorSpace {
     pub primaries: Primaries,
@@ -202,22 +204,25 @@ impl ColorSpace {
         npl: None,
     };
 
-    /// HDR HLG BT.2020 source space (npl 400 for ingest inverse-EOTF).
+    /// HDR HLG BT.2020 source space. npl=100 — the absolute working space
+    /// (linear 1.0 = 100 nits; Session 4 / PORT_DESIGN §4A). Matches zimg's
+    /// npl=100 finishing default so HLG video round-trips as identity.
     pub const HDR_HLG_BT2020: ColorSpace = ColorSpace {
         primaries: Primaries::Bt2020,
         transfer: Transfer::Hlg,
         range: Range::Limited,
         matrix: Matrix::Bt2020nc,
-        npl: Some(400),
+        npl: Some(100),
     };
 
-    /// HDR PQ BT.2020 source space (npl 1000 for ingest inverse-EOTF).
+    /// HDR PQ BT.2020 source space. npl=100 — same absolute working-space
+    /// convention as HLG (see `HDR_HLG_BT2020`).
     pub const HDR_PQ_BT2020: ColorSpace = ColorSpace {
         primaries: Primaries::Bt2020,
         transfer: Transfer::Pq,
         range: Range::Limited,
         matrix: Matrix::Bt2020nc,
-        npl: Some(1000),
+        npl: Some(100),
     };
 
     /// Patch individual axes from optional zscale-token strings (per-clip
@@ -329,12 +334,79 @@ pub fn delivery_zscale_chain(_working: &ColorSpace, output: &ColorSpace) -> Stri
 }
 
 /// The HDR ingest nominal-peak-luminance convention for a transfer.
+/// npl=100 for both HDR transfers — the absolute working space (linear 1.0 =
+/// 100 nits). zimg's HLG/PQ finishing default is also npl=100, so ingest at
+/// 100 makes HDR video round-trip as identity (the old 400/1000 values
+/// darkened HLG 240→183 across a round-trip; PORT_DESIGN §4A / Session 4).
 pub const fn default_npl_for(t: Transfer) -> Option<u32> {
     match t {
-        Transfer::Hlg => Some(400),
-        Transfer::Pq => Some(1000),
+        Transfer::Hlg => Some(100),
+        Transfer::Pq => Some(100),
         _ => None,
     }
+}
+
+/// zimg SDR diffuse white = linear 1.0 in the absolute working space.
+pub const SDR_REF_WHITE_NITS: f64 = 100.0;
+/// BT.2408 HDR graphics / diffuse reference white.
+pub const HDR_REF_WHITE_NITS: f64 = 203.0;
+
+/// Composite headroom factor. Real iPhone HLG peaks at linear 24.6 at npl=100
+/// (Session 4) → H must exceed that; H=16 clips. H=32 covers HLG + PQ to
+/// ~3200 nit. PQ above ~3200 nit clips (PORT_DESIGN §6 known bound). Applied
+/// ONLY on HDR delivery — H=32 on SDR regresses the gradient 209→85 levels.
+pub const COMPOSITE_HEADROOM: f64 = 32.0;
+
+/// Linear-light gain that anchors an SDR-ORIGIN source to the delivery's
+/// reference white. Returns `Some(2.03)` IFF the source is SDR-origin
+/// (`!source.transfer.is_hdr()`) AND the delivery is HDR
+/// (`delivery.transfer.is_hdr()`); otherwise `None` (no scaling).
+///
+/// HDR-origin sources carry their own absolute nits and are NEVER anchored.
+/// SDR→SDR is native (no anchor). Applied as a linear gain at the INGEST
+/// tail, on the SDR-origin branch only, so the HDR video branch — which
+/// shares the single finishing — is untouched. Proven equivalent to
+/// `npl=203` finishing for HLG and PQ (PORT_DESIGN §2 / HANDOFF §2).
+pub fn sdr_origin_anchor_gain(source: &ColorSpace, delivery: &ColorSpace) -> Option<f64> {
+    (!source.transfer.is_hdr() && delivery.transfer.is_hdr())
+        .then(|| HDR_REF_WHITE_NITS / SDR_REF_WHITE_NITS) // 2.03
+}
+
+/// Linear-light RGB gain by `factor`, as a comma-joined `colorchannelmixer`
+/// CHAIN. Each stage multiplies R/G/B uniformly (rr=gg=bb=stage, off-diagonal
+/// 0). `colorchannelmixer` caps every coefficient at ±2.0 and is clamp-free
+/// for values >1.0, so a factor outside [0,2] is split into ≤2.0 stages whose
+/// product equals `factor`. Operates on `gbrpf32le`; preserves values >1.0
+/// (HDR headroom) — the property `geq` (clamps [0,1]) and `exposure` (±3-stop
+/// cap) both fail (Session 4).
+///
+/// The ±2.0 cap is an UPPER bound only — there is no lower positive bound
+/// (a single coefficient of 0.03125 is legal), so chaining is needed only
+/// when `factor > 2.0`. Stage coefficients are formatted with Rust's f64
+/// `Display` (shortest round-trip repr — pinned by unit test).
+///
+/// `factor` must be finite and > 0. `factor == 1.0` returns an empty string
+/// (identity — caller splices nothing).
+pub fn linear_gain_filter(factor: f64) -> String {
+    assert!(
+        factor.is_finite() && factor > 0.0,
+        "linear_gain_filter: factor must be finite and > 0, got {factor}",
+    );
+    if factor == 1.0 {
+        return String::new();
+    }
+    let mut stages: Vec<f64> = Vec::new();
+    let mut remaining = factor;
+    while remaining > 2.0 {
+        stages.push(2.0);
+        remaining /= 2.0;
+    }
+    stages.push(remaining);
+    stages
+        .iter()
+        .map(|s| format!("colorchannelmixer=rr={s}:gg={s}:bb={s}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 // ---- override-token parsers (zscale tokens → axis enum) -------------------
@@ -417,19 +489,27 @@ mod tests {
         );
     }
 
+    // The two HDR ingest pins below are NOT "legacy" strings anymore: Phase 4
+    // (HDR port, 2026-06-11) re-baselined them from npl=400/1000 to npl=100 —
+    // the absolute working-space convention (linear 1.0 = 100 nits), which
+    // matches zimg's npl=100 finishing default so HDR video round-trips as
+    // identity (the old values darkened HLG 240→183). Do NOT "restore"
+    // 400/1000; that re-introduces the round-trip darkening the
+    // hdr-video round-trip integration test (color_fixtures.rs) would catch.
+
     #[test]
-    fn ingest_hlg_matches_legacy() {
+    fn ingest_hlg_pins_npl_100_absolute_space() {
         assert_eq!(
             ingest_zscale_chain(&ColorSpace::HDR_HLG_BT2020, &ColorSpace::WORKING, false),
-            "zscale=tin=arib-std-b67:t=linear:npl=400,format=gbrpf32le,zscale=p=bt2020:m=bt2020nc",
+            "zscale=tin=arib-std-b67:t=linear:npl=100,format=gbrpf32le,zscale=p=bt2020:m=bt2020nc",
         );
     }
 
     #[test]
-    fn ingest_pq_matches_legacy() {
+    fn ingest_pq_pins_npl_100_absolute_space() {
         assert_eq!(
             ingest_zscale_chain(&ColorSpace::HDR_PQ_BT2020, &ColorSpace::WORKING, false),
-            "zscale=tin=smpte2084:t=linear:npl=1000,format=gbrpf32le,zscale=p=bt2020:m=bt2020nc",
+            "zscale=tin=smpte2084:t=linear:npl=100,format=gbrpf32le,zscale=p=bt2020:m=bt2020nc",
         );
     }
 
@@ -478,6 +558,15 @@ mod tests {
         // npl is an ingest-only concept; delivery signaling rides the encoder
         // -color_trc flag. A source-shaped HDR ColorSpace (npl=Some) must not
         // leak ":npl=" into the finishing filter.
+        //
+        // Phase 4 note: the ship-review ACTION_PLAN flagged this pin for
+        // retirement ("npl=203 on delivery"), but the implemented design
+        // (docs/spikes/IMPLEMENTATION.md, reconciled with Matthew) anchors
+        // SDR-origin sources via an ingest-side ×2.03 linear gain
+        // (`sdr_origin_anchor_gain`) — proven byte-equivalent to npl=203
+        // finishing — precisely so the delivery chain stays npl-free and the
+        // HDR video branch (which shares it) round-trips untouched. This pin
+        // therefore remains CORRECT after the HDR port; do not retire it.
         let chain = delivery_zscale_chain(&ColorSpace::WORKING, &ColorSpace::HDR_HLG_BT2020);
         assert!(!chain.contains("npl="), "got: {}", chain);
     }
@@ -523,7 +612,8 @@ mod tests {
 
     #[test]
     fn with_overrides_patches_named_axes_and_rederives_npl() {
-        // Start SDR, override transfer to HLG → npl re-derived to 400.
+        // Start SDR, override transfer to HLG → npl re-derived to 100 (the
+        // absolute working-space convention, Phase 4).
         let cs = ColorSpace::SDR_BT709.with_overrides(
             Some("bt2020"),
             Some("arib-std-b67"),
@@ -534,7 +624,71 @@ mod tests {
         assert_eq!(cs.transfer, Transfer::Hlg);
         assert_eq!(cs.range, Range::Limited);
         assert_eq!(cs.matrix, Matrix::Bt2020nc);
-        assert_eq!(cs.npl, Some(400));
+        assert_eq!(cs.npl, Some(100));
+    }
+
+    // ---- Phase 4: SDR-origin → HDR-delivery anchor + linear gain chain ----
+
+    #[test]
+    fn sdr_origin_anchor_gain_some_for_sdr_to_hdr() {
+        for src in [ColorSpace::SRGB, ColorSpace::SDR_BT709] {
+            for hdr in [ColorSpace::HDR_HLG_BT2020, ColorSpace::HDR_PQ_BT2020] {
+                assert_eq!(
+                    sdr_origin_anchor_gain(&src, &hdr),
+                    Some(2.03),
+                    "{:?} → {:?}",
+                    src.transfer,
+                    hdr.transfer,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sdr_origin_anchor_gain_none_for_hdr_source() {
+        // HDR-origin sources carry their own absolute nits — never anchored,
+        // regardless of delivery.
+        for src in [ColorSpace::HDR_HLG_BT2020, ColorSpace::HDR_PQ_BT2020] {
+            for delivery in [
+                ColorSpace::SDR_BT709,
+                ColorSpace::HDR_HLG_BT2020,
+                ColorSpace::HDR_PQ_BT2020,
+            ] {
+                assert_eq!(sdr_origin_anchor_gain(&src, &delivery), None);
+            }
+        }
+    }
+
+    #[test]
+    fn sdr_origin_anchor_gain_none_for_sdr_delivery() {
+        for src in [ColorSpace::SRGB, ColorSpace::SDR_BT709] {
+            assert_eq!(sdr_origin_anchor_gain(&src, &ColorSpace::SDR_BT709), None);
+        }
+    }
+
+    #[test]
+    fn linear_gain_filter_decompositions() {
+        // Worked decompositions from the HDR-port build spec
+        // (docs/spikes/IMPLEMENTATION.md §1) — these strings are spliced
+        // verbatim into filtergraphs, so they are byte-pinned here.
+        assert_eq!(linear_gain_filter(1.0), "");
+        // B anchor ×2.03 → [2.0, 1.015].
+        assert_eq!(
+            linear_gain_filter(2.03),
+            "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=1.015:gg=1.015:bb=1.015",
+        );
+        // C ÷H (H=32): one stage — the ±2.0 cap is an upper bound only.
+        assert_eq!(
+            linear_gain_filter(1.0 / COMPOSITE_HEADROOM),
+            "colorchannelmixer=rr=0.03125:gg=0.03125:bb=0.03125",
+        );
+        // C ×H: 2⁵ = 32 → five 2.0 stages.
+        assert_eq!(
+            linear_gain_filter(COMPOSITE_HEADROOM),
+            "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,\
+             colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,\
+             colorchannelmixer=rr=2:gg=2:bb=2",
+        );
     }
 
     #[test]

@@ -469,6 +469,36 @@ pub fn map_ingest_filter_into(working: &ColorSpace) -> String {
     ingest_zscale_chain(&ColorSpace::SRGB, working, true)
 }
 
+/// Delivery-aware form of [`map_ingest_filter`] — Phase 4 (HDR port, fix B).
+///
+/// The map canvas is always sRGB (SDR-origin), so when the delivery target is
+/// HDR the BT.2408 reference-white anchor applies: a ×2.03 linear gain
+/// (203-nit graphics white / 100-nit SDR diffuse white) appended at the
+/// ingest tail, on the working-space float buffer. For SDR delivery the
+/// anchor is `None` and this is byte-identical to [`map_ingest_filter`].
+///
+/// Channel B (`map_only`, locked to ProRes Master / SDR) and the WS1/WS2
+/// proxy/thumbnail paths stay on the no-arg [`map_ingest_filter`] — they have
+/// no HDR delivery concept and must remain unchanged.
+pub fn map_ingest_filter_for_delivery(delivery: &ColorSpace) -> String {
+    map_ingest_filter_into_for_delivery(&ColorSpace::WORKING, delivery)
+}
+
+/// Working-space-parameterized form of [`map_ingest_filter_for_delivery`].
+pub fn map_ingest_filter_into_for_delivery(
+    working: &ColorSpace,
+    delivery: &ColorSpace,
+) -> String {
+    let base = ingest_zscale_chain(&ColorSpace::SRGB, working, true);
+    match crate::util::color_space::sdr_origin_anchor_gain(&ColorSpace::SRGB, delivery)
+        .map(crate::util::color_space::linear_gain_filter)
+        .filter(|s| !s.is_empty())
+    {
+        Some(g) => format!("{base},{g}"),
+        None => base,
+    }
+}
+
 /// Coarse classification of a source clip's color regime. Drives ingest
 /// formula selection at every stage of the pipeline (proxy, thumbnail,
 /// export). All Phase 1 ingest paths branch on this enum.
@@ -487,7 +517,8 @@ pub enum SourceColorClass {
     /// transfer on BT.2020 primaries. iPhone HDR mode.
     HlgBt2020,
     /// High dynamic range via the SMPTE ST 2084 / Perceptual Quantizer
-    /// transfer on BT.2020 primaries. Treated as `npl=1000` at ingest time.
+    /// transfer on BT.2020 primaries. Ingested at `npl=100` (the absolute
+    /// working-space convention — see `color_space::default_npl_for`).
     PqBt2020,
     /// Dolby Vision. Phase 1 collapses every Dolby Vision profile down to
     /// "treat the HLG base layer; discard the enhancement layer / RPU." Full
@@ -845,18 +876,22 @@ mod tests {
         );
     }
 
+    // Phase 4 re-baseline: HDR ingest npl is 100 (absolute working space,
+    // linear 1.0 = 100 nits) — was 400/1000, which darkened HDR video across
+    // the ingest→finishing round-trip. See color_space::default_npl_for.
+
     #[test]
-    fn ingest_filter_for_hlg_uses_arib_std_b67_with_npl_400() {
+    fn ingest_filter_for_hlg_uses_arib_std_b67_with_npl_100() {
         let f = ingest_filter_for(SourceColorClass::HlgBt2020, None);
-        assert!(f.contains("zscale=tin=arib-std-b67:t=linear:npl=400"), "got: {}", f);
+        assert!(f.contains("zscale=tin=arib-std-b67:t=linear:npl=100"), "got: {}", f);
         assert!(f.contains("format=gbrpf32le"), "got: {}", f);
         assert!(f.contains("zscale=p=bt2020:m=bt2020nc"), "got: {}", f);
     }
 
     #[test]
-    fn ingest_filter_for_pq_uses_smpte2084_with_npl_1000() {
+    fn ingest_filter_for_pq_uses_smpte2084_with_npl_100() {
         let f = ingest_filter_for(SourceColorClass::PqBt2020, None);
-        assert!(f.contains("zscale=tin=smpte2084:t=linear:npl=1000"), "got: {}", f);
+        assert!(f.contains("zscale=tin=smpte2084:t=linear:npl=100"), "got: {}", f);
         assert!(f.contains("format=gbrpf32le"), "got: {}", f);
         assert!(f.contains("zscale=p=bt2020:m=bt2020nc"), "got: {}", f);
     }
@@ -1175,6 +1210,31 @@ mod tests {
         assert!(f.contains("rin=full"), "got: {}", f);
         assert!(f.contains("format=gbrpf32le"), "got: {}", f);
         assert!(f.contains("zscale=p=bt2020:m=bt2020nc"), "got: {}", f);
+    }
+
+    #[test]
+    fn map_ingest_for_hdr_delivery_appends_bt2408_anchor_gain() {
+        // Phase 4 (fix B): SDR-origin map graphics delivered to HDR must be
+        // anchored at BT.2408 reference white — a ×2.03 linear gain appended
+        // after the working-space landing. Proven equivalent to npl=203
+        // finishing (PORT_DESIGN §2); the tracer tests in color_fixtures.rs
+        // assert the decoded result (0.75 HLG / 0.58 PQ signal).
+        use crate::util::color_space::linear_gain_filter;
+        let anchor = linear_gain_filter(2.03);
+        for hdr in [ColorSpace::HDR_HLG_BT2020, ColorSpace::HDR_PQ_BT2020] {
+            let f = map_ingest_filter_for_delivery(&hdr);
+            let expected = format!("{},{}", map_ingest_filter(), anchor);
+            assert_eq!(f, expected, "delivery {:?}", hdr.transfer);
+        }
+    }
+
+    #[test]
+    fn map_ingest_for_sdr_delivery_is_byte_identical_to_no_arg_form() {
+        // SDR delivery: no anchor — the chain must be byte-identical to the
+        // no-arg form so Channel B and every SDR composite are unchanged.
+        for sdr in [ColorSpace::SDR_BT709, ColorSpace::SRGB] {
+            assert_eq!(map_ingest_filter_for_delivery(&sdr), map_ingest_filter());
+        }
     }
 
     #[test]

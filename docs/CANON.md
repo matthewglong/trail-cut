@@ -80,14 +80,48 @@ with error code 3074 ("no path between colorspaces").
 **Authority**: `src-tauri/src/util/color_space.rs:260-276` (two-step shape :273-276,
 explicit-tags requirement :268-271).
 
-### 1.5 npl at ingest only, never on delivery — DECIDED
+### 1.5 npl at ingest only, never on delivery; npl=100 absolute working space — DECIDED
 
-Nominal peak luminance is an ingest-side linearization parameter: HLG ingest uses
-`npl=400`, PQ ingest uses `npl=1000`. The delivery chain deliberately emits **no npl** —
-the encoder's `-color_trc` carries HDR signaling. (The old research recommendation to put
-`npl=1000` on the HLG finishing filter is superseded — see §5.3.)
-**Authority**: `src-tauri/src/util/color_space.rs:331-338` (ingest npl), :317-320
-(delivery emits none); tests in `src-tauri/src/util/color.rs:826, 851, 859`.
+Nominal peak luminance is an ingest-side linearization parameter. Since the Phase 4 HDR
+port (2026-06-11): **HLG and PQ both ingest at `npl=100`** — the absolute working-space
+convention (linear 1.0 = 100 nits), confirmed by Matthew (npl=1000 rejected; see
+`docs/spikes/IMPLEMENTATION.md` §0). zimg's HLG/PQ *finishing* default is also npl=100,
+so HDR video round-trips as identity (the pre-Phase-4 400/1000 ingest darkened HLG
+240→183 across a round-trip). The delivery chain deliberately emits **no npl** — the
+encoder's `-color_trc` carries HDR signaling, and the BT.2408 reference-white anchor for
+SDR-origin content is an ingest-side ×2.03 linear gain (see §1.12), NOT an npl on
+delivery. (The old research recommendation to put `npl=1000` on the HLG finishing filter
+is superseded — see §5.3.)
+**Authority**: `src-tauri/src/util/color_space.rs` (`default_npl_for`, the
+`HDR_*_BT2020` constants; delivery chain emits none); tests
+`ingest_{hlg,pq}_pins_npl_100_absolute_space`, `delivery_never_emits_npl` (same file),
+and the round-trip identity tests `hdr_video_round_trip_{hlg,pq}_*` in
+`src-tauri/tests/color_fixtures.rs`.
+
+### 1.12 SDR-origin→HDR anchor (×2.03 at ingest) + HDR-gated composite headroom — DECIDED
+
+The per-origin × per-delivery matrix: SDR-origin sources (the map canvas is always
+sRGB/SDR-origin; SDR clips; developed log clips) delivered to an HDR target carry a
+**×2.03 linear gain at the ingest tail** (`sdr_origin_anchor_gain` — 203-nit BT.2408
+graphics white / 100-nit SDR diffuse white, proven byte-equivalent to `npl=203`
+finishing). HDR-origin sources are NEVER anchored (they carry absolute nits); SDR→SDR is
+native. Gains are emitted by `linear_gain_filter` (a clamp-free `colorchannelmixer`
+chain, stages ≤2.0 — `geq` clamps [0,1] and `exposure` caps ±3 stops, both unusable).
+The composite's 10-bit `yuva444p10le` overlay lift clamps to [0,1], so on HDR delivery
+every color-stream lift is wrapped in ÷32 … ×32 headroom (`COMPOSITE_HEADROOM = 32`;
+H=16 clips real iPhone HLG which peaks at linear 24.6; PQ above ~3200 nit clips — known
+bound). SDR delivery gets neither (headroom regresses the SDR gradient 209→85 levels).
+4:2:0 finishing splits the fused `format=` hop into 4:4:4 → lanczos chroma resample →
+4:2:0 (HQ subsample, both SDR and HDR).
+**Authority**: `src-tauri/src/util/color_space.rs` (`sdr_origin_anchor_gain`,
+`linear_gain_filter`, `COMPOSITE_HEADROOM`), `src-tauri/src/export/filtergraph.rs`
+(`build_composite_filter_complex`), `src-tauri/src/export/delivery.rs`
+(`delivery_finishing_filter`); decoded-frame gates: `hdr_reference_white_tracer_*`,
+`hdr_video_round_trip_*`, `composite_chains_verbose_dry_run_*`,
+`sdr_delivery_map_white_stays_at_sdr_white` in `src-tauri/tests/color_fixtures.rs`.
+Known bounds (flagged, not hidden): HDR→SDR delivery still hard-clips highlights
+(tone-map operator is a Matthew-confirmed follow-up, NOT part of Phase 4); PQ >3200 nit
+clips at H=32.
 
 ### 1.6 Every `overlay` pins `:format=yuv444p10` — DECIDED
 
@@ -298,7 +332,8 @@ ground truth — confirm claims empirically before acting on them.
 SDR/graphics diffuse white composited onto an HDR canvas must be anchored at 203 nit
 (75% HLG signal) per ITU-R BT.2408 — a **convention, not a derivation** ("how many nits is
 SDR white" has no physics answer). Scene-linear 1.0 lands at ~62% HLG instead, which reads
-visibly dark. This is the diagnosed root cause of the dark HDR map exports — see OPEN item §6.1.
+visibly dark. This was the diagnosed root cause of the dark HDR map exports — fixed by the
+Phase 4 HDR port (DECIDED §1.12; history in §6.1).
 (Was: UNIVERSAL_WORKING_SPACE_REPORT §5.)
 
 ---
@@ -384,20 +419,22 @@ only if a transparent-map / decorations-only mode ships. Not a standing TODO —
 
 ## 6. Open items (live, surfaced by the harvest)
 
-### 6.1 npl=203 reference-white anchoring for HDR map exports — OPEN
+### 6.1 npl=203 reference-white anchoring for HDR map exports — RESOLVED (Phase 4, 2026-06-11)
 
-Diagnosed, **not in code** (`203` appears nowhere in `src-tauri/src`): HDR-HLG/PQ map
-exports are dark because the SDR map graphics are encoded scene-linear (white → ~62% HLG)
-instead of anchored at BT.2408 reference white (203 nit / 75% HLG; PQ verified the same
-bug — signal 0.58). Fix = `npl=203` anchoring at the map→working seam. Not a renderer,
-subsampling, or hue problem. This is the single most valuable undone item the doc
-reconciliation surfaced. (See §4.8 for the underlying convention.)
+Was the single most valuable undone item the doc reconciliation surfaced: HDR-HLG/PQ map
+exports were dark because SDR map graphics were encoded scene-linear (white → ~62% HLG)
+instead of anchored at BT.2408 reference white (203 nit / 75% HLG; PQ same bug — 0.58
+signal). **Fixed by the Phase 4 HDR port** — implemented as the ×2.03 SDR-origin ingest
+anchor (proven equivalent to npl=203 finishing), npl=100 absolute working space, and
+HDR-gated composite headroom; see DECIDED §1.5 + §1.12 (which now carry the convention)
+and §4.8 for the underlying 203-nit convention.
 
-**Pinned by the Phase 3 tracer oracle (2026-06-11):** the
-`hdr_reference_white_tracer_{hlg,pq}` tests in `src-tauri/tests/color_fixtures.rs` push
-map-white through the real delivery chain and decode the result — measured 0.630 HLG /
-0.509 PQ against the 0.75 / 0.58 reference. They are red-by-design in CI (dedicated
-`hdr-tracer` job in `.github/workflows/ci.yml`) and go green when the Phase 4 fix lands.
+The Phase 3 tracer oracle (`hdr_reference_white_tracer_{hlg,pq}` in
+`src-tauri/tests/color_fixtures.rs`, red-by-design at 0.630 HLG / 0.509 PQ) went green
+with the fix and is graduated into the main CI test job (the expected-red `hdr-tracer`
+job is deleted). Remaining known bound from the same work: HDR-origin → SDR delivery
+hard-clips highlights — tone-map operator (e.g. zscale tonemap / BT.2446-A) is a
+Matthew-confirmed follow-up, tracked as the open tail of this item.
 
 ### 6.2 Sidecar bundling (task 130) — OPEN, required before ship
 

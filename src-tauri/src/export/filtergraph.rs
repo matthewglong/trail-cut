@@ -22,8 +22,10 @@ use crate::export::error::ClipChainError;
 use crate::export::layout::{OutputDimensions, PixelRect};
 use crate::models::Clip;
 use crate::export::delivery::push_color_flags_from_cs;
-use crate::util::color::{map_ingest_filter, WORKING_SPACE_PIX_FMT};
-use crate::util::color_space::{delivery_zscale_chain, ColorSpace};
+use crate::util::color::{map_ingest_filter, map_ingest_filter_for_delivery, WORKING_SPACE_PIX_FMT};
+use crate::util::color_space::{
+    delivery_zscale_chain, linear_gain_filter, ColorSpace, COMPOSITE_HEADROOM,
+};
 
 /// Argv chunks ready to splat into the full FFmpeg invocation, plus the
 /// per-frame byte count the orchestrator's sink uses to validate frames.
@@ -306,7 +308,9 @@ fn build_video_only_filter_complex(
     let n = visible_clips.len();
     let mut parts: Vec<String> = Vec::with_capacity(n * 2 + 4);
 
-    // Per-clip video subgraphs.
+    // Per-clip video subgraphs. Channel C is always ProRes Master (SDR
+    // BT.709) — the SDR delivery space means no SDR-origin anchor, so these
+    // chains are byte-identical to pre-Phase-4.
     for (idx, vc) in visible_clips.iter().enumerate() {
         let inputs = ClipChainInputs {
             input_index: idx as u32,
@@ -314,6 +318,7 @@ fn build_video_only_filter_complex(
             source_dims: vc.source_dims,
             video_slot: slot,
             fps,
+            delivery: ColorSpace::SDR_BT709,
         };
         parts.push(build_clip_video_subgraph(&inputs)?);
     }
@@ -372,6 +377,7 @@ fn build_video_only_filter_complex(
                 source_dims: vc.source_dims,
                 video_slot: slot,
                 fps,
+                delivery: ColorSpace::SDR_BT709,
             };
             parts.push(build_clip_audio_subgraph(&inputs)?);
         } else {
@@ -607,6 +613,32 @@ fn build_composite_filter_complex(
     let n = visible_clips.len();
     let mut parts: Vec<String> = Vec::with_capacity(n * 2 + 8);
 
+    // Phase 4 (HDR port): the delivery target's output color space drives
+    // (a) the SDR-origin BT.2408 reference-white anchor at every ingest
+    // (fix B — clips below, map further down) and (b) the composite-headroom
+    // gate (fix C). For SDR delivery both collapse to no-ops and every chain
+    // is byte-identical to pre-Phase-4.
+    let delivery_cs = delivery_target.output_color_space();
+    let hdr_delivery = delivery_cs.transfer.is_hdr();
+    // Composite headroom (fix C): the 10-bit `yuva444p10le` lift around
+    // `overlay` clamps working-space values to [0,1] — HDR video (linear up
+    // to ~24.6 at npl=100) and the anchored 2.03 map white would clip.
+    // ÷H is spliced immediately before every COLOR-stream lift (map/vc/bg —
+    // never the gray mask) and ×H immediately after the post-overlay return
+    // to `gbrpf32le`, H=32. HDR delivery only: H=32 on SDR regresses the
+    // gradient 209→85 distinct levels (Session 4), and SDR content never
+    // exceeds 1.0 anyway.
+    let down = if hdr_delivery {
+        format!("{},", linear_gain_filter(1.0 / COMPOSITE_HEADROOM))
+    } else {
+        String::new()
+    };
+    let up = if hdr_delivery {
+        format!(",{}", linear_gain_filter(COMPOSITE_HEADROOM))
+    } else {
+        String::new()
+    };
+
     // Per-clip video subgraphs. NOTE — the slot passed here is the
     // *video* slot, not the map slot. Channel A's per-clip video chain
     // is identical to Channel C's (LAYOUT.md §7 invariant); both feed
@@ -620,6 +652,7 @@ fn build_composite_filter_complex(
             source_dims: vc.source_dims,
             video_slot,
             fps,
+            delivery: delivery_cs,
         };
         parts.push(build_clip_video_subgraph(&inputs)?);
     }
@@ -651,7 +684,12 @@ fn build_composite_filter_complex(
     // The map arrives at map_slot dims (the renderer supersamples then
     // downsamples to slot dims on-GPU), so `[map]` is slot-sized — exactly
     // what the overlay positions below expect.
-    let map_ingest = map_ingest_filter();
+    //
+    // Phase 4 (fix B): the map is always sRGB (SDR-origin), so the delivery-
+    // aware form appends the ×2.03 BT.2408 reference-white anchor when the
+    // delivery is HDR; for SDR delivery it is byte-identical to
+    // `map_ingest_filter()`.
+    let map_ingest = map_ingest_filter_for_delivery(&delivery_cs);
     parts.push(format!("[{n}:v]{map_ingest}[map]"));
 
     // Mode-specific composite chain. All overlays operate in working
@@ -715,9 +753,9 @@ fn build_composite_filter_complex(
                 // it by promoting to yuva444p10le (ProResMaster) — the
                 // alpha was load-bearing for the overlay's blend, not
                 // for anything past `[vout_w]`.
-                parts.push("[map]format=yuva444p10le[map_a]".to_string());
+                parts.push(format!("[map]{down}format=yuva444p10le[map_a]"));
                 parts.push("[map_a][mask]alphamerge[map_masked]".to_string());
-                parts.push("[vc]format=yuva444p10le[vc_a]".to_string());
+                parts.push(format!("[vc]{down}format=yuva444p10le[vc_a]"));
                 // `:format=yuv444p10` pins the overlay's internal working
                 // pixel format. Without it `overlay` defaults to `yuv420`
                 // and auto-inserts a swscale that downconverts BOTH inputs
@@ -732,19 +770,19 @@ fn build_composite_filter_complex(
                     y = map_slot.y,
                 ));
                 parts.push(format!(
-                    "[vout_masked]format={pix}[vout_w]",
+                    "[vout_masked]format={pix}{up}[vout_w]",
                     pix = WORKING_SPACE_PIX_FMT,
                 ));
             } else {
-                parts.push("[vc]format=yuva444p10le[vc_nm]".to_string());
-                parts.push("[map]format=yuva444p10le[map_nm]".to_string());
+                parts.push(format!("[vc]{down}format=yuva444p10le[vc_nm]"));
+                parts.push(format!("[map]{down}format=yuva444p10le[map_nm]"));
                 parts.push(format!(
                     "[vc_nm][map_nm]overlay={x}:{y}:format=yuv444p10[vout_lifted]",
                     x = map_slot.x,
                     y = map_slot.y,
                 ));
                 parts.push(format!(
-                    "[vout_lifted]format={pix}[vout_w]",
+                    "[vout_lifted]format={pix}{up}[vout_w]",
                     pix = WORKING_SPACE_PIX_FMT,
                 ));
             }
@@ -765,28 +803,28 @@ fn build_composite_filter_complex(
                 // pixel-format family. See the PipMapInset comment above
                 // for the full root-cause writeup — same fix in reverse
                 // (`[map]` is the gbrpf32le side that needs lifting).
-                parts.push("[vc]format=yuva444p10le[vc_a]".to_string());
+                parts.push(format!("[vc]{down}format=yuva444p10le[vc_a]"));
                 parts.push("[vc_a][mask]alphamerge[vc_masked]".to_string());
-                parts.push("[map]format=yuva444p10le[map_a]".to_string());
+                parts.push(format!("[map]{down}format=yuva444p10le[map_a]"));
                 parts.push(format!(
                     "[map_a][vc_masked]overlay={x}:{y}:format=yuv444p10[vout_masked]",
                     x = video_slot.x,
                     y = video_slot.y,
                 ));
                 parts.push(format!(
-                    "[vout_masked]format={pix}[vout_w]",
+                    "[vout_masked]format={pix}{up}[vout_w]",
                     pix = WORKING_SPACE_PIX_FMT,
                 ));
             } else {
-                parts.push("[map]format=yuva444p10le[map_nm]".to_string());
-                parts.push("[vc]format=yuva444p10le[vc_nm]".to_string());
+                parts.push(format!("[map]{down}format=yuva444p10le[map_nm]"));
+                parts.push(format!("[vc]{down}format=yuva444p10le[vc_nm]"));
                 parts.push(format!(
                     "[map_nm][vc_nm]overlay={x}:{y}:format=yuv444p10[vout_lifted]",
                     x = video_slot.x,
                     y = video_slot.y,
                 ));
                 parts.push(format!(
-                    "[vout_lifted]format={pix}[vout_w]",
+                    "[vout_lifted]format={pix}{up}[vout_w]",
                     pix = WORKING_SPACE_PIX_FMT,
                 ));
             }
@@ -843,9 +881,11 @@ fn build_composite_filter_complex(
             // with alpha; we convert back to `WORKING_SPACE_PIX_FMT` so
             // `[vout_w]` honours the working-space contract that
             // `delivery_finishing_filter` consumes.
-            parts.push("[bg]format=yuva444p10le[bg_a]".to_string());
-            parts.push("[map]format=yuva444p10le[map_a]".to_string());
-            parts.push("[vc]format=yuva444p10le[vc_a]".to_string());
+            // ÷H on `[bg]` is mathematically a no-op (black = linear 0) but
+            // is applied uniformly so the single post-overlay ×H is exact.
+            parts.push(format!("[bg]{down}format=yuva444p10le[bg_a]"));
+            parts.push(format!("[map]{down}format=yuva444p10le[map_a]"));
+            parts.push(format!("[vc]{down}format=yuva444p10le[vc_a]"));
             parts.push(format!(
                 "[bg_a][map_a]overlay={x}:{y}:format=yuv444p10[bg_with_map]",
                 x = map_slot.x,
@@ -857,7 +897,7 @@ fn build_composite_filter_complex(
                 y = video_slot.y,
             ));
             parts.push(format!(
-                "[vout_lifted]format={pix}[vout_w]",
+                "[vout_lifted]format={pix}{up}[vout_w]",
                 pix = WORKING_SPACE_PIX_FMT,
             ));
             parts.push(format!(
@@ -879,6 +919,7 @@ fn build_composite_filter_complex(
                 source_dims: vc.source_dims,
                 video_slot,
                 fps,
+                delivery: delivery_cs,
             };
             parts.push(build_clip_audio_subgraph(&inputs)?);
         } else {
@@ -1631,18 +1672,30 @@ mod tests {
             fc,
         );
         assert!(!fc.contains("alphamerge"), "no-mask path must not alphamerge: {}", fc);
-        // The finishing chain (post-`[vout_w]`) must NOT scale or pad —
+        // The finishing chain (post-`[vout_w]`) must NOT resize or pad —
         // pre-Issue-2 it padded to the target's hardcoded dims, silently
         // overriding the user's (aspect, quality). Per-clip scales upstream
         // of `[vout_w]` are legitimate (clips fit project canvas slot);
         // narrow the check to the finishing tail only.
+        //
+        // Phase 4 re-baseline (fix D): the finishing tail now contains a
+        // FLAGS-ONLY `scale=` (the HQ lanczos chroma resample, no w=/h= —
+        // it does not resize). The hazard this guards is a DIMENSIONED
+        // scale/pad, so that is what's forbidden.
         let finishing_tail = fc
             .rfind("[vout_w]")
             .map(|i| &fc[i..])
             .unwrap_or("");
         assert!(
-            !finishing_tail.contains(",scale=") && !finishing_tail.contains("pad="),
-            "post-Issue-2: finishing chain must not scale or pad: {}",
+            !finishing_tail.contains("scale=w=")
+                && !finishing_tail.contains(":w=")
+                && !finishing_tail.contains("pad="),
+            "post-Issue-2: finishing chain must not resize or pad: {}",
+            finishing_tail,
+        );
+        assert!(
+            finishing_tail.contains("scale=flags=lanczos"),
+            "fix D: SDR finishing must carry the HQ chroma subsample split: {}",
             finishing_tail,
         );
 
@@ -2474,7 +2527,7 @@ mod tests {
             fc,
         );
         assert!(
-            fc.contains("zscale=tin=arib-std-b67:t=linear:npl=400"),
+            fc.contains("zscale=tin=arib-std-b67:t=linear:npl=100"),
             "HLG clip must route through arib-std-b67 ingest; fc: {}",
             fc,
         );
@@ -3096,6 +3149,136 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4 (HDR port) — composite anchor + headroom gating
+    // -----------------------------------------------------------------
+
+    /// The ×2.03 BT.2408 anchor chain (fix B), as `linear_gain_filter(2.03)`
+    /// emits it — byte-pinned in `color_space::tests`.
+    const ANCHOR_2_03: &str =
+        "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=1.015:gg=1.015:bb=1.015";
+    /// ÷32 headroom down-gain (fix C).
+    const HEADROOM_DOWN: &str = "colorchannelmixer=rr=0.03125:gg=0.03125:bb=0.03125";
+    /// ×32 headroom up-gain (fix C): five 2.0 stages.
+    const HEADROOM_UP: &str = "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2";
+
+    /// Every composite mode × mask combination the builder supports.
+    /// (Split structurally has no mask.)
+    fn all_composite_shapes() -> Vec<(CompositeMode, Option<&'static Path>)> {
+        let mask: &'static Path = Path::new("/tmp/mask.png");
+        vec![
+            (CompositeMode::PipMapInset, None),
+            (CompositeMode::PipMapInset, Some(mask)),
+            (CompositeMode::PipVideoInset, None),
+            (CompositeMode::PipVideoInset, Some(mask)),
+            (CompositeMode::Split, None),
+        ]
+    }
+
+    fn build_fc_for_target(
+        mode: CompositeMode,
+        mask: Option<&Path>,
+        target: DeliveryTarget,
+    ) -> String {
+        let map_slot = PixelRect { x: 702, y: 1497, w: 346, h: 346 };
+        let video_slot = PixelRect { x: 0, y: 0, w: 1080, h: 1920 };
+        let output = OutputDimensions { w: 1080, h: 1920 };
+        let inputs = vec![vc("a", 2000, true)];
+        let plan = build_composite_filtergraph(
+            &inputs,
+            map_slot,
+            video_slot,
+            output,
+            mode,
+            mask,
+            30,
+            60,
+            &hevc_choice(),
+            DEFAULT_AUDIO_KBPS,
+            target,
+            out_path(),
+        )
+        .unwrap();
+        fc_of(&plan).to_string()
+    }
+
+    #[test]
+    fn composite_hdr_delivery_anchors_sdr_origins_and_wraps_lifts_in_headroom() {
+        // Fix B: SDR-origin streams (every clip here is SDR; the map always
+        // is) carry the ×2.03 BT.2408 anchor at their ingest tails.
+        // Fix C: every COLOR-stream lift to yuva444p10le is preceded by ÷32
+        // and the single post-overlay restore to gbrpf32le is followed by
+        // ×32 — protecting the anchored (>1.0) values through the 10-bit
+        // integer lift.
+        for target in [DeliveryTarget::HdrHlg, DeliveryTarget::HdrPq] {
+            for (mode, mask) in all_composite_shapes() {
+                let fc = build_fc_for_target(mode, mask, target);
+                let label = format!("{target:?}/{mode:?}/mask={}", mask.is_some());
+
+                // (B) clip subgraph anchored between ingest tail and format.
+                assert!(
+                    fc.contains(&format!(",{ANCHOR_2_03},format=gbrpf32le[v0]")),
+                    "{label}: SDR clip must carry the ×2.03 anchor; fc: {fc}",
+                );
+                // (B) map ingest anchored (the [map] label ends with the gain).
+                assert!(
+                    fc.contains(&format!(",{ANCHOR_2_03}[map]")),
+                    "{label}: map ingest must carry the ×2.03 anchor; fc: {fc}",
+                );
+
+                // (C) EVERY yuva444p10le lift is preceded by ÷32 — the lift
+                // count and the down-gain count must match exactly.
+                let lifts = fc.matches("format=yuva444p10le[").count();
+                let guarded = fc
+                    .matches(&format!("{HEADROOM_DOWN},format=yuva444p10le["))
+                    .count();
+                assert!(lifts > 0, "{label}: expected yuva lifts; fc: {fc}");
+                assert_eq!(
+                    guarded, lifts,
+                    "{label}: every color-stream lift must be ÷32-guarded ({guarded}/{lifts}); fc: {fc}",
+                );
+
+                // (C) restore followed by ×32, feeding [vout_w].
+                assert!(
+                    fc.contains(&format!("format=gbrpf32le,{HEADROOM_UP}[vout_w]")),
+                    "{label}: post-overlay restore must apply ×32 before [vout_w]; fc: {fc}",
+                );
+
+                // (D) HDR finishing carries the HQ chroma subsample split.
+                assert!(
+                    fc.contains("format=yuv444p10le,scale=flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp,format=yuv420p10le"),
+                    "{label}: HDR finishing must use the HQ chroma split; fc: {fc}",
+                );
+
+                // The gray corner mask is alpha, not color — never gained.
+                if mask.is_some() {
+                    assert!(
+                        !fc.contains(&format!("{HEADROOM_DOWN},format=gray")),
+                        "{label}: the mask must NOT be headroom-scaled; fc: {fc}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn composite_sdr_delivery_emits_no_anchor_and_no_headroom() {
+        // SDR delivery gate: anchor and headroom are both HDR-delivery-only.
+        // No colorchannelmixer may appear anywhere — the composite chain is
+        // byte-identical to pre-Phase-4 (the existing SDR composite tests
+        // pin the exact strings; this is the explicit negative guard).
+        for target in [DeliveryTarget::SdrH264, DeliveryTarget::SdrH265, DeliveryTarget::Prores] {
+            for (mode, mask) in all_composite_shapes() {
+                let fc = build_fc_for_target(mode, mask, target);
+                assert!(
+                    !fc.contains("colorchannelmixer"),
+                    "{target:?}/{mode:?}/mask={}: SDR/ProRes delivery must not gain-scale; fc: {fc}",
+                    mask.is_some(),
+                );
             }
         }
     }

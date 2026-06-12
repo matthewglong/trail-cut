@@ -16,6 +16,7 @@ use crate::export::error::ClipChainError;
 use crate::export::layout::PixelRect;
 use crate::models::{Clip, FocalPoint};
 use crate::util::color::{ingest_filter_for, WORKING_SPACE_PIX_FMT};
+use crate::util::color_space::ColorSpace;
 
 /// Source pixel dimensions, distinct from `OutputDimensions` so call sites
 /// don't accidentally pass the export dims where the source dims are needed.
@@ -36,6 +37,12 @@ pub struct ClipChainInputs<'a> {
     /// Target slot dims, taken from `layout.resolved.video_slot`.
     pub video_slot: PixelRect,
     pub fps: u32,
+    /// Delivery target's output color space — needed for the SDR-origin
+    /// BT.2408 reference-white anchor at the ingest tail (Phase 4, fix B).
+    /// The composite builder threads `DeliveryTarget::output_color_space()`;
+    /// Channel C (video-only) is always ProRes Master and passes
+    /// `ColorSpace::SDR_BT709` (anchor `None` — byte-identical to pre-Phase-4).
+    pub delivery: ColorSpace,
 }
 
 #[derive(Debug, Clone)]
@@ -128,7 +135,7 @@ pub fn build_clip_video_subgraph(inputs: &ClipChainInputs) -> Result<String, Cli
     let ingest = if has_override {
         crate::util::color_space::ingest_zscale_chain(
             &inputs.clip.effective_color_space(),
-            &crate::util::color_space::ColorSpace::WORKING,
+            &ColorSpace::WORKING,
             true,
         )
     } else {
@@ -138,8 +145,30 @@ pub fn build_clip_video_subgraph(inputs: &ClipChainInputs) -> Result<String, Cli
         )
     };
 
+    // Phase 4 (fix B): SDR-origin clips delivered to HDR get the BT.2408
+    // reference-white anchor (×2.03 linear gain) appended after the
+    // working-space landing. `source_cs.transfer.is_hdr()` is the single
+    // discriminator for both ingest branches: a user-overridden SDR clip
+    // still anchors, an HDR clip never does (it carries absolute nits), and
+    // log variants develop to BT.709 SDR → SDR-origin → anchored. For SDR
+    // delivery the anchor is `None` and the chain is byte-identical to
+    // pre-Phase-4.
+    let source_cs = if has_override {
+        inputs.clip.effective_color_space()
+    } else {
+        crate::util::color::source_color_space_for(
+            inputs.clip.effective_color_class(),
+            inputs.clip.color_trc.as_deref(),
+        )
+    };
+    let anchor_csv = crate::util::color_space::sdr_origin_anchor_gain(&source_cs, &inputs.delivery)
+        .map(crate::util::color_space::linear_gain_filter)
+        .filter(|s| !s.is_empty())
+        .map(|g| format!(",{g}"))
+        .unwrap_or_default();
+
     Ok(format!(
-        "[{idx}:v]trim=start={in_s:.6}:end={out_s:.6},setpts=(PTS-STARTPTS)/{speed:.6},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},{ingest},format={pix}[v{idx}]",
+        "[{idx}:v]trim=start={in_s:.6}:end={out_s:.6},setpts=(PTS-STARTPTS)/{speed:.6},crop={cw}:{ch}:{cx}:{cy},scale={vw}:{vh},{ingest}{anchor_csv},format={pix}[v{idx}]",
         idx = inputs.input_index,
         in_s = in_s,
         out_s = out_s,
@@ -592,6 +621,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(s.starts_with("[0:v]trim=start=0.000000:end=2.000000,"), "got: {}", s);
@@ -623,6 +653,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(s.contains("trim=start=0.500000:end=1.500000"), "got: {}", s);
@@ -644,6 +675,7 @@ mod tests {
             source_dims: PixelDims { w: 3840, h: 2160 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         // 3840×2160 → fit_h=2160, fit_w=2160*(1080/1920)=1215. Centered.
@@ -665,6 +697,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_audio_subgraph(&inputs).unwrap();
         assert!(!s.contains("atempo"), "speed=1.0 should not emit atempo: {}", s);
@@ -686,6 +719,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_audio_subgraph(&inputs).unwrap();
         assert_eq!(
@@ -711,6 +745,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_audio_subgraph(&inputs).unwrap();
         assert_eq!(s.matches("atempo=2.000000").count(), 2, "got: {}", s);
@@ -730,6 +765,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_audio_subgraph(&inputs).unwrap();
         assert_eq!(s.matches("atempo=0.500000").count(), 2, "got: {}", s);
@@ -749,6 +785,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_audio_subgraph(&inputs).unwrap();
         assert_eq!(s.matches("atempo=2.000000").count(), 2, "got: {}", s);
@@ -769,6 +806,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let out = build_clip_chain(&inputs).unwrap();
         assert_eq!(out.video_label, "v3");
@@ -804,6 +842,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         let expected = crate::util::color::ingest_filter_for(
@@ -811,7 +850,7 @@ mod tests {
             None,
         );
         assert!(s.contains(&expected), "expected HLG ingest chain; got: {}", s);
-        assert!(s.contains("zscale=tin=arib-std-b67:t=linear:npl=400"), "got: {}", s);
+        assert!(s.contains("zscale=tin=arib-std-b67:t=linear:npl=100"), "got: {}", s);
         assert!(s.ends_with("[v0]"), "got: {}", s);
     }
 
@@ -835,6 +874,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(s.contains("rin=full"), "override must force rin=full; got: {}", s);
@@ -857,6 +897,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         let class_expected = crate::util::color::ingest_filter_for(
@@ -880,6 +921,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         let expected = crate::util::color::ingest_filter_for(
@@ -887,7 +929,7 @@ mod tests {
             None,
         );
         assert!(s.contains(&expected), "expected PQ ingest chain; got: {}", s);
-        assert!(s.contains("zscale=tin=smpte2084:t=linear:npl=1000"), "got: {}", s);
+        assert!(s.contains("zscale=tin=smpte2084:t=linear:npl=100"), "got: {}", s);
     }
 
     // ---- Fix #6: legacy SDR transfer threading through clip subgraph ----
@@ -909,6 +951,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(
@@ -933,6 +976,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(s.contains("zscale=tin=470bg:t=linear"), "got: {}", s);
@@ -951,6 +995,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(s.contains("zscale=tin=bt709:t=linear"), "got: {}", s);
@@ -969,10 +1014,11 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let s = build_clip_video_subgraph(&inputs).unwrap();
         assert!(
-            s.contains("zscale=tin=arib-std-b67:t=linear:npl=400"),
+            s.contains("zscale=tin=arib-std-b67:t=linear:npl=100"),
             "override must select HLG ingest, got: {}",
             s,
         );
@@ -1004,6 +1050,7 @@ mod tests {
                 source_dims: PixelDims { w: 1920, h: 1080 },
                 video_slot: slot(1080, 1920),
                 fps: 30,
+                delivery: ColorSpace::SDR_BT709,
             };
             let s = build_clip_video_subgraph(&inputs).unwrap();
             assert!(
@@ -1013,6 +1060,111 @@ mod tests {
                 s,
             );
         }
+    }
+
+    // ---- Phase 4 (fix B): SDR-origin → HDR-delivery anchor ----
+
+    const ANCHOR_2_03: &str =
+        "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=1.015:gg=1.015:bb=1.015";
+
+    #[test]
+    fn sdr_clip_to_hdr_delivery_appends_anchor_between_ingest_and_format() {
+        // An SDR clip delivered to HDR carries the ×2.03 BT.2408 anchor
+        // chain spliced after the working-space landing and before the
+        // final format re-assert.
+        for hdr in [ColorSpace::HDR_HLG_BT2020, ColorSpace::HDR_PQ_BT2020] {
+            let clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+            let inputs = ClipChainInputs {
+                input_index: 0,
+                clip: &clip,
+                source_dims: PixelDims { w: 1920, h: 1080 },
+                video_slot: slot(1080, 1920),
+                fps: 30,
+                delivery: hdr,
+            };
+            let s = build_clip_video_subgraph(&inputs).unwrap();
+            let tail = format!(
+                "zscale=p=bt2020:m=bt2020nc,{ANCHOR_2_03},format=gbrpf32le[v0]",
+            );
+            assert!(
+                s.ends_with(&tail),
+                "HDR delivery {:?}: anchor must sit between ingest tail and format; got: {}",
+                hdr.transfer,
+                s,
+            );
+        }
+    }
+
+    #[test]
+    fn sdr_clip_to_sdr_delivery_is_byte_identical_to_pre_phase4() {
+        // SDR→SDR: no anchor — byte-identical to the pre-Phase-4 chain.
+        let clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+            delivery: ColorSpace::SDR_BT709,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(!s.contains("colorchannelmixer"), "SDR delivery must not anchor: {}", s);
+        assert!(s.ends_with("zscale=p=bt2020:m=bt2020nc,format=gbrpf32le[v0]"), "got: {}", s);
+    }
+
+    #[test]
+    fn hdr_clip_to_hdr_delivery_never_anchors() {
+        // HDR-origin sources carry their own absolute nits — the anchor is
+        // for SDR-origin content only. An HLG clip delivered to HLG (or PQ)
+        // must NOT pick up the ×2.03 gain (that would brighten camera
+        // footage 2×).
+        for class in [
+            crate::util::color::SourceColorClass::HlgBt2020,
+            crate::util::color::SourceColorClass::PqBt2020,
+        ] {
+            let clip = make_clip_with_class(class);
+            let inputs = ClipChainInputs {
+                input_index: 0,
+                clip: &clip,
+                source_dims: PixelDims { w: 1920, h: 1080 },
+                video_slot: slot(1080, 1920),
+                fps: 30,
+                delivery: ColorSpace::HDR_HLG_BT2020,
+            };
+            let s = build_clip_video_subgraph(&inputs).unwrap();
+            assert!(
+                !s.contains("colorchannelmixer"),
+                "{:?} (HDR-origin) must not anchor: {}",
+                class,
+                s,
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_sdr_clip_to_hdr_delivery_still_anchors() {
+        // The per-axis override path must anchor too: a clip the user
+        // force-tagged as (full-range) SDR is still SDR-origin.
+        let mut clip = make_clip_with_class(crate::util::color::SourceColorClass::SdrBt709);
+        clip.color_space_override = Some(crate::models::PerAxisOverride {
+            range: Some("full".to_string()),
+            inferred_range: true,
+            ..Default::default()
+        });
+        let inputs = ClipChainInputs {
+            input_index: 0,
+            clip: &clip,
+            source_dims: PixelDims { w: 1920, h: 1080 },
+            video_slot: slot(1080, 1920),
+            fps: 30,
+            delivery: ColorSpace::HDR_HLG_BT2020,
+        };
+        let s = build_clip_video_subgraph(&inputs).unwrap();
+        assert!(
+            s.contains(ANCHOR_2_03),
+            "override path (SDR-origin) must anchor on HDR delivery: {}",
+            s,
+        );
     }
 
     #[test]
@@ -1029,6 +1181,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let err = build_clip_video_subgraph(&inputs).unwrap_err();
         assert!(matches!(err, ClipChainError::InvalidSpeed { .. }));
@@ -1048,6 +1201,7 @@ mod tests {
             source_dims: PixelDims { w: 1920, h: 1080 },
             video_slot: slot(1080, 1920),
             fps: 30,
+            delivery: ColorSpace::SDR_BT709,
         };
         let err = build_clip_video_subgraph(&inputs).unwrap_err();
         assert!(matches!(err, ClipChainError::InvalidTrim { .. }));

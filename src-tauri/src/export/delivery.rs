@@ -177,11 +177,33 @@ pub fn delivery_finishing_filter(target: DeliveryTarget) -> String {
     // target's final pixel format. Both pieces come from the registry — the
     // per-target match arms of hardcoded zscale strings are gone (a new target
     // is an `output_color_space` + `finishing_pix_fmt` entry, nothing more).
-    format!(
-        "{chain},format={pix}",
-        chain = delivery_zscale_chain(&ColorSpace::WORKING, &target.output_color_space()),
-        pix = target.finishing_pix_fmt(),
-    )
+    //
+    // Phase 4 (fix D — HQ chroma subsample): a fused `format=yuv420p[10le]`
+    // is where FFmpeg silently box-filter-decimates chroma to 4:2:0. For
+    // 4:2:0 targets the hop is split: land full-chroma 4:4:4 at the target
+    // depth, lanczos-resample the chroma (`scale=` with no w=/h= does NOT
+    // resize — it only re-samples per the flags), then the final 4:2:0
+    // format. Gated on `finishing_pix_fmt()` (the pixel format, not the
+    // target enum) so a future 4:2:0 target gets HQ subsample automatically;
+    // ProRes (yuva444p10le) and any 4:4:4 target keep the fused form.
+    let chain = delivery_zscale_chain(&ColorSpace::WORKING, &target.output_color_space());
+    let pix = target.finishing_pix_fmt();
+    match pix {
+        // HDR 10-bit 4:2:0 — split via 4:4:4-10 then lanczos chroma.
+        "yuv420p10le" => format!(
+            "{chain},format=yuv444p10le,\
+             scale=flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp,\
+             format=yuv420p10le"
+        ),
+        // SDR 8-bit 4:2:0 — 8-bit analogue.
+        "yuv420p" => format!(
+            "{chain},format=yuv444p,\
+             scale=flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp,\
+             format=yuv420p"
+        ),
+        // Non-4:2:0 targets (ProRes yuva444p10le): no decimation, leave fused.
+        _ => format!("{chain},format={pix}"),
+    }
 }
 
 /// Encoder argv for the given target. Spliced into the FFmpeg invocation
@@ -466,9 +488,19 @@ mod tests {
         // Extensibility proof: PQ delivery was added as registry table entries
         // (one DeliveryTarget arm + output_color_space) with NO new filter or
         // flag code, and produces a correct PQ / BT.2020 chain end-to-end.
+        //
+        // Phase 4 re-baseline (fix D): the pre-Phase-4 pin was the fused
+        // `…,format=yuv420p10le`, where FFmpeg silently box-filter-decimates
+        // chroma. The finishing now splits the hop: 4:4:4-10 landing →
+        // lanczos chroma resample → 4:2:0-10. Justified by the decoded-frame
+        // tracer (hdr_reference_white_tracer_pq) and the verbose dry-run
+        // test in color_fixtures.rs.
         let f = delivery_finishing_filter(DeliveryTarget::HdrPq);
         assert_eq!(
-            f, "zscale=t=smpte2084:m=bt2020nc:p=bt2020:r=limited,format=yuv420p10le",
+            f,
+            "zscale=t=smpte2084:m=bt2020nc:p=bt2020:r=limited,format=yuv444p10le,\
+             scale=flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp,\
+             format=yuv420p10le",
         );
         let args = delivery_encoder_args(DeliveryTarget::HdrPq, &libx265());
         let joined = args.join(" ");
@@ -527,8 +559,15 @@ mod tests {
     // that no `scale=` / `pad=` slips back in (which was the pre-refactor
     // aspect-override bug).
 
+    // Phase 4 re-baseline (fix D): the 4:2:0 targets now contain a
+    // FLAGS-ONLY `scale=` step (the HQ lanczos chroma resample). A `scale=`
+    // with no `w=`/`h=` does not resize — the Issue-2 aspect-override hazard
+    // these tests guard against is a DIMENSIONED scale/pad, so the
+    // assertions below forbid `scale=w=`/`pad=` while allowing the
+    // flags-only chroma step, and pin the split shape.
+
     #[test]
-    fn finishing_filter_sdr_targets_use_bt709_yuv420p_and_emit_no_scale_pad() {
+    fn finishing_filter_sdr_targets_use_bt709_yuv420p_with_hq_chroma_split() {
         for t in [DeliveryTarget::SdrH264, DeliveryTarget::SdrH265] {
             let f = delivery_finishing_filter(t);
             assert!(
@@ -537,34 +576,50 @@ mod tests {
                 t,
                 f,
             );
-            assert!(f.contains("format=yuv420p"), "{:?}: {}", t, f);
-            // No standalone scale or pad — `scale=` is a substring of
-            // `zscale=`, so match `,scale=` to exclude the zscale prefix.
+            // Fix D split shape: 4:4:4 landing → lanczos chroma → 4:2:0.
             assert!(
-                !f.contains(",scale=") && !f.starts_with("scale="),
-                "{:?} must not include a standalone scale filter: {}",
+                f.contains(
+                    "format=yuv444p,\
+                     scale=flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp,\
+                     format=yuv420p"
+                ),
+                "{:?} must use the HQ chroma subsample split: {}",
                 t,
                 f,
             );
-            assert!(!f.contains("pad="), "{:?} must not pad: {}", t, f);
+            // No DIMENSIONED scale and no pad (the aspect-override hazard).
+            assert!(
+                !f.contains("scale=w=") && !f.contains(":w=") && !f.contains("pad="),
+                "{:?} must not resize or pad: {}",
+                t,
+                f,
+            );
         }
     }
 
     #[test]
-    fn finishing_filter_hdr_uses_hlg_bt2020_yuv420p10le_and_emits_no_scale_pad() {
+    fn finishing_filter_hdr_uses_hlg_bt2020_yuv420p10le_with_hq_chroma_split() {
         let f = delivery_finishing_filter(DeliveryTarget::HdrHlg);
         assert!(
             f.contains("zscale=t=arib-std-b67:m=bt2020nc:p=bt2020:r=limited"),
             "{}",
             f,
         );
-        assert!(f.contains("format=yuv420p10le"), "{}", f);
+        // Fix D split shape at 10-bit.
         assert!(
-            !f.contains(",scale=") && !f.starts_with("scale="),
-            "HDR must not include a standalone scale filter: {}",
+            f.contains(
+                "format=yuv444p10le,\
+                 scale=flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp,\
+                 format=yuv420p10le"
+            ),
+            "HDR must use the HQ chroma subsample split: {}",
             f,
         );
-        assert!(!f.contains("pad="), "HDR must not pad: {}", f);
+        assert!(
+            !f.contains("scale=w=") && !f.contains(":w=") && !f.contains("pad="),
+            "HDR must not resize or pad: {}",
+            f,
+        );
     }
 
     #[test]
