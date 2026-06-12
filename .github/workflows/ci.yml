@@ -71,17 +71,17 @@ jobs:
       - name: Frontend tests (Vitest)
         run: npm run test:run
 
-      - name: Stub Tauri bundle resources (chrome glob)
-        # tauri.conf.json lists `binaries/chrome-*/**/*` in bundle.resources
-        # (the bundled chrome-headless-shell, populated locally by
-        # `npm run build:renderer`, gitignored). The Tauri build script
-        # errors when the glob matches nothing, which breaks `cargo test` on
-        # a clean checkout. Tests don't read it — satisfy the glob with a
-        # placeholder. Remove when task 130 (sidecar bundling) provisions
-        # real binaries in CI.
-        run: |
-          mkdir -p src-tauri/binaries/chrome-ci-stub/stub
-          echo "CI placeholder — satisfies the tauri.conf.json bundle.resources glob; not a real Chrome" > src-tauri/binaries/chrome-ci-stub/stub/PLACEHOLDER
+      - name: Build renderer sidecar (bundles + Chrome for Testing)
+        # The orchestrator integration tests (tests/orchestrator.rs) drive
+        # the REAL chromium renderer worker end-to-end: they need
+        # dist/{renderer.cjs,setup_fixture.cjs} and the pinned Chrome for
+        # Testing binary this script downloads into src-tauri/binaries/
+        # (~170MB, host arch). Loud-failure rule: tests panic without these
+        # preconditions, so CI provisions them — it does not skip. This also
+        # satisfies tauri.conf.json's `binaries/chrome-*/**/*`
+        # bundle.resources glob, which the Tauri build script errors on when
+        # empty.
+        run: npm run build:renderer
 
       - name: Rust tests (cargo)
         working-directory: src-tauri
