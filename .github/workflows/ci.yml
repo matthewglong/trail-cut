@@ -35,17 +35,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ffmpeg + exiftool
-        run: brew install ffmpeg exiftool
+      - name: Install ffmpeg-full (zscale-capable) + exiftool
+        # The plain homebrew-core `ffmpeg` bottle has NO libzimg/zscale
+        # (proven by CI run 27385616028) — the color pipeline requires it.
+        # `ffmpeg-full` is the bottled core formula that includes zimg;
+        # it is keg-only, so put its bin on PATH explicitly.
+        run: |
+          brew install ffmpeg-full exiftool
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
 
       - name: Assert ffmpeg has zscale (libzimg)
-        # Fail fast with a clear message if the brew bottle ever drops
-        # libzimg again — the color suite's assert_ffmpeg_has_zscale would
-        # catch it anyway, but this pins the blame on provisioning, not
-        # tests.
+        # Fail fast with a clear message if the bottle ever drops libzimg —
+        # the color suite's assert_ffmpeg_has_zscale would catch it anyway,
+        # but this pins the blame on provisioning, not tests.
         run: |
           if ! ffmpeg -hide_banner -filters | grep -q ' zscale '; then
-            echo '::error title=Bad runner ffmpeg::brew ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
+            echo '::error title=Bad runner ffmpeg::runner ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
             exit 1
           fi
 
@@ -80,13 +85,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ffmpeg
-        run: brew install ffmpeg
+      - name: Install ffmpeg-full (zscale-capable)
+        run: |
+          brew install ffmpeg-full
+          echo "$(brew --prefix ffmpeg-full)/bin" >> "$GITHUB_PATH"
 
       - name: Assert ffmpeg has zscale (libzimg)
         run: |
           if ! ffmpeg -hide_banner -filters | grep -q ' zscale '; then
-            echo '::error title=Bad runner ffmpeg::brew ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
+            echo '::error title=Bad runner ffmpeg::runner ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
             exit 1
           fi
 

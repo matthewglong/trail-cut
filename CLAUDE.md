@@ -92,7 +92,7 @@ Source videos are linked (absolute paths), not copied. `project.json` is schema-
 
 ## Dependencies to have installed
 - Rust (via rustup), Node.js (v22+), Xcode CLI tools
-- **FFmpeg built with zscale/libzimg** (`brew install ffmpeg`) — the color pipeline requires zscale at every ingest path; the color test suite fails loudly without it (`assert_ffmpeg_has_zscale` in `src-tauri/tests/color_fixtures.rs`)
+- **FFmpeg built with zscale/libzimg** (`brew install ffmpeg-full`, then `brew link ffmpeg-full` — the plain core `ffmpeg` bottle has NO libzimg, proven by CI run 27385616028) — the color pipeline requires zscale at every ingest path; the color test suite fails loudly without it (`assert_ffmpeg_has_zscale` in `src-tauri/tests/color_fixtures.rs`)
 - ExifTool (`brew install exiftool`)
 
 ## Phase status
