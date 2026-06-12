@@ -10,14 +10,29 @@ cross-session state. Keep entries terse and dated.
 
 ## NEXT ACTION
 
-**1) Matthew's eyeball sign-off on Phase 4 (blocking).** Three real exports
-of "Abel's Hike" (DV/HLG iPhone clip + map, default 9:16 PiP) are on the
-Desktop in `~/Desktop/trailcut-phase4-hdr-eyeball/`:
-`abels-hike-hdr-hlg.mp4`, `abels-hike-hdr-pq.mp4`, `abels-hike-sdr-h265.mp4`.
-Checklist (ACTION_PLAN decision log #3): map at correct brightness next to
-the camera footage in the HDR files (measured: map-inset region 0.722 HLG
-signal vs 0.75 graphics white; was ~0.60-class pre-fix), camera footage NOT
-darkened/brightened vs the SDR export, decorations/waypoint legible.
+**1) Re-gate Phase 4 eyeball sign-off on real HAND exports (blocking).**
+The three `~/Desktop/trailcut-phase4-hdr-eyeball/` artifacts are **INVALID
+for map-content/decoration checks** (found 2026-06-12): the throwaway driver
+built `project_state` via the unit-test fixture builder
+(`__tests__/setupFixture.ts` → `setup_fixture.cjs`), not the real
+`exportRequest.ts` path, and substituted `default_pip_layout` 9:16 for the
+project's configured layout. Their missing route trail + frozen POV are
+harness artifacts — Matthew's hand export through the app shows the trail
+correctly. Do NOT eyeball those files again (driver neutralized:
+`/tmp/hdr_eyeball_render.rs.phase4-driver.INVALID-fixture-fed`).
+Re-gate: Matthew exports HLG/PQ/SDR-H265 by hand through the app and runs
+the decision-log #3 checklist on those: map at correct brightness next to
+the footage in the HDR files, camera footage NOT darkened/brightened,
+decorations/waypoint legible. From the 2026-06-12 partial eyeball of the
+invalid files, the checks that exercised the REAL color chain stand as
+supporting (not gating) evidence: footage unchanged PASS, rounded-corner
+mask PASS, HLG map land bright (anchor fired; 0.722 measurement real).
+To re-judge ONLY on hand exports: decoration graininess (route/POV are GL
+line/circle layers, waypoints are baked SDF — known Phase 5 lane, not a
+Phase 4 blocker unless illegible), PQ encode quality, SDR color cast
+(measure ffprobe tags + map-land pixels before trusting screenshots —
+EDR screen capture tone-maps), SDR blown highlights (known HDR→SDR
+tone-map deferral unless whole image is lifted/milky).
 
 **2) Phase 5 — parallel lanes (Threads 1/5/6/7 + doc lifecycle).** After
 sign-off, fan out per ACTION_PLAN §Phase 5: each lane opens with its smallest
@@ -38,7 +53,7 @@ entries (HDR→SDR tone map, proxy-npl divergence).
 | 2a — Data-loss fix (Thread 2) | ✅ done 2026-06-11 | See Phase 2a record below |
 | 2b — Doc canon (Thread 4) | ✅ done 2026-06-11 | See Phase 2b record below |
 | 3 — Tracer oracle (Thread 1 thin) | ✅ done 2026-06-11 | See Phase 3 record below; green CI run 27386190883 with verified red-by-design tracer |
-| 4 — HDR port (Thread 3) | ✅ landed 2026-06-11, green CI 27389312554 — ⏳ awaiting Matthew's eyeball sign-off | See Phase 4 record below; tracers GREEN + graduated |
+| 4 — HDR port (Thread 3) | ✅ landed 2026-06-11, green CI 27389312554 — ⏳ eyeball gate INVALIDATED 2026-06-12 (fixture-fed artifacts); re-gate on hand exports | See Phase 4 record below + NEXT ACTION |
 | 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending (gated on Phase 4 sign-off) | Per-lane tracer slices, see ACTION_PLAN |
 
 ## Test baseline (canonical, post-Phase-4, on `main` @ acc1ec9)
@@ -149,16 +164,22 @@ live only inside a historical phase record.
   filtergraph.rs tests); HdrPq finishing string + the three
   no-scale-pad finishing tests (now forbid only DIMENSIONED scale/pad and
   pin the split shape).
-- **Eyeball artifacts (decision log #3):** real "Abel's Hike" project
-  (16.7s Dolby-Vision/HLG iPhone clip, GPS, 1 waypoint, project map
-  settings) rendered through `render_export_inner` with the real renderer
-  worker → `~/Desktop/trailcut-phase4-hdr-eyeball/{abels-hike-hdr-hlg,
-  abels-hike-hdr-pq,abels-hike-sdr-h265}.mp4`. Objective spot-check on the
-  HLG file: map-inset region averages 0.722 HLG signal (graphics white =
-  0.75; map land is slightly off-white) — pre-fix this class of region
-  measured ~0.60; tags arib-std-b67/bt2020/bt2020nc correct. Driver script
-  preserved at `/tmp/hdr_eyeball_render.rs.phase4-driver` (throwaway, not
-  committed; needs the `readback` strip + multi_thread flavor notes inside).
+- **Eyeball artifacts (decision log #3) — INVALIDATED 2026-06-12 for
+  map-content checks.** The driver did call the real `render_export_inner` +
+  renderer worker + delivery targets/encoders, BUT it built `project_state`
+  by piping the project's fields through the unit-test fixture builder
+  (`setupFixture.ts` → `setup_fixture.cjs`) instead of the real
+  `exportRequest.ts` path, and used `default_pip_layout` 9:16 instead of the
+  project's configured layout. Result: route trail missing + POV frozen in
+  the artifacts — harness artifacts, NOT product bugs (Matthew's hand export
+  through the app shows the trail). Still-valid signals from these files:
+  color-transform chain was real — HLG map-inset 0.722 vs 0.75 graphics
+  white (pre-fix ~0.60), tags arib-std-b67/bt2020/bt2020nc correct, footage
+  unchanged, corner mask clean. Sign-off re-gated on hand exports (see NEXT
+  ACTION). Driver renamed to
+  `/tmp/hdr_eyeball_render.rs.phase4-driver.INVALID-fixture-fed`; if a
+  reproducible artifact generator is ever wanted, it must build
+  `project_state` via the real `exportRequest.ts` path.
 - **Known bounds shipped-and-flagged (CANON §1.12):** HDR→SDR highlight
   clipping (tone-map follow-up), PQ >3200 nit at H=32, proxy-npl divergence
   — all in the deferred ledger with owners.
@@ -371,7 +392,20 @@ live only inside a historical phase record.
   composite shape × target (4:4:4 overlay negotiation). Suites: Vitest
   928/7, cargo 374/0/1 with zero skips; green CI run 27389312554.
   `delivery_never_emits_npl` deliberately KEPT (still true under the chosen
-  design — documented in the test). Three real "Abel's Hike" exports
-  rendered to `~/Desktop/trailcut-phase4-hdr-eyeball/` for the decision-log
-  #3 eyeball checklist (HLG map-inset measures 0.722 vs 0.75 graphics
-  white). STOPPED for Matthew's sign-off; Phase 5 fans out after.
+  design — documented in the test). Three "Abel's Hike" exports rendered to
+  `~/Desktop/trailcut-phase4-hdr-eyeball/` for the decision-log #3 eyeball
+  checklist (HLG map-inset measures 0.722 vs 0.75 graphics white). STOPPED
+  for Matthew's sign-off; Phase 5 fans out after.
+- **2026-06-12** — Phase 4 eyeball gate INVALIDATED: Matthew's eyeball of the
+  Desktop artifacts showed missing route trail + frozen POV + grainy
+  decorations; his hand export through the app showed the trail fine.
+  Provenance traced: the throwaway driver fed `project_state` through the
+  unit-test fixture builder (`setupFixture.ts`) and a default 9:16 PiP
+  layout, not the real `exportRequest.ts` path — so the artifacts
+  misrepresent the product for all map-content/decoration checks. Record
+  corrected (NEXT ACTION + Phase 4 record), driver renamed `.INVALID-*`.
+  Eyeball checks that exercised the real color chain held: footage
+  unchanged, corner mask clean, HLG map land bright. Decoration graininess
+  (route/POV = GL layers vs waypoints' baked SDF) confirmed as a real
+  pre-existing gap but stays Phase 5 renderer-lane scope, NOT a Phase 4
+  blocker. Sign-off re-gated on hand exports of all three targets.
