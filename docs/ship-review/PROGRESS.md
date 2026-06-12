@@ -10,19 +10,24 @@ cross-session state. Keep entries terse and dated.
 
 ## NEXT ACTION
 
-**Phase 4 — HDR port (Thread 3).** Work order: `docs/spikes/IMPLEMENTATION.md`
-(A+B+C+D, atomic per the spike's own warning — partial landing darkens camera
-footage ~2×). `npl=203` WORKING_NPL anchor at every HDR ingest AND delivery,
-×2.03 SDR-origin gain, 10-bit headroom, HQ subsample, BT.2446-A tone map for
-SDR targets. Gated on the Phase 3 tracer: the two
-`hdr_reference_white_tracer_*` tests (red today: 0.630 HLG / 0.509 PQ vs
-0.75 / 0.58 expected) must go GREEN — then graduate them into the main CI
-job (drop the `--skip hdr_reference_white_tracer` in `.github/workflows/
-ci.yml`'s test job and delete the `hdr-tracer` job; its report step goes red
-on unexpected-green precisely to force this). Deliberately retire the
-byte-pins that encode the bug (`delivery_never_emits_npl`; pre-fix PQ string
-in delivery.rs tests) — each re-baseline documented. Sign-off: Matthew's
-eyeball checklist, ACTION_PLAN decision log #3.
+**1) Matthew's eyeball sign-off on Phase 4 (blocking).** Three real exports
+of "Abel's Hike" (DV/HLG iPhone clip + map, default 9:16 PiP) are on the
+Desktop in `~/Desktop/trailcut-phase4-hdr-eyeball/`:
+`abels-hike-hdr-hlg.mp4`, `abels-hike-hdr-pq.mp4`, `abels-hike-sdr-h265.mp4`.
+Checklist (ACTION_PLAN decision log #3): map at correct brightness next to
+the camera footage in the HDR files (measured: map-inset region 0.722 HLG
+signal vs 0.75 graphics white; was ~0.60-class pre-fix), camera footage NOT
+darkened/brightened vs the SDR export, decorations/waypoint legible.
+
+**2) Phase 5 — parallel lanes (Threads 1/5/6/7 + doc lifecycle).** After
+sign-off, fan out per ACTION_PLAN §Phase 5: each lane opens with its smallest
+tracer slice (Oracle hardening: decorations in the golden-frame fixture +
+per-frame paint-seam parity; Renderer strangle: current-renderer quick wins
+then maplibre-native prototype; Soup zones: resurrect
+`integration_export_parity` first; Ship deps: own-CI LGPL FFmpeg build;
+Doc lifecycle: stale map-decorations docs + split-brained task ledgers).
+Check the deferred ledger below when opening any lane — Phase 4 added
+entries (HDR→SDR tone map, proxy-npl divergence).
 
 ## Phase status
 
@@ -33,21 +38,20 @@ eyeball checklist, ACTION_PLAN decision log #3.
 | 2a — Data-loss fix (Thread 2) | ✅ done 2026-06-11 | See Phase 2a record below |
 | 2b — Doc canon (Thread 4) | ✅ done 2026-06-11 | See Phase 2b record below |
 | 3 — Tracer oracle (Thread 1 thin) | ✅ done 2026-06-11 | See Phase 3 record below; green CI run 27386190883 with verified red-by-design tracer |
-| 4 — HDR port (Thread 3) | ⬜ next | Gate: tracer green; SDR unchanged; Matthew eyeball checklist (ACTION_PLAN decision log #3) |
-| 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending | Per-lane tracer slices, see ACTION_PLAN |
+| 4 — HDR port (Thread 3) | ✅ landed 2026-06-11, green CI 27389312554 — ⏳ awaiting Matthew's eyeball sign-off | See Phase 4 record below; tracers GREEN + graduated |
+| 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending (gated on Phase 4 sign-off) | Per-lane tracer slices, see ACTION_PLAN |
 
-## Test baseline (canonical, post-Phase-3, on `main` @ b44ae9a)
+## Test baseline (canonical, post-Phase-4, on `main` @ acc1ec9)
 
 `npm run test:run` → **928 passed | 7 skipped (935), 0 failed**.
-`cargo test -- --skip hdr_reference_white_tracer` → **356 passed, 0 failed,
-1 ignored, 2 filtered** (332 lib + 15 color_fixtures + 1 encoder_probe + 2
-layout_parity + 2 orchestrator + 4 project_parity). The 2 filtered are the
-`hdr_reference_white_tracer_*` tests — **red-by-design until Phase 4**
-(plain `cargo test` shows them as the only 2 failures; that is correct, not
-a regression). Any other failure is a regression. CI reproduces exactly
-these counts (run 27386190883). Note: the suites now PANIC (by design) on
-machines missing ffmpeg / zscale / TRAILCUT_CHROME_BIN-with-feature — local
-ffmpeg must be `ffmpeg-full` (plain brew `ffmpeg` bottle has no libzimg).
+`cargo test` (no skips — the tracer exclusion is GONE) → **374 passed,
+0 failed, 1 ignored** (344 lib + 21 color_fixtures + 1 encoder_probe + 2
+layout_parity + 2 orchestrator + 4 project_parity). The
+`hdr_reference_white_tracer_*` tests are GREEN and run in the main suite;
+any failure anywhere is a regression. CI reproduces exactly these counts
+(run 27389312554). Note: the suites PANIC (by design) on machines missing
+ffmpeg / zscale / renderer bundles — local ffmpeg must be `ffmpeg-full`
+(plain brew `ffmpeg` bottle has no libzimg).
 
 ## Deferred follow-ups ledger (standing — check when opening any phase)
 
@@ -69,17 +73,95 @@ live only inside a historical phase record.
 - **Parity-test `working_color_space` exception** — self-removing: delete the
   exception when a second `WorkingColorSpaceId` variant lands (instructions in
   `src-tauri/tests/project_parity.rs`).
-- npl=203 ref-white, task 130 sidecar bundling, task 120 parity gate —
-  already owned by Phases 4 / 5 Ship-deps / 5 Oracle lanes; also recorded in
-  `docs/CANON.md` §6. (The three silent test skips were resolved in Phase 3.)
-- **CI chrome-glob stub in the `hdr-tracer` job** (placeholder dir satisfies
-  tauri.conf.json's `binaries/chrome-*/**/*` bundle.resources glob; the test
-  job provisions the real thing via `npm run build:renderer`) — remove when
-  task 130 lands real sidecar provisioning. Owner: Phase 5 Ship-deps lane.
-- **Tracer graduation** (when Phase 4 lands: drop `--skip
-  hdr_reference_white_tracer` from the CI test job, delete the `hdr-tracer`
-  job) — owner: Phase 4; mechanically enforced (the job goes red on
-  unexpected-green).
+- task 130 sidecar bundling, task 120 parity gate — owned by Phase 5
+  Ship-deps / Oracle lanes; also recorded in `docs/CANON.md` §6. (npl=203
+  ref-white was RESOLVED by Phase 4; tracer graduation done; the
+  `hdr-tracer` job and its chrome-glob stub are deleted with it.)
+- **HDR-origin → SDR delivery hard-clips highlights** (working-space values
+  >1.0 hit the SDR finishing unclamped-by-tone-map; ~status quo, now
+  explicit — CANON §1.12 / §6.1 tail). Proper fix = tone-map operator
+  (zscale `tonemap` / BT.2446-A / libplacebo); Matthew confirmed follow-up,
+  deliberately NOT in Phase 4. Owner: Phase 5 Oracle lane (first slice: an
+  HLG→SDR decoded-frame test that pins today's clip behavior, so the
+  tone-map work lands against an oracle).
+- **PQ source above ~3200 nit clips at `COMPOSITE_HEADROOM = 32`** (linear
+  >32 clips in the composite lift; HDR10 1000-nit masters are fine). Flagged
+  in CANON §1.12; revisit with per-export dynamic H or tone-mapping only if
+  real PQ footage clips visibly (none in hand). Owner: Phase 5 Oracle lane
+  (same slice as above).
+- **Proxy/thumbnail npl divergence** (`commands/ffmpeg.rs` WS1/WS2 preview
+  chains still linearize HLG@npl=400 / PQ@npl=1000 + Hable tone-map for
+  their SDR outputs; the export pipeline is now npl=100 absolute — preview
+  brightness of HDR clips can differ slightly from export). Deliberately
+  untouched by Phase 4 (work order scoped to the export pipeline). Owner:
+  Phase 5 Oracle lane via the task 120 preview≡export parity gate.
+
+## Phase 4 record (landed 2026-06-11 — awaiting Matthew's eyeball sign-off)
+
+- **Commit on `main` (pushed): `acc1ec9`** — the HDR port, A+B+C+D atomic per
+  `docs/spikes/IMPLEMENTATION.md`. 9 files: `util/color_space.rs` (npl=100
+  absolute working space; `sdr_origin_anchor_gain`, `linear_gain_filter`,
+  `COMPOSITE_HEADROOM=32`), `util/color.rs`
+  (`map_ingest_filter_for_delivery`), `export/clip_chain.rs`
+  (`ClipChainInputs.delivery` + anchor splice), `export/filtergraph.rs`
+  (composite anchor/headroom, all 5 branches; Channel B/C explicitly
+  SDR-unchanged), `export/delivery.rs` (fix D finishing split),
+  `tests/color_fixtures.rs`, `.github/workflows/ci.yml`, `docs/CANON.md`
+  (§1.5 updated, §1.12 new DECIDED, §6.1 → RESOLVED), `CLAUDE.md`.
+- **Work-order reconciliation (documented divergence from the ACTION_PLAN
+  bullet):** ACTION_PLAN §Phase 4 said "npl=203 WORKING_NPL at every HDR
+  ingest AND delivery" + "BT.2446-A tone map for SDR targets" — that wording
+  predates the spike's final reconciliation. Built to IMPLEMENTATION.md (the
+  named work order): **npl=100 absolute working space + ×2.03 SDR-origin
+  ingest anchor** (proven byte-equivalent to npl=203; Matthew CONFIRMED
+  npl=100, npl=1000 off the table), and HDR→SDR tone map is a
+  Matthew-confirmed FOLLOW-UP (deferred ledger above). Consequently
+  `delivery_never_emits_npl` was NOT retired — the chosen design keeps
+  delivery npl-free, so the pin still encodes a true invariant (comment in
+  the test explains this).
+- **Gate evidence — green CI run `27389312554`** on `acc1ec9`: single
+  `Tests (macOS)` job (the expected-red `hdr-tracer` job is DELETED, the
+  `--skip` dropped — graduation forced by its own unexpected-green
+  enforcement, exactly as designed). Tracers GREEN: 0.75 HLG / 0.58 PQ
+  (±0.02) measured through the production delivery-aware chain (the tracer
+  now uses `map_ingest_filter_for_delivery`, which is what the composite
+  builder splices).
+- **New decoded-frame gates (all loud, zero skips), beyond the tracers:**
+  `hdr_video_round_trip_{hlg,pq}_is_identity` (npl=100 round-trip; harness
+  verified to have teeth — npl=400 measures 800→597 vs the ±0.015 tolerance,
+  i.e. the "camera footage darkened" regression is detectable),
+  `sdr_delivery_map_white_stays_at_sdr_white` (anchor gating),
+  `composite_chains_verbose_dry_run_no_silent_chroma_downconvert` (every
+  composite shape × {SdrH265, HdrHlg, HdrPq} runs the REAL production argv;
+  overlay must negotiate 4:4:4 10-bit — the
+  feedback_ffmpeg_filter_empirical_validation rule made executable).
+- **SDR byte-stability:** ingest + composite chains for SDR delivery are
+  byte-identical (existing string pins unchanged + explicit
+  `composite_sdr_delivery_emits_no_anchor_and_no_headroom`). ONE deliberate
+  SDR change, per the work order's explicit test-change list: the 4:2:0
+  finishing now uses the HQ lanczos chroma split (fix D — the pipeline-side
+  ~25% decoration-crispness recovery; no resize, flags-only `scale`). So SDR
+  output bytes differ in chroma quality only; the "SDR exports
+  byte-unchanged" gate phrase was interpreted per IMPLEMENTATION.md and the
+  re-baseline is pinned in `delivery.rs` tests.
+- **Re-baselined byte-pins, each documented in place:** HDR ingest npl
+  strings 400/1000→100 (color_space.rs, color.rs, clip_chain.rs,
+  filtergraph.rs tests); HdrPq finishing string + the three
+  no-scale-pad finishing tests (now forbid only DIMENSIONED scale/pad and
+  pin the split shape).
+- **Eyeball artifacts (decision log #3):** real "Abel's Hike" project
+  (16.7s Dolby-Vision/HLG iPhone clip, GPS, 1 waypoint, project map
+  settings) rendered through `render_export_inner` with the real renderer
+  worker → `~/Desktop/trailcut-phase4-hdr-eyeball/{abels-hike-hdr-hlg,
+  abels-hike-hdr-pq,abels-hike-sdr-h265}.mp4`. Objective spot-check on the
+  HLG file: map-inset region averages 0.722 HLG signal (graphics white =
+  0.75; map land is slightly off-white) — pre-fix this class of region
+  measured ~0.60; tags arib-std-b67/bt2020/bt2020nc correct. Driver script
+  preserved at `/tmp/hdr_eyeball_render.rs.phase4-driver` (throwaway, not
+  committed; needs the `readback` strip + multi_thread flavor notes inside).
+- **Known bounds shipped-and-flagged (CANON §1.12):** HDR→SDR highlight
+  clipping (tone-map follow-up), PQ >3200 nit at H=32, proxy-npl divergence
+  — all in the deferred ledger with owners.
 
 ## Phase 3 record (done 2026-06-11)
 
@@ -276,3 +358,20 @@ live only inside a historical phase record.
   pre-existing integration_export compile break (SetupPayload.readback).
   Next: Phase 4 — HDR port (Thread 3), work order docs/spikes/
   IMPLEMENTATION.md, gated on the tracer flipping green.
+- **2026-06-11** — Phase 4 executed: HDR port landed atomically on `main`
+  (`acc1ec9`, pushed): npl=100 absolute working space (A), ×2.03 SDR-origin
+  BT.2408 anchor at ingest (B — implemented per IMPLEMENTATION.md, NOT the
+  ACTION_PLAN's stale "npl=203 on delivery" wording; equivalence proven),
+  HDR-gated ÷32/×32 composite headroom (C), HQ lanczos chroma subsample in
+  4:2:0 finishing (D). Phase 3 tracers flipped GREEN (0.75/0.58) and
+  graduated into the main CI job; the expected-red `hdr-tracer` job deleted
+  — its unexpected-green enforcement fired exactly as designed. New
+  decoded-frame gates: HLG/PQ round-trip identity (instrument verified
+  against npl=400: 800→597), SDR map-white pin, verbose dry-run over every
+  composite shape × target (4:4:4 overlay negotiation). Suites: Vitest
+  928/7, cargo 374/0/1 with zero skips; green CI run 27389312554.
+  `delivery_never_emits_npl` deliberately KEPT (still true under the chosen
+  design — documented in the test). Three real "Abel's Hike" exports
+  rendered to `~/Desktop/trailcut-phase4-hdr-eyeball/` for the decision-log
+  #3 eyeball checklist (HLG map-inset measures 0.722 vs 0.75 graphics
+  white). STOPPED for Matthew's sign-off; Phase 5 fans out after.
