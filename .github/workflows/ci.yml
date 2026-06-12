@@ -71,6 +71,18 @@ jobs:
       - name: Frontend tests (Vitest)
         run: npm run test:run
 
+      - name: Stub Tauri bundle resources (chrome glob)
+        # tauri.conf.json lists `binaries/chrome-*/**/*` in bundle.resources
+        # (the bundled chrome-headless-shell, populated locally by
+        # `npm run build:renderer`, gitignored). The Tauri build script
+        # errors when the glob matches nothing, which breaks `cargo test` on
+        # a clean checkout. Tests don't read it — satisfy the glob with a
+        # placeholder. Remove when task 130 (sidecar bundling) provisions
+        # real binaries in CI.
+        run: |
+          mkdir -p src-tauri/binaries/chrome-ci-stub/stub
+          echo "CI placeholder — satisfies the tauri.conf.json bundle.resources glob; not a real Chrome" > src-tauri/binaries/chrome-ci-stub/stub/PLACEHOLDER
+
       - name: Rust tests (cargo)
         working-directory: src-tauri
         # The two hdr_reference_white_tracer_* tests are red-by-design until
@@ -103,17 +115,37 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Stub Tauri bundle resources (chrome glob)
+        # Same placeholder as the test job — see the comment there.
+        run: |
+          mkdir -p src-tauri/binaries/chrome-ci-stub/stub
+          echo "CI placeholder — satisfies the tauri.conf.json bundle.resources glob; not a real Chrome" > src-tauri/binaries/chrome-ci-stub/stub/PLACEHOLDER
+
       - name: Run HDR reference-white tracer (allowed to fail)
         id: tracer
         continue-on-error: true
         working-directory: src-tauri
-        run: cargo test --test color_fixtures hdr_reference_white_tracer -- --nocapture
+        run: |
+          set -o pipefail
+          cargo test --test color_fixtures hdr_reference_white_tracer -- --nocapture 2>&1 | tee "$RUNNER_TEMP/tracer.log"
 
       - name: Report tracer status
+        # Three outcomes, all loud:
+        #   - failed WITH the documented reference-white assertion → the
+        #     expected red; warn and stay green.
+        #   - passed → Phase 4 landed or the test lost its teeth; job goes
+        #     RED to force graduating the tests into the main job.
+        #   - failed for ANY OTHER reason (build error, harness fault) → job
+        #     goes RED; a broken tracer must never masquerade as the
+        #     expected red (this exact false positive happened on CI run
+        #     27385745706 when the Tauri build script failed).
         run: |
-          if [ "${{ steps.tracer.outcome }}" = "failure" ]; then
+          if [ "${{ steps.tracer.outcome }}" = "success" ]; then
+            echo "::error title=HDR tracer GREEN (unexpected)::The expected-red tracer passed. Either the Phase 4 npl=203 fix landed (graduate the tests: drop the --skip in the test job and delete this hdr-tracer job) or the test lost its teeth. Do not leave this job in place."
+            exit 1
+          elif grep -q "map-graphics white is NOT at BT.2408 reference white" "$RUNNER_TEMP/tracer.log"; then
             echo "::warning title=HDR tracer RED (expected)::hdr_reference_white_tracer_* failed as designed: HDR map white is not anchored at BT.2408 reference white (the diagnosed npl=203 defect, docs/CANON.md §6.1). The fix is ship-review Phase 4; when it lands these tests go green and must graduate into the main test job."
           else
-            echo "::error title=HDR tracer GREEN (unexpected)::The expected-red tracer passed. Either the Phase 4 npl=203 fix landed (graduate the tests: drop the --skip in the test job and delete this hdr-tracer job) or the test lost its teeth. Do not leave this job in place."
+            echo "::error title=HDR tracer BROKE (not the documented red)::The tracer failed for a reason OTHER than the npl=203 reference-white assertion (build error, missing tool, harness fault). The instrument is broken, not measuring the defect — fix it."
             exit 1
           fi
