@@ -1499,6 +1499,231 @@ fn ws3_masked_pip_composite_overlay_inputs_share_format_family() {
 // one covers the *runtime* invariant (zimg actually accepts them).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// HDR reference-white tracer — EXPECTED RED until the Phase 4 npl=203 fix.
+//
+// The diagnosed live defect (docs/CANON.md §6.1): HDR map exports are dark
+// because SDR map graphics enter the working space scene-linear (sRGB white
+// → linear 1.0) and the delivery chain encodes that without a reference-white
+// anchor, so map white lands at ~62% HLG signal instead of the BT.2408
+// graphics-white level (203 nit = 75% HLG signal; PQ verified the same bug —
+// correct level is 58% PQ signal). The fix is `npl=203` anchoring at the
+// map→working seam, which lands in ship-review Phase 4 — NOT alongside this
+// test.
+//
+// These two tests are the ship-review tracer oracle: they push a pure-white
+// map frame through the REAL production chain (`map_ingest_filter()` →
+// `delivery_finishing_filter(target)` → the real selected encoder), decode
+// the delivered frame, and assert white sits at the BT.2408 reference-white
+// signal level. They MUST fail today — that is the point: they prove the
+// instrument can see the known defect before anyone trusts it as a gate.
+//
+// DO NOT mark these `#[ignore]`, skip them, or loosen the tolerance to make
+// them pass. CI runs them in a dedicated visible job
+// (`.github/workflows/ci.yml`, job `hdr-tracer`) that is allowed to fail and
+// annotates the run loudly; the main test job excludes them by the
+// `hdr_reference_white_tracer` name prefix. When Phase 4 lands the npl=203
+// fix these go green — at that point fold them into the main CI job and
+// delete the tracer job.
+// ---------------------------------------------------------------------------
+
+/// BT.2408 graphics white ("reference white", 203 cd/m²) expressed as a
+/// normalized HLG signal level. This is the anchor YouTube and Resolve use
+/// for SDR-origin graphics in HDR programmes.
+const HLG_REFERENCE_WHITE_SIGNAL: f64 = 0.75;
+
+/// BT.2408 graphics white as a normalized PQ signal level
+/// (PQ inverse-EOTF of 203 cd/m² ≈ 0.58).
+const PQ_REFERENCE_WHITE_SIGNAL: f64 = 0.58;
+
+/// Acceptance window around the reference-white signal. The defect is a
+/// ~13-percentage-point miss (≈0.62 measured vs 0.75 expected for HLG), so
+/// ±0.02 cleanly separates "anchored at BT.2408" from "scene-linear bug"
+/// while absorbing 10-bit quantization + encoder noise on a flat field.
+const REFERENCE_WHITE_TOLERANCE: f64 = 0.02;
+
+/// Render a pure-white map frame through the real delivery chain for
+/// `target` and return the decoded luma as a normalized signal level
+/// (0.0 = 10-bit limited-range black 64, 1.0 = white 940).
+///
+/// Production-faithful path: the white frame enters exactly as map canvas
+/// frames do (bare rawvideo RGBA, no stream color tags) through
+/// `map_ingest_filter()` into `[vout_w]`, then `delivery_finishing_filter`
+/// + `delivery_encoder_args` with the encoder `select_encoder_for_target`
+/// actually picks on this machine — the same splice `render_export`'s
+/// composite branch performs. The delivered file is then decoded back and
+/// the luma plane averaged over the central region (borders excluded to
+/// keep encoder edge ringing out of the measurement).
+fn measure_delivered_map_white_signal(target: trail_cut_lib::export::DeliveryTarget) -> f64 {
+    use trail_cut_lib::export::{
+        delivery_encoder_args, delivery_finishing_filter, select_encoder_for_target,
+    };
+
+    const W: usize = 256;
+    const H: usize = 256;
+    const FRAMES: usize = 10;
+
+    let temp = TempDir::new().expect("temp dir");
+    let out = temp
+        .path()
+        .join(format!("tracer_white.{}", target.container_extension()));
+
+    let map_ingest = map_ingest_filter();
+    let finishing = delivery_finishing_filter(target);
+    let filter_complex = format!("[0:v]{map_ingest}[vout_w];[vout_w]{finishing}[vout]");
+
+    let encoder = select_encoder_for_target(target)
+        .unwrap_or_else(|e| panic!("select_encoder_for_target({target:?}): {e}"));
+    let enc_args = delivery_encoder_args(target, &encoder);
+
+    // Encode: white RGBA frames on stdin → delivery chain → container.
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgba",
+        "-s",
+        &format!("{W}x{H}"),
+        "-r",
+        "30",
+        "-i",
+        "pipe:0",
+        "-filter_complex",
+        &filter_complex,
+        "-map",
+        "[vout]",
+        "-an",
+    ]);
+    for a in &enc_args {
+        cmd.arg(a);
+    }
+    cmd.arg(&out);
+
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg encode");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("ffmpeg stdin");
+        let white_frame = vec![255u8; W * H * 4];
+        for _ in 0..FRAMES {
+            stdin.write_all(&white_frame).expect("write white frame");
+        }
+    }
+    let enc_out = child.wait_with_output().expect("await ffmpeg encode");
+    assert!(
+        enc_out.status.success(),
+        "delivery encode failed for {:?} (encoder {}):\nfilter_complex=`{}`\nstderr:\n{}",
+        target,
+        encoder.name,
+        filter_complex,
+        String::from_utf8_lossy(&enc_out.stderr),
+    );
+
+    // Decode one delivered frame back to raw 10-bit 4:2:0 and read the luma
+    // plane. Both HDR targets store yuv420p10le, so this is a straight read,
+    // not a conversion.
+    let dec = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(&out)
+        .args([
+            "-map",
+            "0:v:0",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "yuv420p10le",
+            "pipe:1",
+        ])
+        .output()
+        .expect("spawn ffmpeg decode");
+    assert!(
+        dec.status.success(),
+        "decode of delivered {:?} output failed: {}",
+        target,
+        String::from_utf8_lossy(&dec.stderr),
+    );
+    let raw = &dec.stdout;
+    assert!(
+        raw.len() >= W * H * 2,
+        "decoded frame too short: got {} bytes, need at least {} for the luma plane",
+        raw.len(),
+        W * H * 2,
+    );
+
+    // Average luma over the central 50% region (u16 little-endian samples,
+    // 0..=1023).
+    let (x0, x1) = (W / 4, 3 * W / 4);
+    let (y0, y1) = (H / 4, 3 * H / 4);
+    let mut sum = 0u64;
+    let mut count = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let off = (y * W + x) * 2;
+            let v = u16::from_le_bytes([raw[off], raw[off + 1]]);
+            sum += v as u64;
+            count += 1;
+        }
+    }
+    let y_avg = sum as f64 / count as f64;
+
+    // Normalize against the 10-bit limited (tv) range the delivery chain
+    // emits: black = 64, nominal peak white = 940.
+    (y_avg - 64.0) / (940.0 - 64.0)
+}
+
+fn assert_map_white_at_reference_signal(
+    target: trail_cut_lib::export::DeliveryTarget,
+    expected_signal: f64,
+) {
+    assert_ffmpeg_on_path();
+    assert_ffprobe_on_path();
+    assert_ffmpeg_has_zscale();
+
+    let measured = measure_delivered_map_white_signal(target);
+    assert!(
+        (measured - expected_signal).abs() <= REFERENCE_WHITE_TOLERANCE,
+        "map-graphics white is NOT at BT.2408 reference white in the {:?} delivery: \
+         measured signal {:.4}, expected {:.2} ±{:.2}.\n\
+         This is the diagnosed npl=203 reference-white defect (docs/CANON.md §6.1): \
+         SDR map graphics enter the working space scene-linear and the HDR delivery \
+         encodes them without a 203-nit anchor, so the map renders dark next to \
+         camera footage. EXPECTED RED until ship-review Phase 4 lands the npl=203 \
+         anchoring at the map→working seam. Do not ignore/skip this test — when the \
+         fix lands it goes green and graduates into the main CI job.",
+        target,
+        measured,
+        expected_signal,
+        REFERENCE_WHITE_TOLERANCE,
+    );
+}
+
+#[test]
+fn hdr_reference_white_tracer_hlg_map_white_lands_at_75pct_signal() {
+    assert_map_white_at_reference_signal(
+        trail_cut_lib::export::DeliveryTarget::HdrHlg,
+        HLG_REFERENCE_WHITE_SIGNAL,
+    );
+}
+
+#[test]
+fn hdr_reference_white_tracer_pq_map_white_lands_at_58pct_signal() {
+    assert_map_white_at_reference_signal(
+        trail_cut_lib::export::DeliveryTarget::HdrPq,
+        PQ_REFERENCE_WHITE_SIGNAL,
+    );
+}
+
 #[test]
 fn map_ingest_filter_runs_on_bare_rawvideo_rgba() {
     assert_ffmpeg_on_path();

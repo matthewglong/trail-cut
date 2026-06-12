@@ -100,16 +100,26 @@ fn assert_chromium_bundle_present() {
     }
 }
 
-/// Returns true if the env var is set, false otherwise. Caller skips the
-/// test when false. Until task 118 bundles a Chrome binary, this env var is
-/// the only way the chromium sidecar finds Chrome — and CI / clean checkouts
-/// won't have it set. Skipping (instead of panicking) keeps
-/// `cargo test --features integration_export` green by default and makes
-/// opting in to this test a deliberate act.
-fn chrome_bin_env_present() -> bool {
-    std::env::var("TRAILCUT_CHROME_BIN")
+/// Panic with an actionable message if `TRAILCUT_CHROME_BIN` is unset. Until
+/// task 118 bundles a Chrome binary, this env var is the only way the
+/// chromium sidecar finds Chrome. Loud-failure rule (docs/CANON.md §1.11):
+/// running `cargo test --features integration_export` on a machine that
+/// can't support the test must FAIL, not silently pass — the feature flag
+/// itself is the deliberate opt-in; once opted in, a green run must mean
+/// the pixels were actually compared.
+fn assert_chrome_bin_env() {
+    let present = std::env::var("TRAILCUT_CHROME_BIN")
         .map(|v| !v.is_empty())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if !present {
+        panic!(
+            "TRAILCUT_CHROME_BIN not set — golden_frame_parity_chromium cannot run \
+             without a Chrome binary. Set it to a Chrome/Chromium path (see \
+             docs/export/tasks/117-golden-frame-parity.md for the dev-mode path), \
+             or run `cargo test` without `--features integration_export` if you \
+             did not intend to run the renderer integration tests."
+        );
+    }
 }
 
 /// Load the committed setup.json fixture and reshape it into a SetupPayload.
@@ -141,6 +151,10 @@ fn load_setup_payload() -> SetupPayload {
     let pixel_ratio = canonical.pixel_ratio;
     SetupPayload {
         css_viewport,
+        // Fixture predates SSAA — captured at supersample factor 1, so the
+        // renderer paints and reads back at the same slot-sized buffer the
+        // committed 540×960 golden PNGs were taken from.
+        readback: framebuffer,
         framebuffer,
         pixel_ratio,
         fps: FPS,
@@ -248,14 +262,7 @@ impl FrameSink for CapturingSink {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn golden_frame_parity_chromium() {
-    if !chrome_bin_env_present() {
-        eprintln!(
-            "SKIP golden_frame_parity_chromium: TRAILCUT_CHROME_BIN not set. \
-             Set it to a Chrome binary path to run this test. See \
-             docs/export/tasks/117-golden-frame-parity.md for the dev-mode path."
-        );
-        return;
-    }
+    assert_chrome_bin_env();
     assert_chromium_bundle_present();
 
     let setup = load_setup_payload();

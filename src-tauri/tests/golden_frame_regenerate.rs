@@ -99,6 +99,9 @@ fn load_setup_payload() -> SetupPayload {
     let pixel_ratio = canonical.pixel_ratio;
     SetupPayload {
         css_viewport,
+        // Fixture predates SSAA — supersample factor 1, readback == framebuffer
+        // (matches load_setup_payload in golden_frame_parity.rs).
+        readback: framebuffer,
         framebuffer,
         pixel_ratio,
         fps: FPS,

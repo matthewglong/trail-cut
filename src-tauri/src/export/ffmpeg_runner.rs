@@ -229,20 +229,27 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn ffmpeg_on_path() -> bool {
-        std::process::Command::new("ffmpeg")
+    /// Loud-failure rule (docs/CANON.md §1.11): these tests drive the real
+    /// ffmpeg binary; a machine without it cannot validate the runner, so
+    /// the tests must FAIL with an install pointer — never silently pass.
+    /// (Mirrors `assert_ffmpeg_on_path` in tests/color_fixtures.rs.)
+    fn assert_ffmpeg_on_path() {
+        let ok = std::process::Command::new("ffmpeg")
             .arg("-version")
             .output()
             .map(|o| o.status.success())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        assert!(
+            ok,
+            "ffmpeg not on PATH (or non-zero exit) — required by the ffmpeg_runner \
+             tests. Install via `brew install ffmpeg` (macOS) or your distro's \
+             package manager."
+        );
     }
 
     #[tokio::test]
     async fn run_ffmpeg_version_succeeds() {
-        if !ffmpeg_on_path() {
-            eprintln!("ffmpeg not on PATH — skipping");
-            return;
-        }
+        assert_ffmpeg_on_path();
         let res = run_ffmpeg(&PathBuf::from("ffmpeg"), &["-version".to_string()])
             .await
             .expect("ffmpeg -version should succeed");
@@ -256,10 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_ffmpeg_unknown_flag_errors() {
-        if !ffmpeg_on_path() {
-            eprintln!("ffmpeg not on PATH — skipping");
-            return;
-        }
+        assert_ffmpeg_on_path();
         let err = run_ffmpeg(
             &PathBuf::from("ffmpeg"),
             &["-nonexistent_flag_xyz".to_string()],

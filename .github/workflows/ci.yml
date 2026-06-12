@@ -1,0 +1,112 @@
+# TrailCut CI — the ship-review tracer oracle (Phase 3, Thread 1 thin slice).
+#
+# Two jobs, both on macOS (the current ship target):
+#
+#   test        — the gate. Vitest + cargo test, with the two
+#                 `hdr_reference_white_tracer_*` tests excluded by name —
+#                 they run in the dedicated job below instead. Nothing in
+#                 this job is allowed to skip silently: the suites panic
+#                 loudly on missing preconditions (ffmpeg, zscale, exiftool),
+#                 so this job provisions all of them up front and fails fast
+#                 if the runner image can't supply them.
+#
+#   hdr-tracer  — the EXPECTED-RED tracer (docs/CANON.md §6.1): map-graphics
+#                 white through the real HDR delivery chain must land at
+#                 BT.2408 reference white (75% HLG / 58% PQ signal), and
+#                 today it doesn't — the npl=203 anchoring fix lands in
+#                 ship-review Phase 4. The job runs the tests visibly,
+#                 annotates the run loudly, and stays green while they fail
+#                 for the documented reason. If the tracer unexpectedly goes
+#                 GREEN this job goes red — that forces whoever lands the fix
+#                 to graduate the tests into the main job (delete the
+#                 exclusion there and this job) rather than leaving a stale
+#                 allowed-to-fail lane behind.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg + exiftool
+        run: brew install ffmpeg exiftool
+
+      - name: Assert ffmpeg has zscale (libzimg)
+        # Fail fast with a clear message if the brew bottle ever drops
+        # libzimg again — the color suite's assert_ffmpeg_has_zscale would
+        # catch it anyway, but this pins the blame on provisioning, not
+        # tests.
+        run: |
+          if ! ffmpeg -hide_banner -filters | grep -q ' zscale '; then
+            echo '::error title=Bad runner ffmpeg::brew ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Frontend tests (Vitest)
+        run: npm run test:run
+
+      - name: Rust tests (cargo)
+        working-directory: src-tauri
+        # The two hdr_reference_white_tracer_* tests are red-by-design until
+        # the Phase 4 npl=203 fix lands; they run VISIBLY in the hdr-tracer
+        # job below — this is a relocation, not a silent skip. Everything
+        # else must pass.
+        run: cargo test -- --skip hdr_reference_white_tracer
+
+  hdr-tracer:
+    name: "HDR reference-white tracer — EXPECTED RED until Phase 4 (CANON §6.1)"
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Assert ffmpeg has zscale (libzimg)
+        run: |
+          if ! ffmpeg -hide_banner -filters | grep -q ' zscale '; then
+            echo '::error title=Bad runner ffmpeg::brew ffmpeg has no zscale (libzimg) — the TrailCut color pipeline requires it; fix CI provisioning'
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run HDR reference-white tracer (allowed to fail)
+        id: tracer
+        continue-on-error: true
+        working-directory: src-tauri
+        run: cargo test --test color_fixtures hdr_reference_white_tracer -- --nocapture
+
+      - name: Report tracer status
+        run: |
+          if [ "${{ steps.tracer.outcome }}" = "failure" ]; then
+            echo "::warning title=HDR tracer RED (expected)::hdr_reference_white_tracer_* failed as designed: HDR map white is not anchored at BT.2408 reference white (the diagnosed npl=203 defect, docs/CANON.md §6.1). The fix is ship-review Phase 4; when it lands these tests go green and must graduate into the main test job."
+          else
+            echo "::error title=HDR tracer GREEN (unexpected)::The expected-red tracer passed. Either the Phase 4 npl=203 fix landed (graduate the tests: drop the --skip in the test job and delete this hdr-tracer job) or the test lost its teeth. Do not leave this job in place."
+            exit 1
+          fi
