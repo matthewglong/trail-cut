@@ -10,29 +10,42 @@ cross-session state. Keep entries terse and dated.
 
 ## NEXT ACTION
 
-**1) Re-gate Phase 4 eyeball sign-off on real HAND exports (blocking).**
-The three `~/Desktop/trailcut-phase4-hdr-eyeball/` artifacts are **INVALID
-for map-content/decoration checks** (found 2026-06-12): the throwaway driver
-built `project_state` via the unit-test fixture builder
-(`__tests__/setupFixture.ts` → `setup_fixture.cjs`), not the real
-`exportRequest.ts` path, and substituted `default_pip_layout` 9:16 for the
-project's configured layout. Their missing route trail + frozen POV are
-harness artifacts — Matthew's hand export through the app shows the trail
-correctly. Do NOT eyeball those files again (driver neutralized:
-`/tmp/hdr_eyeball_render.rs.phase4-driver.INVALID-fixture-fed`).
-Re-gate: Matthew exports HLG/PQ/SDR-H265 by hand through the app and runs
-the decision-log #3 checklist on those: map at correct brightness next to
-the footage in the HDR files, camera footage NOT darkened/brightened,
-decorations/waypoint legible. From the 2026-06-12 partial eyeball of the
-invalid files, the checks that exercised the REAL color chain stand as
-supporting (not gating) evidence: footage unchanged PASS, rounded-corner
-mask PASS, HLG map land bright (anchor fired; 0.722 measurement real).
-To re-judge ONLY on hand exports: decoration graininess (route/POV are GL
-line/circle layers, waypoints are baked SDF — known Phase 5 lane, not a
-Phase 4 blocker unless illegible), PQ encode quality, SDR color cast
-(measure ffprobe tags + map-land pixels before trusting screenshots —
-EDR screen capture tone-maps), SDR blown highlights (known HDR→SDR
-tone-map deferral unless whole image is lifted/milky).
+**1) Implement fix C′ — replace the linear ÷32/×32 composite headroom with
+a PQ transport curve around the 10-bit overlay lift (blocking; awaiting
+Matthew's go).** The 2026-06-12 hand-export re-gate FAILED for HDR map
+fidelity and the cause is root-caused + empirically proven (session log
+below): fix C's `linear_gain_filter(1/32)` runs BEFORE the
+`format=yuva444p10le` overlay lift, so the SDR-origin map (linear 0–2.03
+after the ×2.03 anchor) is quantized in LINEAR light into the bottom 6.3%
+of the 10-bit range — measured 256→66 distinct levels and hue errors up to
+12.5° (red), 3.8° (green) on flat decoration colors. That one seam explains
+all three HDR-only symptoms Matthew saw (grit, wrong decoration hue,
+temporal shimmer; PQ worse than HLG because PQ's EOTF stretches the bottom
+of the range hardest). Validated fix: swap `{÷32 … ×32}` for
+`{zscale=t=smpte2084 … zscale=tin=smpte2084:t=linear:npl=100}` (HDR
+deliveries only, same gate) — measured 256/256 levels and ≤0.33° hue vs
+the pure-float reference; SDR chains stay byte-identical; no headroom
+constant at all (PQ transport covers linear 0–100 = 10,000 nits, which
+RETIRES the "PQ >3200 nit clips at H=32" deferred item — new bound is
+PQ's own 10k ceiling). Scope: `color_space.rs` (transport helpers replace
+`COMPOSITE_HEADROOM`), `filtergraph.rs` `down`/`up` splice points + comment
+blocks (all 5 branches), re-pin composite-chain string tests, KEEP the
+round-trip identity + dry-run gates green, ADD a decoration-fidelity
+decoded-frame gate (ramp ≥250 distinct levels through the HDR composite
+sandwich + flat-color hue delta <1°), CANON §1.12 amendment (fix C → C′).
+Probe artifacts: `/tmp/hdr-grit-probe/`. After landing: Matthew re-eyeballs
+hand exports (expect: HDR map hue matches SDR/preview, grit+shimmer gone).
+
+**2) Hand-export re-gate results 2026-06-12 (decision-log #3) — record:**
+PASS: HDR footage identical to source (both HLG+PQ — the atomic-landing
+risk held), corners decent, no banding, motion clean on SDR. FAIL: HDR map
+hue wrong + gritty + shimmery in both HLG/PQ (root cause above, fix C′).
+Surfaced, known-deferred: SDR delivery of HDR-origin footage is BLOWN OUT —
+Matthew flags it as "not in a good state"; it's the HDR→SDR tone-map
+deferral (ledger below) — bump it to the FIRST slice of the Phase 5 Oracle
+lane. Decoration crispness (route/POV GL layers vs waypoints' baked SDF)
+remains Phase 5 renderer-lane scope; re-judge after C′ lands since the
+quantization grit currently masks it.
 
 **2) Phase 5 — parallel lanes (Threads 1/5/6/7 + doc lifecycle).** After
 sign-off, fan out per ACTION_PLAN §Phase 5: each lane opens with its smallest
@@ -53,7 +66,7 @@ entries (HDR→SDR tone map, proxy-npl divergence).
 | 2a — Data-loss fix (Thread 2) | ✅ done 2026-06-11 | See Phase 2a record below |
 | 2b — Doc canon (Thread 4) | ✅ done 2026-06-11 | See Phase 2b record below |
 | 3 — Tracer oracle (Thread 1 thin) | ✅ done 2026-06-11 | See Phase 3 record below; green CI run 27386190883 with verified red-by-design tracer |
-| 4 — HDR port (Thread 3) | ✅ landed 2026-06-11, green CI 27389312554 — ⏳ eyeball gate INVALIDATED 2026-06-12 (fixture-fed artifacts); re-gate on hand exports | See Phase 4 record below + NEXT ACTION |
+| 4 — HDR port (Thread 3) | ✅ landed 2026-06-11, green CI 27389312554 — ❌ hand-export re-gate 2026-06-12: footage/anchor/corners PASS, HDR map fidelity FAIL (fix C ÷32 × 10-bit lift quantization; fix C′ scoped in NEXT ACTION) | See Phase 4 record + session log |
 | 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending (gated on Phase 4 sign-off) | Per-lane tracer slices, see ACTION_PLAN |
 
 ## Test baseline (canonical, post-Phase-4, on `main` @ acc1ec9)
@@ -96,14 +109,16 @@ live only inside a historical phase record.
   >1.0 hit the SDR finishing unclamped-by-tone-map; ~status quo, now
   explicit — CANON §1.12 / §6.1 tail). Proper fix = tone-map operator
   (zscale `tonemap` / BT.2446-A / libplacebo); Matthew confirmed follow-up,
-  deliberately NOT in Phase 4. Owner: Phase 5 Oracle lane (first slice: an
-  HLG→SDR decoded-frame test that pins today's clip behavior, so the
-  tone-map work lands against an oracle).
+  deliberately NOT in Phase 4. **2026-06-12: Matthew eyeballed the real SDR
+  export of HDR-origin footage as "blown out / not in a good state" — bump
+  to the FIRST slice of the Phase 5 Oracle lane.** Owner: Phase 5 Oracle
+  lane (first slice: an HLG→SDR decoded-frame test that pins today's clip
+  behavior, so the tone-map work lands against an oracle).
 - **PQ source above ~3200 nit clips at `COMPOSITE_HEADROOM = 32`** (linear
   >32 clips in the composite lift; HDR10 1000-nit masters are fine). Flagged
-  in CANON §1.12; revisit with per-export dynamic H or tone-mapping only if
-  real PQ footage clips visibly (none in hand). Owner: Phase 5 Oracle lane
-  (same slice as above).
+  in CANON §1.12. **RETIRED when fix C′ lands** (NEXT ACTION): the PQ
+  transport curve covers linear 0–100 (10,000 nits) with no headroom
+  constant — the bound becomes PQ's own format ceiling. Owner: fix C′.
 - **Proxy/thumbnail npl divergence** (`commands/ffmpeg.rs` WS1/WS2 preview
   chains still linearize HLG@npl=400 / PQ@npl=1000 + Hable tone-map for
   their SDR outputs; the export pipeline is now npl=100 absolute — preview
@@ -409,3 +424,20 @@ live only inside a historical phase record.
   (route/POV = GL layers vs waypoints' baked SDF) confirmed as a real
   pre-existing gap but stays Phase 5 renderer-lane scope, NOT a Phase 4
   blocker. Sign-off re-gated on hand exports of all three targets.
+- **2026-06-12 (later)** — Hand-export re-gate run by Matthew: HDR footage
+  identical to source (PASS — the atomic-landing risk held), corners PASS,
+  no banding, SDR map/decorations true to preview; but HDR map in BOTH
+  HLG+PQ has wrong decoration hue + grit + temporal shimmer (PQ worst), and
+  SDR-of-HDR-footage blown out (known tone-map deferral, flagged as bad).
+  Root cause FOUND + PROVEN empirically (ffmpeg probes in
+  `/tmp/hdr-grit-probe/`, production filter strings): fix C's ÷32 linear
+  headroom runs before the `format=yuva444p10le` overlay lift, quantizing
+  the anchored map (linear 0–2.03) into the bottom 6.3% of the 10-bit range
+  in LINEAR light — ramp collapses 256→66 distinct levels; flat decoration
+  colors shift hue up to 12.5° (red) / 3.8° (green). Footage spans ~77% of
+  the range + sensor noise dithers → looks fine; SDR has no ÷32 → fine.
+  Candidate fix VALIDATED in the same probes: PQ transport curve around the
+  lift (`zscale=t=smpte2084` … `zscale=tin=smpte2084:t=linear:npl=100`,
+  HDR-gated like today) → 256/256 levels, hue delta ≤0.33°, SDR
+  byte-identical, retires the PQ>3200-nit headroom bound. Scoped as fix C′
+  in NEXT ACTION; awaiting Matthew's go to implement.
