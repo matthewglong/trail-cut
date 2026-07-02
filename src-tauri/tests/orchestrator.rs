@@ -19,7 +19,7 @@ use std::process::Command;
 
 use serde_json::Value;
 use trail_cut_lib::export::{
-    render_map_frames, OrchestratorConfig, SetupPayload, VecSink,
+    render_map_frames, OrchestratorConfig, RendererBackend, SetupPayload, VecSink,
 };
 
 const VIEWPORT_W: u32 = 540;
@@ -90,6 +90,25 @@ fn config_with(worker_count: usize, recycle_every: u32) -> OrchestratorConfig {
     }
 }
 
+/// Native-backend variant. Pins `TRAILCUT_RENDERER_BACKEND=native` on the
+/// worker child via config (NOT process-global env — tests run concurrently
+/// in one process) and panics loudly if the patched binding isn't staged.
+/// Loud-failure rule: the native tests must never silently exercise chrome.
+fn native_config_with(worker_count: usize, recycle_every: u32) -> OrchestratorConfig {
+    let config = OrchestratorConfig {
+        renderer_backend: Some(RendererBackend::Native),
+        ..config_with(worker_count, recycle_every)
+    };
+    assert!(
+        config.mbgl_native_dir.exists(),
+        "Patched maplibre-gl-native binding missing at {}.\n\
+         Run `npm run build:renderer` (or `npm run build:native-binding`) first — \
+         the native-backend integration tests refuse to run without it.",
+        config.mbgl_native_dir.display(),
+    );
+    config
+}
+
 fn assert_in_order_and_well_formed(frames: &[(u32, Vec<u8>)], expected_count: u32) {
     assert_eq!(
         frames.len() as u32,
@@ -155,6 +174,46 @@ async fn n2_ten_frames_orders_across_workers_with_recycle() {
     let count = render_map_frames(setup, 10, config, Box::new(sink), None)
         .await
         .expect("orchestrator run");
+    assert_eq!(count, 10);
+
+    let frames = inspector.frames();
+    assert_in_order_and_well_formed(&frames, 10);
+}
+
+// ---- Native backend (Phase 5 renderer strangle) ----------------------------
+//
+// The same protocol/ordering/recycle assertions, driven through the worker's
+// NATIVE backend (maplibre-gl-native in-process). The wire format is
+// backend-invariant, so these tests are byte-for-byte the same shape as the
+// chrome ones — which is exactly the point: the orchestrator cannot tell the
+// engines apart. Loud panic (never skip) when the patched binding is absent.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_n1_four_frames_with_mid_run_recycle() {
+    let setup = build_setup_payload();
+    let sink = VecSink::new();
+    let inspector = sink.clone();
+    let config = native_config_with(1, 2);
+
+    let count = render_map_frames(setup, 4, config, Box::new(sink), None)
+        .await
+        .expect("orchestrator run (native backend)");
+    assert_eq!(count, 4);
+
+    let frames = inspector.frames();
+    assert_in_order_and_well_formed(&frames, 4);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_n2_ten_frames_orders_across_workers_with_recycle() {
+    let setup = build_setup_payload();
+    let sink = VecSink::new();
+    let inspector = sink.clone();
+    let config = native_config_with(2, 4);
+
+    let count = render_map_frames(setup, 10, config, Box::new(sink), None)
+        .await
+        .expect("orchestrator run (native backend)");
     assert_eq!(count, 10);
 
     let frames = inspector.frames();

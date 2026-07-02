@@ -100,6 +100,7 @@ fn build_request(output_path: &str) -> RenderExportRequest {
         obj.remove("cmd");
         obj.remove("cssViewport");
         obj.remove("framebuffer");
+        obj.remove("readback");
         obj.remove("pixelRatio");
         obj.remove("fps");
     }
@@ -312,6 +313,7 @@ fn build_request_with_layout(
         obj.remove("cmd");
         obj.remove("cssViewport");
         obj.remove("framebuffer");
+        obj.remove("readback");
         obj.remove("pixelRatio");
         obj.remove("fps");
     }

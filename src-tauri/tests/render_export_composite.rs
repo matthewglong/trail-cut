@@ -127,6 +127,22 @@ fn make_test_clip(output: &Path, duration_s: f64, color_seed: &str) {
             "ultrafast",
             "-pix_fmt",
             "yuv420p",
+            // Colorimetry must be in the x264 bitstream VUI (not just the
+            // container tags): decoded frame props come from the VUI, and
+            // the Phase-4 clip ingest lets zimg infer source colorimetry
+            // from those props — an untagged decode fails filter planning
+            // with zimg's "no path between colorspaces" (code 3074). Real
+            // camera footage always carries VUI colorimetry.
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-colorspace",
+            "bt709",
+            "-color_range",
+            "tv",
+            "-x264-params",
+            "colorprim=bt709:transfer=bt709:colormatrix=bt709",
             "-c:a",
             "aac",
             "-shortest",
@@ -289,6 +305,7 @@ fn build_setup_payload_via_fixture(clips: &[Value]) -> Value {
         obj.remove("cmd");
         obj.remove("cssViewport");
         obj.remove("framebuffer");
+        obj.remove("readback");
         obj.remove("pixelRatio");
         obj.remove("fps");
     }

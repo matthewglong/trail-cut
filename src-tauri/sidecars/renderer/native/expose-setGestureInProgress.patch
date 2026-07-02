@@ -1,0 +1,53 @@
+diff --git a/platform/node/src/node_map.cpp b/platform/node/src/node_map.cpp
+index 6a61f4e..742fe09 100644
+--- a/platform/node/src/node_map.cpp
++++ b/platform/node/src/node_map.cpp
+@@ -110,6 +110,7 @@ ParseError)JS")
+     Nan::SetPrototypeMethod(tpl, "setZoom", SetZoom);
+     Nan::SetPrototypeMethod(tpl, "setBearing", SetBearing);
+     Nan::SetPrototypeMethod(tpl, "setPitch", SetPitch);
++    Nan::SetPrototypeMethod(tpl, "setGestureInProgress", SetGestureInProgress);
+     Nan::SetPrototypeMethod(tpl, "setLight", SetLight);
+     Nan::SetPrototypeMethod(tpl, "setAxonometric", SetAxonometric);
+     Nan::SetPrototypeMethod(tpl, "setXSkew", SetXSkew);
+@@ -1085,6 +1086,28 @@ void NodeMap::SetPitch(const Nan::FunctionCallbackInfo<v8::Value>& info) {
+     info.GetReturnValue().SetUndefined();
+ }
+ 
++// Exposes mbgl::Map::setGestureInProgress. While true, the transform reports
++// isChanging(), so raster layers use the non-pixel-aligned projection matrix —
++// the equivalent of maplibre-gl-js's `moving` painter flag. Needed by external
++// animation drivers (e.g. per-frame still renders of a moving camera path),
++// which otherwise hit the raster pixel-snap on every frame.
++void NodeMap::SetGestureInProgress(const Nan::FunctionCallbackInfo<v8::Value>& info) {
++    auto nodeMap = Nan::ObjectWrap::Unwrap<NodeMap>(info.Holder());
++    if (!nodeMap->map) return Nan::ThrowError(releasedMessage());
++
++    if (info.Length() <= 0 || !info[0]->IsBoolean()) {
++        return Nan::ThrowTypeError("First argument must be a boolean");
++    }
++
++    try {
++        nodeMap->map->setGestureInProgress(Nan::To<bool>(info[0]).ToChecked());
++    } catch (const std::exception& ex) {
++        return Nan::ThrowError(ex.what());
++    }
++
++    info.GetReturnValue().SetUndefined();
++}
++
+ void NodeMap::SetLight(const Nan::FunctionCallbackInfo<v8::Value>& info) {
+     using namespace mbgl::style;
+     using namespace mbgl::style::conversion;
+diff --git a/platform/node/src/node_map.hpp b/platform/node/src/node_map.hpp
+index 9f170d3..57c42b3 100644
+--- a/platform/node/src/node_map.hpp
++++ b/platform/node/src/node_map.hpp
+@@ -60,6 +60,7 @@ public:
+     static void SetZoom(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetBearing(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetPitch(const Nan::FunctionCallbackInfo<v8::Value>&);
++    static void SetGestureInProgress(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetLight(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetAxonometric(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetXSkew(const Nan::FunctionCallbackInfo<v8::Value>&);

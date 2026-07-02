@@ -13,6 +13,7 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "build:renderer": "node src-tauri/sidecars/renderer/build.mjs",
+    "build:native-binding": "node src-tauri/sidecars/renderer/native/ensure-binding.mjs",
     "test:renderer": "vitest run --config vitest.renderer.config.ts"
   },
   "dependencies": {

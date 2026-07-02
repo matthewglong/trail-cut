@@ -54,7 +54,9 @@ pub use layout::{
     NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts,
     SlotResolution, SplitSide,
 };
-pub use orchestrator::{render_map_frames, OrchestratorConfig, RECYCLE_EVERY_FRAMES};
+pub use orchestrator::{
+    render_map_frames, OrchestratorConfig, RendererBackend, RECYCLE_EVERY_FRAMES,
+};
 pub use protocol::{SetupPayload, Viewport};
 pub use resolution::{CodecPreference, OutputResolution};
 pub use sink::{FrameSink, SinkError, VecSink};

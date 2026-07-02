@@ -60,6 +60,24 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Cache patched mbgl-native binding
+        # The renderer's native backend needs the PATCHED
+        # @maplibre/maplibre-gl-native binding (expose-setGestureInProgress
+        # — the raster anti-snap knob; see
+        # src-tauri/sidecars/renderer/native/). build:renderer verifies the
+        # staged artifact or builds it from source (~5 min); this cache makes
+        # the build a once-per-bump cost. Keyed on the vendored patch + the
+        # ensure script (which pins the upstream tag + ABI expectations).
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries/mbgl-native-*
+          key: mbgl-native-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src-tauri/sidecars/renderer/native/expose-setGestureInProgress.patch', 'src-tauri/sidecars/renderer/native/ensure-binding.mjs') }}
+
+      - name: Install native-binding build tools (ninja)
+        # Only exercised on a binding cache miss; cheap otherwise. cmake and
+        # git ship on the macOS runner image already.
+        run: brew install ninja ccache
+
       - name: Frontend tests (Vitest)
         run: npm run test:run
 

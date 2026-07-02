@@ -160,6 +160,27 @@ function ensureChrome() {
 
 ensureChrome();
 
+// ---- 0b. Ensure the patched maplibre-gl-native binding ----
+//
+// The worker's native backend (TRAILCUT_RENDERER_BACKEND=native) loads the
+// patched @maplibre/maplibre-gl-native binding from
+// src-tauri/binaries/mbgl-native-<triple>/. ensure-binding.mjs verifies the
+// staged artifact (fast, one child-process load probe) or builds it from
+// source (~5 min, cmake; CI caches the staged dir). Provisioned here —
+// alongside Chrome — so "npm run build:renderer" remains the single
+// precondition for BOTH backends' tests; the suites panic loudly without it
+// rather than skip.
+console.error('[build:renderer] ensure patched mbgl-native binding');
+const ensureBinding = spawnSync(
+  process.execPath,
+  [resolve(here, 'native', 'ensure-binding.mjs')],
+  { cwd: repoRoot, stdio: 'inherit' },
+);
+if (ensureBinding.status !== 0) {
+  console.error('[build:renderer] native binding provisioning failed');
+  process.exit(ensureBinding.status ?? 1);
+}
+
 // ---- 1. Type-check worker ----
 console.error('[build:renderer] tsc --noEmit (worker)');
 const tscWorker = spawnSync(

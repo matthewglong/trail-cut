@@ -75,6 +75,19 @@ fn make_test_clip(output: &Path, duration_s: f64, color_seed: &str) {
             "ultrafast",
             "-pix_fmt",
             "yuv420p",
+            // VUI colorimetry (not just container tags) — decoded frame
+            // props feed the Phase-4 ingest's zscale inference; untagged
+            // decodes fail planning (zimg code 3074). Matches real footage.
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-colorspace",
+            "bt709",
+            "-color_range",
+            "tv",
+            "-x264-params",
+            "colorprim=bt709:transfer=bt709:colormatrix=bt709",
             "-c:a",
             "aac",
             "-shortest",

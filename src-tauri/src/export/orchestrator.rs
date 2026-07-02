@@ -51,6 +51,28 @@ const STDERR_TAIL_BYTES: usize = 4096;
 // worker 0.
 const PANIC_UNKNOWN_WORKER_ID: usize = usize::MAX;
 
+/// Rendering backend the worker should use. `None` in
+/// [`OrchestratorConfig`] means "don't override" — the worker child
+/// inherits the parent process env, so a `TRAILCUT_RENDERER_BACKEND` set on
+/// the app (or shell) flows through untouched and the worker's own default
+/// (chrome) applies otherwise. `Some(_)` pins the backend explicitly on the
+/// child's env regardless of the parent env — used by integration tests so
+/// backend selection never races through process-global env mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererBackend {
+    Chrome,
+    Native,
+}
+
+impl RendererBackend {
+    fn as_env_value(self) -> &'static str {
+        match self {
+            RendererBackend::Chrome => "chrome",
+            RendererBackend::Native => "native",
+        }
+    }
+}
+
 pub struct OrchestratorConfig {
     pub worker_count: usize,
     pub recycle_every: u32,
@@ -64,6 +86,15 @@ pub struct OrchestratorConfig {
     /// `src-tauri/binaries/`, both filesystem concerns the worker shouldn't
     /// know about.
     pub chrome_path: PathBuf,
+    /// Directory of the patched `@maplibre/maplibre-gl-native` binding the
+    /// worker's NATIVE backend `require()`s. Same resolution philosophy as
+    /// `chrome_path` (env override → Tauri `Resources/` → dev
+    /// `src-tauri/binaries/`); always passed via `TRAILCUT_MBGL_NATIVE_DIR`
+    /// — harmless when the backend is chrome. Provisioned by
+    /// `npm run build:renderer` (sidecars/renderer/native/ensure-binding.mjs).
+    pub mbgl_native_dir: PathBuf,
+    /// Explicit backend pin for spawned workers; see [`RendererBackend`].
+    pub renderer_backend: Option<RendererBackend>,
 }
 
 impl Default for OrchestratorConfig {
@@ -79,6 +110,8 @@ impl Default for OrchestratorConfig {
                 .join("renderer.cjs"),
             node_path: PathBuf::from("node"),
             chrome_path: resolve_chrome(manifest_dir),
+            mbgl_native_dir: resolve_mbgl_native(manifest_dir),
+            renderer_backend: None,
         }
     }
 }
@@ -192,6 +225,45 @@ fn resolve_chrome(manifest_dir: &str) -> PathBuf {
     dev
 }
 
+// Resolve the patched maplibre-gl-native binding directory for the worker's
+// native backend. Same three-tier lookup as `resolve_chrome`:
+//
+//   1. `TRAILCUT_MBGL_NATIVE_DIR` env var — explicit override (tests, ad-hoc
+//      dev with a non-default artifact).
+//   2. Production layout — `<exe>/../Resources/binaries/mbgl-native-<triple>`
+//      (task 130 ships the staged dir like the other sidecar binaries).
+//   3. Dev layout — `<manifest>/binaries/mbgl-native-<triple>`, populated by
+//      `npm run build:renderer` via native/ensure-binding.mjs.
+//
+// Returns the first candidate that exists, else the dev path so the worker's
+// loud missing-binding error points the developer at the location to
+// populate. The binding is a directory (npm-package layout: index.js +
+// lib/node-v<ABI>/mbgl.node), not a single file.
+fn resolve_mbgl_native(manifest_dir: &str) -> PathBuf {
+    if let Ok(p) = std::env::var("TRAILCUT_MBGL_NATIVE_DIR") {
+        if !p.trim().is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+
+    let dirname = format!("mbgl-native-{}", host_target_triple());
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(macos_dir) = exe.parent() {
+            let resources_candidate = macos_dir
+                .join("..")
+                .join("Resources")
+                .join("binaries")
+                .join(&dirname);
+            if resources_candidate.exists() {
+                return resources_candidate;
+            }
+        }
+    }
+
+    PathBuf::from(manifest_dir).join("binaries").join(&dirname)
+}
+
 // Target triple of the current build, in the form Tauri uses for sidecar
 // naming. Restricted to the platforms this app supports today (macOS arm64 +
 // x86_64). Task 130 will add Windows triples.
@@ -258,6 +330,8 @@ pub async fn render_map_frames(
         let node_path = config.node_path.clone();
         let renderer_cjs = config.renderer_cjs_path.clone();
         let chrome_path = config.chrome_path.clone();
+        let mbgl_native_dir = config.mbgl_native_dir.clone();
+        let renderer_backend = config.renderer_backend;
         set.spawn(async move {
             run_worker(
                 worker_id,
@@ -269,6 +343,8 @@ pub async fn render_map_frames(
                 node_path,
                 renderer_cjs,
                 chrome_path,
+                mbgl_native_dir,
+                renderer_backend,
                 tx_clone,
             )
             .await
@@ -404,11 +480,24 @@ async fn run_worker(
     node_path: PathBuf,
     renderer_cjs: PathBuf,
     chrome_path: PathBuf,
+    mbgl_native_dir: PathBuf,
+    renderer_backend: Option<RendererBackend>,
     frame_tx: mpsc::Sender<(u32, Vec<u8>)>,
 ) -> Result<(), OrchestratorError> {
-    let mut child = Command::new(&node_path)
+    let mut command = Command::new(&node_path);
+    command
         .arg(&renderer_cjs)
         .env("TRAILCUT_CHROME_BIN", &chrome_path)
+        // Always passed; only the native backend reads it. Resolution lives
+        // here for the same prod-vs-dev filesystem reason as chrome_path.
+        .env("TRAILCUT_MBGL_NATIVE_DIR", &mbgl_native_dir);
+    if let Some(backend) = renderer_backend {
+        // Explicit pin (tests / programmatic override). When None, the
+        // child inherits the parent env, so an app-level
+        // TRAILCUT_RENDERER_BACKEND still selects the backend.
+        command.env("TRAILCUT_RENDERER_BACKEND", backend.as_env_value());
+    }
+    let mut child = command
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -803,5 +892,41 @@ mod tests {
                 "expected macOS binary path, got {s}",
             );
         });
+    }
+
+    #[test]
+    fn mbgl_native_env_override_takes_priority() {
+        with_env("TRAILCUT_MBGL_NATIVE_DIR", Some("/tmp/explicit-override/mbgl"), || {
+            let cfg = OrchestratorConfig::default();
+            assert_eq!(
+                cfg.mbgl_native_dir,
+                PathBuf::from("/tmp/explicit-override/mbgl"),
+            );
+        });
+    }
+
+    #[test]
+    fn mbgl_native_dev_path_when_no_env() {
+        with_env("TRAILCUT_MBGL_NATIVE_DIR", None, || {
+            let cfg = OrchestratorConfig::default();
+            let s = cfg.mbgl_native_dir.to_string_lossy();
+            // Dev layout: <manifest>/binaries/mbgl-native-<triple>/ — the
+            // npm-package-shaped dir ensure-binding.mjs stages. Production
+            // resolution only fires inside a real Tauri bundle.
+            assert!(
+                s.contains("binaries/mbgl-native-"),
+                "expected dev path under binaries/mbgl-native-<triple>/, got {s}",
+            );
+        });
+    }
+
+    #[test]
+    fn default_config_pins_no_backend() {
+        // None = the worker child inherits the parent env; the worker's own
+        // default (chrome) applies until the cutover decision flips it.
+        let cfg = OrchestratorConfig::default();
+        assert_eq!(cfg.renderer_backend, None);
+        assert_eq!(RendererBackend::Chrome.as_env_value(), "chrome");
+        assert_eq!(RendererBackend::Native.as_env_value(), "native");
     }
 }
