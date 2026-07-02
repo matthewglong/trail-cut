@@ -55,9 +55,10 @@ const PANIC_UNKNOWN_WORKER_ID: usize = usize::MAX;
 /// [`OrchestratorConfig`] means "don't override" — the worker child
 /// inherits the parent process env, so a `TRAILCUT_RENDERER_BACKEND` set on
 /// the app (or shell) flows through untouched and the worker's own default
-/// (chrome) applies otherwise. `Some(_)` pins the backend explicitly on the
-/// child's env regardless of the parent env — used by integration tests so
-/// backend selection never races through process-global env mutation.
+/// (native, since the Phase 5 cutover) applies otherwise. `Some(_)` pins
+/// the backend explicitly on the child's env regardless of the parent env —
+/// used by integration tests so backend selection never races through
+/// process-global env mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererBackend {
     Chrome,
@@ -923,7 +924,9 @@ mod tests {
     #[test]
     fn default_config_pins_no_backend() {
         // None = the worker child inherits the parent env; the worker's own
-        // default (chrome) applies until the cutover decision flips it.
+        // default — NATIVE since the Phase 5 cutover — applies otherwise.
+        // The worker-side default itself is pinned in
+        // sidecars/renderer/__tests__/backendSelect.test.ts.
         let cfg = OrchestratorConfig::default();
         assert_eq!(cfg.renderer_backend, None);
         assert_eq!(RendererBackend::Chrome.as_env_value(), "chrome");

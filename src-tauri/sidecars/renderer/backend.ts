@@ -8,10 +8,9 @@
 // format to Rust is identical for every backend — the orchestrator cannot
 // tell which engine rendered a frame.
 //
-// Backend selection: TRAILCUT_RENDERER_BACKEND = 'chrome' (default) |
-// 'native'. Default stays chrome until Matthew signs off on the cutover
-// (which is additionally gated on the cross-engine golden-frame gate that
-// cannot exist until the color lane lands — see PROGRESS.md).
+// Backend selection: TRAILCUT_RENDERER_BACKEND = 'native' (default) |
+// 'chrome'. The default flipped to native at the Phase 5 cutover (golden
+// gates green on both engines + Matthew's hand-export pass — CANON §2.5).
 
 import type { CompiledTimeline } from '../../../src/lib/cameraIntent';
 import type { Clip, Route, MapSettings, Waypoint } from '../../../src/types';
@@ -107,6 +106,25 @@ export interface RendererBackend {
   /** Orchestrator-cadence resource reset (default: every 60 frames). */
   recycle(): Promise<void>;
   shutdown(): Promise<void>;
+}
+
+// ---- Backend selection -------------------------------------------------------
+
+export type BackendName = 'chrome' | 'native';
+
+/** Resolve the TRAILCUT_RENDERER_BACKEND env value to a backend name.
+ *  Pure (unit-tested in __tests__/backendSelect.test.ts); the worker entry
+ *  point turns the throw into a loud stderr + exit(1). Default: native —
+ *  flipped at the Phase 5 cutover. Unknown values throw rather than fall
+ *  back: a typo silently landing on some default would make every
+ *  explicit-backend gate meaningless. */
+export function selectBackendName(raw: string | undefined): BackendName {
+  const v = (raw ?? 'native').trim();
+  if (v === '' || v === 'native') return 'native';
+  if (v === 'chrome') return 'chrome';
+  throw new Error(
+    `unknown TRAILCUT_RENDERER_BACKEND='${v}' (expected 'native' or 'chrome')`,
+  );
 }
 
 // ---- Shared flags ----------------------------------------------------------

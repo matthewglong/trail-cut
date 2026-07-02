@@ -5,12 +5,12 @@
 // Phase 5 renderer strangle: the worker is split into a protocol shell
 // (this file) and two rendering backends behind one interface (backend.ts):
 //
-//   - chromeBackend.ts — headless Chrome + maplibre-gl-js via puppeteer
-//     (the shipped pre-strangle renderer; DEFAULT until cutover).
 //   - nativeBackend.ts — maplibre-gl-native in-process (no Chrome, no CDP;
-//     the Chrome-for-Testing redistribution problem this port retires).
+//     the DEFAULT since the Phase 5 cutover).
+//   - chromeBackend.ts — headless Chrome + maplibre-gl-js via puppeteer
+//     (the pre-strangle renderer).
 //
-// Selection: TRAILCUT_RENDERER_BACKEND = 'chrome' | 'native'. Unknown
+// Selection: TRAILCUT_RENDERER_BACKEND = 'native' | 'chrome'. Unknown
 // values fail loud. The wire format is backend-invariant — the orchestrator
 // (export/protocol.rs, UNCHANGED) cannot tell which engine rendered.
 //
@@ -23,8 +23,8 @@
 
 import readline from 'node:readline';
 
-import type { Cmd, RenderCmd, RendererBackend, SetupCmd } from './backend';
-import { VERBOSE, verbose } from './backend';
+import type { BackendName, Cmd, RenderCmd, RendererBackend, SetupCmd } from './backend';
+import { selectBackendName, VERBOSE, verbose } from './backend';
 import { buildFramePayload } from './scene';
 import { indexRoute, type IndexedRoute } from '../../../src/lib/routeLocation';
 import { createTileCache, defaultCacheDir, type TileCache } from './tileCache';
@@ -33,21 +33,18 @@ import { NativeBackend } from './nativeBackend';
 
 // ---- Backend selection ------------------------------------------------------
 
-type BackendName = 'chrome' | 'native';
-
-function selectBackendName(): BackendName {
-  const raw = (process.env.TRAILCUT_RENDERER_BACKEND ?? 'chrome').trim();
-  if (raw === '' || raw === 'chrome') return 'chrome';
-  if (raw === 'native') return 'native';
-  // Loud failure — a typo silently falling back to chrome would make every
-  // "native" gate meaningless.
-  process.stderr.write(
-    `[renderer] unknown TRAILCUT_RENDERER_BACKEND='${raw}' (expected 'chrome' or 'native')\n`,
-  );
-  process.exit(1);
+function resolveBackendName(): BackendName {
+  try {
+    return selectBackendName(process.env.TRAILCUT_RENDERER_BACKEND);
+  } catch (e) {
+    // Loud failure — a typo silently falling back to a default would make
+    // every explicit-backend gate meaningless.
+    process.stderr.write(`[renderer] ${(e as Error).message}\n`);
+    process.exit(1);
+  }
 }
 
-const BACKEND_NAME: BackendName = selectBackendName();
+const BACKEND_NAME: BackendName = resolveBackendName();
 
 // ---- State ----------------------------------------------------------------
 
