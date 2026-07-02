@@ -1,19 +1,39 @@
-// Golden-frame parity test (task 117) — the regression guard for the
-// chromium renderer's wobble fix.
+// Golden-frame parity tests (task 117 + Phase 5 renderer strangle) — the
+// pixel-level regression guard for the export renderer.
 //
-// What this protects: the painter monkey-patch in
-// src-tauri/sidecars/renderer/page/painterPatch.ts forces
-// `options.moving = true` to defeat sub-pixel snap on slow camera pans.
-// If that patch silently no-ops (or maplibre-gl-js drifts on a version
-// bump), the rendered bytes for a known slow-pan camera path change.
-// Comparing against committed truth catches that.
+// What this protects: the rendered bytes for a known slow-pan camera path
+// are pinned against committed truth. Any silent drift in the render stack
+// (maplibre version bumps, anti-snap knob no-oping, style/tile-cache
+// regressions, per-frame paint-application changes) shows up as a byte
+// mismatch on a committed PNG.
+//
+// Two engines, two golden sets, one fixture/camera-path:
+//   - `golden_frame_parity_chromium` → frame-XXXX.png (maplibre-gl-js in
+//     headless Chrome; guards page/painterPatch.ts's `moving: true`
+//     anti-snap patch).
+//   - `golden_frame_parity_native` → native-frame-XXXX.png
+//     (maplibre-gl-native in-process; guards `setGestureInProgress(true)`,
+//     the buffer:0 point-source contract, and the remove/re-add source
+//     refresh — CANON §2.5 port contracts).
+// The golden sets are engine-specific: the engines rasterize with
+// different AA/text stacks, so cross-engine byte-equality is not expected
+// (cross-engine *placement* parity is gated separately at ≤0.03 CSS px —
+// .spike/native-gl/PRODUCTION_WORKER_GATES.md). Within one engine the
+// render is byte-deterministic, so each set is compared with zero
+// tolerance.
+//
+// NOTE: this is a RAW RENDERER FRAME pin — frames are captured from
+// `render_map_frames` before any FFmpeg compositing or delivery-target
+// color handling. It has no dependency on the HDR color lane; a
+// delivered-look approval gate is a separate, deferred piece of work.
 //
 // Determinism contract: same (setup.json, frame_index) produces the same
 // RGBA bytes every time. Enforced structurally by:
-//   - the chromium worker's frozen clock (`maplibregl.setNow(t)`),
-//   - the page-level paint-transition stub (`stylesheet.transition =
-//     {duration:0,delay:0}`),
-//   - the on-disk tile cache (no network races on warm runs),
+//   - frozen animation time (chrome: `maplibregl.setNow(t)` + transition
+//     stub; native: every animated value arrives pre-resolved in the
+//     per-frame paint tuples from scene.ts),
+//   - the on-disk tile cache (no network races on warm runs; both
+//     backends share one cache keyed on original URLs),
 //   - the hand-authored timeline in the fixture (point intents, no Van
 //     Wijk arcs, no time-based curves at all).
 //
@@ -21,16 +41,15 @@
 // concern. Skipped cleanly on other platforms via cfg(target_os).
 //
 // Gated on `--features integration_export` so routine `cargo test`
-// doesn't pay the Chromium cold-launch cost (~5s warm, ~60s cold +
-// network).
+// doesn't pay the renderer-boot + 150-frame render cost.
 //
-// Preconditions:
+// Preconditions (loud panic, never skip — docs/CANON.md §1.11):
 //   - `npm run build:renderer` has produced
-//     src-tauri/sidecars/renderer/dist/{renderer.cjs,
-//     page-init.bundle.js}.
-//   - `TRAILCUT_CHROME_BIN` env var points at a Chrome binary (task 118
-//     resolves this from the binary bundled into src-tauri/binaries/ by
-//     `npm run build:renderer`).
+//     src-tauri/sidecars/renderer/dist/{renderer.cjs, page-init.bundle.js}
+//     AND staged the patched maplibre-gl-native binding at
+//     src-tauri/binaries/mbgl-native-<triple>/.
+//   - `TRAILCUT_CHROME_BIN` env var points at a Chrome binary (chromium
+//     test only).
 //   - Network access on first run to populate OpenFreeMap tile cache;
 //     subsequent runs work offline against `~/.cache/trailcut/tiles/`.
 //
@@ -49,7 +68,7 @@ use serde_json::Value;
 
 use trail_cut_lib::export::{
     canonical_map_viewport, render_map_frames, AspectRatio, FrameSink, OrchestratorConfig,
-    OutputResolution, SetupPayload, SinkError, Viewport,
+    OutputResolution, RendererBackend, SetupPayload, SinkError, Viewport,
 };
 
 /// Frame indices the fixture commits PNGs for. Times: 0s, 1s, 2s, 4s.
@@ -122,10 +141,32 @@ fn assert_chrome_bin_env() {
     }
 }
 
+/// Panic with an actionable message if the patched maplibre-gl-native binding
+/// isn't staged where the orchestrator resolves it (TRAILCUT_MBGL_NATIVE_DIR
+/// override or the dev layout under src-tauri/binaries/). Same loud-failure
+/// rule as `assert_chrome_bin_env` — the native golden test must never
+/// silently pass (or silently exercise chrome) on a machine missing the
+/// binding.
+fn assert_native_binding_present(config: &OrchestratorConfig) {
+    if !config.mbgl_native_dir.exists() {
+        panic!(
+            "Patched maplibre-gl-native binding missing at {} — \
+             golden_frame_parity_native cannot run without it. Run \
+             `npm run build:renderer` (or `npm run build:native-binding`) to \
+             provision it, or set TRAILCUT_MBGL_NATIVE_DIR. Run `cargo test` \
+             without `--features integration_export` if you did not intend to \
+             run the renderer integration tests.",
+            config.mbgl_native_dir.display(),
+        );
+    }
+}
+
 /// Load the committed setup.json fixture and reshape it into a SetupPayload.
-/// The wire-only keys (`cmd`, `cssViewport`, `framebuffer`, `pixelRatio`,
-/// `fps`) are stripped so SetupPayload's flatten+typed wrapper round-trips
-/// cleanly.
+/// The wire-only keys (`cmd`, `cssViewport`, `framebuffer`, `readback`,
+/// `pixelRatio`, `fps`) are stripped so SetupPayload's flatten+typed wrapper
+/// round-trips cleanly (a leaked duplicate key wins over the typed field on
+/// re-serialization — the exact bug class Phase 5 fixed in
+/// render_export_composite.rs).
 fn load_setup_payload() -> SetupPayload {
     let path = fixture_dir().join("setup.json");
     let bytes = std::fs::read(&path)
@@ -136,6 +177,7 @@ fn load_setup_payload() -> SetupPayload {
         obj.remove("cmd");
         obj.remove("cssViewport");
         obj.remove("framebuffer");
+        obj.remove("readback");
         obj.remove("pixelRatio");
         obj.remove("fps");
     }
@@ -260,11 +302,25 @@ impl FrameSink for CapturingSink {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn golden_frame_parity_chromium() {
-    assert_chrome_bin_env();
-    assert_chromium_bundle_present();
-
+/// Drive the full fixture camera path through `config`'s renderer and diff
+/// the captured frames against the committed `{golden_prefix}-XXXX.png` set.
+///
+/// Tolerance is engine-specific:
+///   - chrome (GL JS): byte-identical (`max_chan_delta = 0`) per task 117 —
+///     the render is byte-deterministic on this stack.
+///   - native (mbgl/Metal): the GPU rasterizer has a measured ±1-LSB wobble
+///     on a handful of AA edge pixels across identical runs (observed
+///     0–10 px of 518,400 per frame, always channel delta 1, over repeated
+///     runs 2026-07-02). The pin allows exactly that class and nothing
+///     more: per-channel delta ≤ 1 AND ≤ 0.01% of pixels differing. Any
+///     real regression — a sub-pixel snap, a style/paint change, placement
+///     drift — moves hundreds of pixels or produces deltas ≥ 2, and fails.
+async fn run_golden_parity(
+    config: OrchestratorConfig,
+    golden_prefix: &str,
+    max_chan_delta: i32,
+    max_diff_pixel_fraction: f64,
+) {
     let setup = load_setup_payload();
     let sink = CapturingSink::new(GOLDEN_FRAME_INDICES);
     let captured = sink.handle();
@@ -272,7 +328,7 @@ async fn golden_frame_parity_chromium() {
     let frames_written = render_map_frames(
         setup,
         TOTAL_FRAMES,
-        OrchestratorConfig::default(),
+        config,
         Box::new(sink),
         None,
     )
@@ -289,16 +345,13 @@ async fn golden_frame_parity_chromium() {
         captured_map.len(),
     );
 
-    // Diff each captured frame against the committed PNG. Byte-identical
-    // (no tolerance) per task 117 — we're snapshotting a deterministic
-    // chromium render against itself; any drift is information.
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut failures: Vec<String> = Vec::new();
     for &idx in GOLDEN_FRAME_INDICES {
         let rendered = captured_map
             .get(&idx)
             .unwrap_or_else(|| panic!("missing captured frame {}", idx));
-        let golden_path = fixture_dir().join(format!("frame-{:04}.png", idx));
+        let golden_path = fixture_dir().join(format!("{}-{:04}.png", golden_prefix, idx));
         let (gw, gh, golden_rgba) = decode_png_rgba(&golden_path);
         if gw != VIEWPORT_W || gh != VIEWPORT_H {
             failures.push(format!(
@@ -319,8 +372,9 @@ async fn golden_frame_parity_chromium() {
         if rendered.as_slice() != golden_rgba.as_slice() {
             // Count differing pixels so the failure message is diagnostic.
             let pixel_count = (VIEWPORT_W * VIEWPORT_H) as usize;
+            let max_diff_pixels = (pixel_count as f64 * max_diff_pixel_fraction) as usize;
             let mut diff_pixels = 0usize;
-            let mut max_chan_delta: i32 = 0;
+            let mut frame_max_delta: i32 = 0;
             for i in 0..pixel_count {
                 let off = i * 4;
                 let mut pixel_diff = false;
@@ -328,8 +382,8 @@ async fn golden_frame_parity_chromium() {
                     let d = (rendered[off + c] as i32 - golden_rgba[off + c] as i32).abs();
                     if d != 0 {
                         pixel_diff = true;
-                        if d > max_chan_delta {
-                            max_chan_delta = d;
+                        if d > frame_max_delta {
+                            frame_max_delta = d;
                         }
                     }
                 }
@@ -337,16 +391,29 @@ async fn golden_frame_parity_chromium() {
                     diff_pixels += 1;
                 }
             }
+            if frame_max_delta <= max_chan_delta && diff_pixels <= max_diff_pixels {
+                eprintln!(
+                    "frame {}: within tolerance ({} of {} pixels differ, max channel delta {} \
+                     — allowed: delta ≤ {}, pixels ≤ {})",
+                    idx, diff_pixels, pixel_count, frame_max_delta, max_chan_delta, max_diff_pixels,
+                );
+                continue;
+            }
             // Write the rendered PNG to tmp for inspection.
-            let dump = tmp.path().join(format!("rendered-frame-{:04}.png", idx));
+            let dump = tmp
+                .path()
+                .join(format!("rendered-{}-{:04}.png", golden_prefix, idx));
             let _ = encode_rgba_png(rendered, VIEWPORT_W, VIEWPORT_H, &dump);
             failures.push(format!(
-                "frame {}: byte mismatch ({} of {} pixels differ, max channel delta {}). \
+                "frame {}: byte mismatch ({} of {} pixels differ, max channel delta {}; \
+                 allowed: delta ≤ {}, pixels ≤ {}). \
                  Rendered written to {}; compare against {}.",
                 idx,
                 diff_pixels,
                 pixel_count,
+                frame_max_delta,
                 max_chan_delta,
+                max_diff_pixels,
                 dump.display(),
                 golden_path.display(),
             ));
@@ -358,9 +425,32 @@ async fn golden_frame_parity_chromium() {
         // is to inspect the dumped PNGs against the committed fixtures.
         let kept = tmp.keep();
         panic!(
-            "golden-frame parity failed:\n  - {}\n\nRendered frames preserved at: {}",
+            "golden-frame parity ({}) failed:\n  - {}\n\nRendered frames preserved at: {}",
+            golden_prefix,
             failures.join("\n  - "),
             kept.display(),
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn golden_frame_parity_chromium() {
+    assert_chrome_bin_env();
+    assert_chromium_bundle_present();
+    run_golden_parity(OrchestratorConfig::default(), "frame", 0, 0.0).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn golden_frame_parity_native() {
+    assert_chromium_bundle_present(); // renderer.cjs hosts both backends
+    let config = OrchestratorConfig {
+        // Pin the backend on the worker child's env (never process-global —
+        // tests share one process) so this can never silently exercise chrome.
+        renderer_backend: Some(RendererBackend::Native),
+        ..OrchestratorConfig::default()
+    };
+    assert_native_binding_present(&config);
+    // ±1-LSB GPU wobble tolerance — see run_golden_parity docs for the
+    // measured basis. 0.0001 of 518,400 px = 51 px ceiling vs observed ≤ 10.
+    run_golden_parity(config, "native-frame", 1, 0.0001).await;
 }

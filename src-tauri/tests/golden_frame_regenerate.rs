@@ -1,10 +1,13 @@
-// Golden-frame regeneration helper (task 117). Renders the golden frames
-// listed in golden_frame_parity.rs and writes them back to the fixture
-// directory, overwriting the committed PNGs.
+// Golden-frame regeneration helpers (task 117 + Phase 5 renderer strangle).
+// Render the golden frames listed in golden_frame_parity.rs and write them
+// back to the fixture directory, overwriting the committed PNGs —
+// `regenerate_golden_frames` for the chromium set (frame-XXXX.png),
+// `regenerate_golden_frames_native` for the native set
+// (native-frame-XXXX.png).
 //
 // `#[ignore]`-by-default so it never runs in routine CI; intended as a
 // manual operation when:
-//   - bumping maplibre-gl,
+//   - bumping maplibre-gl / the maplibre-gl-native binding,
 //   - making a deliberate visual change to mapVisuals/,
 //   - OpenFreeMap changes its style or tile data.
 //
@@ -29,7 +32,7 @@ use serde_json::Value;
 
 use trail_cut_lib::export::{
     canonical_map_viewport, render_map_frames, AspectRatio, FrameSink, OrchestratorConfig,
-    OutputResolution, SetupPayload, SinkError, Viewport,
+    OutputResolution, RendererBackend, SetupPayload, SinkError, Viewport,
 };
 
 const GOLDEN_FRAME_INDICES: &[u32] = &[0, 30, 60, 120];
@@ -88,6 +91,7 @@ fn load_setup_payload() -> SetupPayload {
         obj.remove("cmd");
         obj.remove("cssViewport");
         obj.remove("framebuffer");
+        obj.remove("readback");
         obj.remove("pixelRatio");
         obj.remove("fps");
     }
@@ -158,12 +162,7 @@ impl FrameSink for CapturingSink {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "regen is manual; runs only with --ignored"]
-async fn regenerate_golden_frames() {
-    assert_chromium_bundle_present();
-    assert_chrome_bin_env();
-
+async fn regenerate(config: OrchestratorConfig, golden_prefix: &str) {
     let setup = load_setup_payload();
     let sink = CapturingSink::new(GOLDEN_FRAME_INDICES);
     let captured = sink.handle();
@@ -171,7 +170,7 @@ async fn regenerate_golden_frames() {
     let frames_written = render_map_frames(
         setup,
         TOTAL_FRAMES,
-        OrchestratorConfig::default(),
+        config,
         Box::new(sink),
         None,
     )
@@ -185,7 +184,7 @@ async fn regenerate_golden_frames() {
     let dir = fixture_dir();
     for &idx in GOLDEN_FRAME_INDICES {
         let rgba = captured_map.get(&idx).expect("captured frame");
-        let path = dir.join(format!("frame-{:04}.png", idx));
+        let path = dir.join(format!("{}-{:04}.png", golden_prefix, idx));
         encode_rgba_png(rgba, VIEWPORT_W, VIEWPORT_H, &path)
             .unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
         eprintln!("wrote {}", path.display());
@@ -195,4 +194,30 @@ async fn regenerate_golden_frames() {
          Re-run `cargo test --test golden_frame_parity --features integration_export` \
          to confirm parity holds."
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "regen is manual; runs only with --ignored"]
+async fn regenerate_golden_frames() {
+    assert_chromium_bundle_present();
+    assert_chrome_bin_env();
+    regenerate(OrchestratorConfig::default(), "frame").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "regen is manual; runs only with --ignored"]
+async fn regenerate_golden_frames_native() {
+    assert_chromium_bundle_present(); // renderer.cjs hosts both backends
+    let config = OrchestratorConfig {
+        renderer_backend: Some(RendererBackend::Native),
+        ..OrchestratorConfig::default()
+    };
+    assert!(
+        config.mbgl_native_dir.exists(),
+        "Patched maplibre-gl-native binding missing at {} — run \
+         `npm run build:renderer` (or `npm run build:native-binding`) first, \
+         or set TRAILCUT_MBGL_NATIVE_DIR.",
+        config.mbgl_native_dir.display(),
+    );
+    regenerate(config, "native-frame").await;
 }

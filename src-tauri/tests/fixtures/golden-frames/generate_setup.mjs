@@ -15,6 +15,17 @@
 // `transitionSpans` is empty: no Van Wijk between adjacent stationary
 // spans, no time-based curve at all.
 //
+// Wire-shape strategy: everything EXCEPT the hand-authored timeline comes
+// from the shared fixture builder (`dist/setup_fixture.cjs`, bundled from
+// __tests__/setupFixture.ts) — the single source of truth the protocol and
+// orchestrator tests already use. That builder tracks the live
+// SetupCmd/MapSettings/Clip shapes, so this fixture can no longer rot
+// silently when the wire shape evolves (it did once: the original
+// hand-inlined mapSettings predated the camera/route/waypoints/pov
+// restructure, and the golden tests failed at worker setup until this
+// script was re-run).
+//
+// Preconditions: `npm run build:renderer` (produces dist/setup_fixture.cjs).
 // Run: node src-tauri/tests/fixtures/golden-frames/generate_setup.mjs
 // Output: setup.json in the same directory.
 //
@@ -23,9 +34,16 @@
 
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+// The shared fixture builder — bundled CJS, tracks the live wire shapes.
+const { buildSetupPayload } = require(
+  join(__dirname, '..', '..', '..', 'sidecars', 'renderer', 'dist', 'setup_fixture.cjs'),
+);
 
 const VIEWPORT_W = 540;
 const VIEWPORT_H = 960;
@@ -116,7 +134,7 @@ const timeline = {
 };
 
 // Synthetic 3-trackpoint route matching the camera path. The fixture
-// renders the route-full layer; the marker is data-driven from
+// renders the route decoration layers; the live marker is data-driven from
 // wallClockTrace, which finds the route point matching wallMs.
 const route = {
   source_path: '/dev/null/route.gpx',
@@ -143,61 +161,50 @@ const route = {
   ],
 };
 
-// One synthetic clip whose id is referenced by every clipSpan (the
-// orchestrator's `activeClipIdAt` does a clipSpans lookup; clips[] is also
-// passed through for the waypoints layer). We pass a dummy single clip,
-// not 150 — the timeline drives camera math; clips[] only feeds waypoint
-// circles. A 1-clip waypoints set keeps the fixture small.
-const clips = [
-  {
-    id: 'frame-0000',
-    path: '/dev/null/clip-a.mov',
-    filename: 'clip-a.mov',
-    created_at: CLIP_CREATED_AT,
-    duration_ms: TOTAL_DURATION_MS,
-    gps: { lat: START_LAT, lng: START_LNG },
-    resolution: '1920x1080',
-    frame_rate: 30,
-    trim: { in_ms: 0, out_ms: TOTAL_DURATION_MS },
-    focal_point: { x: 0.5, y: 0.5, zoom: 1 },
-    effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
-    visible: true,
-    map_overrides: null,
-  },
-];
-
-const mapSettings = {
-  route_mode: 'full',
-  waypoints_mode: 'full',
-  follow_playhead: true,
-  map_style: 'default',
-  zoom: 16,
-  bearing_mode: 'fixed',
-  bearing_degrees: 0,
-  bearing_stops: 3,
+// One synthetic clip whose id matches clipSpans[0] (the orchestrator's
+// `activeClipIdAt` does a clipSpans lookup; clips[] also feeds per-clip
+// map overrides). Field shape rides the builder's DEFAULT_CLIP so new Clip
+// fields (color metadata etc.) are picked up automatically — we override
+// only what the fixture pins.
+const clip = {
+  id: 'frame-0000',
+  path: '/dev/null/clip-a.mov',
+  filename: 'clip-a.mov',
+  created_at: CLIP_CREATED_AT,
+  duration_ms: TOTAL_DURATION_MS,
+  gps: { lat: START_LAT, lng: START_LNG },
+  resolution: '1920x1080',
+  frame_rate: 30,
+  trim: { in_ms: 0, out_ms: TOTAL_DURATION_MS },
+  focal_point: { x: 0.5, y: 0.5, zoom: 1 },
+  effects: { stabilize: { enabled: false, shakiness: 0 }, speed: 1 },
+  visible: true,
+  map_overrides: null,
+  pix_fmt: null,
+  color_primaries: null,
+  color_trc: null,
+  color_space: null,
+  color_range: null,
+  has_dolby_vision: false,
+  camera_make: null,
+  camera_model: null,
+  source_color_class: 'unknown',
 };
 
-// Wire shape — matches what the chromium worker's setup handler reads.
-// The Rust integration test loads this file, parses it as JSON, and feeds
-// it into RenderExportRequest.project_state via #[serde(flatten)] (cmd,
-// cssViewport, framebuffer, pixelRatio, fps stripped first since they're
-// re-injected by render_export).
-//
-// 9_16 aspect at 540×960 framebuffer → canonical CSS width 1080, so
-// pixelRatio = 540/1080 = 0.5, cssViewport.h = 960/0.5 = 1920.
-const CANONICAL_CSS_W = 1080;
-const PIXEL_RATIO = VIEWPORT_W / CANONICAL_CSS_W;
-const setup = {
-  cmd: 'setup',
-  cssViewport: { w: CANONICAL_CSS_W, h: Math.round(VIEWPORT_H / PIXEL_RATIO) },
-  framebuffer: { w: VIEWPORT_W, h: VIEWPORT_H },
-  pixelRatio: PIXEL_RATIO,
+// Build the payload through the shared builder (current wire shape: modern
+// MapSettings with camera/route/waypoints/pov blocks, top-level waypoints,
+// readback, canonical cssViewport/pixelRatio for 9_16 @ 540×960 @ 1080p),
+// then swap in the hand-authored deterministic timeline.
+const setup = buildSetupPayload({
+  aspect: '9_16',
+  framebufferW: VIEWPORT_W,
+  framebufferH: VIEWPORT_H,
   fps: FPS,
-  timeline,
+  outputResolution: '1080p',
+  clips: [clip],
   route,
-  clips,
-  mapSettings,
-};
+});
+setup.timeline = timeline;
 
 const outPath = join(__dirname, 'setup.json');
 writeFileSync(outPath, JSON.stringify(setup, null, 2) + '\n');

@@ -1,14 +1,18 @@
 {
   "cmd": "setup",
   "cssViewport": {
-    "w": 1080,
-    "h": 1920
+    "w": 540,
+    "h": 960
   },
   "framebuffer": {
     "w": 540,
     "h": 960
   },
-  "pixelRatio": 0.5,
+  "readback": {
+    "w": 540,
+    "h": 960
+  },
+  "pixelRatio": 1,
   "fps": 30,
   "timeline": {
     "clipSpans": [
@@ -3080,17 +3084,70 @@
         "speed": 1
       },
       "visible": true,
-      "map_overrides": null
+      "map_overrides": null,
+      "pix_fmt": null,
+      "color_primaries": null,
+      "color_trc": null,
+      "color_space": null,
+      "color_range": null,
+      "has_dolby_vision": false,
+      "camera_make": null,
+      "camera_model": null,
+      "source_color_class": "unknown"
     }
   ],
   "mapSettings": {
-    "route_mode": "full",
-    "waypoints_mode": "full",
-    "follow_playhead": true,
-    "map_style": "default",
-    "zoom": 16,
-    "bearing_mode": "fixed",
-    "bearing_degrees": 0,
-    "bearing_stops": 3
-  }
+    "camera": {
+      "follow_playhead": true,
+      "map_style": "default",
+      "zoom": 14,
+      "bearing_mode": "fixed",
+      "bearing_degrees": 0,
+      "bearing_stops": 3
+    },
+    "route": {
+      "mode": "full",
+      "color": {
+        "mode": "solid",
+        "solid": "#bced09"
+      },
+      "size": {
+        "width": 0.006
+      }
+    },
+    "waypoints": {
+      "mode": "full",
+      "color": {
+        "mode": "solid",
+        "solid": "#bced09"
+      },
+      "secondary_color": {
+        "mode": "solid",
+        "solid": "#ffffff"
+      },
+      "shape": "circle",
+      "size": {
+        "circle_radius": 0.02,
+        "active_radius": 0.025,
+        "stroke_width": 0.004,
+        "label_size": 0.018
+      },
+      "label_mode": "numbered",
+      "active_mode": "latest_passed"
+    },
+    "pov": {
+      "color": "#bced09",
+      "secondary_color": "#ffffff",
+      "size": {
+        "pulse_radius": 0.016,
+        "dot_radius": 0.017,
+        "dot_stroke_width": 0.005,
+        "pulse_start_radius": 0.016,
+        "pulse_end_radius": 0.044
+      },
+      "pulse_style": "sonar",
+      "pulse_rate": "medium"
+    }
+  },
+  "waypoints": []
 }
