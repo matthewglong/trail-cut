@@ -1,6 +1,7 @@
-// Native rendering backend — maplibre-gl-native (mbgl) driven IN-PROCESS,
-// replacing the Chrome/CDP/page hop of chromeBackend.ts. Same setup payload,
-// same per-frame tuples (scene.ts), same wire bytes to the orchestrator.
+// Native rendering backend — maplibre-gl-native (mbgl) driven IN-PROCESS.
+// Replaced the pre-cutover Chrome/CDP/page renderer (chromeBackend.ts,
+// removed post-cutover; git history has it): same setup payload, same
+// per-frame tuples (scene.ts), same wire bytes to the orchestrator.
 //
 // This is the Phase 5 renderer strangle. Both viability gates (speed 57×,
 // jitter) and the mechanical-correctness gate are GREEN — measured, not
@@ -48,10 +49,10 @@
 // today: the map paints an opaque basemap (alpha=255 everywhere), and the
 // composite replaces map alpha wholesale with the Rust-side corner mask
 // (corner_mask.rs + alphamerge) — premultiplied-vs-straight is
-// indistinguishable for opaque pixels. (The chrome SSAA path returns
-// straight alpha via 2D-canvas getImageData; the divergence class is
-// corner-AA fringes only, and those pixels' alpha is discarded. Flagged in
-// MECHANICAL_VERDICT §2; revisit only if the map background ever goes
+// indistinguishable for opaque pixels. (The retired chrome SSAA path
+// returned straight alpha via 2D-canvas getImageData; the divergence class
+// was corner-AA fringes only, and those pixels' alpha is discarded. Flagged
+// in MECHANICAL_VERDICT §2; revisit only if the map background ever goes
 // transparent.)
 //
 // Windows note: this file has no darwin-only logic — the platform bound is
@@ -149,9 +150,9 @@ function hostTargetTriple(): string {
 }
 
 /** Resolve the patched binding package dir. The orchestrator passes
- *  TRAILCUT_MBGL_NATIVE_DIR (it owns prod-vs-dev filesystem concerns, same
- *  as TRAILCUT_CHROME_BIN); the __dirname fallback covers standalone runs
- *  of the bundled worker from the source tree (dist/ → src-tauri/binaries). */
+ *  TRAILCUT_MBGL_NATIVE_DIR (it owns prod-vs-dev filesystem concerns); the
+ *  __dirname fallback covers standalone runs of the bundled worker from
+ *  the source tree (dist/ → src-tauri/binaries). */
 function bindingDir(): string {
   const fromEnv = process.env.TRAILCUT_MBGL_NATIVE_DIR;
   if (fromEnv && fromEnv.trim()) return fromEnv;
@@ -217,9 +218,9 @@ function nativeSourceSpec(id: string, spec: Record<string, unknown>): Record<str
 /** Downsample `src` (actualW×actualH, top-down premultiplied RGBA) to
  *  `outW×outH` with an exact `factor`× box filter, padding/cropping the
  *  source to `expW×expH` (= outW*factor × outH*factor) first. Padding
- *  pixels are transparent black — same convention as the chrome page's
- *  captureFramebufferIntoBuf, and only reachable on the ≤1 px dim drift the
- *  css×ratio rounding can produce. Averaging happens in gamma (sRGB) space
+ *  pixels are transparent black — the convention the retired chrome page's
+ *  captureFramebufferIntoBuf established, and only reachable on the ≤1 px
+ *  dim drift the css×ratio rounding can produce. Averaging happens in gamma (sRGB) space
  *  on premultiplied components — matching the engines' own gamma-space
  *  blending (see ALPHA CONVENTION header). */
 export function boxDownsample(
@@ -271,8 +272,8 @@ export function boxDownsample(
 /** Infer the actual pixel dims of a native render buffer from its byte
  *  length. Expected = the orchestrator's `framebuffer`; mbgl sizes its
  *  buffer from `round(css × ratio)` per axis, which can drift ≤1 px from
- *  the exact slot×factor dims when css dims were rounded (same drift the
- *  chrome page pads/crops — init.ts captureFramebufferIntoBuf). */
+ *  the exact slot×factor dims when css dims were rounded (the same drift
+ *  the retired chrome page padded/cropped for). */
 export function resolveActualDims(
   byteLength: number,
   expW: number,
@@ -317,12 +318,12 @@ export class NativeBackend implements RendererBackend {
 
   constructor(private tileCache: TileCache) {}
 
-  // ---- mbgl request bridge: same cache, same keys as the chrome path ----
+  // ---- mbgl request bridge ----
   //
-  // The chrome path caches on the ORIGINAL url (trailcutFetch unwraps the
-  // trailcut:// rewrite before tileCache.get) — native requests arrive as
-  // original urls already, so both backends share one on-disk cache and
-  // produce identical bytes for identical URLs.
+  // The on-disk cache is keyed on the ORIGINAL url (sha256 — pinned
+  // end-to-end by tileCacheKeyParity.test.ts); mbgl hands this bridge
+  // original urls directly, so every worker and every run shares one
+  // on-disk cache and produces identical bytes for identical URLs.
   private request = (req: MbglRequest, callback: MbglRequestCallback): void => {
     this.tileCache.get(req.url, fetchUrl, (err, data) => {
       if (err) {
@@ -349,7 +350,7 @@ export class NativeBackend implements RendererBackend {
   private async fetchStyleObject(style: unknown): Promise<unknown> {
     if (typeof style !== 'string') return style;
     // URL style (DEFAULT_STYLE_URL) — fetch through the shared tile cache
-    // (same cache key the chrome path uses for the style document).
+    // (keyed on the style URL like every other cached resource).
     const bytes = await new Promise<Buffer>((resolve, reject) => {
       this.tileCache.get(style, fetchUrl, (err, data) => {
         if (err || !data) reject(err ?? new Error('style fetch returned no data'));
@@ -411,9 +412,9 @@ export class NativeBackend implements RendererBackend {
     }
     map.setGestureInProgress(true);
 
-    // 3D buildings (map_style === '3d') — same soft-failure semantics as
-    // the chrome page (__init): the layer expects the 'openmaptiles'
-    // source; not all styles have it.
+    // 3D buildings (map_style === '3d') — soft-failure semantics (carried
+    // over from the pre-cutover renderer): the layer expects the
+    // 'openmaptiles' source; not all styles have it.
     if (scene.add3dBuildings && scene.buildingsLayer) {
       try {
         map.addLayer(scene.buildingsLayer);
@@ -423,8 +424,8 @@ export class NativeBackend implements RendererBackend {
     }
 
     // Sources → layers → images → static paints/layouts/gradients — the
-    // same order as the chrome page's __init (and MapView's onStyleLoad),
-    // so atlas layout and layer stacking are identical.
+    // same order as the preview's MapView onStyleLoad, so atlas layout and
+    // layer stacking are identical to what the user previews.
     this.sourceOrder = scene.staticSources.map(([id]) => id);
     this.lastSourceJson.clear();
     for (const [id, spec] of scene.staticSources) {
@@ -441,9 +442,9 @@ export class NativeBackend implements RendererBackend {
       this.layersBySource.set(layer.source, arr);
     }
 
-    // SDF shape icons — the same pure rasterizer the preview and the chrome
-    // page run (`buildAllShapeIcons`), executed in-process. Port contract
-    // 5: Buffer + dims-in-options signature.
+    // SDF shape icons — the same pure rasterizer the preview runs
+    // (`buildAllShapeIcons`), executed in-process. Port contract 5:
+    // Buffer + dims-in-options signature.
     for (const { id, icon, options } of buildAllShapeIcons({
       outlineThickness: scene.shapeOutlineThickness,
       pixelRatio: payload.pixelRatio,
@@ -614,9 +615,10 @@ export class NativeBackend implements RendererBackend {
 
   async recycle(): Promise<void> {
     // The orchestrator's recycle cadence exists to bound renderer memory
-    // growth. Native holds far less steady-state than a Chrome page, but a
-    // full rebuild is cheap (style + tiles come from the disk cache) and
-    // keeps the two backends' recycle semantics identical.
+    // growth. Native holds far less steady-state than the retired chrome
+    // backend's Page did, but a full rebuild is cheap (style + tiles come
+    // from the disk cache) and keeps the recycle semantics the protocol
+    // promises.
     if (!this.setupPayload) {
       process.stderr.write('[renderer] recycle without prior setup, ignoring\n');
       return;

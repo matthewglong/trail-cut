@@ -1,16 +1,17 @@
 // Shared contract between the renderer worker's protocol shell (index.ts)
-// and its two rendering backends (chromeBackend.ts, nativeBackend.ts).
+// and its rendering backend (nativeBackend.ts).
 //
-// The strangle shape (Phase 5 renderer lane): index.ts owns the stdio
-// protocol to the Rust orchestrator and the engine-agnostic per-frame
+// The strangle shape (Phase 5 renderer lane, completed): index.ts owns the
+// stdio protocol to the Rust orchestrator and the engine-agnostic per-frame
 // mapVisuals translation (scene.ts); a backend owns only "given this scene
 // and this frame's tuples, produce readback-sized RGBA bytes". The wire
-// format to Rust is identical for every backend — the orchestrator cannot
-// tell which engine rendered a frame.
+// format to Rust is backend-invariant — the orchestrator cannot tell which
+// engine rendered a frame. The chrome backend was removed post-cutover
+// (git history has it); the interface stays because it is the seam the
+// next engine swap would use.
 //
-// Backend selection: TRAILCUT_RENDERER_BACKEND = 'native' (default) |
-// 'chrome'. The default flipped to native at the Phase 5 cutover (golden
-// gates green on both engines + Matthew's hand-export pass — CANON §2.5).
+// Backend selection: TRAILCUT_RENDERER_BACKEND = 'native' (default and
+// only value). Kept as a loud single-value switch — see selectBackendName.
 
 import type { CompiledTimeline } from '../../../src/lib/cameraIntent';
 import type { Clip, Route, MapSettings, Waypoint } from '../../../src/types';
@@ -34,9 +35,9 @@ export interface SetupCmd {
    *  the wire. */
   readback: { w: number; h: number };
   /** `framebuffer.w / cssViewport.w` (a float; carries the supersample
-   *  factor, so > 1 for every supersampled export). Chrome: MapLibre's
-   *  `pixelRatio` constructor arg + `deviceScaleFactor`. Native: the Map's
-   *  constructor-time `ratio` (the same lever — measured equivalent,
+   *  factor, so > 1 for every supersampled export). Applied as the Map's
+   *  constructor-time `ratio` — the same lever GL JS exposes as the
+   *  `pixelRatio` constructor arg (measured equivalent,
    *  .spike/native-gl/MECHANICAL_VERDICT.md §3). */
   pixelRatio: number;
   fps: number;
@@ -65,9 +66,9 @@ export type Cmd = SetupCmd | RenderCmd | RecycleCmd | ShutdownCmd;
  *  scene.ts `buildFramePayload` from the shared mapVisuals surface; backends
  *  apply the tuples through their engine's API and never re-derive them. */
 export interface FramePayload {
-  /** project_time_ms — chrome feeds it to maplibregl.setNow (frozen clock);
-   *  native has no wall-clock animations to freeze (every animated value
-   *  arrives pre-resolved in `paints`). */
+  /** project_time_ms. Native has no wall-clock animations to freeze —
+   *  every animated value arrives pre-resolved in `paints`. (The retired
+   *  chrome backend fed this to maplibregl.setNow as a frozen clock.) */
   t: number;
   /** Per-frame GeoJSON updates, `[sourceId, data]`. */
   sources: Array<[string, unknown]>;
@@ -110,20 +111,26 @@ export interface RendererBackend {
 
 // ---- Backend selection -------------------------------------------------------
 
-export type BackendName = 'chrome' | 'native';
+export type BackendName = 'native';
 
 /** Resolve the TRAILCUT_RENDERER_BACKEND env value to a backend name.
  *  Pure (unit-tested in __tests__/backendSelect.test.ts); the worker entry
- *  point turns the throw into a loud stderr + exit(1). Default: native —
- *  flipped at the Phase 5 cutover. Unknown values throw rather than fall
- *  back: a typo silently landing on some default would make every
- *  explicit-backend gate meaningless. */
+ *  point turns the throw into a loud stderr + exit(1). 'native' is the
+ *  default and the only value — the chrome backend was removed at the
+ *  Phase 5 cutover, and a stale 'chrome' (or any typo) must throw rather
+ *  than silently render on an engine the caller didn't ask for. */
 export function selectBackendName(raw: string | undefined): BackendName {
   const v = (raw ?? 'native').trim();
   if (v === '' || v === 'native') return 'native';
-  if (v === 'chrome') return 'chrome';
+  if (v === 'chrome') {
+    throw new Error(
+      "TRAILCUT_RENDERER_BACKEND='chrome': the chrome backend was removed at " +
+      'the Phase 5 cutover (native is the only engine). Check out a pre-cutover ' +
+      'commit to compare engines.',
+    );
+  }
   throw new Error(
-    `unknown TRAILCUT_RENDERER_BACKEND='${v}' (expected 'native' or 'chrome')`,
+    `unknown TRAILCUT_RENDERER_BACKEND='${v}' (expected 'native')`,
   );
 }
 

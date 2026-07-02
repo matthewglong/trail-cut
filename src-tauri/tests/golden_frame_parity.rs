@@ -1,26 +1,19 @@
-// Golden-frame parity tests (task 117 + Phase 5 renderer strangle) — the
+// Golden-frame parity test (task 117 + Phase 5 renderer strangle) — the
 // pixel-level regression guard for the export renderer.
 //
 // What this protects: the rendered bytes for a known slow-pan camera path
-// are pinned against committed truth. Any silent drift in the render stack
-// (maplibre version bumps, anti-snap knob no-oping, style/tile-cache
-// regressions, per-frame paint-application changes) shows up as a byte
-// mismatch on a committed PNG.
+// are pinned against committed truth (native-frame-XXXX.png). Any silent
+// drift in the render stack (maplibre-gl-native binding bumps,
+// `setGestureInProgress(true)` no-oping, the buffer:0 point-source
+// contract, the remove/re-add source refresh, style/tile-cache
+// regressions, per-frame paint-application changes — CANON §2.5 port
+// contracts) shows up as a pixel mismatch on a committed PNG.
 //
-// Two engines, two golden sets, one fixture/camera-path:
-//   - `golden_frame_parity_chromium` → frame-XXXX.png (maplibre-gl-js in
-//     headless Chrome; guards page/painterPatch.ts's `moving: true`
-//     anti-snap patch).
-//   - `golden_frame_parity_native` → native-frame-XXXX.png
-//     (maplibre-gl-native in-process; guards `setGestureInProgress(true)`,
-//     the buffer:0 point-source contract, and the remove/re-add source
-//     refresh — CANON §2.5 port contracts).
-// The golden sets are engine-specific: the engines rasterize with
-// different AA/text stacks, so cross-engine byte-equality is not expected
-// (cross-engine *placement* parity is gated separately at ≤0.03 CSS px —
-// .spike/native-gl/PRODUCTION_WORKER_GATES.md). Within one engine the
-// render is byte-deterministic, so each set is compared with zero
-// tolerance.
+// History: until the Phase 5 cutover this file also pinned the chrome
+// backend (frame-XXXX.png, byte-identical — GL JS rendered
+// byte-deterministically). The chrome backend, its goldens, and its
+// `TRAILCUT_CHROME_BIN` precondition were removed with the cutover; git
+// history has them if an engine comparison is ever needed.
 //
 // NOTE: this is a RAW RENDERER FRAME pin — frames are captured from
 // `render_map_frames` before any FFmpeg compositing or delivery-target
@@ -28,12 +21,11 @@
 // delivered-look approval gate is a separate, deferred piece of work.
 //
 // Determinism contract: same (setup.json, frame_index) produces the same
-// RGBA bytes every time. Enforced structurally by:
-//   - frozen animation time (chrome: `maplibregl.setNow(t)` + transition
-//     stub; native: every animated value arrives pre-resolved in the
-//     per-frame paint tuples from scene.ts),
-//   - the on-disk tile cache (no network races on warm runs; both
-//     backends share one cache keyed on original URLs),
+// pixels every time, modulo a measured ±1-LSB GPU wobble (see
+// `run_golden_parity`). Enforced structurally by:
+//   - no wall-clock animation state (every animated value arrives
+//     pre-resolved in the per-frame paint tuples from scene.ts),
+//   - the on-disk tile cache (no network races on warm runs),
 //   - the hand-authored timeline in the fixture (point intents, no Van
 //     Wijk arcs, no time-based curves at all).
 //
@@ -45,17 +37,13 @@
 //
 // Preconditions (loud panic, never skip — docs/CANON.md §1.11):
 //   - `npm run build:renderer` has produced
-//     src-tauri/sidecars/renderer/dist/{renderer.cjs, page-init.bundle.js}
-//     AND staged the patched maplibre-gl-native binding at
-//     src-tauri/binaries/mbgl-native-<triple>/.
-//   - `TRAILCUT_CHROME_BIN` env var points at a Chrome binary (chromium
-//     test only).
+//     src-tauri/sidecars/renderer/dist/renderer.cjs AND staged the patched
+//     maplibre-gl-native binding at src-tauri/binaries/mbgl-native-<triple>/.
 //   - Network access on first run to populate OpenFreeMap tile cache;
 //     subsequent runs work offline against `~/.cache/trailcut/tiles/`.
 //
 // Run:
-//   TRAILCUT_CHROME_BIN=/path/to/chrome \
-//     cargo test --test golden_frame_parity --features integration_export -- --nocapture
+//   cargo test --test golden_frame_parity --features integration_export -- --nocapture
 
 #![cfg(feature = "integration_export")]
 #![cfg(target_os = "macos")]
@@ -89,7 +77,7 @@ fn fixture_dir() -> PathBuf {
     manifest_dir().join("tests").join("fixtures").join("golden-frames")
 }
 
-fn renderer_chromium_cjs() -> PathBuf {
+fn renderer_cjs() -> PathBuf {
     manifest_dir()
         .join("sidecars")
         .join("renderer")
@@ -97,56 +85,24 @@ fn renderer_chromium_cjs() -> PathBuf {
         .join("renderer.cjs")
 }
 
-fn page_init_bundle() -> PathBuf {
-    manifest_dir()
-        .join("sidecars")
-        .join("renderer")
-        .join("dist")
-        .join("page-init.bundle.js")
-}
-
-fn assert_chromium_bundle_present() {
-    let r = renderer_chromium_cjs();
-    let p = page_init_bundle();
-    if !r.exists() || !p.exists() {
+fn assert_renderer_bundle_present() {
+    let r = renderer_cjs();
+    if !r.exists() {
         panic!(
-            "Chromium renderer bundle missing. Run `npm run build:renderer` first.\n\
-             Expected: {}\n\
+            "Renderer bundle missing. Run `npm run build:renderer` first.\n\
              Expected: {}",
             r.display(),
-            p.display(),
-        );
-    }
-}
-
-/// Panic with an actionable message if `TRAILCUT_CHROME_BIN` is unset. Until
-/// task 118 bundles a Chrome binary, this env var is the only way the
-/// chromium sidecar finds Chrome. Loud-failure rule (docs/CANON.md §1.11):
-/// running `cargo test --features integration_export` on a machine that
-/// can't support the test must FAIL, not silently pass — the feature flag
-/// itself is the deliberate opt-in; once opted in, a green run must mean
-/// the pixels were actually compared.
-fn assert_chrome_bin_env() {
-    let present = std::env::var("TRAILCUT_CHROME_BIN")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    if !present {
-        panic!(
-            "TRAILCUT_CHROME_BIN not set — golden_frame_parity_chromium cannot run \
-             without a Chrome binary. Set it to a Chrome/Chromium path (see \
-             docs/export/tasks/117-golden-frame-parity.md for the dev-mode path), \
-             or run `cargo test` without `--features integration_export` if you \
-             did not intend to run the renderer integration tests."
         );
     }
 }
 
 /// Panic with an actionable message if the patched maplibre-gl-native binding
 /// isn't staged where the orchestrator resolves it (TRAILCUT_MBGL_NATIVE_DIR
-/// override or the dev layout under src-tauri/binaries/). Same loud-failure
-/// rule as `assert_chrome_bin_env` — the native golden test must never
-/// silently pass (or silently exercise chrome) on a machine missing the
-/// binding.
+/// override or the dev layout under src-tauri/binaries/). Loud-failure rule
+/// (docs/CANON.md §1.11): running `cargo test --features integration_export`
+/// on a machine that can't support the test must FAIL, not silently pass —
+/// the feature flag itself is the deliberate opt-in; once opted in, a green
+/// run must mean the pixels were actually compared.
 fn assert_native_binding_present(config: &OrchestratorConfig) {
     if !config.mbgl_native_dir.exists() {
         panic!(
@@ -305,16 +261,15 @@ impl FrameSink for CapturingSink {
 /// Drive the full fixture camera path through `config`'s renderer and diff
 /// the captured frames against the committed `{golden_prefix}-XXXX.png` set.
 ///
-/// Tolerance is engine-specific:
-///   - chrome (GL JS): byte-identical (`max_chan_delta = 0`) per task 117 —
-///     the render is byte-deterministic on this stack.
-///   - native (mbgl/Metal): the GPU rasterizer has a measured ±1-LSB wobble
-///     on a handful of AA edge pixels across identical runs (observed
-///     0–10 px of 518,400 per frame, always channel delta 1, over repeated
-///     runs 2026-07-02). The pin allows exactly that class and nothing
-///     more: per-channel delta ≤ 1 AND ≤ 0.01% of pixels differing. Any
-///     real regression — a sub-pixel snap, a style/paint change, placement
-///     drift — moves hundreds of pixels or produces deltas ≥ 2, and fails.
+/// Tolerance (mbgl/Metal): the GPU rasterizer has a measured ±1-LSB wobble
+/// on a handful of AA edge pixels across identical runs (observed 0–10 px
+/// of 518,400 per frame, always channel delta 1, over repeated runs
+/// 2026-07-02). The pin allows exactly that class and nothing more:
+/// per-channel delta ≤ 1 AND ≤ 0.01% of pixels differing. Any real
+/// regression — a sub-pixel snap, a style/paint change, placement drift —
+/// moves hundreds of pixels or produces deltas ≥ 2, and fails. (The retired
+/// chrome/GL JS pin was byte-identical; that stack rendered
+/// byte-deterministically.)
 async fn run_golden_parity(
     config: OrchestratorConfig,
     golden_prefix: &str,
@@ -434,18 +389,12 @@ async fn run_golden_parity(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn golden_frame_parity_chromium() {
-    assert_chrome_bin_env();
-    assert_chromium_bundle_present();
-    run_golden_parity(OrchestratorConfig::default(), "frame", 0, 0.0).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn golden_frame_parity_native() {
-    assert_chromium_bundle_present(); // renderer.cjs hosts both backends
+    assert_renderer_bundle_present();
     let config = OrchestratorConfig {
         // Pin the backend on the worker child's env (never process-global —
-        // tests share one process) so this can never silently exercise chrome.
+        // tests share one process) so a stale parent env can never decide
+        // what this test renders with.
         renderer_backend: Some(RendererBackend::Native),
         ..OrchestratorConfig::default()
     };

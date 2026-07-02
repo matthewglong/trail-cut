@@ -1,5 +1,5 @@
 {
-  "// purpose": "Type-check-only config for the renderer worker. Node CJS context. The page-side script (page/init.ts) is type-checked separately via page/tsconfig.json (DOM lib, no Node types).",
+  "// purpose": "Type-check-only config for the renderer worker. Node CJS context.",
   "compilerOptions": {
     "target": "ES2022",
     "module": "CommonJS",
@@ -21,11 +21,8 @@
     "index.ts",
     "backend.ts",
     "scene.ts",
-    "chromeBackend.ts",
     "nativeBackend.ts",
     "fetchUrl.ts",
-    "bootstrap.html.ts",
-    "trailcutFetch.ts",
     "tileCache.ts",
     "__tests__/setupFixture.ts",
     "../../../src/lib/mapVisuals/**/*.ts",
@@ -36,7 +33,6 @@
   ],
   "exclude": [
     "**/*.test.ts",
-    "page/**",
     "dist/**",
     "node_modules/**"
   ]

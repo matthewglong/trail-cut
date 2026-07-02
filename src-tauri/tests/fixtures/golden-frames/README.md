@@ -3,7 +3,7 @@
 Deterministic pixel-level regression guard for the export map renderer. See
 [`docs/export/tasks/117-golden-frame-parity.md`](../../../../docs/export/tasks/117-golden-frame-parity.md)
 for the original design rationale (chromium era); `docs/CANON.md` §2.5 for
-the native-backend port this now also guards.
+the native backend this now guards.
 
 ## What this is
 
@@ -28,25 +28,22 @@ Files:
   (`sidecars/renderer/__tests__/setupFixture.ts` via
   `dist/setup_fixture.cjs`), so the wire shape tracks the live
   `SetupCmd`/`MapSettings`/`Clip` types instead of rotting silently.
-- Golden PNG sets — RGBA8 snapshots at frame indices 0, 30, 60, 120
-  (project times 0 s, 1 s, 2 s, 4 s), 540 × 960, losslessly encoded:
-  - `frame-XXXX.png` — chromium backend (maplibre-gl-js), compared
-    byte-identical (the GL JS render is byte-deterministic).
-  - `native-frame-XXXX.png` — native backend (maplibre-gl-native),
-    compared with a measured ±1-LSB tolerance (mbgl/Metal has a small
-    GPU AA wobble across identical runs: observed 0–10 px of 518,400 per
-    frame, always channel delta 1; the pin allows delta ≤ 1 on ≤ 0.01%
-    of pixels and nothing more).
-  The two sets are NOT byte-comparable to each other — the engines
-  rasterize with different AA/text stacks (and can differ on dense-label
-  collision outcomes, e.g. a label one engine places and the other
-  drops). Cross-engine *placement* parity is gated separately
-  (≤0.03 CSS px, `.spike/native-gl/PRODUCTION_WORKER_GATES.md`).
+- `native-frame-XXXX.png` — RGBA8 golden snapshots at frame indices 0,
+  30, 60, 120 (project times 0 s, 1 s, 2 s, 4 s), 540 × 960, losslessly
+  encoded. Compared with a measured ±1-LSB tolerance (mbgl/Metal has a
+  small GPU AA wobble across identical runs: observed 0–10 px of 518,400
+  per frame, always channel delta 1; the pin allows delta ≤ 1 on ≤ 0.01%
+  of pixels and nothing more).
 - `generate_setup.mjs` — writes `setup.json` deterministically.
   Re-run it after deliberate changes to the camera path or fixture
   metadata; it produces byte-identical output for the same code.
   Requires `npm run build:renderer` first (it loads
   `dist/setup_fixture.cjs`).
+
+History: until the Phase 5 cutover this fixture also carried the chrome
+backend's golden set (`frame-XXXX.png`, byte-identical comparison — GL JS
+rendered byte-deterministically). Removed with the chrome backend; git
+history has both if an engine comparison is ever needed.
 
 ## macOS only (v1)
 
@@ -59,27 +56,23 @@ The parity test (`src-tauri/tests/golden_frame_parity.rs`) and the regen
 test (`src-tauri/tests/golden_frame_regenerate.rs`) both gate on
 `#[cfg(target_os = "macos")]` and skip cleanly on other platforms.
 
-## Running the parity tests
+## Running the parity test
 
 ```sh
-TRAILCUT_CHROME_BIN=/path/to/chrome \
-  cargo test --test golden_frame_parity --features integration_export -- --nocapture
+cargo test --test golden_frame_parity --features integration_export -- --nocapture
 ```
 
 Preconditions (loud panic, never skip):
 
 - `npm run build:renderer` — produces
-  `sidecars/renderer/dist/{renderer.cjs,page-init.bundle.js}` AND stages
-  the patched maplibre-gl-native binding at
-  `src-tauri/binaries/mbgl-native-<triple>/`.
-- `TRAILCUT_CHROME_BIN` pointing at a Chrome binary (chromium test only;
-  `build:renderer` downloads one into `src-tauri/binaries/chrome-<triple>/`).
+  `sidecars/renderer/dist/renderer.cjs` and stages the patched
+  maplibre-gl-native binding at `src-tauri/binaries/mbgl-native-<triple>/`.
 - Network on first run (populates the on-disk tile cache at
   `~/.cache/trailcut/tiles/`); subsequent runs work offline.
 
 ## Regenerating the fixture
 
-When to regen: maplibre-gl / maplibre-gl-native bumps, deliberate visual
+When to regen: maplibre-gl-native binding bumps, deliberate visual
 changes to `src/lib/mapVisuals/`, OpenFreeMap style changes, or a
 deliberate camera-path change in `setup.json`. The parity test failing on
 its own is **information** — investigate before regenerating.
@@ -89,9 +82,8 @@ Regen-on-failure defeats the entire test.
 # 1. (If setup.json changed) regenerate it from generate_setup.mjs:
 node src-tauri/tests/fixtures/golden-frames/generate_setup.mjs
 
-# 2. Render fresh PNGs into the fixture dir (both engines):
-TRAILCUT_CHROME_BIN=/path/to/chrome \
-  cargo test --test golden_frame_regenerate --features integration_export \
+# 2. Render fresh PNGs into the fixture dir:
+cargo test --test golden_frame_regenerate --features integration_export \
   -- --ignored --nocapture
 
 # 3. Visually inspect each PNG. Open them in Preview and verify:
@@ -103,20 +95,15 @@ TRAILCUT_CHROME_BIN=/path/to/chrome \
 
 # 4. Commit the PNGs (and setup.json if changed).
 
-# 5. Confirm the parity tests now pass:
-TRAILCUT_CHROME_BIN=/path/to/chrome \
-  cargo test --test golden_frame_parity --features integration_export
+# 5. Confirm the parity test now passes:
+cargo test --test golden_frame_parity --features integration_export
 ```
 
 ## Sanity check during fixture creation
 
-To prove the test catches what it's supposed to:
-
-- Chromium: temporarily disable the painter monkey-patch in
-  `src-tauri/sidecars/renderer/page/painterPatch.ts` (return from
-  `applyPainterPatch` early), `npm run build:renderer`, re-run — it
-  should fail with a pixel-diff message.
-- Native: temporarily skip the `setGestureInProgress(true)` call in
-  `src-tauri/sidecars/renderer/nativeBackend.ts` — same expectation
-  (on satellite/raster content the failure is dramatic; on the vector
-  fixture the tile-alignment path still shifts bytes).
+To prove the test catches what it's supposed to: temporarily skip the
+`setGestureInProgress(true)` call in
+`src-tauri/sidecars/renderer/nativeBackend.ts`, `npm run build:renderer`,
+re-run the parity test — it should fail with a pixel-diff message (on
+satellite/raster content the failure is dramatic; on the vector fixture
+the tile-alignment path still shifts bytes).

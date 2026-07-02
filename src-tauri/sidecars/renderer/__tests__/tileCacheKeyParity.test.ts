@@ -1,17 +1,14 @@
-// End-to-end hash-key parity audit (task 119). The chromium renderer's
-// addProtocol bridge rewrites every http(s) URL maplibre fetches into a
-// `trailcut://r?u=<base64url(originalUrl)>` URL on the page side; the
-// Node-side bridge in trailcutFetch.ts MUST hash the cache on the *original*
-// OpenFreeMap URL, never on the rewritten trailcut:// URL.
-//
-// trailcutFetch.test.ts covers the unit invariant by mocking the cache and
-// asserting the URL passed to `cache.get`. This test covers the same
-// invariant non-circularly: it spawns the bundled worker, lets it actually
-// populate a temp cache directory, then inspects what landed on disk and
-// matches it against expected `sha256(originalUrl)` keys for URLs the style
-// references. A regression that hashes on the trailcut:// URL would land
-// entries with a different shard structure (or filenames containing base64
-// fragments); this test catches that even if every unit test still passes.
+// End-to-end hash-key audit (task 119). The on-disk tile cache MUST be
+// keyed on sha256 of the *original* resource URL — that key contract is
+// what lets every worker (and the golden/orchestrator tests) share one
+// warm cache across runs and backends. Historically the hazard was the
+// chrome page's `trailcut://r?u=<base64url(originalUrl)>` rewrite leaking
+// into the hash (task 119); the native backend has no rewrite (mbgl hands
+// the Node request bridge original URLs), but the disk contract is still
+// the thing every warm-cache consumer depends on, so the end-to-end pin
+// stays: spawn the bundled worker, let it populate a temp cache dir, and
+// match what landed on disk against expected `sha256(originalUrl)` keys
+// for URLs the style references.
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -23,7 +20,6 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { buildSetupPayload } from './setupFixture';
 
 const RENDERER_CJS = resolve(__dirname, '../dist/renderer.cjs');
-const PAGE_BUNDLE = resolve(__dirname, '../dist/page-init.bundle.js');
 
 const VIEWPORT_W = 540;
 const VIEWPORT_H = 960;
@@ -115,14 +111,8 @@ function send(child: ChildProcessWithoutNullStreams, obj: object): void {
 
 describe('tile-cache hash-key parity (end-to-end)', () => {
   beforeAll(() => {
-    if (!existsSync(RENDERER_CJS) || !existsSync(PAGE_BUNDLE)) {
+    if (!existsSync(RENDERER_CJS)) {
       throw new Error('renderer dist missing. Run `npm run build:renderer` first.');
-    }
-    if (!process.env.TRAILCUT_CHROME_BIN) {
-      throw new Error(
-        'TRAILCUT_CHROME_BIN env var not set. Set it to a Chrome binary path ' +
-        'before running this test.',
-      );
     }
   });
 

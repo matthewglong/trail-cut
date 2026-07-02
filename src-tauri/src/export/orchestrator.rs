@@ -37,9 +37,11 @@ use crate::export::protocol::{
 use crate::export::sink::FrameSink;
 
 /// Default per-worker recycle cadence. PLAN.md §"Renderer worker lifecycle"
-/// — recycling caps per-Page memory growth (Chrome holds allocations
-/// across renders) so a 60-frame chunk doesn't spiral.
-/// Tunable via `OrchestratorConfig::recycle_every`.
+/// — recycling bounds renderer memory growth across a long export. The
+/// cadence was tuned for the retired chrome backend (per-Page allocation
+/// growth); the native backend holds far less steady-state and its recycle
+/// (full map rebuild from the disk cache) is cheap, so 60 remains a safe
+/// default. Tunable via `OrchestratorConfig::recycle_every`.
 pub const RECYCLE_EVERY_FRAMES: u32 = 60;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -58,17 +60,19 @@ const PANIC_UNKNOWN_WORKER_ID: usize = usize::MAX;
 /// (native, since the Phase 5 cutover) applies otherwise. `Some(_)` pins
 /// the backend explicitly on the child's env regardless of the parent env —
 /// used by integration tests so backend selection never races through
-/// process-global env mutation.
+/// process-global env mutation. Native is the only variant since the
+/// chrome backend was removed post-cutover; the enum survives because it
+/// is the seam an engine swap (or A/B) would reuse, and because a pin must
+/// stay expressible even with one engine (a stale parent env must never
+/// silently decide what a test renders with).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererBackend {
-    Chrome,
     Native,
 }
 
 impl RendererBackend {
     fn as_env_value(self) -> &'static str {
         match self {
-            RendererBackend::Chrome => "chrome",
             RendererBackend::Native => "native",
         }
     }
@@ -79,20 +83,14 @@ pub struct OrchestratorConfig {
     pub recycle_every: u32,
     pub renderer_cjs_path: PathBuf,
     pub node_path: PathBuf,
-    /// Path to the Chrome executable that the chromium renderer worker
-    /// spawns via puppeteer-core. Always set; the orchestrator passes it
-    /// to every worker via `TRAILCUT_CHROME_BIN`. Resolution lives here
-    /// (not in the Node worker) because production must look at the Tauri
-    /// bundle's `Resources/` directory and dev must look at
-    /// `src-tauri/binaries/`, both filesystem concerns the worker shouldn't
-    /// know about.
-    pub chrome_path: PathBuf,
     /// Directory of the patched `@maplibre/maplibre-gl-native` binding the
-    /// worker's NATIVE backend `require()`s. Same resolution philosophy as
-    /// `chrome_path` (env override → Tauri `Resources/` → dev
-    /// `src-tauri/binaries/`); always passed via `TRAILCUT_MBGL_NATIVE_DIR`
-    /// — harmless when the backend is chrome. Provisioned by
-    /// `npm run build:renderer` (sidecars/renderer/native/ensure-binding.mjs).
+    /// worker `require()`s. Resolution lives here (not in the Node worker)
+    /// because production must look at the Tauri bundle's `Resources/`
+    /// directory and dev must look at `src-tauri/binaries/`, both
+    /// filesystem concerns the worker shouldn't know about (env override →
+    /// Tauri `Resources/` → dev `src-tauri/binaries/`); always passed via
+    /// `TRAILCUT_MBGL_NATIVE_DIR`. Provisioned by `npm run build:renderer`
+    /// (sidecars/renderer/native/ensure-binding.mjs).
     pub mbgl_native_dir: PathBuf,
     /// Explicit backend pin for spawned workers; see [`RendererBackend`].
     pub renderer_backend: Option<RendererBackend>,
@@ -110,7 +108,6 @@ impl Default for OrchestratorConfig {
                 .join("dist")
                 .join("renderer.cjs"),
             node_path: PathBuf::from("node"),
-            chrome_path: resolve_chrome(manifest_dir),
             mbgl_native_dir: resolve_mbgl_native(manifest_dir),
             renderer_backend: None,
         }
@@ -122,15 +119,15 @@ impl Default for OrchestratorConfig {
 // Map-frame rendering is embarrassingly parallel — each worker owns a
 // disjoint frame range, the orchestrator already re-orders the (idx, bytes)
 // pairs from a bounded mpsc into the sink in strict frame order. The
-// per-frame cost is dominated by maplibre's render pipeline + GPU readback
-// inside Chrome (CPU+GPU bound, single-threaded JS event loop per worker),
-// so wall-clock scales close to linearly with worker count up to physical
-// CPU saturation.
+// per-frame cost is maplibre's render pipeline + GPU readback (CPU+GPU
+// bound, single-threaded JS event loop per worker), so wall-clock scales
+// with worker count up to GPU/CPU saturation.
 //
-// Default: 2 workers. Each worker spawns its own headless Chrome (~500 MB
-// RAM steady-state, ~150 MB more for the maplibre Map allocations). 2
-// workers ≈ 1.3 GB which is comfortable on the 16 GB M-series machines
-// we target. Override with TRAILCUT_RENDERER_WORKERS=N (clamped to
+// Default: 2 workers — tuned for the retired chrome backend (each worker
+// was a ~650 MB headless Chrome). Native workers are in-process mbgl
+// (tens of MB, ~57× faster per frame), so this default is conservative;
+// re-tuning the count for native is a perf follow-up, not a correctness
+// concern. Override with TRAILCUT_RENDERER_WORKERS=N (clamped to
 // 1..=available_parallelism).
 fn default_worker_count() -> usize {
     if let Ok(s) = std::env::var("TRAILCUT_RENDERER_WORKERS") {
@@ -147,87 +144,14 @@ fn max_reasonable_workers() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
-        // Hard cap. Spawning more headless Chromes than physical perf
+        // Hard cap. Spawning more renderer workers than physical perf
         // cores produces context-switch thrash and saturates the GPU
         // command queue without further wall-clock win. 8 is generous.
         .min(8)
 }
 
-// Path components from the unpacked Chrome dir to the actual executable.
-// macOS ships browsers as .app bundles with the binary buried at
-// `<App>.app/Contents/MacOS/<App>`. Task 130 will add Windows/Linux.
-fn chrome_binary_relative() -> &'static [&'static str] {
-    #[cfg(target_os = "macos")]
-    {
-        &[
-            "Google Chrome for Testing.app",
-            "Contents",
-            "MacOS",
-            "Google Chrome for Testing",
-        ]
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        &["chrome"]
-    }
-}
-
-// Resolve the bundled Chrome binary. Three-tier lookup:
-//
-//   1. `TRAILCUT_CHROME_BIN` env var — explicit override, used by tests and
-//      for ad-hoc dev with a non-default install.
-//   2. Production layout — when the executable lives next to a Tauri bundle
-//      Resources dir (`<exe>/../Resources/binaries/chrome-<triple>/...` on
-//      macOS). Computed from `current_exe()`.
-//   3. Dev layout — `<manifest>/binaries/chrome-<triple>/<inner>`, populated
-//      by `npm run build:renderer` via @puppeteer/browsers.
-//
-// Returns the first candidate that exists. If none exist, returns the dev
-// path (so the eventual `puppeteer.launch` error message points the developer
-// at the location they need to populate).
-//
-// Chrome ships as a directory tree (.app bundle on macOS containing the
-// binary plus frameworks, helper apps, and resources). We expose the path of
-// the inner executable; the surrounding tree must travel with it. That's why
-// this ships via `bundle.resources` (directory copy) rather than
-// `bundle.externalBin` (single-file copy).
-fn resolve_chrome(manifest_dir: &str) -> PathBuf {
-    if let Ok(p) = std::env::var("TRAILCUT_CHROME_BIN") {
-        if !p.trim().is_empty() {
-            return PathBuf::from(p);
-        }
-    }
-
-    let triple = host_target_triple();
-    let dirname = format!("chrome-{}", triple);
-    let inner: Vec<&str> = chrome_binary_relative().to_vec();
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(macos_dir) = exe.parent() {
-            // <bundle>/Contents/MacOS/<exe> → <bundle>/Contents/Resources/binaries/...
-            let mut resources_candidate = macos_dir
-                .join("..")
-                .join("Resources")
-                .join("binaries")
-                .join(&dirname);
-            for seg in &inner {
-                resources_candidate = resources_candidate.join(seg);
-            }
-            if resources_candidate.exists() {
-                return resources_candidate;
-            }
-        }
-    }
-
-    let mut dev = PathBuf::from(manifest_dir).join("binaries").join(&dirname);
-    for seg in &inner {
-        dev = dev.join(seg);
-    }
-    dev
-}
-
-// Resolve the patched maplibre-gl-native binding directory for the worker's
-// native backend. Same three-tier lookup as `resolve_chrome`:
+// Resolve the patched maplibre-gl-native binding directory for the worker.
+// Three-tier lookup:
 //
 //   1. `TRAILCUT_MBGL_NATIVE_DIR` env var — explicit override (tests, ad-hoc
 //      dev with a non-default artifact).
@@ -330,7 +254,6 @@ pub async fn render_map_frames(
         let setup_line_bytes = setup_line_bytes.clone();
         let node_path = config.node_path.clone();
         let renderer_cjs = config.renderer_cjs_path.clone();
-        let chrome_path = config.chrome_path.clone();
         let mbgl_native_dir = config.mbgl_native_dir.clone();
         let renderer_backend = config.renderer_backend;
         set.spawn(async move {
@@ -343,7 +266,6 @@ pub async fn render_map_frames(
                 setup_line_bytes,
                 node_path,
                 renderer_cjs,
-                chrome_path,
                 mbgl_native_dir,
                 renderer_backend,
                 tx_clone,
@@ -480,7 +402,6 @@ async fn run_worker(
     setup_line_bytes: String,
     node_path: PathBuf,
     renderer_cjs: PathBuf,
-    chrome_path: PathBuf,
     mbgl_native_dir: PathBuf,
     renderer_backend: Option<RendererBackend>,
     frame_tx: mpsc::Sender<(u32, Vec<u8>)>,
@@ -488,9 +409,8 @@ async fn run_worker(
     let mut command = Command::new(&node_path);
     command
         .arg(&renderer_cjs)
-        .env("TRAILCUT_CHROME_BIN", &chrome_path)
-        // Always passed; only the native backend reads it. Resolution lives
-        // here for the same prod-vs-dev filesystem reason as chrome_path.
+        // Resolution lives orchestrator-side (prod-vs-dev filesystem
+        // concern); the worker fails loud if the binding is absent.
         .env("TRAILCUT_MBGL_NATIVE_DIR", &mbgl_native_dir);
     if let Some(backend) = renderer_backend {
         // Explicit pin (tests / programmatic override). When None, the
@@ -864,38 +784,6 @@ mod tests {
     }
 
     #[test]
-    fn chrome_env_override_takes_priority() {
-        with_env("TRAILCUT_CHROME_BIN", Some("/tmp/explicit-override/chrome"), || {
-            let cfg = OrchestratorConfig::default();
-            assert_eq!(
-                cfg.chrome_path,
-                PathBuf::from("/tmp/explicit-override/chrome"),
-            );
-        });
-    }
-
-    #[test]
-    fn chrome_dev_path_when_no_env() {
-        with_env("TRAILCUT_CHROME_BIN", None, || {
-            let cfg = OrchestratorConfig::default();
-            let s = cfg.chrome_path.to_string_lossy();
-            // Dev layout: <manifest>/binaries/chrome-<triple>/<inner>.
-            // Inner path is platform-specific; on macOS the binary lives
-            // inside `Google Chrome for Testing.app/Contents/MacOS/...`.
-            // Production resolution only fires inside a real Tauri bundle.
-            assert!(
-                s.contains("binaries/chrome-"),
-                "expected dev path under binaries/chrome-<triple>/, got {s}",
-            );
-            #[cfg(target_os = "macos")]
-            assert!(
-                s.ends_with("/Google Chrome for Testing"),
-                "expected macOS binary path, got {s}",
-            );
-        });
-    }
-
-    #[test]
     fn mbgl_native_env_override_takes_priority() {
         with_env("TRAILCUT_MBGL_NATIVE_DIR", Some("/tmp/explicit-override/mbgl"), || {
             let cfg = OrchestratorConfig::default();
@@ -929,7 +817,6 @@ mod tests {
         // sidecars/renderer/__tests__/backendSelect.test.ts.
         let cfg = OrchestratorConfig::default();
         assert_eq!(cfg.renderer_backend, None);
-        assert_eq!(RendererBackend::Chrome.as_env_value(), "chrome");
         assert_eq!(RendererBackend::Native.as_env_value(), "native");
     }
 }

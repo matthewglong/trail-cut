@@ -1,16 +1,14 @@
-// Process-level protocol test for the chromium renderer worker. Spawns
-// the bundled worker as a child process, walks setup → render → recycle →
-// render → shutdown, asserts the wire format on each step. Mirrors the
-// native renderer's __tests__/protocol.test.ts; same assertions, longer
-// timeouts to absorb cold Chromium launch.
+// Process-level protocol test for the renderer worker. Spawns the bundled
+// worker as a child process (default backend — native since the Phase 5
+// cutover), walks setup → render → recycle → render → shutdown, asserts
+// the wire format on each step.
 //
 // Gated behind `npm run test:renderer` (separate vitest config)
 // because the test:
-//   - requires dist/renderer.cjs + dist/page-init.bundle.js (run
-//     build:renderer first; fails up front if missing),
-//   - requires TRAILCUT_CHROME_BIN pointing at a Chrome binary,
+//   - requires dist/renderer.cjs + the staged maplibre-gl-native binding
+//     (run build:renderer first; fails up front if missing),
 //   - requires internet access for OpenFreeMap tile fetches on first run,
-//   - is structurally heavy: cold Chromium first frame is 5+ s.
+//   - is process-level (spawn + real render), not a unit test.
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -21,11 +19,9 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { buildSetupPayload } from './setupFixture';
 
 const RENDERER_CJS = resolve(__dirname, '../dist/renderer.cjs');
-const PAGE_BUNDLE = resolve(__dirname, '../dist/page-init.bundle.js');
 
-// First-frame budget: cold Chromium launch + first tile prefetch. Very
-// generous on CI; the spike measured ~5s warm. 60s gives margin for slow
-// CI hosts.
+// First-frame budget: worker boot + style/tile fetch on a cold cache.
+// Native renders in tens of ms warm; 60s gives margin for cold-network CI.
 const FIRST_FRAME_TIMEOUT_MS = 60_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 const VIEWPORT_W = 540;
@@ -139,15 +135,29 @@ describe('renderer worker protocol', () => {
         `${RENDERER_CJS} not found. Run \`npm run build:renderer\` first.`,
       );
     }
-    if (!existsSync(PAGE_BUNDLE)) {
+    // Loud precondition, never skip: the worker resolves the binding via
+    // TRAILCUT_MBGL_NATIVE_DIR (set by the orchestrator in production) or
+    // its dev-layout fallback under src-tauri/binaries/. Mirror that
+    // resolution here so a missing binding fails at collection time with
+    // an actionable message instead of a mid-test worker death.
+    const triple = process.platform === 'darwin' && process.arch === 'arm64'
+      ? 'aarch64-apple-darwin'
+      : process.platform === 'darwin' && process.arch === 'x64'
+        ? 'x86_64-apple-darwin'
+        : null;
+    if (triple === null) {
       throw new Error(
-        `${PAGE_BUNDLE} not found. Run \`npm run build:renderer\` first.`,
+        `unsupported host platform=${process.platform} arch=${process.arch} ` +
+        '(darwin only until task 130 lands the Windows binding artifact)',
       );
     }
-    if (!process.env.TRAILCUT_CHROME_BIN) {
+    const bindingDir = process.env.TRAILCUT_MBGL_NATIVE_DIR?.trim()
+      || resolve(__dirname, '..', '..', '..', 'binaries', `mbgl-native-${triple}`);
+    if (!existsSync(bindingDir)) {
       throw new Error(
-        'TRAILCUT_CHROME_BIN env var not set. Set it to a Chrome binary path ' +
-        'before running this test (task 118 resolves this from a bundled binary).',
+        `Patched maplibre-gl-native binding missing at ${bindingDir}. ` +
+        'Run `npm run build:renderer` (or `npm run build:native-binding`) first, ' +
+        'or set TRAILCUT_MBGL_NATIVE_DIR.',
       );
     }
   });
@@ -296,8 +306,6 @@ describe('renderer worker protocol', () => {
       active = null;
 
       // Cache shape on disk: {2-char}/{2-char}/{64-char-hex}, no .tmp.* leftovers.
-      // Same as the native renderer's protocol test — the cache module is
-      // unchanged, so the disk layout is unchanged.
       const files = listAllFiles(cacheDir);
       expect(files.length).toBeGreaterThan(0);
       for (const f of files) {

@@ -1,15 +1,14 @@
 import { defineConfig } from 'vitest/config';
 
 // Dedicated config for the renderer worker tests.
-//   - painterPatch.test.ts, trailcutFetch.test.ts, tileCache.test.ts, and
-//     tileCacheKeyParity.test.ts are pure unit tests.
-//   - protocol.test.ts is process-level: spawns the bundled worker, drives
-//     stdin, asserts wire format. Heavy: requires built dist/ + chrome-
-//     headless-shell + network on first run.
+//   - backendSelect.test.ts and tileCache.test.ts are pure unit tests.
+//   - protocol.test.ts and tileCacheKeyParity.test.ts are process-level:
+//     they spawn the bundled worker (native backend), drive stdin, and
+//     assert wire format / on-disk cache keys. They require built dist/ +
+//     the staged maplibre-gl-native binding + network on first run.
 //
 // All live in the same dir; vitest groups them. Default timeout is generous
-// so the protocol test's cold-Chromium first-frame doesn't trip it; the unit
-// tests finish well within.
+// so a cold-cache first frame doesn't trip it; warm runs finish in seconds.
 export default defineConfig({
   test: {
     environment: 'node',

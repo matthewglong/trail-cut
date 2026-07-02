@@ -47,8 +47,8 @@ export interface DecorationLayerSpec {
 export interface StaticScene {
   /** Style spec — either a URL string (DEFAULT_STYLE_URL for default/3d
    *  modes) or a parsed StyleSpecification object (SATELLITE_STYLE). The
-   *  chrome page's transformRequest fetches URL styles through the tile
-   *  cache; the native backend fetches + parses before `map.load`. */
+   *  backend fetches + parses URL styles through the tile cache before
+   *  `map.load`. */
   style: unknown;
   add3dBuildings: boolean;
   buildingsLayer: unknown | null;

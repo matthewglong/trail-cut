@@ -2,24 +2,21 @@
 // the export pipeline. Communicates with the Rust orchestrator over a
 // line-delimited-JSON-on-stdin / length-prefixed-RGBA-on-stdout protocol.
 //
-// Phase 5 renderer strangle: the worker is split into a protocol shell
-// (this file) and two rendering backends behind one interface (backend.ts):
-//
-//   - nativeBackend.ts — maplibre-gl-native in-process (no Chrome, no CDP;
-//     the DEFAULT since the Phase 5 cutover).
-//   - chromeBackend.ts — headless Chrome + maplibre-gl-js via puppeteer
-//     (the pre-strangle renderer).
-//
-// Selection: TRAILCUT_RENDERER_BACKEND = 'native' | 'chrome'. Unknown
-// values fail loud. The wire format is backend-invariant — the orchestrator
-// (export/protocol.rs, UNCHANGED) cannot tell which engine rendered.
+// Phase 5 renderer strangle (completed): the worker is a protocol shell
+// (this file) over the rendering backend behind backend.ts's interface —
+// nativeBackend.ts, maplibre-gl-native in-process. The pre-cutover chrome
+// backend (headless Chrome + maplibre-gl-js via puppeteer/CDP) was removed
+// after the cutover; recover it from git history if an engine comparison
+// is ever needed. TRAILCUT_RENDERER_BACKEND survives as a single-value
+// switch ('native') so explicit-backend pins stay meaningful and stale
+// values fail loud instead of silently rendering.
 //
 // Visual parity by import — the load-bearing invariant. Every visual
 // decision (style spec, layer specs, source data, animation curves, camera
 // math) lives in src/lib/mapVisuals/, src/lib/cameraIntent.ts,
 // src/lib/routeLocation.ts. This worker imports the same modules the
 // preview's MapView.tsx uses (via scene.ts); it never redefines them, and
-// BOTH backends consume the identical per-frame tuple translation.
+// the backend consumes the engine-agnostic per-frame tuple translation.
 
 import readline from 'node:readline';
 
@@ -28,7 +25,6 @@ import { selectBackendName, VERBOSE, verbose } from './backend';
 import { buildFramePayload } from './scene';
 import { indexRoute, type IndexedRoute } from '../../../src/lib/routeLocation';
 import { createTileCache, defaultCacheDir, type TileCache } from './tileCache';
-import { ChromeBackend } from './chromeBackend';
 import { NativeBackend } from './nativeBackend';
 
 // ---- Backend selection ------------------------------------------------------
@@ -37,8 +33,8 @@ function resolveBackendName(): BackendName {
   try {
     return selectBackendName(process.env.TRAILCUT_RENDERER_BACKEND);
   } catch (e) {
-    // Loud failure — a typo silently falling back to a default would make
-    // every explicit-backend gate meaningless.
+    // Loud failure — a stale 'chrome' or a typo silently falling back to a
+    // default would make every explicit-backend gate meaningless.
     process.stderr.write(`[renderer] ${(e as Error).message}\n`);
     process.exit(1);
   }
@@ -53,9 +49,7 @@ const tileCache: TileCache = createTileCache({
   offline: process.env.TRAILCUT_TILE_CACHE_OFFLINE === '1',
 });
 
-const backend: RendererBackend = BACKEND_NAME === 'native'
-  ? new NativeBackend(tileCache)
-  : new ChromeBackend(tileCache);
+const backend: RendererBackend = new NativeBackend(tileCache);
 
 let setupPayload: SetupCmd | null = null;
 let indexedRoute: IndexedRoute | null = null;
@@ -173,10 +167,10 @@ function processNext(): void {
         },
         (e: Error) => {
           process.stderr.write(`[renderer] setup failed: ${e.message}\n${e.stack ?? ''}\n`);
-          // Defer exit so pipe-forwarded child stderr (Chrome GPU-process
-          // death, OOM, target-destroyed lines) has a chance to flush
-          // before we tear down. Without this delay, the stderr ring only
-          // captures the surface error, not the root cause.
+          // Defer exit so any in-flight stderr (native binding load errors,
+          // OOM diagnostics) has a chance to flush before we tear down.
+          // Without this delay, the stderr ring only captures the surface
+          // error, not the root cause.
           setTimeout(() => process.exit(1), 500);
         },
       );

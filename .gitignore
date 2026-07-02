@@ -15,9 +15,9 @@ dist-ssr
 # Rust / Tauri
 src-tauri/target
 src-tauri/gen
-# Chrome binaries are downloaded at build time by
-# src-tauri/sidecars/renderer/build.mjs (~170 MB per arch on macOS),
-# not committed.
+# Renderer binding artifacts (patched @maplibre/maplibre-gl-native) are
+# staged at build time by src-tauri/sidecars/renderer/build.mjs via
+# native/ensure-binding.mjs, not committed.
 src-tauri/binaries/
 
 # Editor directories and files

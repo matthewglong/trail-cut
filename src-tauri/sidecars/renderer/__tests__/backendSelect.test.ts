@@ -17,9 +17,12 @@ describe('selectBackendName', () => {
     expect(selectBackendName('  ')).toBe('native');
   });
 
-  it('resolves explicit values', () => {
+  it('resolves the explicit value', () => {
     expect(selectBackendName('native')).toBe('native');
-    expect(selectBackendName('chrome')).toBe('chrome');
+  });
+
+  it("throws a removal notice on 'chrome' — never silently renders native", () => {
+    expect(() => selectBackendName('chrome')).toThrow(/chrome backend was removed/);
   });
 
   it('throws loud on unknown values — no silent fallback', () => {

@@ -1,9 +1,8 @@
-// Network fetcher for tile-cache misses. Shared by both backends: chrome
-// reaches it through the trailcutFetch bridge (page → exposeFunction →
-// tileCache.get(originalUrl, fetchUrl)), native calls tileCache.get
-// directly from the mbgl request callback. One implementation → one set of
-// HTTP semantics (redirects, content-encoding) → identical cached bytes.
-// (Moved verbatim from index.ts in the Phase 5 backend split.)
+// Network fetcher for tile-cache misses. Called via tileCache.get from the
+// mbgl request callback. One implementation → one set of HTTP semantics
+// (redirects, content-encoding) → identical cached bytes for identical
+// URLs, which is what keeps the on-disk cache shareable across workers and
+// runs. (Moved verbatim from index.ts in the Phase 5 backend split.)
 
 import https from 'node:https';
 import http from 'node:http';

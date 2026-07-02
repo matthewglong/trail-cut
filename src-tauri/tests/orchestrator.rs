@@ -78,9 +78,11 @@ fn build_setup_payload() -> SetupPayload {
 }
 
 fn config_with(worker_count: usize, recycle_every: u32) -> OrchestratorConfig {
-    // Inherit chrome_path from Default so the same dev/env resolution lookup
-    // applies to integration tests; we only override the worker_count +
-    // recycle cadence + renderer.cjs path.
+    // Inherit mbgl_native_dir from Default so the same dev/env resolution
+    // lookup applies to integration tests; we only override the
+    // worker_count + recycle cadence + renderer.cjs path. No backend pin:
+    // these variants exercise the DEFAULT selection path (native since the
+    // Phase 5 cutover).
     OrchestratorConfig {
         worker_count,
         recycle_every,
@@ -90,10 +92,11 @@ fn config_with(worker_count: usize, recycle_every: u32) -> OrchestratorConfig {
     }
 }
 
-/// Native-backend variant. Pins `TRAILCUT_RENDERER_BACKEND=native` on the
+/// Explicit-pin variant. Pins `TRAILCUT_RENDERER_BACKEND=native` on the
 /// worker child via config (NOT process-global env — tests run concurrently
 /// in one process) and panics loudly if the patched binding isn't staged.
-/// Loud-failure rule: the native tests must never silently exercise chrome.
+/// Loud-failure rule: a stale parent env must never decide what these
+/// tests render with.
 fn native_config_with(worker_count: usize, recycle_every: u32) -> OrchestratorConfig {
     let config = OrchestratorConfig {
         renderer_backend: Some(RendererBackend::Native),
@@ -180,13 +183,13 @@ async fn n2_ten_frames_orders_across_workers_with_recycle() {
     assert_in_order_and_well_formed(&frames, 10);
 }
 
-// ---- Native backend (Phase 5 renderer strangle) ----------------------------
+// ---- Explicit backend pin (Phase 5 renderer strangle) -----------------------
 //
-// The same protocol/ordering/recycle assertions, driven through the worker's
-// NATIVE backend (maplibre-gl-native in-process). The wire format is
-// backend-invariant, so these tests are byte-for-byte the same shape as the
-// chrome ones — which is exactly the point: the orchestrator cannot tell the
-// engines apart. Loud panic (never skip) when the patched binding is absent.
+// The same protocol/ordering/recycle assertions as n1/n2 above, but with
+// the backend pinned explicitly on the worker child env instead of riding
+// the default-selection path — the two selection routes stay covered
+// independently. Loud panic (never skip) when the patched binding is
+// absent.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_n1_four_frames_with_mid_run_recycle() {

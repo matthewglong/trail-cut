@@ -1,19 +1,16 @@
-// Golden-frame regeneration helpers (task 117 + Phase 5 renderer strangle).
-// Render the golden frames listed in golden_frame_parity.rs and write them
-// back to the fixture directory, overwriting the committed PNGs —
-// `regenerate_golden_frames` for the chromium set (frame-XXXX.png),
-// `regenerate_golden_frames_native` for the native set
-// (native-frame-XXXX.png).
+// Golden-frame regeneration helper (task 117 + Phase 5 renderer strangle).
+// Renders the golden frames listed in golden_frame_parity.rs and writes
+// them back to the fixture directory, overwriting the committed
+// native-frame-XXXX.png set.
 //
 // `#[ignore]`-by-default so it never runs in routine CI; intended as a
 // manual operation when:
-//   - bumping maplibre-gl / the maplibre-gl-native binding,
+//   - bumping the maplibre-gl-native binding,
 //   - making a deliberate visual change to mapVisuals/,
 //   - OpenFreeMap changes its style or tile data.
 //
 // Run (manual):
-//   TRAILCUT_CHROME_BIN=/path/to/chrome \
-//     cargo test --test golden_frame_regenerate --features integration_export -- --ignored --nocapture
+//   cargo test --test golden_frame_regenerate --features integration_export -- --ignored --nocapture
 //
 // After a regen: `git diff` the four PNG fixtures, eyeball them (open in
 // Preview), and commit if they look correct. The byte-comparison parity
@@ -49,7 +46,7 @@ fn fixture_dir() -> PathBuf {
     manifest_dir().join("tests").join("fixtures").join("golden-frames")
 }
 
-fn renderer_chromium_cjs() -> PathBuf {
+fn renderer_cjs() -> PathBuf {
     manifest_dir()
         .join("sidecars")
         .join("renderer")
@@ -57,27 +54,9 @@ fn renderer_chromium_cjs() -> PathBuf {
         .join("renderer.cjs")
 }
 
-fn page_init_bundle() -> PathBuf {
-    manifest_dir()
-        .join("sidecars")
-        .join("renderer")
-        .join("dist")
-        .join("page-init.bundle.js")
-}
-
-fn assert_chromium_bundle_present() {
-    let r = renderer_chromium_cjs();
-    let p = page_init_bundle();
-    if !r.exists() || !p.exists() {
-        panic!(
-            "Chromium renderer bundle missing. Run `npm run build:renderer` first."
-        );
-    }
-}
-
-fn assert_chrome_bin_env() {
-    if std::env::var("TRAILCUT_CHROME_BIN").is_err() {
-        panic!("TRAILCUT_CHROME_BIN env var not set.");
+fn assert_renderer_bundle_present() {
+    if !renderer_cjs().exists() {
+        panic!("Renderer bundle missing. Run `npm run build:renderer` first.");
     }
 }
 
@@ -198,16 +177,8 @@ async fn regenerate(config: OrchestratorConfig, golden_prefix: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "regen is manual; runs only with --ignored"]
-async fn regenerate_golden_frames() {
-    assert_chromium_bundle_present();
-    assert_chrome_bin_env();
-    regenerate(OrchestratorConfig::default(), "frame").await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "regen is manual; runs only with --ignored"]
 async fn regenerate_golden_frames_native() {
-    assert_chromium_bundle_present(); // renderer.cjs hosts both backends
+    assert_renderer_bundle_present();
     let config = OrchestratorConfig {
         renderer_backend: Some(RendererBackend::Native),
         ..OrchestratorConfig::default()
