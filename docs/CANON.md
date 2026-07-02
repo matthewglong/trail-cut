@@ -237,6 +237,96 @@ are solid-only. Decoration sizes are fractions of the 1080-CSS-px reference widt
 (perceived-scale invariance). Landed via the map-decorations commits (`9d498ad`…`bf4ebeb`);
 see `docs/map-decorations/` (noting `data-model.md` has drifted — `src/types.ts` wins).
 
+### 2.5 Export map renderer — maplibre-gl-native, cutover complete — DECIDED
+
+**Decision (Phase 5 renderer strangle; port landed 2026-07-02, cutover completed
+2026-07-02).** The export renderer worker (`src-tauri/sidecars/renderer/index.ts`) is a
+protocol shell over one rendering backend behind the `backend.ts` interface:
+`nativeBackend.ts` — maplibre-gl-native **in-process**, no Chrome/CDP. The pre-strangle
+chrome backend (headless Chrome + maplibre-gl-js) shipped behind the same interface
+during the strangle window and was **removed after the cutover** (git history has it;
+the strip commit lists everything it took with it — CfT download, page bundle,
+`TRAILCUT_CHROME_BIN`, the chrome golden set). `TRAILCUT_RENDERER_BACKEND` survives as
+a loud single-value switch (`native`; a stale `chrome` throws a removal notice — no
+silent fallback), and the orchestrator can still pin per-worker via
+`OrchestratorConfig::renderer_backend` so a stale parent env never decides what a test
+renders with. The stdio wire format (`export/protocol.rs`, unchanged) is
+backend-invariant. The engine-agnostic per-frame translation lives in `scene.ts` —
+parity with the preview by shared derivation (measured ≤0.03 CSS px cross-engine
+decoration placement while both engines existed).
+
+**Cutover evidence**: golden-frame pixel gate on the native backend
+(`golden_frame_parity_native`, `src-tauri/tests/golden_frame_parity.rs` — raw
+`render_map_frames` output vs committed `native-frame-*.png`, ±1-LSB measured GPU
+tolerance), all reference-free oracles green through the production worker
+(`PRODUCTION_WORKER_GATES.md`), HDR anchors through the real composite argv
+(`native_hdr_composite.rs`), and Matthew's hand-export parity pass (2026-07-02).
+A prior wording of this section claimed the cutover needed a "cross-engine golden-frame
+gate that cannot exist until the color lane lands and a look is approved" — that was a
+conflation. The golden gate pins RAW RENDERER FRAMES, captured before any FFmpeg
+compositing or delivery-target color handling, so it has ZERO dependency on the color
+lane. The thing that does depend on the color lane is a full **delivered-HDR-look
+approval gate** — a separate, still-deferred piece of work (Oracle lane), not a cutover
+prerequisite. En route, the golden fixture itself was found rotted (hand-inlined
+pre-restructure `mapSettings` — both engines failed at worker setup; invisible because
+the gate is feature-flag opt-in and CI never ran it); it now builds its wire shape
+through the shared `setupFixture.ts` builder so it tracks the live types.
+
+**Why native**: 57× map-frame speed (2026-06-04 spike), and it retires the
+Chrome-for-Testing redistribution problem (the ship forcing-function). Jitter and
+mechanical correctness were gated before the port: `.spike/native-gl/jitter-report.md`,
+`MECHANICAL_VERDICT.md`; the port re-ran the oracles THROUGH the production worker:
+`PRODUCTION_WORKER_GATES.md` (vector 0.0188 / satellite 0.0686 px RMS with production
+recycles; lever model exact; colorimetry byte-pins; HDR anchors 0.7511/0.5822 measured
+vs 0.75/0.58 expected through the real composite argv —
+`src-tauri/tests/native_hdr_composite.rs`).
+
+**Port contracts (all measured, all BINDING while the native backend exists):**
+1. `map.setGestureInProgress(true)` once after construction, unconditionally, on every
+   export map (`nativeBackend.ts::setup`). Requires the PATCHED binding
+   (`sidecars/renderer/native/`, provisioned by `ensure-binding.mjs`); the backend
+   refuses to render without it (satellite would sawtooth 0.93 px RMS). (The retired
+   chrome page's `painterPatch.ts` was the GL JS spelling of the same knob.)
+2. `buffer: 0` on both point GeoJSON sources (`live-marker`, `waypoints`) at the native
+   boundary (`NATIVE_SOURCE_BUFFER_ZERO`) — translucent circles otherwise draw once per
+   overlapping tile (halo/pulse brightness pops G 138→192 at tile-band crossings).
+   Symbol placement is unaffected by buffer:0 (measured: identical pixel counts,
+   0.000 px centroid shift for boundary-anchored icons — `probe-waypoints-buffer.js`).
+3. Empty-LineString placeholders normalize to an empty FeatureCollection at the native
+   boundary only (`normalizeGeojson`); `sources.ts` stays untouched (feeds the preview).
+4. No GeoJSON `setData` in the node binding: per-frame source refresh = removeLayer(s) →
+   removeSource → addSource → addLayer(s) → re-apply paints/layouts. The binding's
+   `addLayer` takes no `beforeId`, so the refresh rebuilds the decoration stack from the
+   lowest changed source upward (`refreshSources`) — the decoration layers occupy the
+   contiguous top of the style, so re-adding in static order restores exact stacking.
+5. `addImage` caps textures at 1024 texels → `pixelRatio ≤ 8` guard (icons are
+   128×pixelRatio; production pixelRatio ≤ 4 today). Signature:
+   `(id, Buffer, {width, height, pixelRatio, sdf})`. The binding's `index.d.ts` is stale
+   — trust the runtime prototype.
+
+**SSAA + alpha convention**: native's constructor-time `ratio` carries the full
+pixelRatio (resolution multiplier × SSAA factor); the worker downsamples framebuffer →
+readback with an exact integer box filter in **premultiplied, gamma (sRGB) space**
+(`boxDownsample`), and the wire buffer stays premultiplied — byte-identical semantics to
+GL JS `gl.readPixels` (MECHANICAL_VERDICT §2). Downstream exposure is nil: the map
+paints an opaque basemap (alpha=255 measured on every pixel) and the composite replaces
+map alpha wholesale with the Rust corner mask (§4.4 / corner_mask.rs). The §1.3 sRGB
+ingest anchor carries over with NO contract change.
+
+**Determinism bound (measured 2026-07-02)**: mbgl/Metal re-renders of an identical
+frame wobble by ±1 LSB on a handful of AA edge pixels across worker boots (0–10 px of
+518,400, always channel delta 1); within one map instance renders are byte-identical.
+The golden gate's tolerance encodes exactly that class (delta ≤ 1 on ≤ 0.01% of pixels)
+and nothing more. (The retired GL JS stack was byte-deterministic across boots.)
+
+**Binding distribution (interim)**: vendored patch + build-from-source
+(`sidecars/renderer/native/ensure-binding.mjs`, staged at
+`src-tauri/binaries/mbgl-native-<triple>/`, CI-cached; `tauri.conf.json` bundles the
+staged dir via `bundle.resources`). The upstream PR is the exit ramp — NOT posted;
+Matthew decides when (draft package: `.spike/native-gl/UPSTREAM_PR_DRAFT.md`). Task 130
+ships the staged dir per platform; Windows rides upstream's prebuilt matrix (win32
+included) — darwin-arm64 is the only measured platform today.
+
 ---
 
 ## 3. Export
@@ -438,10 +528,11 @@ Matthew-confirmed follow-up, tracked as the open tail of this item.
 
 ### 6.2 Sidecar bundling (task 130) — OPEN, required before ship
 
-ffmpeg/ffprobe/exiftool/node resolve via `PATH` today; only chrome-headless-shell is
-bundled (`src-tauri/tauri.conf.json`). Bundling is deferred as "task 130" but **required
-before ship** (the app goes to end users who do not have Homebrew FFmpeg). The task was
-never authored.
+ffmpeg/ffprobe/exiftool/node resolve via `PATH` today; only the patched
+maplibre-gl-native binding dir is bundled (`src-tauri/tauri.conf.json`
+`bundle.resources` — the Chrome-for-Testing bundle it replaced was removed at the §2.5
+cutover). Bundling is deferred as "task 130" but **required before ship** (the app goes
+to end users who do not have Homebrew FFmpeg). The task was never authored.
 
 ### 6.3 Preview ≡ export parity gate (task 120) — OPEN, never authored
 

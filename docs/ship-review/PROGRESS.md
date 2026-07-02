@@ -10,31 +10,53 @@ cross-session state. Keep entries terse and dated.
 
 ## NEXT ACTION
 
-**1) Implement fix C′ — replace the linear ÷32/×32 composite headroom with
-a PQ transport curve around the 10-bit overlay lift (blocking; awaiting
-Matthew's go).** The 2026-06-12 hand-export re-gate FAILED for HDR map
-fidelity and the cause is root-caused + empirically proven (session log
-below): fix C's `linear_gain_filter(1/32)` runs BEFORE the
-`format=yuva444p10le` overlay lift, so the SDR-origin map (linear 0–2.03
-after the ×2.03 anchor) is quantized in LINEAR light into the bottom 6.3%
-of the 10-bit range — measured 256→66 distinct levels and hue errors up to
-12.5° (red), 3.8° (green) on flat decoration colors. That one seam explains
-all three HDR-only symptoms Matthew saw (grit, wrong decoration hue,
-temporal shimmer; PQ worse than HLG because PQ's EOTF stretches the bottom
-of the range hardest). Validated fix: swap `{÷32 … ×32}` for
-`{zscale=t=smpte2084 … zscale=tin=smpte2084:t=linear:npl=100}` (HDR
-deliveries only, same gate) — measured 256/256 levels and ≤0.33° hue vs
-the pure-float reference; SDR chains stay byte-identical; no headroom
-constant at all (PQ transport covers linear 0–100 = 10,000 nits, which
-RETIRES the "PQ >3200 nit clips at H=32" deferred item — new bound is
-PQ's own 10k ceiling). Scope: `color_space.rs` (transport helpers replace
-`COMPOSITE_HEADROOM`), `filtergraph.rs` `down`/`up` splice points + comment
-blocks (all 5 branches), re-pin composite-chain string tests, KEEP the
-round-trip identity + dry-run gates green, ADD a decoration-fidelity
-decoded-frame gate (ramp ≥250 distinct levels through the HDR composite
-sandwich + flat-color hue delta <1°), CANON §1.12 amendment (fix C → C′).
-Probe artifacts: `/tmp/hdr-grit-probe/`. After landing: Matthew re-eyeballs
-hand exports (expect: HDR map hue matches SDR/preview, grit+shimmer gone).
+**1) Re-probe the composite seam — fix C′ eyeball FAILED 2026-07-01 on PQ
+temporal crawl.** fix C′ (PQ transport curve) is WRITTEN in the working tree
+(uncommitted) and both suites are green, but it is NOT landed and Phase 4 is
+NOT closed. Matthew hand-exported HLG + PQ (2026-07-01) and the HDR map
+still shimmers: **flat decoration colors crawl/sparkle frame-to-frame, PQ
+worse than HLG.** fix C′ DID fix the *static* defect (ramp 66→256 distinct
+levels, hue 12.5°→≤0.33°) — but the gate that proved that
+(`composite_pq_transport_ramp_retains_distinct_levels` + the hue gate) is
+**single-frame only**; it is blind to temporal stability, so it went green
+while the crawl survived. **Working hypothesis (to MEASURE, not assume):**
+PQ's steep low-end OETF slope — the same steepness that bought back the
+distinct levels — *amplifies* a sub-LSB frame-to-frame wobble in the
+renderer's flat fill (AA against the panning basemap) into a visible
+multi-code swing; HLG's gentler curve amplifies less → PQ worse.
+**Action:** build a TEMPORAL probe (N frames of a flat decoration patch
+through the real PQ/HLG/SDR composite argv → per-pixel temporal std-dev in a
+flat region; expect PQ≫HLG>SDR≈0), stage the decode to pin the injector
+(before transport / after transport / after 4:2:0 finishing), then choose
+the fix (dead-band/quantize before transport, gentler transport shaping, or
+stabilize the renderer flat fill upstream). That probe becomes the missing
+TEMPORAL gate so nothing can go green while still crawling. Do NOT commit
+fix C′ as landed or touch the CANON/PROGRESS "closed" wording until the
+temporal gate is green. This is a COLOR-seam bug, NOT the renderer —
+decoration crispness + any native-renderer work stay Phase 5 renderer-lane
+scope and cannot fix this crawl.
+
+**fix C′ landed — record (2026-06-12):** `color_space.rs` —
+`COMPOSITE_HEADROOM` removed; `composite_transport_encode()`
+(`zscale=t=smpte2084`) + `composite_transport_decode()`
+(`zscale=tin=smpte2084:t=linear:npl=100`, npl tied to
+`default_npl_for(Pq)`) added. `filtergraph.rs` — `down`/`up` now splice the
+PQ encode/decode (same HDR-only gate, same splice points, all 5 branches
+untouched in structure); load-bearing comment block rewritten. Tests:
+`linear_gain_filter_decompositions` dropped the obsolete ÷32/×32 cases (kept
+the ×2.03 anchor); new `composite_transport_round_trip_strings` byte-pin;
+the composite HDR string test renamed →
+`…wraps_lifts_in_pq_transport` (asserts every lift is PQ-encode-wrapped + no
+`colorchannelmixer=rr=0.03125` survives); the SDR negative renamed →
+`composite_sdr_delivery_emits_no_anchor_and_no_transport` (asserts no
+`zscale=t=smpte2084,format=yuva444p10le` / decode on SDR — byte-stable).
+NEW decoration-fidelity decoded-frame gates in `color_fixtures.rs`:
+`composite_pq_transport_ramp_retains_distinct_levels` (≥250/256 through the
+real PQ sandwich; teeth verified — old ÷32 sandwich measures 66) +
+`composite_pq_transport_preserves_decoration_hue` (<1° on the three probe
+colors). Empirically validated with a `-loglevel verbose` dry-run (overlay
+still negotiates 4:4:4 10-bit — no silent scaler). Probe artifacts:
+`/tmp/hdr-grit-probe/`.
 
 **2) Hand-export re-gate results 2026-06-12 (decision-log #3) — record:**
 PASS: HDR footage identical to source (both HLG+PQ — the atomic-landing
@@ -66,20 +88,28 @@ entries (HDR→SDR tone map, proxy-npl divergence).
 | 2a — Data-loss fix (Thread 2) | ✅ done 2026-06-11 | See Phase 2a record below |
 | 2b — Doc canon (Thread 4) | ✅ done 2026-06-11 | See Phase 2b record below |
 | 3 — Tracer oracle (Thread 1 thin) | ✅ done 2026-06-11 | See Phase 3 record below; green CI run 27386190883 with verified red-by-design tracer |
-| 4 — HDR port (Thread 3) | ✅ landed 2026-06-11, green CI 27389312554 — ❌ hand-export re-gate 2026-06-12: footage/anchor/corners PASS, HDR map fidelity FAIL (fix C ÷32 × 10-bit lift quantization; fix C′ scoped in NEXT ACTION) | See Phase 4 record + session log |
-| 5 — Parallel lanes (Threads 1/5/6/7) | ⬜ pending (gated on Phase 4 sign-off) | Per-lane tracer slices, see ACTION_PLAN |
+| 4 — HDR port (Thread 3) | ⚠️ NOT closed. HDR port landed `acc1ec9`; static-quantization FAIL → fix C′ (PQ transport) WRITTEN but UNCOMMITTED, suites green; re-eyeball 2026-07-01 FAILED on PQ flat-color temporal crawl — static gate is blind to it. Re-probing composite seam for temporal amplification (see NEXT ACTION). | See Phase 4 record + fix C′ record + session log |
+| 5 — Parallel lanes (Threads 1/5/6/7) | 🟨 renderer-strangle lane DONE 2026-07-02 (native cutover complete, chrome stripped — see session log + CANON §2.5); other lanes pending | Golden gate `golden_frame_parity_native` + PRODUCTION_WORKER_GATES.md + hand-export pass; other lanes: per-lane tracer slices, see ACTION_PLAN |
 
-## Test baseline (canonical, post-Phase-4, on `main` @ acc1ec9)
+## Test baseline (canonical, post-cutover `8110f70` + fix C′ in the working tree)
 
-`npm run test:run` → **928 passed | 7 skipped (935), 0 failed**.
-`cargo test` (no skips — the tracer exclusion is GONE) → **374 passed,
-0 failed, 1 ignored** (344 lib + 21 color_fixtures + 1 encoder_probe + 2
-layout_parity + 2 orchestrator + 4 project_parity). The
-`hdr_reference_white_tracer_*` tests are GREEN and run in the main suite;
-any failure anywhere is a regression. CI reproduces exactly these counts
-(run 27389312554). Note: the suites PANIC (by design) on machines missing
-ffmpeg / zscale / renderer bundles — local ffmpeg must be `ffmpeg-full`
-(plain brew `ffmpeg` bottle has no libzimg).
+`npm run test:run` → **928 passed | 7 skipped (935), 0 failed** (frontend
+untouched by fix C′ and the cutover).
+`cargo test` (no skips) → **381 passed, 0 failed, 1 ignored** (346 lib +
+23 color_fixtures + 1 ignored + 1 encoder_probe + 2 layout_parity + 4
+orchestrator + 4 project_parity + 1 native_hdr_composite). Includes fix C′
+(uncommitted: lib +1 `composite_transport_round_trip_strings`,
+color_fixtures +2 `composite_pq_transport_*`); the cutover removed the two
+chrome-path resolution tests and kept the 4 orchestrator e2e tests
+(default-path n1/n2 + explicit-pin native_n1/n2, all native now). The
+`hdr_reference_white_tracer_*` tests stay GREEN; any failure anywhere is a
+regression. `npm run test:renderer` → **18 passed** (backendSelect,
+tileCache units + protocol/tileCacheKeyParity process-level on native).
+Golden gate (`cargo test --features integration_export --test
+golden_frame_parity`) → 1 passed, native-only. Note: the suites PANIC (by
+design) on machines missing ffmpeg / zscale / renderer bundles / the
+staged mbgl-native binding — local ffmpeg must be `ffmpeg-full` (plain
+brew `ffmpeg` bottle has no libzimg).
 
 ## Deferred follow-ups ledger (standing — check when opening any phase)
 
@@ -114,11 +144,11 @@ live only inside a historical phase record.
   to the FIRST slice of the Phase 5 Oracle lane.** Owner: Phase 5 Oracle
   lane (first slice: an HLG→SDR decoded-frame test that pins today's clip
   behavior, so the tone-map work lands against an oracle).
-- **PQ source above ~3200 nit clips at `COMPOSITE_HEADROOM = 32`** (linear
-  >32 clips in the composite lift; HDR10 1000-nit masters are fine). Flagged
-  in CANON §1.12. **RETIRED when fix C′ lands** (NEXT ACTION): the PQ
+- ~~**PQ source above ~3200 nit clips at `COMPOSITE_HEADROOM = 32`**~~ —
+  **RETIRED 2026-06-12 by fix C′.** `COMPOSITE_HEADROOM` is gone; the PQ
   transport curve covers linear 0–100 (10,000 nits) with no headroom
-  constant — the bound becomes PQ's own format ceiling. Owner: fix C′.
+  constant, so the bound is now PQ's own 10k-nit format ceiling. No further
+  action.
 - **Proxy/thumbnail npl divergence** (`commands/ffmpeg.rs` WS1/WS2 preview
   chains still linearize HLG@npl=400 / PQ@npl=1000 + Hable tone-map for
   their SDR outputs; the export pipeline is now npl=100 absolute — preview
@@ -441,3 +471,218 @@ live only inside a historical phase record.
   HDR-gated like today) → 256/256 levels, hue delta ≤0.33°, SDR
   byte-identical, retires the PQ>3200-nit headroom bound. Scoped as fix C′
   in NEXT ACTION; awaiting Matthew's go to implement.
+- **2026-06-12 (fix C′ landed)** — Replaced fix C's linear ÷32/×32 composite
+  headroom with the PQ transport curve. `color_space.rs`: removed
+  `COMPOSITE_HEADROOM`, added `composite_transport_encode`/`_decode` (npl
+  tied to `default_npl_for(Pq)`=100). `filtergraph.rs`: `down`/`up` now
+  splice the PQ encode/decode — identical HDR-only gate, splice points, and
+  5-branch structure; comment block rewritten. Re-pinned the composite
+  string tests; added two decoded-frame fidelity gates in `color_fixtures.rs`
+  (`composite_pq_transport_ramp_retains_distinct_levels` ≥250/256;
+  `composite_pq_transport_preserves_decoration_hue` <1°). Teeth confirmed by
+  a standalone probe: the OLD ÷32 sandwich measures 66 distinct levels, the
+  new PQ sandwich 256, pure-float ref 256. Empirically validated with a
+  `-loglevel verbose` dry-run (overlay still negotiates 4:4:4 10-bit, no
+  silent scaler). Suites: Vitest 928/7/0 (untouched), cargo 377/0/1 (lib +1,
+  color_fixtures +2). CANON §1.12 amended (C→C′, history block, PQ>3200
+  bound retired); §6.1 pointer updated; deferred-ledger PQ>3200 entry struck.
+  STOPPED for Matthew to re-eyeball HLG+PQ hand exports.
+- **2026-07-01 — re-eyeball FAILED; fix C′ NOT committed; suites re-confirmed
+  green on resume.** Session resumed after the Fable outage. Confirmed fix C′
+  is uncommitted in the working tree (` M` on color_space.rs, filtergraph.rs,
+  color_fixtures.rs, CANON.md, PROGRESS.md — nothing staged). Re-ran both
+  suites on the working tree: Vitest 928/7/0, cargo 377/0/1 — fix C′ verified
+  green. Matthew hand-exported HLG + PQ through the real app path and
+  eyeballed: HDR map still shimmers — **flat decoration colors crawl,
+  PQ worse than HLG** (characterization confirmed via question). Diagnosis:
+  the static ramp/hue gate is blind to temporal stability, so fix C′ fixed
+  the banding but not the crawl. Held all commits (per Matthew). Recorded the
+  failure + re-probe plan in NEXT ACTION item 1. Also spun up a parallel
+  Fable session on the SEPARATE Phase 5 renderer-strangle lane (native
+  maplibre prototype on the VECTOR basemap; satellite/raster snap flagged as
+  the OPEN case, not solved) — handoff brief written; that lane cannot and
+  must not be expected to fix this color-seam crawl. Next: temporal probe +
+  seam localization (this session, color lane).
+- **2026-07-02 — renderer-strangle lane: native-gl jitter spike EXECUTED
+  (measured, not inherited).** The prior Fable session died right after env
+  setup; this session ran the full spike per
+  `docs/spikes/native-gl-jitter-handoff.md`. **Vector: GO** — native residual
+  RMS 0.0056 px vs GL JS baseline 0.0040 px on the identical 150-pose
+  sub-pixel 4K pan (bar: 0.10); re-confirmed 9:16 (0.0060); crispness native
+  ≥ GL JS everywhere. **Satellite/raster: NO-GO as shipped, but localized
+  with no core fork needed** — RMS 0.93 px sawtooth (±0.5 CSS px, period 3.1
+  fr) from `raster_layer_tweaker.cpp:97` `aligned=!state.isChanging()`,
+  always-false in the node binding's still renders. Mechanism proven 3 ways
+  (amplitude+period prediction match; integer-px falsification collapses
+  residual 3,400×; GL JS unpatched reproduces the identical 0.9345 signature).
+  Reachable switch `Map::setGestureInProgress(bool)` is public core API
+  already in the shipped binary — fix = ~15-line node-binding patch /
+  upstream PR; patched-native satellite end state deliberately left
+  UNMEASURED (no "smooth now" claim) pending a from-source binding build.
+  Receipts: `.spike/native-gl/VERDICT.md` + `jitter-report.md` + videos.
+  Color-seam lane untouched by design.
+- **2026-07-02 (cont.) — satellite fix BUILT AND MEASURED: GO.** Built the
+  node binding from source at the same tag (`node-v6.4.1`, upstream preset
+  `macos-metal-node`; from-source build is ~5 min wall, and renders
+  byte-identical to the shipped prebuilt — knob-off jitter stats match to
+  12+ digits) with `expose-setGestureInProgress.patch` (53 lines,
+  `platform/node/src/node_map.{cpp,hpp}` only, zero core changes; verified
+  to also apply clean to node-v6.5.0-pre.1). A/B on the identical harness:
+  raster gesture-ON **RMS 0.0795 px** (bar 0.10; statistically = the GL JS
+  patched-raster 0.0830 our shipped renderer produces for satellite today),
+  vector unchanged (0.00558), no static crispness penalty (Sobel 113.4 vs
+  shipped GL JS 116.1). Production route + integration contract:
+  `.spike/native-gl/PRODUCTION_PATH.md` (prefer upstream PR — not posted,
+  Matthew's call; interim fork rides upstream's node-release.yml prebuilt
+  matrix incl. win32). Both native viability gates (speed 57×, jitter) now
+  green on macOS; full strangle still needs protocol port + cross-engine
+  golden-frame parity gate + HDR-through-native (unstarted).
+- **2026-07-02 (cont. 2) — renderer-strangle lane: MECHANICAL-CORRECTNESS GATE
+  RUN — GO.** Full write-up + numbers: `.spike/native-gl/MECHANICAL_VERDICT.md`.
+  Reference-free/ground-truth only; golden frames deliberately NOT seeded
+  (color lane unresolved — no approved look exists to snapshot).
+  **(1) Temporal on real content:** decorations driven through the REAL
+  `mapVisuals` surface (esbuild bundle of `resolveStaticPaints` /
+  `buildPerFrameState` / `buildAllShapeIcons` / `compileTimeline`; per-frame
+  translation copied verbatim from renderer/index.ts) — decorated vector RMS
+  **0.0056** px (= bare basemap; decorations add zero jitter), decoration-only
+  symbol-isolation **0.0146** (a symbol snap would be 50× larger — none),
+  decorated satellite **0.0665** (= shipped GL JS level 0.0688), bearing
+  **0.0858** / zoom **0.0120** / pitch-45 **0.0057** — all under the 0.10 bar,
+  no sawtooth anywhere. POV marker centroid pixel-stationary at exact buffer
+  center across the pan (both styles). **(2) Colorimetric readback contract:**
+  native buffer = 8-bit RGBA, sRGB-encoded, 14/14 style literals BIT-EXACT,
+  PREMULTIPLIED alpha, gamma-space blending, ratio-invariant — and GL JS
+  gl.readPixels is byte-identical on every probe → CANON §1 ingest anchor
+  carries over with NO contract change. **(3) Semantic parity:** lever model
+  holds exactly on native (aspect: bit-identical decoration bboxes, centroid
+  shift = exact viewport delta; resolution: 2.0× bbox scaling, ≤0.3 px CSS
+  agreement); cross-engine icon placement agrees to ≤0.05 CSS px; the
+  "dashed green trail absent in GL JS" crispness-crop claim was WRONG —
+  root-caused to liberty `park` `fill-outline-color` hairline drawn in BOTH
+  engines pixel-aligned, GL JS at ~54% amplitude (thin-line AA, a look-lane
+  question). **Divergences found (all root-caused, none blocking):** (a)
+  translucent CIRCLE layers draw once per overlapping tile in native
+  (n=2 in tile-buffer bands, n=4 at corners; brightness pops G 138→192 at
+  band crossings — invisible to jitter oracles; POV pulse/halo affected) —
+  **mitigation VALIDATED: `buffer: 0` on point sources → n=1, circle complete**;
+  (b) native rejects the app's empty-LineString placeholder (normalize to
+  empty FeatureCollection); (c) port contracts: NO GeoJSON setData (per-frame
+  remove/re-add measured jitter-free), addImage 1024-texel cap → SDF icons
+  break at pixelRatio>8, addImage takes (id, Buffer, {w,h,pixelRatio,sdf}).
+  Unmeasured, listed in the verdict: Windows/ANGLE, golden frames (deferred to
+  look approval), production-protocol speed, dense-label collision parity,
+  3D buildings, HDR composite fed by native frames. Color-seam lane untouched.
+- **2026-07-02 (cont. 3) — renderer-strangle lane: PRODUCTION PORT LANDED
+  (backend split + native backend), all reference-free gates GREEN; awaiting
+  Matthew's hand-export eyeball (gate d) + cutover sign-off.** The worker
+  (`sidecars/renderer/index.ts`) is now a protocol shell over two backends
+  behind one interface: `chromeBackend.ts` (extracted verbatim, still the
+  DEFAULT) and `nativeBackend.ts` (mbgl in-process, all five port contracts
+  implemented — gesture knob mandatory/loud, buffer:0 on live-marker AND
+  waypoints, empty-LineString normalization at the native boundary,
+  stacking-order-preserving remove/re-add source refresh (binding addLayer
+  has no beforeId — rebuilds the decoration stack from the lowest changed
+  source up), pixelRatio≤8 addImage guard). Engine-agnostic per-frame
+  translation extracted to `scene.ts` (consumed by BOTH backends — parity by
+  shared derivation). SSAA on native = worker-side exact integer box filter,
+  premultiplied gamma space, documented in `nativeBackend.ts` + CANON §2.5
+  (map alpha measured 255 everywhere on both backends; corner mask owns
+  alpha downstream, so premult-vs-straight has zero exposure).
+  Backend select: `TRAILCUT_RENDERER_BACKEND=chrome|native` (typos fail
+  loud); Rust `OrchestratorConfig.renderer_backend` pins per-worker for
+  tests; `TRAILCUT_MBGL_NATIVE_DIR` resolved orchestrator-side like chrome.
+  Binding: patch vendored at `sidecars/renderer/native/` +
+  `ensure-binding.mjs` (verify-or-build-from-source, staged at
+  `src-tauri/binaries/mbgl-native-<triple>/`, wired into build:renderer +
+  CI with cache; upstream PR still NOT posted — draft package written to
+  `.spike/native-gl/UPSTREAM_PR_DRAFT.md` for Matthew's call).
+  **Gates (receipts: `.spike/native-gl/PRODUCTION_WORKER_GATES.md`):**
+  (a) suites green both backends — Vitest 928/7/0, cargo **383**/0/1
+  (+5 orchestrator/native tests incl. 2 native e2e integration tests that
+  panic loudly without the binding; +1 native HDR gate), renderer vitest
+  25/25; (b) spike oracles re-run THROUGH the production worker — jitter
+  vector 0.0188 / satellite 0.0686 px RMS (bar 0.10, production recycle
+  cadence exercised, no sawtooth), colorimetry byte-pins exact (literals +
+  alpha=255 through the native SSAA downsample), placement ≤0.03 CSS px
+  native-vs-chrome, lever invariance exact (bit-identical bboxes across
+  aspect; exact 2× across resolution); waypoints buffer:0 symbol-placement
+  probe PASS (0.000 px icon shift; halo double-draw reproduced at default
+  buffer G=195, fixed at buffer:0 G=135); (c) HDR through native —
+  `tests/native_hdr_composite.rs` (ungated, loud preconditions) drives the
+  REAL `render_export_inner` composite argv with native map frames for
+  SdrH265/HdrHlg/HdrPq: white anchors measured 1.0137 / **0.7511** /
+  **0.5822** vs 1.0 / 0.75 / 0.58 expected. Golden frames still deliberately
+  NOT seeded (color lane unresolved). **Also fixed en route (pre-existing,
+  found while building gate c):** feature-gated integration tests were
+  un-runnable since Phase 1 — stale strip-lists leaked the fixture's
+  `readback` key into project_state (duplicate wire key, last-wins → frame
+  size mismatch; fixed in render_export_{composite,map_only}.rs) and
+  synthetic clips lacked x264 VUI colorimetry (decoded frame props
+  unspecified → zimg 3074 "no path between colorspaces" in the Phase-4
+  ingest; fixed in render_export_{composite,video_only}.rs +
+  native_hdr_composite.rs — real footage always carries VUI tags). Two
+  REMAINING pre-existing failures there, NOT renderer-lane scope, for the
+  Soup-zones/Oracle ledger: composite pip_map_inset content assertion
+  (route:null → null-island ocean ≈ testsrc blue at the sampled pixel) and
+  video_only full-bleed alpha=0 at center (ProRes-alpha path, no map
+  involvement). **NEXT for this lane:** Matthew hand-exports the same
+  project through both backends × {SdrH265, HdrHlg, HdrPq} (flip via
+  `TRAILCUT_RENDERER_BACKEND=native npm run tauri dev`) for the gate-d
+  eyeball; DEFAULT STAYS CHROME until his sign-off + the cross-engine
+  golden-frame gate (blocked on the color lane's approved look). CANON §2.5
+  records the decision + port contracts. PROGRESS/CANON edits left
+  uncommitted alongside the color lane's (staging by path would sweep the
+  color-lane hunks); port code committed separately by explicit path.
+  [SUPERSEDED by the 2026-07-02 cutover entry below — the "cross-engine
+  golden-frame gate blocked on the color lane" clause was a conflation; see
+  the corrected CANON §2.5.]
+- **2026-07-02 (cont. 4) — renderer-strangle lane: CUTOVER EXECUTED. Native
+  is the default and only backend; chrome stripped.** Matthew hand-exported
+  a real project through the native backend, confirmed it works well
+  (informal parity pass), and authorized the cutover. Four commits, in order:
+  **(1) `7dee105`** golden-frame gate extended to native — and the ENTIRE
+  golden gate found ROTTED: the fixture's hand-inlined `mapSettings`
+  predated the camera/route/waypoints/pov restructure, so BOTH engines
+  failed at worker setup; invisible because the gate is feature-flag opt-in
+  (`--features integration_export`) and CI never runs it. Fixture revived —
+  `generate_setup.mjs` now builds its wire shape through the shared
+  `setupFixture.ts` builder (cannot rot silently again; decorations now
+  render in the golden frames), `readback` added to the wire-key
+  strip-lists. Native goldens committed after eyeball vs chrome (only
+  divergence: one dense-label collision outcome). Determinism measured, not
+  assumed: mbgl/Metal wobbles ±1 LSB on 0–10 of 518,400 px across worker
+  boots (byte-identical within one map instance) → native pin allows
+  exactly delta ≤ 1 on ≤ 0.01% of pixels; chrome pin stayed byte-exact
+  while it existed. **(2) `7988c2a`** default flipped to native —
+  `selectBackendName` extracted pure into backend.ts with a unit pin
+  (default=native, loud throw on typos); Rust `OrchestratorConfig` default
+  unchanged (None = inherit env, worker default applies), comments +
+  `default_config_pins_no_backend` updated. Renderer vitest 29/29 with the
+  worker-spawning tests now exercising native (2.3s vs ~30s under chrome).
+  **(3) `8110f70`** chrome STRIPPED: chromeBackend.ts, page bundle
+  (painterPatch.ts et al.), bootstrap.html.ts, trailcutFetch.ts, chrome
+  transport probes + their tests, chrome goldens, CfT download in
+  build.mjs, puppeteer-core/@puppeteer/browsers/pngjs deps,
+  `TRAILCUT_CHROME_BIN` + `chrome_path`/`resolve_chrome` in orchestrator.rs
+  (RendererBackend keeps only Native as the explicit-pin seam),
+  tauri.conf.json resources glob chrome-* → mbgl-native-*.
+  `TRAILCUT_RENDERER_BACKEND` kept as a loud single-value switch ('chrome'
+  throws a removal notice). protocol.test.ts + tileCacheKeyParity.test.ts
+  ported to native (binding-staged precondition; the sha256(originalUrl)
+  disk-key contract stays pinned end-to-end). **(4)** docs: CANON §2.5
+  rewritten to DECIDED/cutover-complete and the gate CONFLATION fixed —
+  the golden gate pins raw renderer frames pre-composite (zero color-lane
+  dependency); only a delivered-HDR-look approval gate needs the color
+  lane, and that stays deferred in the Oracle lane. CANON §6.2 bundling
+  note updated (mbgl-native dir is what task 130 ships now).
+  **Verified after strip:** cargo suites green (zero chrome remnants),
+  frontend Vitest 928/7/0, renderer Vitest 18/18, native golden gate
+  green, feature-gated render_export tests show exactly the two documented
+  pre-existing out-of-lane failures (pip_map_inset content assert;
+  video_only full-bleed alpha) and nothing new. Local-only — NOTHING
+  pushed, per standing rule. Leftover ~600 MB CfT dir at
+  `src-tauri/binaries/chrome-<triple>/` is gitignored; safe to hand-delete.
+  Worker-count default (2) still carries chrome-era tuning — perf
+  follow-up flagged in orchestrator.rs. Color-seam lane untouched (fix C′
+  still uncommitted in the working tree by design).
