@@ -681,6 +681,7 @@ export default function ProjectView({
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
                 aspect={previewAspectToAspectRatio(previewAspect)}
+                layouts={projectLayouts}
                 onSelectClip={handleSelectClip}
               />
               <div

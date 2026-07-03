@@ -53,18 +53,60 @@ export const OUTPUT_DIMS: Record<AspectRatio, OutputDimensions> = {
   '16_9': outputDims('16_9', '1080p'),
 };
 
-/** The CSS width at which `mapSettings.zoom` is calibrated in the preview UI.
- *  1080 for 9_16 / 4_5, 1920 for 16_9. The preview's `MapView` compensates a
- *  pane that is not this width by `+ log2(paneCssWidth / canonicalMapCssWidth)`
- *  so the framing matches what the 1080p export of that aspect produces — see
- *  `src/components/MapView.tsx` (the `displayZoom` write near the per-frame
- *  loop). The renderer worker no longer lays the map out at this width; under
- *  the lever model (see `canonicalMapViewport`) the renderer's cssViewport
- *  matches the slot shape, and the resolution shift rides on `pixelRatio`.
- *  Mirror of `canonical_map_css_width` in `src-tauri/src/export/layout.rs`. */
+/** The CSS width of the canonical (1080p-class) frame for an aspect.
+ *  1080 for 9_16 / 4_5, 1920 for 16_9. `mapSettings.zoom` and every
+ *  decoration-size fraction are denominated in this canonical CSS space —
+ *  the "reference space" — and exports render in it directly (aspect sets
+ *  the frame shape, the layout's map slot crops the map's window into it,
+ *  `pixelRatio` absorbs output resolution). The preview does NOT interpret
+ *  the knob in its own pane pixels: `MapView` displays the reference space
+ *  at the fixed factor `previewDisplayScale` (fullscreen-fit on the current
+ *  screen), so pane resizes reveal/crop geography without changing perceived
+ *  scale. Mirror of `canonical_map_css_width` in
+ *  `src-tauri/src/export/layout.rs`. */
 export function canonicalMapCssWidth(aspect: AspectRatio): number {
   // 1080p is the canonical map zoom reference resolution.
   return outputDims(aspect, '1080p').w;
+}
+
+/** Canonical (1080p-class) CSS dims of an aspect's MAP SLOT under a layout.
+ *  This is the CSS viewport the export renderer lays the map out at (see
+ *  `canonicalMapViewport`: at 1080p the multiplier is 1, so cssW/cssH equal
+ *  the 1080p slot dims exactly; other resolutions differ only by ±1 px of
+ *  divider rounding). The preview resolves camera intents — region fits in
+ *  particular — against THIS viewport, not the full canonical frame and not
+ *  the live pane, so a "fit these bounds" intent produces the same zoom the
+ *  export band will use. `null` layout falls back to `defaultLayout(aspect)`,
+ *  mirroring the export pipeline's fallback for cleared aspects. */
+export function canonicalSlotCss(
+  layout: LayoutConfig | null,
+  aspect: AspectRatio,
+): { w: number; h: number } {
+  const resolved = resolveSlots(layout ?? defaultLayout(aspect), aspect, '1080p');
+  return { w: resolved.map_slot.w, h: resolved.map_slot.h };
+}
+
+/** The preview pane's fixed display scale: how many on-screen CSS pixels one
+ *  reference-space unit occupies. Defined as the fullscreen-fit factor of
+ *  the aspect's canonical frame on the given screen — i.e. the scale the
+ *  export video has when played fullscreen (or fit-to-screen) on this
+ *  display. Anchoring the pane to this factor is what makes the preview's
+ *  perceived zoom / decoration size match played-back exports to the naked
+ *  eye; because it depends only on (aspect, screen), dragging the pane
+ *  larger or smaller reveals or crops geography without rescaling it.
+ *
+ *  The stored knob values never see this factor — it is display-only.
+ *  Exports always render the reference space at scale 1, so the same
+ *  project produces identical exports on every machine. Degenerate screen
+ *  dims fall back to 1 (reference scale). */
+export function previewDisplayScale(
+  aspect: AspectRatio,
+  screenW: number,
+  screenH: number,
+): number {
+  if (!(screenW > 0) || !(screenH > 0)) return 1;
+  const frame = outputDims(aspect, '1080p');
+  return Math.min(screenW / frame.w, screenH / frame.h);
 }
 
 /** Result of `canonicalMapViewport`. `cssW`/`cssH` are integer CSS-pixel dims

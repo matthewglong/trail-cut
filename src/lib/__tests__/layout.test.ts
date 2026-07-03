@@ -11,6 +11,8 @@ import {
   OUTPUT_DIMS,
   canonicalMapCssWidth,
   canonicalMapViewport,
+  canonicalSlotCss,
+  previewDisplayScale,
   outputDims,
   resolveSlots,
   defaultLayout,
@@ -486,6 +488,101 @@ describe('synthesizeLayoutForMode', () => {
     };
     expect(synthesizeLayoutForMode('split', '9_16', hint)).toEqual(
       defaultSplitLayout('9_16'),
+    );
+  });
+});
+
+// -- Reference-space display helpers (preview↔export scale honesty) ----------
+//
+// `canonicalSlotCss` is the preview's intent-resolution viewport;
+// `previewDisplayScale` is the pane's fixed display factor. Together they
+// implement the reference-space model: exports render the canonical
+// 1080p-class space verbatim, the pane shows that space at fullscreen-fit
+// scale for the current screen. These pins guard both halves.
+
+describe('canonicalSlotCss', () => {
+  const aspects: AspectRatio[] = ['9_16', '4_5', '16_9'];
+
+  for (const aspect of aspects) {
+    it(`${aspect}: null layout falls back to defaultLayout, dims match resolveSlots @1080p`, () => {
+      const expected = resolveSlots(defaultLayout(aspect), aspect, '1080p').map_slot;
+      expect(canonicalSlotCss(null, aspect)).toEqual({
+        w: expected.w,
+        h: expected.h,
+      });
+    });
+
+    it(`${aspect}: equals the renderer's cssViewport derivation at 1080p (lever-model parity)`, () => {
+      // The export worker lays the map out at canonicalMapViewport(...) css
+      // dims. At 1080p the multiplier is exactly 1, so the preview's intent
+      // viewport must equal it exactly — region fits then produce the same
+      // zoom on both surfaces.
+      const layout = defaultSplitLayout(aspect);
+      const slotPx = resolveSlots(layout, aspect, '1080p').map_slot;
+      const rendererViewport = canonicalMapViewport(aspect, slotPx.w, slotPx.h, '1080p');
+      const previewViewport = canonicalSlotCss(layout, aspect);
+      expect(previewViewport.w).toBe(rendererViewport.cssW);
+      expect(previewViewport.h).toBe(rendererViewport.cssH);
+      expect(rendererViewport.pixelRatio).toBe(1);
+    });
+  }
+
+  it('respects an explicit pip layout (map inset dims, not the frame)', () => {
+    const pip = defaultPipLayout('9_16');
+    const expected = resolveSlots(pip, '9_16', '1080p').map_slot;
+    const slot = canonicalSlotCss(pip, '9_16');
+    expect(slot).toEqual({ w: expected.w, h: expected.h });
+    // Sanity: a map inset is strictly smaller than the frame.
+    const frame = outputDims('9_16', '1080p');
+    expect(slot.w).toBeLessThan(frame.w);
+    expect(slot.h).toBeLessThan(frame.h);
+  });
+});
+
+describe('previewDisplayScale', () => {
+  // 14" MacBook Pro default scaled resolution — the measured reference
+  // display from the B2 characterization (docs/ship-review/PROGRESS.md).
+  const SCREEN_W = 1512;
+  const SCREEN_H = 982;
+
+  it('9_16 on a landscape laptop display is height-limited (982 / 1920)', () => {
+    expect(previewDisplayScale('9_16', SCREEN_W, SCREEN_H)).toBeCloseTo(
+      982 / 1920,
+      12,
+    );
+  });
+
+  it('16_9 on the same display is width-limited (1512 / 1920)', () => {
+    expect(previewDisplayScale('16_9', SCREEN_W, SCREEN_H)).toBeCloseTo(
+      1512 / 1920,
+      12,
+    );
+  });
+
+  it('4_5 on the same display is height-limited (982 / 1350)', () => {
+    expect(previewDisplayScale('4_5', SCREEN_W, SCREEN_H)).toBeCloseTo(
+      982 / 1350,
+      12,
+    );
+  });
+
+  it('can exceed 1 on displays larger than the canonical frame', () => {
+    // 16:9 canonical frame is 1920×1080; a 2560×1440 display fits it at 4/3.
+    expect(previewDisplayScale('16_9', 2560, 1440)).toBeCloseTo(4 / 3, 12);
+  });
+
+  it('degenerate screen dims fall back to reference scale 1', () => {
+    expect(previewDisplayScale('9_16', 0, 982)).toBe(1);
+    expect(previewDisplayScale('9_16', 1512, 0)).toBe(1);
+    expect(previewDisplayScale('9_16', NaN, 982)).toBe(1);
+  });
+
+  it('is independent of any pane geometry by construction (signature takes only aspect + screen)', () => {
+    // Two calls with the same (aspect, screen) are identical — the pane's
+    // size never enters the math. This is the window-semantics guarantee:
+    // dragging the pane cannot change perceived scale.
+    expect(previewDisplayScale('9_16', SCREEN_W, SCREEN_H)).toBe(
+      previewDisplayScale('9_16', SCREEN_W, SCREEN_H),
     );
   });
 });

@@ -150,6 +150,7 @@ export function buildPerFramePaints(
   activeWaypointIndex: number | null,
   projectTimeMs: number,
   mapSettings: MapSettings,
+  surfaceScale: number = 1,
 ): PaintUpdates {
   const pulse = pulsePairAt(projectTimeMs, mapSettings);
 
@@ -157,11 +158,16 @@ export function buildPerFramePaints(
   // The user-facing knob is `circle_radius` (in 1080-anchored fractions).
   // For SDF symbols, the equivalent rendered size is
   // `(target_radius / SHAPE_CANONICAL_RADIUS)` (icon-size multiplier).
+  // `surfaceScale` rides the same anchor as in `resolveStaticPaints`: the
+  // export renderer omits it (scale 1, byte-identical values); the preview
+  // passes its fixed display scale so per-frame sizes (icon bumps, halo,
+  // pulse rings) minify in lockstep with the statically-seeded ones.
+  const anchor = PAINT_REFERENCE_WIDTH * surfaceScale;
   const defaultIconSize =
-    (mapSettings.waypoints.size.circle_radius * PAINT_REFERENCE_WIDTH) /
+    (mapSettings.waypoints.size.circle_radius * anchor) /
     SHAPE_CANONICAL_RADIUS;
   const activeIconSize =
-    (mapSettings.waypoints.size.active_radius * PAINT_REFERENCE_WIDTH) /
+    (mapSettings.waypoints.size.active_radius * anchor) /
     SHAPE_CANONICAL_RADIUS;
 
   // ---- Color slots ----
@@ -235,9 +241,9 @@ export function buildPerFramePaints(
         sortKeyExpr as DataDrivenPropertyValueSpecification<number>,
       waypointPlacementKey:
         placementKeyExpr as DataDrivenPropertyValueSpecification<number>,
-      pulseRadius: pulse.a.radius,
+      pulseRadius: pulse.a.radius * surfaceScale,
       pulseOpacity: pulse.a.opacity,
-      pulseRadiusB: pulse.b.radius,
+      pulseRadiusB: pulse.b.radius * surfaceScale,
       pulseOpacityB: pulse.b.opacity,
       dotOpacity: pulse.a.dotOpacity,
     };

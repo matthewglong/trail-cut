@@ -652,3 +652,90 @@ describe('live marker layers', () => {
     );
   });
 });
+
+// -- surfaceScale (preview display factor) ------------------------------------
+//
+// The preview renders the reference space at a fixed display scale; it passes
+// that factor here so decoration sizes minify with the world. The export
+// renderer omits the argument — scale 1 MUST be byte-identical to the
+// pre-scale behavior (golden-frame gate depends on it).
+
+describe('resolveStaticPaints — surfaceScale', () => {
+  const SIZE_PAINT_PROPS = new Set([
+    'line-width',
+    'circle-radius',
+    'circle-stroke-width',
+  ]);
+
+  it('omitting the argument is exactly scale 1 (renderer identity)', () => {
+    expect(resolveStaticPaints(minimal)).toEqual(resolveStaticPaints(minimal, 1));
+  });
+
+  it('scale 0.5 halves every size paint and leaves colors untouched', () => {
+    const ref = resolveStaticPaints(minimal, 1);
+    const scaled = resolveStaticPaints(minimal, 0.5);
+    expect(scaled.paints.length).toBe(ref.paints.length);
+    for (let i = 0; i < ref.paints.length; i++) {
+      const [layer, prop, value] = ref.paints[i];
+      const [sLayer, sProp, sValue] = scaled.paints[i];
+      expect(sLayer).toBe(layer);
+      expect(sProp).toBe(prop);
+      if (SIZE_PAINT_PROPS.has(prop)) {
+        expect(typeof value).toBe('number');
+        expect(sValue).toBeCloseTo((value as number) * 0.5, 12);
+      } else {
+        // Color strings ride through unscaled.
+        expect(sValue).toEqual(value);
+      }
+    }
+  });
+
+  it('scale 0.5 halves text-size and icon-size layouts; visibility and expressions are unchanged', () => {
+    const ref = resolveStaticPaints(minimal, 1);
+    const scaled = resolveStaticPaints(minimal, 0.5);
+    expect(scaled.layouts.length).toBe(ref.layouts.length);
+    for (let i = 0; i < ref.layouts.length; i++) {
+      const [layer, prop, value] = ref.layouts[i];
+      const [sLayer, sProp, sValue] = scaled.layouts[i];
+      expect(sLayer).toBe(layer);
+      expect(sProp).toBe(prop);
+      if (prop === 'text-size' || prop === 'icon-size') {
+        expect(typeof value).toBe('number');
+        expect(sValue).toBeCloseTo((value as number) * 0.5, 12);
+      } else {
+        expect(sValue).toEqual(value);
+      }
+    }
+  });
+
+  it('gradients are scale-free (identical expressions at any scale)', () => {
+    const gradientSettings: MapSettings = {
+      ...minimal,
+      route: {
+        ...minimal.route,
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#ff0000' },
+            { fraction: 1, color: '#00ff00' },
+          ],
+        },
+      },
+    };
+    const ref = resolveStaticPaints(gradientSettings, 1);
+    const scaled = resolveStaticPaints(gradientSettings, 0.5);
+    expect(scaled.gradients).toEqual(ref.gradients);
+  });
+
+  it('scaling is linear in the factor (2× of 0.5× returns to reference)', () => {
+    const half = resolveStaticPaints(minimal, 0.5);
+    const ref = resolveStaticPaints(minimal, 1);
+    for (let i = 0; i < ref.paints.length; i++) {
+      const [, prop, value] = ref.paints[i];
+      const [, , halfValue] = half.paints[i];
+      if (SIZE_PAINT_PROPS.has(prop)) {
+        expect((halfValue as number) * 2).toBeCloseTo(value as number, 12);
+      }
+    }
+  });
+});

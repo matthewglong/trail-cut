@@ -15,6 +15,7 @@ import type { Clip, MapSettings, Waypoint } from '../../types';
 import {
   cameraAt,
   resolveIntent,
+  withDisplayScale,
   type CompiledTimeline,
   type Viewport,
 } from '../cameraIntent';
@@ -95,11 +96,21 @@ function wallClockTrace(
 }
 
 /** Compose a single per-frame snapshot. Both renderer and preview call
- *  this — the preview consumes the result directly since paints are
- *  pane-invariant.
+ *  this and consume the result directly.
+ *
+ *  `viewport` is the REFERENCE-SPACE viewport intents resolve against — the
+ *  aspect's canonical map-slot CSS dims on both surfaces (the renderer's
+ *  cssViewport; `canonicalSlotCss` preview-side), never the live pane.
+ *  `surfaceScale` is the consuming surface's CSS-px-per-reference-unit
+ *  factor: the renderer omits it (scale 1 — camera and paints come back
+ *  byte-identical to the pre-scale behavior), the preview passes its fixed
+ *  `previewDisplayScale`. The returned camera carries the `+ log2(scale)`
+ *  display offset and the returned paints the matching `× scale`, so a
+ *  consumer just applies the snapshot — decoration ground footprints and
+ *  geographic framing then agree across surfaces by construction.
  *
  *  Camera: `cameraAt(timeline, projectTimeMs)` → `resolveIntent(intent,
- *  viewport)`.
+ *  viewport)` → `withDisplayScale(camera, surfaceScale)`.
  *
  *  Sources: `route-trail`, `live-marker`, and (when `waypoints_mode ===
  *  'visited'`) `waypoints`. See `buildPerFrameSourceData` for the
@@ -119,9 +130,10 @@ export function buildPerFrameState(
   waypoints: Waypoint[],
   mapSettings: MapSettings,
   viewport: Viewport,
+  surfaceScale: number = 1,
 ): PerFrameState {
   const intent = cameraAt(timeline, projectTimeMs);
-  const camera = resolveIntent(intent, viewport);
+  const camera = withDisplayScale(resolveIntent(intent, viewport), surfaceScale);
 
   const trace = wallClockTrace(projectTimeMs, timeline);
 
@@ -158,6 +170,7 @@ export function buildPerFrameState(
     activeWaypointIndex,
     projectTimeMs,
     mapSettings,
+    surfaceScale,
   );
 
   return { camera, sources, paints };

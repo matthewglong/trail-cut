@@ -430,6 +430,22 @@ export function resolveIntent(
   }
 }
 
+/** Re-express a reference-space camera at a display surface's fixed scale.
+ *  `surfaceScale` is CSS-px-per-reference-unit (see `previewDisplayScale`
+ *  in `lib/layout.ts`): the preview pane shows the reference space minified
+ *  (or magnified) by this factor, so its MapLibre camera needs
+ *  `zoom + log2(scale)` for a ground feature to occupy `scale ×` its
+ *  reference-space pixels. Center / bearing / pitch are scale-invariant.
+ *  Scale 1 is the identity (the export renderer's case) — returned
+ *  reference-equal so parity pins can assert no-op exactly. */
+export function withDisplayScale(
+  camera: ResolvedCamera,
+  surfaceScale: number,
+): ResolvedCamera {
+  if (surfaceScale === 1) return camera;
+  return { ...camera, zoom: camera.zoom + Math.log2(surfaceScale) };
+}
+
 /** Canonical 1024×1024 viewport used for cross-clip transition arcs.
  *  Transition endpoints are intrinsically not viewport-aware — the
  *  evaluator must produce a single arc that the renderer can later re-frame

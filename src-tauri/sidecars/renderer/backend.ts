@@ -20,11 +20,13 @@ import type { Clip, Route, MapSettings, Waypoint } from '../../../src/types';
 
 export interface SetupCmd {
   cmd: 'setup';
-  /** CSS-pixel viewport dimensions the renderer is laid out at. `w`
-   *  always equals `canonicalMapCssWidth(aspect)`; `h` is derived from the
-   *  framebuffer height divided by `pixelRatio` so map_slot's own aspect
-   *  (which can differ from the full export's aspect in composite layouts)
-   *  is preserved. */
+  /** CSS-pixel viewport dimensions the renderer is laid out at: the MAP
+   *  SLOT's canonical (1080p-class) CSS dims under the lever model —
+   *  `canonicalMapViewport` in `src/lib/layout.ts` (slot px ÷ resolution
+   *  multiplier), NOT the full frame's `canonicalMapCssWidth`. This is the
+   *  reference space: zoom and decoration sizes apply verbatim in it, and
+   *  the preview resolves intents against the same dims
+   *  (`canonicalSlotCss`) while displaying at its own fixed scale. */
   cssViewport: { w: number; h: number };
   /** High-res drawing buffer the renderer paints into — the map slot
    *  pixel dims × the SSAA supersample factor. */

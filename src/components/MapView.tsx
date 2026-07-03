@@ -4,12 +4,15 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Clip, Route, MapSettings, Waypoint } from '../types';
 import {
   resolveIntent,
+  withDisplayScale,
   type CompiledTimeline,
   type Viewport,
 } from '../lib/cameraIntent';
 import {
-  outputDims,
+  canonicalSlotCss,
+  previewDisplayScale,
   type AspectRatio,
+  type ProjectLayouts,
 } from '../lib/layout';
 import { indexRoute } from '../lib/routeLocation';
 import { livePlayheadMs } from '../lib/livePlayhead';
@@ -68,14 +71,24 @@ interface MapViewProps {
   /** First-class waypoints (schema v7). Drives the `waypoints` GeoJSON
    *  source — replaces the old "iterate clips at render time" model. */
   waypoints: Waypoint[];
-  /** Selected export aspect — drives the *canonical* CSS viewport that
-   *  `mapSettings.zoom` is interpreted against. The preview applies that
-   *  zoom directly (no pane-reshape compensation); making the pane wider or
-   *  narrower reveals more / crops geography rather than scaling it, so
-   *  overlay sizes and meters-per-CSS-pixel stay invariant. The preview is
-   *  pixel-identical to the 1080p export only when the pane equals the
-   *  aspect's canonical width. */
+  /** Selected export aspect. Together with `layouts` it fixes the two
+   *  display-side constants of the reference-space model:
+   *  (1) the canonical map-slot CSS viewport camera intents resolve against
+   *  (`canonicalSlotCss` — the same viewport the export renderer uses, so
+   *  region fits produce the export band's zoom), and (2) the pane's fixed
+   *  display scale (`previewDisplayScale` — the fullscreen-fit factor of
+   *  the aspect's canonical frame on the current screen). The pane renders
+   *  the reference space at that fixed scale: `zoom + log2(scale)` and
+   *  decoration paints `× scale`, both threaded through mapVisuals. Making
+   *  the pane wider or narrower reveals more / crops geography and never
+   *  rescales it; perceived zoom and decoration size match the export as
+   *  played fullscreen on this display. */
   aspect: AspectRatio;
+  /** Per-aspect layout configs — `layouts[aspect]` (or the default layout
+   *  when null) determines the canonical map-slot dims above. Passing the
+   *  whole record keeps this component's derivation identical to the export
+   *  pipeline's `resolve_slots` fallback semantics. */
+  layouts: ProjectLayouts;
   onSelectClip?: (clipId: string) => void;
 }
 
@@ -89,6 +102,7 @@ export default function MapView({
   playheadMs,
   mapSettings,
   aspect,
+  layouts,
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
@@ -114,13 +128,32 @@ export default function MapView({
   const [devicePixelRatio, setDevicePixelRatio] = useState(() =>
     typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1,
   );
+  // Screen CSS dims feed `previewDisplayScale` (fullscreen-fit factor of the
+  // aspect's canonical frame on THIS display). Tracked as state alongside
+  // DPR: a cross-monitor drag flips the matchMedia below, which is also the
+  // moment the screen dims can change. Same-DPR monitor moves are not
+  // observable this way — the stale factor persists until the next DPR flip
+  // or remount, an accepted approximation (the factor is a viewing-scale
+  // convention, not a correctness input to exports).
+  const [screenDims, setScreenDims] = useState(() =>
+    typeof window === 'undefined'
+      ? { w: 0, h: 0 }
+      : { w: window.screen.width, h: window.screen.height },
+  );
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const mq = window.matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
-    const onChange = () => setDevicePixelRatio(window.devicePixelRatio || 1);
+    const onChange = () => {
+      setDevicePixelRatio(window.devicePixelRatio || 1);
+      setScreenDims({ w: window.screen.width, h: window.screen.height });
+    };
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, [devicePixelRatio]);
+  // The pane's fixed display scale: CSS px per reference-space unit.
+  // Depends only on (aspect, screen) — never the pane's size — so dragging
+  // the pane reveals/crops geography at constant perceived scale.
+  const displayScale = previewDisplayScale(aspect, screenDims.w, screenDims.h);
 
   // Tracks the last route reference we framed via the region-intent jumpTo
   // below. Idempotence guard: we only refit once per unique route.
@@ -160,6 +193,14 @@ export default function MapView({
   useEffect(() => {
     aspectRef.current = aspect;
   }, [aspect]);
+  const layoutsRef = useRef(layouts);
+  useEffect(() => {
+    layoutsRef.current = layouts;
+  }, [layouts]);
+  const displayScaleRef = useRef(displayScale);
+  useEffect(() => {
+    displayScaleRef.current = displayScale;
+  }, [displayScale]);
   // `activeClipId` is no longer consumed by the render loop (v7 active-
   // waypoint logic uses `mapSettings.active_waypoint_mode` against the
   // marker's wall-clock instead). The prop is kept on `MapViewProps` for
@@ -446,29 +487,33 @@ export default function MapView({
         // Skip degenerate routes (single point or zero extent on either axis)
         // — `cameraForBounds` would return -Infinity zoom on a zero span.
         if (Number.isFinite(minLng) && maxLng > minLng && maxLat > minLat) {
-          // Resolve the region intent against the *canonical* CSS viewport
-          // for the selected export aspect — same viewport the renderer
-          // uses. `mapSettings.zoom` (and the region-fit zoom) mean
-          // "MapLibre zoom at the 1080p canonical width," applied verbatim
-          // without pane-reshape compensation.
-          const canonical1080 = outputDims(aspect, '1080p');
-          const canonicalCssViewport: Viewport = {
-            width: canonical1080.w,
-            height: canonical1080.h,
+          // Resolve the region intent against the aspect's canonical MAP
+          // SLOT CSS dims — the same viewport the export renderer resolves
+          // intents against (its cssViewport is the slot shape under the
+          // lever model), so this fit lands on the zoom the export band
+          // will use. Then re-express the resulting reference-space camera
+          // at the pane's fixed display scale.
+          const slot = canonicalSlotCss(layouts[aspect], aspect);
+          const slotCssViewport: Viewport = {
+            width: slot.w,
+            height: slot.h,
             dpr: 1,
           };
-          const target = resolveIntent(
-            {
-              kind: 'region',
-              bounds: {
-                sw: { lng: minLng, lat: minLat },
-                ne: { lng: maxLng, lat: maxLat },
+          const target = withDisplayScale(
+            resolveIntent(
+              {
+                kind: 'region',
+                bounds: {
+                  sw: { lng: minLng, lat: minLat },
+                  ne: { lng: maxLng, lat: maxLat },
+                },
+                padding: 0.06,
+                bearing: 0,
+                pitch: 0,
               },
-              padding: 0.06,
-              bearing: 0,
-              pitch: 0,
-            },
-            canonicalCssViewport,
+              slotCssViewport,
+            ),
+            displayScale,
           );
           map.jumpTo({
             center: [target.center.lng, target.center.lat],
@@ -481,7 +526,7 @@ export default function MapView({
     };
 
     if (styleReadyRef.current) apply();
-  }, [route, clips, mapSettings, styleVersion, aspect]);
+  }, [route, clips, mapSettings, styleVersion, aspect, layouts, displayScale]);
 
   // ---- Apply static layer paints + layouts ----
   // `resolveStaticPaints(mapSettings)` is the single source of truth for
@@ -504,7 +549,10 @@ export default function MapView({
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
-      const resolved = resolveStaticPaints(mapSettings);
+      // The pane's fixed display scale rides through the resolver — both
+      // surfaces still apply exactly what mapVisuals returns (the renderer
+      // resolves at scale 1); see resolveStaticPaints' surfaceScale doc.
+      const resolved = resolveStaticPaints(mapSettings, displayScale);
       for (const [layerId, prop, value] of resolved.paints) {
         if (!map.getLayer(layerId)) continue;
         map.setPaintProperty(layerId, prop, value);
@@ -525,7 +573,7 @@ export default function MapView({
       }
     };
     if (styleReadyRef.current) apply();
-  }, [styleVersion, mapSettings]);
+  }, [styleVersion, mapSettings, displayScale]);
 
   // ---- Re-rasterize SDF outline icons on stroke / radius change ----
   // The outline thickness is baked into the secondary SDF icon at rasterize
@@ -617,17 +665,20 @@ export default function MapView({
       // (user clicks a clip without playing).
       const projectTimeMs =
         livePlayheadMs.current ?? currentProjectMsRef.current ?? 0;
-      // Resolve intents against the *canonical* CSS viewport for the
-      // selected export aspect — same viewport the renderer uses.
-      // `mapSettings.zoom` means "MapLibre zoom at the 1080p canonical CSS
-      // width for this aspect," applied verbatim to the preview. Pane
-      // reshape reveals/crops geography rather than scaling it, so
-      // meters-per-CSS-pixel stays constant.
+      // Resolve intents against the aspect's canonical MAP SLOT CSS dims —
+      // the identical viewport the export renderer resolves against (its
+      // cssViewport is the slot shape under the lever model), so region
+      // fits produce the export band's zoom. `mapSettings.zoom` means
+      // "MapLibre zoom in the canonical 1080p-class reference space";
+      // `buildPerFrameState` re-expresses the resolved camera and paints at
+      // the pane's fixed display scale (surfaceScale). Pane reshape still
+      // reveals/crops geography rather than scaling it — the scale depends
+      // only on (aspect, screen).
       const currentAspect = aspectRef.current;
-      const canonical1080 = outputDims(currentAspect, '1080p');
-      const canonicalCssViewport: Viewport = {
-        width: canonical1080.w,
-        height: canonical1080.h,
+      const slot = canonicalSlotCss(layoutsRef.current[currentAspect], currentAspect);
+      const slotCssViewport: Viewport = {
+        width: slot.w,
+        height: slot.h,
         dpr: 1,
       };
       const state = buildPerFrameState(
@@ -637,7 +688,8 @@ export default function MapView({
         clipsRef.current,
         waypointsRef.current,
         mapSettingsRef.current,
-        canonicalCssViewport,
+        slotCssViewport,
+        displayScaleRef.current,
       );
 
       map.jumpTo({

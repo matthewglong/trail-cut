@@ -398,11 +398,27 @@ export interface ResolvedStaticPaints {
  *  function; both the renderer worker and the preview `MapView` call this
  *  after style.load (and again whenever any overlay field — project default
  *  or per-clip override — changes). The layer specs ship placeholder `1`s,
- *  so this seeding step is mandatory for visible output. */
+ *  so this seeding step is mandatory for visible output.
+ *
+ *  `surfaceScale` is the consuming surface's CSS-px-per-reference-unit
+ *  factor. The export renderer's cssViewport IS the reference space, so it
+ *  omits the argument (scale 1 — every emitted size is then exactly
+ *  `fraction × PAINT_REFERENCE_WIDTH`, byte-identical to the pre-scale
+ *  behavior). The preview pane displays the reference space at
+ *  `previewDisplayScale` (see `lib/layout.ts`) and passes that factor here
+ *  so decoration sizes minify with the world; pairing it with the
+ *  `withDisplayScale` zoom offset keeps every decoration's GROUND footprint
+ *  identical between pane and export. Scaling through this resolver — never
+ *  ad-hoc in MapView — is what keeps the single-source-of-truth contract:
+ *  both surfaces still apply exactly what this function returns. */
 export function resolveStaticPaints(
   mapSettings: MapSettings,
+  surfaceScale: number = 1,
 ): ResolvedStaticPaints {
-  const w = PAINT_REFERENCE_WIDTH;
+  // Every size-like value below is linear in `w`, so the surface factor
+  // rides the anchor: one lever, no per-tuple special cases. Colors,
+  // visibility, and expressions are scale-free by construction.
+  const w = PAINT_REFERENCE_WIDTH * surfaceScale;
   // Waypoint label expression. 'numbered' renders the 1-based index;
   // 'labeled' renders the feature's `label` string verbatim (empty labels
   // render nothing — the "sparse map" semantic). Both sides resolve through

@@ -610,3 +610,106 @@ describe('buildPerFrameState waypoints visibility', () => {
     }
   });
 });
+
+// -- surfaceScale (preview display factor) ------------------------------------
+//
+// The preview passes its fixed display scale; the export renderer omits the
+// argument. Scale 1 must be an exact no-op (the golden-frame gate renders
+// through the defaulted path), and any other factor must move zoom by
+// log2(scale) and sizes by ×scale in lockstep — that pairing is what keeps a
+// decoration's ground footprint identical between pane and export.
+
+import { buildPerFramePaints } from '../paints';
+import { withDisplayScale, type ResolvedCamera } from '../../cameraIntent';
+
+describe('buildPerFrameState — surfaceScale', () => {
+  it('omitting the argument is exactly scale 1 (renderer identity)', () => {
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const t = 1234;
+    const defaulted = buildPerFrameState(
+      timeline, t, null, clips, waypoints, POINT_SETTINGS, VIEWPORT,
+    );
+    const explicit = buildPerFrameState(
+      timeline, t, null, clips, waypoints, POINT_SETTINGS, VIEWPORT, 1,
+    );
+    expect(defaulted).toEqual(explicit);
+  });
+
+  it('scale 0.5 shifts zoom by exactly -1 and leaves center/bearing/pitch alone', () => {
+    const { clips, waypoints, timeline } = twoClipFixture();
+    const t = 1234;
+    const ref = buildPerFrameState(
+      timeline, t, null, clips, waypoints, POINT_SETTINGS, VIEWPORT,
+    );
+    const scaled = buildPerFrameState(
+      timeline, t, null, clips, waypoints, POINT_SETTINGS, VIEWPORT, 0.5,
+    );
+    expect(scaled.camera.zoom).toBeCloseTo(ref.camera.zoom - 1, 12);
+    expect(scaled.camera.center).toEqual(ref.camera.center);
+    expect(scaled.camera.bearing).toBe(ref.camera.bearing);
+    expect(scaled.camera.pitch).toBe(ref.camera.pitch);
+    // Sources are geometry, not presentation — scale-free.
+    expect(scaled.sources).toEqual(ref.sources);
+  });
+});
+
+describe('buildPerFramePaints — surfaceScale', () => {
+  it('no-active scalar sizes scale linearly; opacities and colors do not', () => {
+    const ref = buildPerFramePaints(null, null, 500, POINT_SETTINGS);
+    const scaled = buildPerFramePaints(null, null, 500, POINT_SETTINGS, 0.5);
+    expect(typeof ref.waypointIconSize).toBe('number');
+    expect(scaled.waypointIconSize).toBeCloseTo(
+      (ref.waypointIconSize as number) * 0.5,
+      12,
+    );
+    expect(scaled.pulseRadius).toBeCloseTo(ref.pulseRadius * 0.5, 12);
+    expect(scaled.pulseRadiusB).toBeCloseTo(ref.pulseRadiusB * 0.5, 12);
+    expect(scaled.pulseOpacity).toBe(ref.pulseOpacity);
+    expect(scaled.pulseOpacityB).toBe(ref.pulseOpacityB);
+    expect(scaled.dotOpacity).toBe(ref.dotOpacity);
+    expect(scaled.waypointPrimaryColor).toEqual(ref.waypointPrimaryColor);
+    expect(scaled.waypointSecondaryColor).toEqual(ref.waypointSecondaryColor);
+  });
+
+  it('active-state expressions carry scaled size arms (icon bump + halo)', () => {
+    const ref = buildPerFramePaints('wp-1', 0, 500, POINT_SETTINGS);
+    const scaled = buildPerFramePaints('wp-1', 0, 500, POINT_SETTINGS, 0.5);
+    // icon-size case expression: ['case', <match>, activeSize, defaultSize]
+    const refExpr = ref.waypointIconSize as unknown[];
+    const scaledExpr = scaled.waypointIconSize as unknown[];
+    expect(refExpr[0]).toBe('case');
+    expect(scaledExpr[2]).toBeCloseTo((refExpr[2] as number) * 0.5, 12);
+    expect(scaledExpr[3]).toBeCloseTo((refExpr[3] as number) * 0.5, 12);
+    // halo radius case expression: ['case', <match>, radius, 0]
+    const refHalo = ref.waypointHaloRadius as unknown[];
+    const scaledHalo = scaled.waypointHaloRadius as unknown[];
+    expect(scaledHalo[2]).toBeCloseTo((refHalo[2] as number) * 0.5, 12);
+    expect(scaledHalo[3]).toBe(0);
+  });
+});
+
+describe('withDisplayScale', () => {
+  const cam: ResolvedCamera = {
+    center: { lng: -122.4, lat: 37.77 },
+    zoom: 15,
+    bearing: 30,
+    pitch: 60,
+  };
+
+  it('scale 1 returns the SAME reference (exact renderer no-op)', () => {
+    expect(withDisplayScale(cam, 1)).toBe(cam);
+  });
+
+  it('offsets zoom by log2(scale), preserving everything else', () => {
+    const out = withDisplayScale(cam, 0.5114583333333333);
+    expect(out.zoom).toBeCloseTo(15 + Math.log2(0.5114583333333333), 12);
+    expect(out.center).toEqual(cam.center);
+    expect(out.bearing).toBe(cam.bearing);
+    expect(out.pitch).toBe(cam.pitch);
+  });
+
+  it('a magnifying display (scale > 1) raises zoom', () => {
+    const out = withDisplayScale(cam, 4 / 3);
+    expect(out.zoom).toBeGreaterThan(cam.zoom);
+  });
+});
