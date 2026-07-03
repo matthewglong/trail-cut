@@ -2181,3 +2181,356 @@ fn composite_chains_verbose_dry_run_no_silent_chroma_downconvert() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Decoration-crispness delivery gate (2026-07-03).
+//
+// Map decorations (POV dot, pulse rings, trail line, waypoint marks) are flat
+// high-chroma shapes with near-zero LUMA contrast against the basemap — their
+// edges live almost entirely in the Cb/Cr planes. The 2026-07-03 probe
+// (docs/ship-review/PROGRESS.md) proved the composite filtergraph delivers
+// those edges essentially intact (the lossless FFV1 tap of `[vout]` is
+// visually indistinguishable from the renderer readback), and that the loss
+// happened at the ENCODER: hevc_videotoolbox at the shipped `-q:v 50`
+// retained only 0.55 of the pre-encode Cr Sobel energy on a real 4K export
+// (visible mush), and stayed below libx265 even at `-q:v 80` with 5× the
+// bits. The fix routes HEVC delivery through libx265 (`fast`/crf17 +
+// cbqpoffs=-2:crqpoffs=-2).
+//
+// This gate makes that decision self-enforcing: for every non-ProRes
+// delivery target it runs the REAL production composite argv (verbatim
+// `build_composite_filtergraph` output with the encoder
+// `select_encoder_for_target` actually picks on this machine) over synthetic
+// decoration-bearing map frames + a moving synthetic clip, taps `[vout]`
+// pre-encoder with FFV1 (identical filtergraph, lossless "what the encoder
+// was given"), and asserts the delivered file keeps the decoration chroma
+// edges. A regression to a starved or hardware encode drops Cb/Cr Sobel
+// retention toward ~0.5–0.7 and fails loudly.
+//
+// Preconditions are loud (CANON §1.11): missing libx265 in the ffmpeg build
+// is a hard failure, not a skip — a machine without it cannot produce
+// ship-quality exports and the suite must say so.
+
+fn assert_ffmpeg_has_libx265() {
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .expect("spawn ffmpeg -encoders");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("libx265"),
+        "ffmpeg on PATH has no libx265 encoder — HEVC delivery targets \
+         (SdrH265/HdrHlg/HdrPq) would fall back to a hardware encoder that \
+         measurably crushes decoration chroma edges. Install ffmpeg-full \
+         (`brew install ffmpeg-full && brew link ffmpeg-full`).",
+    );
+}
+
+/// Synthetic decoration-bearing map frame: flat light-gray "paper" basemap
+/// with the project's actual decoration colors — a `#bced09` trail stripe +
+/// POV-dot disc and a `#5ab7cb` waypoint disc. Flat fills, hard edges, no
+/// luma contrast to lean on: the pure chroma-edge worst case the probe
+/// measured.
+fn synth_decoration_map_frame(w: usize, h: usize) -> Vec<u8> {
+    const BG: [u8; 3] = [0xee, 0xec, 0xe3];
+    const TRAIL: [u8; 3] = [0xbc, 0xed, 0x09];
+    const WAY: [u8; 3] = [0x5a, 0xb7, 0xcb];
+    let mut buf = vec![0u8; w * h * 4];
+    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+    let dot_r = (h as f64) * 0.10;
+    let way_r = (h as f64) * 0.07;
+    let (wx, wy) = (w as f64 * 0.25, h as f64 * 0.30);
+    let stripe_half = (h as f64) * 0.02;
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f64 + 0.5, y as f64 + 0.5);
+            // Diagonal trail stripe through the frame.
+            let stripe_d = (fy - (0.2 * fx + h as f64 * 0.55)).abs();
+            let px = if ((fx - cx).powi(2) + (fy - cy).powi(2)).sqrt() < dot_r {
+                TRAIL
+            } else if ((fx - wx).powi(2) + (fy - wy).powi(2)).sqrt() < way_r {
+                WAY
+            } else if stripe_d < stripe_half {
+                TRAIL
+            } else {
+                BG
+            };
+            let i = (y * w + x) * 4;
+            buf[i] = px[0];
+            buf[i + 1] = px[1];
+            buf[i + 2] = px[2];
+            buf[i + 3] = 255;
+        }
+    }
+    buf
+}
+
+/// Motion-bearing synthetic clip (testsrc2 pans/changes every frame) so the
+/// encoder has real bit competition — a static clip would hand the map slot
+/// unlimited bits and blunt the gate's teeth.
+fn make_synthetic_motion_clip(output: &Path, duration_s: f64) {
+    let video_src = format!("testsrc2=size=640x360:rate=30:duration={}", duration_s);
+    let audio_src = format!("sine=frequency=440:sample_rate=48000:duration={}", duration_s);
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", &video_src,
+            "-f", "lavfi", "-i", &audio_src,
+            "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-color_primaries", "bt709", "-color_trc", "bt709",
+            "-colorspace", "bt709", "-color_range", "tv",
+            "-x264-params", "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+            "-c:a", "aac", "-shortest",
+        ])
+        .arg(output)
+        .status()
+        .expect("spawn ffmpeg motion clip builder");
+    assert!(status.success(), "motion clip builder failed");
+}
+
+/// Decode one mid-stream frame to 4:2:0 planes at the given bit depth and
+/// return (Y, Cb, Cr) as f64 in [0,1], plus the plane dims.
+#[allow(clippy::type_complexity)]
+fn decode_yuv420_planes(
+    path: &Path,
+    ten_bit: bool,
+    w: usize,
+    h: usize,
+    seek_s: f64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>, usize, usize) {
+    let pix = if ten_bit { "yuv420p10le" } else { "yuv420p" };
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error"])
+        .args(["-ss", &format!("{seek_s}")])
+        .arg("-i")
+        .arg(path)
+        .args(["-map", "0:v:0", "-vsync", "0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", pix, "-"])
+        .output()
+        .expect("spawn ffmpeg plane decode");
+    assert!(
+        out.status.success(),
+        "plane decode failed for {}: {}",
+        path.display(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let (cw, ch) = (w / 2, h / 2);
+    let expected = if ten_bit { (w * h + 2 * cw * ch) * 2 } else { w * h + 2 * cw * ch };
+    assert_eq!(
+        out.stdout.len(),
+        expected,
+        "decoded frame byte count mismatch for {} (got {}, want {expected})",
+        path.display(),
+        out.stdout.len(),
+    );
+    let to_f = |bytes: &[u8], n: usize, off: usize| -> Vec<f64> {
+        if ten_bit {
+            (0..n)
+                .map(|i| {
+                    let b = off * 2 + i * 2;
+                    u16::from_le_bytes([bytes[b], bytes[b + 1]]) as f64 / 1023.0
+                })
+                .collect()
+        } else {
+            bytes[off..off + n].iter().map(|&v| v as f64 / 255.0).collect()
+        }
+    };
+    let y = to_f(&out.stdout, w * h, 0);
+    let u = to_f(&out.stdout, cw * ch, w * h);
+    let v = to_f(&out.stdout, cw * ch, w * h + cw * ch);
+    (y, u, v, cw, ch)
+}
+
+/// Sum of Sobel-ish gradient magnitude (central differences) over a plane
+/// crop. Relative measure only — always used as delivered/tap ratios.
+fn plane_gradient_energy(plane: &[f64], w: usize, h: usize, crop: (usize, usize, usize, usize)) -> f64 {
+    let (x0, y0, cw, ch) = crop;
+    let mut e = 0.0;
+    for y in (y0 + 1)..(y0 + ch - 1) {
+        for x in (x0 + 1)..(x0 + cw - 1) {
+            let gx = plane[y * w + x + 1] - plane[y * w + x - 1];
+            let gy = plane[(y + 1) * w + x] - plane[(y - 1) * w + x];
+            e += (gx * gx + gy * gy).sqrt();
+        }
+    }
+    e
+}
+
+#[test]
+fn delivery_encode_preserves_decoration_chroma_edges() {
+    use trail_cut_lib::export::{
+        build_composite_filtergraph, select_encoder_for_target, CompositeMode, DeliveryTarget,
+        OutputDimensions, PixelDims, PixelRect, VisibleClipInput,
+    };
+
+    assert_ffmpeg_on_path();
+    assert_ffprobe_on_path();
+    assert_ffmpeg_has_zscale();
+    assert_ffmpeg_has_libx265();
+
+    let temp = TempDir::new().expect("temp dir");
+    let clip_path = temp.path().join("clip.mp4");
+    make_synthetic_motion_clip(&clip_path, 1.5);
+
+    let clip_json = serde_json::json!({
+        "id": "c1",
+        "path": clip_path.to_string_lossy(),
+        "filename": "clip.mp4",
+        "duration_ms": 1500,
+        "trim": {"in_ms": 0, "out_ms": 1500},
+        "focal_point": {"x": 0.5, "y": 0.5, "zoom": 1.0},
+        "effects": {"stabilize": {"enabled": false, "shakiness": 5}, "speed": 1.0},
+        "visible": true,
+    });
+
+    // 720p-class canvas with the map as a bottom band (PipMapInset, the
+    // production default shape). Even dims keep 4:2:0 plane math exact.
+    let output_dims = OutputDimensions { w: 1280, h: 720 };
+    let map_slot = PixelRect { x: 320, y: 360, w: 640, h: 320 };
+    let video_slot = PixelRect { x: 0, y: 0, w: 1280, h: 720 };
+    const FPS: u32 = 30;
+    const FRAMES: u32 = 30;
+
+    let map_frame = synth_decoration_map_frame(map_slot.w as usize, map_slot.h as usize);
+
+    // Feed the same decoration frame every tick — flat fills + hard edges
+    // stay put while the video underneath moves, which is the bit-starvation
+    // worst case for a rate-controlled encoder (static region competing with
+    // motion).
+    let run_argv = |argv: &[String], frame_bytes: usize| {
+        let mut cmd = Command::new("ffmpeg");
+        cmd.arg("-loglevel").arg("error");
+        for a in argv {
+            cmd.arg(a);
+        }
+        let mut child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn ffmpeg composite");
+        {
+            use std::io::Write;
+            assert_eq!(map_frame.len(), frame_bytes, "map frame size mismatch");
+            let stdin = child.stdin.as_mut().expect("ffmpeg stdin");
+            for _ in 0..(FRAMES + 2) {
+                let _ = stdin.write_all(&map_frame);
+            }
+        }
+        let out = child.wait_with_output().expect("await ffmpeg composite");
+        assert!(
+            out.status.success(),
+            "composite encode failed: {}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+    };
+
+    // Chroma-plane crop of the map slot (4:2:0 planes are half-res).
+    let crop = (
+        map_slot.x as usize / 2,
+        map_slot.y as usize / 2,
+        map_slot.w as usize / 2,
+        map_slot.h as usize / 2,
+    );
+    let seek_s = (FRAMES / 2) as f64 / FPS as f64;
+
+    let targets = [
+        DeliveryTarget::SdrH264,
+        DeliveryTarget::SdrH265,
+        DeliveryTarget::HdrHlg,
+        DeliveryTarget::HdrPq,
+    ];
+    for target in targets {
+        let encoder = select_encoder_for_target(target)
+            .unwrap_or_else(|e| panic!("select_encoder_for_target({target:?}): {e}"));
+        // The gate pins the DECISION, not just the outcome: HEVC delivery
+        // must resolve to software libx265 wherever it exists (which the
+        // precondition above guarantees here).
+        if matches!(
+            target,
+            DeliveryTarget::SdrH265 | DeliveryTarget::HdrHlg | DeliveryTarget::HdrPq
+        ) {
+            assert_eq!(
+                encoder.name, "libx265",
+                "{target:?}: HEVC delivery must select libx265 (decoration-\
+                 crispness decision 2026-07-03); a stale encoder cache can \
+                 cause this — delete {{global_config_dir()}}/encoder.json",
+            );
+        }
+
+        let delivered = temp
+            .path()
+            .join(format!("crisp_{target:?}.{}", target.container_extension()));
+        let clip: trail_cut_lib::Clip =
+            serde_json::from_value(clip_json.clone()).expect("clip stub");
+        let visible = vec![VisibleClipInput {
+            source_path: clip_path.clone(),
+            clip,
+            source_dims: PixelDims { w: 640, h: 360 },
+            has_audio: true,
+        }];
+        let plan = build_composite_filtergraph(
+            &visible,
+            map_slot,
+            video_slot,
+            output_dims,
+            CompositeMode::PipMapInset,
+            None,
+            FPS,
+            FRAMES,
+            &encoder,
+            192,
+            target,
+            &delivered,
+        )
+        .expect("composite plan");
+        run_argv(&plan.argv, plan.frame_bytes_per_input);
+
+        // FFV1 tap of the IDENTICAL filtergraph — "what the encoder was
+        // given", in the delivered pixel format.
+        let tap = temp.path().join(format!("crisp_{target:?}_tap.nut"));
+        let map_idx = plan
+            .argv
+            .iter()
+            .position(|a| a == "-map")
+            .expect("-map in production argv");
+        let mut tap_argv: Vec<String> = plan.argv[..map_idx].to_vec();
+        for a in [
+            "-map", "[vout]", "-map", "[aout]", "-c:a", "pcm_s16le", "-c:v", "ffv1",
+        ] {
+            tap_argv.push(a.to_string());
+        }
+        tap_argv.push(tap.to_string_lossy().into_owned());
+        run_argv(&tap_argv, plan.frame_bytes_per_input);
+
+        let ten_bit = matches!(target, DeliveryTarget::HdrHlg | DeliveryTarget::HdrPq);
+        let (_, du, dv, cw, chh) =
+            decode_yuv420_planes(&delivered, ten_bit, 1280, 720, seek_s);
+        let (_, tu, tv, _, _) = decode_yuv420_planes(&tap, ten_bit, 1280, 720, seek_s);
+
+        let ret_u = plane_gradient_energy(&du, cw, chh, crop)
+            / plane_gradient_energy(&tu, cw, chh, crop);
+        let ret_v = plane_gradient_energy(&dv, cw, chh, crop)
+            / plane_gradient_energy(&tv, cw, chh, crop);
+
+        // Threshold rationale: the shipping libx265 settings measured
+        // ≈0.9–1.1 retention on both the 4K probe and this synthetic scene;
+        // the old starved hardware path measured ≈0.5–0.7. 0.80 is the
+        // midpoint with margin for encoder-version variance. Ratios can
+        // legitimately exceed 1.0 (ringing adds gradient energy) — only the
+        // floor is load-bearing.
+        for (plane, ret) in [("Cb", ret_u), ("Cr", ret_v)] {
+            assert!(
+                ret >= 0.80,
+                "{target:?}: delivered {plane} plane keeps only {ret:.3} of the \
+                 pre-encode decoration edge energy (floor 0.80). The encoder is \
+                 crushing high-chroma decoration edges again — check encoder \
+                 selection (libx265 expected) and its quality settings \
+                 (delivery.rs: preset/crf/{}).",
+                "cbqpoffs/crqpoffs",
+            );
+        }
+        eprintln!(
+            "[crispness gate] {target:?}: Cb retention {ret_u:.3}, Cr retention {ret_v:.3} (floor 0.80)"
+        );
+    }
+}

@@ -2610,14 +2610,16 @@ mod tests {
         .unwrap();
 
         let joined = argv_to_string(&plan.argv);
-        // Encoder name and its videotoolbox-specific codec args. WS4's
-        // `delivery_encoder_args(YoutubeSdr4k, videotoolbox)` emits
-        // `-c:v hevc_videotoolbox -tag:v hvc1 -q:v 50` per the brief
-        // (overriding the encoder's stale `-q:v 65` test-extra default).
+        // Encoder name and its videotoolbox-specific codec args.
+        // `delivery_encoder_args(SdrH265, videotoolbox)` emits
+        // `-c:v hevc_videotoolbox -tag:v hvc1 -q:v 65` — the FALLBACK-ONLY
+        // hardware path (libx265 absent); q:v 65 replaced the WS4 brief's
+        // q:v 50, which the decoration-crispness probe (2026-07-03) measured
+        // starving the encode (~13 Mbps at 4K, decoration mush).
         let cv_idx = plan.argv.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(plan.argv[cv_idx + 1], "hevc_videotoolbox");
         assert!(joined.contains("-tag:v hvc1"), "joined: {}", joined);
-        assert!(joined.contains("-q:v 50"), "WS4 brief uses q:v 50 for VT HEVC; joined: {}", joined);
+        assert!(joined.contains("-q:v 65"), "VT fallback uses q:v 65 (non-starving); joined: {}", joined);
         let cv_count = plan
             .argv
             .windows(2)

@@ -17,9 +17,12 @@
 //     encoder-specific params), `-c:a` / `-b:a` audio settings, and
 //     `-movflags +faststart`.
 //   - a target-selected **encoder probe**. SDR HEVC and HDR HEVC targets
-//     prefer hardware (videotoolbox on macOS) with software fallback; H.264
-//     targets always use libx264 (the brief specifies it explicitly);
-//     ProRes Master always uses prores_ks.
+//     use SOFTWARE libx265 with hardware fallback only when libx265 is
+//     absent — the decoration-crispness probe (2026-07-03) measured hardware
+//     encoders crushing high-chroma decoration edges at any reasonable
+//     bitrate (see `encoder::hevc_candidates`); H.264 targets always use
+//     libx264 (the brief specifies it explicitly); ProRes Master always uses
+//     prores_ks.
 //
 // Public surface for WS5 (export UI):
 //   - `DeliveryTarget` enum — every catalog entry.
@@ -242,20 +245,29 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
             push(&mut out, ["-movflags", "+faststart"]);
         }
         DeliveryTarget::SdrH265 => {
-            // HEVC SDR. videotoolbox preferred; libx265 fallback.
+            // HEVC SDR. libx265 (software) is the quality path — the
+            // decoration-crispness probe (2026-07-03) measured
+            // hevc_videotoolbox crushing high-chroma decoration edges
+            // (Cr Sobel retention 0.55 at the old `-q:v 50`; still below
+            // libx265 crf18 even at `-q:v 80` with 5× the bits). The
+            // videotoolbox branch is FALLBACK-ONLY (ffmpeg builds without
+            // libx265) at a non-starving quality.
             out.push("-c:v".into());
             out.push(encoder.name.clone());
             if encoder.name == "hevc_videotoolbox" {
-                push(&mut out, ["-tag:v", "hvc1", "-q:v", "50"]);
+                push(&mut out, ["-tag:v", "hvc1", "-q:v", "65"]);
             } else {
-                // libx265 (or other software) — explicit pix_fmt + preset/crf.
-                push(&mut out, ["-tag:v", "hvc1", "-preset", "medium", "-crf", "18"]);
+                // libx265 — preset/crf measured on the crispness probe:
+                // `fast`/17 + the chroma QP offsets in X265_DELIVERY_TUNING
+                // hold decoration chroma edges at ≥0.88 Sobel retention vs
+                // the lossless pre-encode tap (vs 0.55 for the old VT path).
+                push(&mut out, ["-tag:v", "hvc1", "-preset", "fast", "-crf", "17"]);
             }
             push(&mut out, ["-pix_fmt", "yuv420p"]);
             push_color_flags_from_cs(&mut out, &out_cs);
             if encoder.name != "hevc_videotoolbox" {
-                // libx265 / x265 software path — VUI duplicate.
-                push_vui_params(&mut out, "-x265-params", &out_cs);
+                // libx265 / x265 software path — VUI duplicate + delivery tuning.
+                push_x265_delivery_params(&mut out, &out_cs);
             }
             push_aac_audio(&mut out);
             push(&mut out, ["-movflags", "+faststart"]);
@@ -265,15 +277,20 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
         // `out_cs`. This is the extensibility payoff: PQ delivery is "free"
         // here, just another `output_color_space` entry.)
         DeliveryTarget::HdrHlg | DeliveryTarget::HdrPq => {
+            // Same libx265-first rationale as SdrH265 — the HDR targets
+            // measured WORSE through videotoolbox (HdrPq Cr Sobel retention
+            // 0.54 at the old `-q:v 50`; PQ's steep curve concentrates
+            // decoration chroma detail exactly where hardware quantization
+            // crushes it). videotoolbox branch is FALLBACK-ONLY.
             out.push("-c:v".into());
             out.push(encoder.name.clone());
             if encoder.name == "hevc_videotoolbox" {
                 push(
                     &mut out,
-                    ["-tag:v", "hvc1", "-q:v", "50", "-profile:v", "main10"],
+                    ["-tag:v", "hvc1", "-q:v", "65", "-profile:v", "main10"],
                 );
             } else {
-                // libx265 main10 fallback.
+                // libx265 main10 — same measured preset/crf/tuning as SDR.
                 push(
                     &mut out,
                     [
@@ -282,17 +299,17 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
                         "-profile:v",
                         "main10",
                         "-preset",
-                        "medium",
+                        "fast",
                         "-crf",
-                        "18",
+                        "17",
                     ],
                 );
             }
             push(&mut out, ["-pix_fmt", "yuv420p10le"]);
             push_color_flags_from_cs(&mut out, &out_cs);
             if encoder.name != "hevc_videotoolbox" {
-                // libx265 — VUI duplicate for HDR.
-                push_vui_params(&mut out, "-x265-params", &out_cs);
+                // libx265 — VUI duplicate for HDR + delivery tuning.
+                push_x265_delivery_params(&mut out, &out_cs);
             }
             push_aac_audio(&mut out);
             push(&mut out, ["-movflags", "+faststart"]);
@@ -365,6 +382,13 @@ pub(crate) fn push_color_flags_from_cs(out: &mut Vec<String>, cs: &ColorSpace) {
     out.push(cs.range.ffmpeg_flag().into());
 }
 
+/// x265 delivery tuning appended to `-x265-params` (decoration-crispness
+/// fix, 2026-07-03). Map decorations are high-chroma edges with near-zero
+/// luma contrast; shifting the chroma QP down 2 steps spends ~5% more bits
+/// exactly where that failure mode lives (measured ≈ +1 dB Cb/Cr PSNR and
+/// +0.02 Cb/Cr Sobel retention on the probe, at unchanged luma quality).
+const X265_DELIVERY_TUNING: &str = "cbqpoffs=-2:crqpoffs=-2";
+
 /// Emit the encoder-specific VUI duplicate (`-x264-params` / `-x265-params
 /// colorprim=…:transfer=…:colormatrix=…`) from a [`ColorSpace`]. libx264 and
 /// libx265 silently drop the VUI color tags without this duplicate (WS6
@@ -377,6 +401,21 @@ fn push_vui_params(out: &mut Vec<String>, flag: &str, cs: &ColorSpace) {
         cs.primaries.ffmpeg_flag(),
         cs.transfer.ffmpeg_flag(),
         cs.matrix.ffmpeg_flag(),
+    ));
+}
+
+/// x265 delivery params: the WS6 VUI duplicate PLUS the chroma-QP delivery
+/// tuning, folded into ONE `-x265-params` value — ffmpeg does not merge
+/// repeated `-x265-params` flags (last one wins), so the tuning must ride
+/// the same string as the VUI colors.
+fn push_x265_delivery_params(out: &mut Vec<String>, cs: &ColorSpace) {
+    out.push("-x265-params".into());
+    out.push(format!(
+        "colorprim={}:transfer={}:colormatrix={}:{}",
+        cs.primaries.ffmpeg_flag(),
+        cs.transfer.ffmpeg_flag(),
+        cs.matrix.ffmpeg_flag(),
+        X265_DELIVERY_TUNING,
     ));
 }
 
@@ -664,12 +703,14 @@ mod tests {
     #[test]
     fn sdr_h265_with_videotoolbox_skips_x265_params() {
         // VideoToolbox honors the global -color_* flags — no -x265-params
-        // splice needed.
+        // splice needed. This branch is FALLBACK-ONLY (libx265 absent);
+        // q:v 65 so the fallback at least doesn't starve (old 50 measured
+        // ~13 Mbps at 4K — decoration mush).
         let args = delivery_encoder_args(DeliveryTarget::SdrH265, &videotoolbox_hevc());
         let joined = args.join(" ");
         assert!(joined.contains("-c:v hevc_videotoolbox"), "{}", joined);
         assert!(joined.contains("-tag:v hvc1"), "{}", joined);
-        assert!(joined.contains("-q:v 50"), "{}", joined);
+        assert!(joined.contains("-q:v 65"), "{}", joined);
         assert!(joined.contains("-color_primaries bt709"), "{}", joined);
         assert!(joined.contains("-color_trc bt709"), "{}", joined);
         assert!(
@@ -685,11 +726,18 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("-c:v libx265"), "{}", joined);
         assert!(joined.contains("-tag:v hvc1"), "{}", joined);
-        assert!(joined.contains("-preset medium"), "{}", joined);
-        assert!(joined.contains("-crf 18"), "{}", joined);
+        // Decoration-crispness settings (2026-07-03 probe): fast/17 + the
+        // chroma QP offsets, measured ≥0.88 Cr Sobel retention vs the
+        // lossless pre-encode tap.
+        assert!(joined.contains("-preset fast"), "{}", joined);
+        assert!(joined.contains("-crf 17"), "{}", joined);
         assert!(
-            joined.contains("-x265-params colorprim=bt709:transfer=bt709:colormatrix=bt709"),
-            "libx265 SDR must duplicate VUI in -x265-params (WS6): {}",
+            joined.contains(
+                "-x265-params colorprim=bt709:transfer=bt709:colormatrix=bt709:\
+                 cbqpoffs=-2:crqpoffs=-2"
+            ),
+            "libx265 SDR must carry the VUI duplicate (WS6) AND the chroma-QP \
+             delivery tuning in ONE -x265-params value: {}",
             joined,
         );
     }
@@ -719,11 +767,15 @@ mod tests {
         assert!(joined.contains("-c:v libx265"), "{}", joined);
         assert!(joined.contains("-profile:v main10"), "{}", joined);
         assert!(joined.contains("-pix_fmt yuv420p10le"), "{}", joined);
+        assert!(joined.contains("-preset fast"), "{}", joined);
+        assert!(joined.contains("-crf 17"), "{}", joined);
         assert!(
             joined.contains(
-                "-x265-params colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc"
+                "-x265-params colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc:\
+                 cbqpoffs=-2:crqpoffs=-2"
             ),
-            "libx265 HDR must duplicate VUI in -x265-params (WS6): {}",
+            "libx265 HDR must carry the VUI duplicate (WS6) AND the chroma-QP \
+             delivery tuning in ONE -x265-params value: {}",
             joined,
         );
     }

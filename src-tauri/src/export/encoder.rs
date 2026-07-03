@@ -59,10 +59,24 @@ pub struct EncoderChoice {
     pub probe_wall_clock_ms: u32,
 }
 
+/// Bump whenever the candidate POLICY changes (order, args, new classes) —
+/// the cache is otherwise keyed only on (ffmpeg_version, platform), so a
+/// policy change would never reach machines with a warm cache. History:
+/// 1 (implicit) = hardware-first HEVC; 2 = libx265-first HEVC
+/// (decoration-crispness fix, 2026-07-03).
+const ENCODER_POLICY_VERSION: u32 = 2;
+
+fn default_policy_version() -> u32 {
+    // Pre-versioning caches deserialize as policy 1 and self-invalidate.
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EncoderProbe {
     pub ffmpeg_version: String,
     pub platform: String,
+    #[serde(default = "default_policy_version")]
+    pub policy_version: u32,
     pub probed_at_unix_ms: u64,
     pub choices: HashMap<EncoderClass, EncoderChoice>,
 }
@@ -188,6 +202,7 @@ pub fn probe_all() -> Result<EncoderProbe, EncoderError> {
     let probe = EncoderProbe {
         ffmpeg_version,
         platform,
+        policy_version: ENCODER_POLICY_VERSION,
         probed_at_unix_ms: now_ms(),
         choices,
     };
@@ -336,20 +351,33 @@ fn candidates_for(class: EncoderClass) -> Vec<Candidate> {
     }
 }
 
+// HEVC candidate order: SOFTWARE FIRST (libx265), hardware fallback.
+//
+// This is a measured quality decision, not a performance one (decoration-
+// crispness probe, 2026-07-03, docs/ship-review/PROGRESS.md): map decorations
+// are high-chroma edges with near-zero luma contrast, and hardware encoders
+// crush exactly that. hevc_videotoolbox at the shipped `-q:v 50` retained only
+// 0.55 of the pre-encode Cr-plane edge energy on a real 4K composite (Y 39.7 /
+// U 45.8 / V 46.6 dB vs the lossless tap) — visibly mushy marks and trail.
+// libx265 crf18 medium at a comparable bitrate class retains 0.85+ (Y 46.4 /
+// U 54.7 / V 54.1 dB). Crucially this is NOT bit starvation alone: VT at
+// `-q:v 80` with 5× the bitrate still measured below libx265 crf18 on chroma
+// edges. The hardware candidates remain as fallbacks so machines whose ffmpeg
+// lacks libx265 still export (at documented lower decoration fidelity).
 #[cfg(target_os = "macos")]
 fn hevc_candidates() -> Vec<Candidate> {
     vec![
         Candidate {
-            name: "hevc_videotoolbox",
-            kind: EncoderKind::Hardware,
-            test_extra_args: &["-tag:v", "hvc1", "-q:v", "65"],
+            name: "libx265",
+            kind: EncoderKind::Software,
+            test_extra_args: &["-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-crf", "17"],
             needs_alpha_input: false,
             class: EncoderClass::Hevc,
         },
         Candidate {
-            name: "libx265",
-            kind: EncoderKind::Software,
-            test_extra_args: &["-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-crf", "17"],
+            name: "hevc_videotoolbox",
+            kind: EncoderKind::Hardware,
+            test_extra_args: &["-tag:v", "hvc1", "-q:v", "65"],
             needs_alpha_input: false,
             class: EncoderClass::Hevc,
         },
@@ -359,6 +387,13 @@ fn hevc_candidates() -> Vec<Candidate> {
 #[cfg(target_os = "windows")]
 fn hevc_candidates() -> Vec<Candidate> {
     vec![
+        Candidate {
+            name: "libx265",
+            kind: EncoderKind::Software,
+            test_extra_args: &["-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-crf", "17"],
+            needs_alpha_input: false,
+            class: EncoderClass::Hevc,
+        },
         Candidate {
             name: "hevc_nvenc",
             kind: EncoderKind::Hardware,
@@ -377,13 +412,6 @@ fn hevc_candidates() -> Vec<Candidate> {
             name: "hevc_amf",
             kind: EncoderKind::Hardware,
             test_extra_args: &["-tag:v", "hvc1", "-quality", "balanced"],
-            needs_alpha_input: false,
-            class: EncoderClass::Hevc,
-        },
-        Candidate {
-            name: "libx265",
-            kind: EncoderKind::Software,
-            test_extra_args: &["-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-crf", "17"],
             needs_alpha_input: false,
             class: EncoderClass::Hevc,
         },
@@ -509,7 +537,10 @@ fn read_cache_if_fresh(version: &str, platform: &str) -> Option<EncoderProbe> {
     let path = cache_path().ok()?;
     let bytes = std::fs::read(&path).ok()?;
     let probe: EncoderProbe = serde_json::from_slice(&bytes).ok()?;
-    if probe.ffmpeg_version == version && probe.platform == platform {
+    if probe.ffmpeg_version == version
+        && probe.platform == platform
+        && probe.policy_version == ENCODER_POLICY_VERSION
+    {
         Some(probe)
     } else {
         None
@@ -548,13 +579,16 @@ Encoders:
     }
 
     #[test]
-    fn macos_hevc_chain_prefers_videotoolbox() {
+    fn hevc_chain_prefers_libx265_hardware_is_fallback_only() {
+        // Decoration-crispness decision (2026-07-03): software x265 first —
+        // hardware encoders measurably crush high-chroma decoration edges
+        // (see the candidate-order comment above hevc_candidates()).
+        let c = candidates_for(EncoderClass::Hevc);
+        assert_eq!(c[0].name, "libx265");
+        assert_eq!(c[0].kind, EncoderKind::Software);
         if cfg!(target_os = "macos") {
-            let c = candidates_for(EncoderClass::Hevc);
-            assert_eq!(c[0].name, "hevc_videotoolbox");
-            assert_eq!(c[0].kind, EncoderKind::Hardware);
-            assert_eq!(c.last().unwrap().name, "libx265");
-            assert_eq!(c.last().unwrap().kind, EncoderKind::Software);
+            assert_eq!(c.last().unwrap().name, "hevc_videotoolbox");
+            assert_eq!(c.last().unwrap().kind, EncoderKind::Hardware);
         }
     }
 
