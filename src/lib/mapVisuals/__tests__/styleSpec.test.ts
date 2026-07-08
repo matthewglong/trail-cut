@@ -10,6 +10,7 @@ import {
   buildStyleSpec,
   buildLineGradientExpression,
   resolveStaticPaints,
+  haloGroupPolicy,
   PAINT_REFERENCE_WIDTH,
   SHAPE_CANONICAL_RADIUS,
   BUILDINGS_LAYER_SPEC,
@@ -351,7 +352,7 @@ describe('resolveStaticPaints', () => {
     // default shape — otherwise a project default of 'diamond' silently
     // renders every un-overridden waypoint as a circle icon. The
     // expression body is a `concat` of
-    // `'waypoint-' + safeShape(override_shape, projectShape) + '-<slot>'`;
+    // `'waypoint-' + safeMarker(override_marker, projectMarker) + '-<slot>'`;
     // we serialize and look for the project shape literal and slot suffix
     // in the tree.
     const settings: MapSettings = {
@@ -372,11 +373,11 @@ describe('resolveStaticPaints', () => {
     // The outer `match` table mentions every known shape name, so we look
     // specifically for the coalesce default placement.
     expect(JSON.stringify(primaryTuple?.[2])).toContain(
-      '"coalesce",["get","override_shape"],"diamond"',
+      '"coalesce",["get","override_marker"],"diamond"',
     );
     expect(JSON.stringify(primaryTuple?.[2])).toContain('-primary');
     expect(JSON.stringify(secondaryTuple?.[2])).toContain(
-      '"coalesce",["get","override_shape"],"diamond"',
+      '"coalesce",["get","override_marker"],"diamond"',
     );
     expect(JSON.stringify(secondaryTuple?.[2])).toContain('-secondary');
     // Sanity: a different project shape produces a different coalesce default.
@@ -388,10 +389,10 @@ describe('resolveStaticPaints', () => {
       ([l, p]) => l === 'waypoints-primary' && p === 'icon-image',
     );
     expect(JSON.stringify(pinPrimaryTuple?.[2])).toContain(
-      '"coalesce",["get","override_shape"],"pin"',
+      '"coalesce",["get","override_marker"],"pin"',
     );
     expect(JSON.stringify(pinPrimaryTuple?.[2])).not.toContain(
-      '"coalesce",["get","override_shape"],"diamond"',
+      '"coalesce",["get","override_marker"],"diamond"',
     );
   });
 
@@ -663,6 +664,7 @@ describe('live marker layers', () => {
 describe('resolveStaticPaints — surfaceScale', () => {
   const SIZE_PAINT_PROPS = new Set([
     'line-width',
+    'line-blur',
     'circle-radius',
     'circle-stroke-width',
   ]);
@@ -737,5 +739,579 @@ describe('resolveStaticPaints — surfaceScale', () => {
         expect((halfValue as number) * 2).toBeCloseTo(value as number, 12);
       }
     }
+  });
+});
+
+describe('haloGroupPolicy', () => {
+  it('falloff-0 degeneracy: core 0 → outerIn 1, coreIn 0, g === outer', () => {
+    for (const outer of [0.1, 0.3, 0.6, 0.6129032258064516, 1]) {
+      const policy = haloGroupPolicy(outer, 0);
+      expect(policy.g).toBeCloseTo(outer, 12);
+      // Floating-point: g = 1-(1-outer) is algebraically `outer` but not
+      // always bit-identical, so outerIn = outer/g lands within epsilon of
+      // 1 rather than exactly 1.
+      expect(policy.outerIn).toBeCloseTo(1, 12);
+      expect(policy.coreIn).toBe(0);
+    }
+  });
+
+  it('zero-opacity guard: outer 0, core 0 → all zeros, no NaN', () => {
+    const policy = haloGroupPolicy(0, 0);
+    expect(policy.g).toBe(0);
+    expect(policy.outerIn).toBe(0);
+    expect(policy.coreIn).toBe(0);
+    expect(Number.isNaN(policy.g)).toBe(false);
+    expect(Number.isNaN(policy.outerIn)).toBe(false);
+    expect(Number.isNaN(policy.coreIn)).toBe(false);
+  });
+
+  it('peak preservation: g === 1 − (1−outer)(1−core) for representative opacity/falloff combos', () => {
+    // opacity 0.6, falloff 1 → outer 0.21, core 0.51 (HALO_FALLOFF_OUTER_DIM
+    // 0.65 / HALO_FALLOFF_CORE_GAIN 0.85) → g ≈ 0.6129.
+    const cases: Array<[number, number]> = [
+      [0.21, 0.51],
+      [0.6, 0.3],
+      [0.05, 0.95],
+      [1, 1],
+      [0.3375, 0.2125], // opacity 0.5, falloff 0.5
+    ];
+    for (const [outer, core] of cases) {
+      const policy = haloGroupPolicy(outer, core);
+      expect(policy.g).toBeCloseTo(1 - (1 - outer) * (1 - core), 12);
+    }
+    const policy = haloGroupPolicy(0.21, 0.51);
+    expect(policy.g).toBeCloseTo(0.6129, 4);
+  });
+
+  it('coreIn saturates to 1 whenever core > 0, even vanishingly small', () => {
+    expect(haloGroupPolicy(0.5, 1e-9).coreIn).toBe(1);
+    expect(haloGroupPolicy(0, 0.4).coreIn).toBe(1);
+  });
+
+  it('exactness property: the group composite reproduces the direct two-layer blend at every non-overlapping point', () => {
+    // For a grid of (outer, core, f ∈ [0,1]) — f is the core band's local
+    // feather fraction (1 on-line, 0 at the core's outer edge) — assert
+    // g·[1 − (1−outerIn)(1−f·coreIn)] ≈ outer + f·core·(1−outer) to 1e-12.
+    // This is the FBO-flatten-then-composite-once result vs. today's
+    // direct alpha-over of the outer band then the core band.
+    const outers = [0, 0.1, 0.21, 0.5, 0.6, 1];
+    const cores = [0, 0.1, 0.3, 0.51, 0.85, 1];
+    const fractions = [0, 0.25, 0.5, 0.75, 1];
+    for (const outer of outers) {
+      for (const core of cores) {
+        const { g, outerIn, coreIn } = haloGroupPolicy(outer, core);
+        for (const f of fractions) {
+          const composited = g * (1 - (1 - outerIn) * (1 - f * coreIn));
+          const directBlend = outer + f * core * (1 - outer);
+          expect(composited).toBeCloseTo(directBlend, 12);
+        }
+      }
+    }
+  });
+});
+
+describe('resolveStaticPaints — route halo', () => {
+  const HALO: NonNullable<MapSettings['route']['halo']> = {
+    enabled: true,
+    color: { mode: 'solid', solid: '#ff00ff' },
+    size: 0.004,
+    fade: 0.5,
+    opacity: 0.6,
+  };
+
+  function withHalo(
+    halo: MapSettings['route']['halo'],
+    mode: MapSettings['route']['mode'] = 'full',
+  ): MapSettings {
+    return {
+      ...DEFAULT_MAP_SETTINGS,
+      route: { ...DEFAULT_MAP_SETTINGS.route, mode, halo },
+    };
+  }
+
+  function byKey(resolved: ReturnType<typeof resolveStaticPaints>) {
+    const paintBy = new Map<string, unknown>();
+    for (const [layerId, prop, value] of resolved.paints) {
+      paintBy.set(`${layerId}/${prop}`, value);
+    }
+    const layoutBy = new Map<string, unknown>();
+    for (const [layerId, prop, value] of resolved.layouts) {
+      layoutBy.set(`${layerId}/${prop}`, value);
+    }
+    return {
+      paintBy,
+      layoutBy,
+      gradBy: new Map(resolved.gradients),
+      haloComposites: resolved.haloComposites,
+    };
+  }
+
+  it('absent halo (legacy project): both halo layers hidden, null gradients', () => {
+    const { layoutBy, gradBy } = byKey(resolveStaticPaints(DEFAULT_MAP_SETTINGS));
+    expect(layoutBy.get('route-full-halo/visibility')).toBe('none');
+    expect(layoutBy.get('route-trail-halo/visibility')).toBe('none');
+    expect(gradBy.get('route-full-halo')).toBeNull();
+    expect(gradBy.get('route-trail-halo')).toBeNull();
+  });
+
+  it('disabled halo (enabled: false) stays hidden, config preserved elsewhere', () => {
+    const { layoutBy } = byKey(
+      resolveStaticPaints(withHalo({ ...HALO, enabled: false })),
+    );
+    expect(layoutBy.get('route-full-halo/visibility')).toBe('none');
+    expect(layoutBy.get('route-trail-halo/visibility')).toBe('none');
+  });
+
+  it('visibility couples halo.enabled with route.mode (per-layer)', () => {
+    const full = byKey(resolveStaticPaints(withHalo(HALO, 'full'))).layoutBy;
+    expect(full.get('route-full-halo/visibility')).toBe('visible');
+    expect(full.get('route-trail-halo/visibility')).toBe('none');
+
+    const visited = byKey(resolveStaticPaints(withHalo(HALO, 'visited'))).layoutBy;
+    expect(visited.get('route-full-halo/visibility')).toBe('none');
+    expect(visited.get('route-trail-halo/visibility')).toBe('visible');
+
+    const none = byKey(resolveStaticPaints(withHalo(HALO, 'none'))).layoutBy;
+    expect(none.get('route-full-halo/visibility')).toBe('none');
+    expect(none.get('route-trail-halo/visibility')).toBe('none');
+  });
+
+  it('solid halo: color/width/blur/opacity math on both layers', () => {
+    // Route width 0.006, spread 0.004 → total (0.006 + 2×0.004) × 1080 =
+    // 15.12 px; blur = fade 0.5 × 15.12 / 2 = 3.78 px.
+    const { paintBy, gradBy, haloComposites } = byKey(
+      resolveStaticPaints(withHalo(HALO)),
+    );
+    const expectedWidth =
+      (DEFAULT_MAP_SETTINGS.route.size.width + 2 * HALO.size) *
+      PAINT_REFERENCE_WIDTH;
+    for (const layer of ['route-full-halo', 'route-trail-halo']) {
+      expect(paintBy.get(`${layer}/line-color`)).toBe('#ff00ff');
+      expect(paintBy.get(`${layer}/line-width`)).toBeCloseTo(expectedWidth, 9);
+      expect(paintBy.get(`${layer}/line-blur`)).toBeCloseTo(
+        (HALO.fade * expectedWidth) / 2,
+        9,
+      );
+      // Falloff absent (0): the group-composite remap collapses the outer
+      // band to in-FBO opacity 1 (single opaque coat) and the configured
+      // opacity moves entirely to the composite `g` — see `haloComposites`
+      // below and `haloGroupPolicy`'s falloff-0 degeneracy.
+      expect(paintBy.get(`${layer}/line-opacity`)).toBe(1);
+      expect(gradBy.get(layer)).toBeNull();
+    }
+    // The composite carries the configured opacity at falloff 0 — the
+    // group-composite result is byte-identical to the pre-composite single
+    // layer at HALO.opacity.
+    expect(haloComposites).toContainEqual({
+      layers: ['route-full-halo', 'route-full-halo-core'],
+      opacity: HALO.opacity,
+    });
+    expect(haloComposites).toContainEqual({
+      layers: ['route-trail-halo', 'route-trail-halo-core'],
+      opacity: HALO.opacity,
+    });
+  });
+
+  it('fade 0 → crisp edge (line-blur 0); fade 1 → half-width feather', () => {
+    const crisp = byKey(resolveStaticPaints(withHalo({ ...HALO, fade: 0 })));
+    expect(crisp.paintBy.get('route-full-halo/line-blur')).toBe(0);
+
+    const soft = byKey(resolveStaticPaints(withHalo({ ...HALO, fade: 1 })));
+    const width = soft.paintBy.get('route-full-halo/line-width') as number;
+    expect(soft.paintBy.get('route-full-halo/line-blur')).toBeCloseTo(
+      width / 2,
+      9,
+    );
+  });
+
+  it('gradient halo: interpolate expression on line-progress, independent of the route line color', () => {
+    const settings = withHalo({
+      ...HALO,
+      color: {
+        mode: 'gradient',
+        stops: [
+          { fraction: 0, color: '#ffffff' },
+          { fraction: 1, color: '#88ccff' },
+        ],
+      },
+    });
+    // Route line stays solid — the halo gradient must not leak onto it.
+    const { gradBy } = byKey(resolveStaticPaints(settings));
+    const expected = [
+      'interpolate',
+      ['linear'],
+      ['line-progress'],
+      0,
+      '#ffffff',
+      1,
+      '#88ccff',
+    ];
+    expect(gradBy.get('route-full-halo')).toEqual(expected);
+    expect(gradBy.get('route-trail-halo')).toEqual(expected);
+    expect(gradBy.get('route-full-line')).toBeNull();
+    expect(gradBy.get('route-trail-line')).toBeNull();
+  });
+
+  it('halo width and blur scale with surfaceScale; opacity does not', () => {
+    const ref = byKey(resolveStaticPaints(withHalo(HALO), 1));
+    const half = byKey(resolveStaticPaints(withHalo(HALO), 0.5));
+    expect(half.paintBy.get('route-full-halo/line-width')).toBeCloseTo(
+      (ref.paintBy.get('route-full-halo/line-width') as number) * 0.5,
+      12,
+    );
+    expect(half.paintBy.get('route-full-halo/line-blur')).toBeCloseTo(
+      (ref.paintBy.get('route-full-halo/line-blur') as number) * 0.5,
+      12,
+    );
+    expect(half.paintBy.get('route-full-halo/line-opacity')).toBe(
+      ref.paintBy.get('route-full-halo/line-opacity'),
+    );
+  });
+
+  // ---- falloff (radial drop-off) ----
+
+  it('falloff absent/0: core layers hidden at opacity 0, outer band at full configured opacity (pre-falloff identity)', () => {
+    // Pre-falloff halo block (no falloff field at all — the persisted shape
+    // of every halo written before the parameter existed).
+    const { paintBy, layoutBy, haloComposites } = byKey(
+      resolveStaticPaints(withHalo(HALO)),
+    );
+    expect(layoutBy.get('route-full-halo-core/visibility')).toBe('none');
+    expect(layoutBy.get('route-trail-halo-core/visibility')).toBe('none');
+    expect(paintBy.get('route-full-halo-core/line-opacity')).toBe(0);
+    // Falloff 0 is the group-composite's degenerate case: the outer band
+    // is the only live layer, so it renders at in-FBO opacity 1 (a single
+    // opaque coat) and the composite alone carries the configured opacity —
+    // see `haloGroupPolicy`. The pre-composite identity ("outer band at the
+    // full configured opacity") now lives one level up, in `g`.
+    expect(paintBy.get('route-full-halo/line-opacity')).toBe(1);
+    expect(haloComposites).toContainEqual({
+      layers: ['route-full-halo', 'route-full-halo-core'],
+      opacity: HALO.opacity,
+    });
+
+    const explicitZero = byKey(
+      resolveStaticPaints(withHalo({ ...HALO, falloff: 0 })),
+    );
+    expect(explicitZero.layoutBy.get('route-full-halo-core/visibility')).toBe(
+      'none',
+    );
+    expect(explicitZero.paintBy.get('route-full-halo/line-opacity')).toBe(1);
+    expect(explicitZero.haloComposites).toContainEqual({
+      layers: ['route-full-halo', 'route-full-halo-core'],
+      opacity: HALO.opacity,
+    });
+  });
+
+  it('falloff redistributes opacity: outer band dims, core rises; core is narrower and fully feathered', () => {
+    const falloff = 1;
+    const { paintBy, layoutBy, haloComposites } = byKey(
+      resolveStaticPaints(withHalo({ ...HALO, falloff })),
+    );
+    // Constants from styleSpec.ts: HALO_FALLOFF_OUTER_DIM 0.65,
+    // HALO_FALLOFF_CORE_GAIN 0.85, HALO_CORE_SPREAD_FRACTION 0.35. The
+    // CONCEPTUAL outer/core opacities feed `haloGroupPolicy`; the emitted
+    // `line-opacity` values are the remapped in-FBO ones, and the
+    // composite `g` (in `haloComposites`) carries the on-line peak.
+    const conceptualOuter = HALO.opacity * (1 - 0.65 * falloff);
+    const conceptualCore = HALO.opacity * 0.85 * falloff;
+    const policy = haloGroupPolicy(conceptualOuter, conceptualCore);
+    expect(paintBy.get('route-full-halo/line-opacity')).toBeCloseTo(
+      policy.outerIn,
+      12,
+    );
+    // Core opacity conceptual > 0 whenever falloff > 0, so its in-FBO value
+    // saturates to 1 (see `haloGroupPolicy`'s coreIn derivation).
+    expect(paintBy.get('route-full-halo-core/line-opacity')).toBe(1);
+    expect(haloComposites).toContainEqual({
+      layers: ['route-full-halo', 'route-full-halo-core'],
+      opacity: policy.g,
+    });
+    const expectedCoreWidth =
+      (DEFAULT_MAP_SETTINGS.route.size.width + 2 * HALO.size * 0.35) *
+      PAINT_REFERENCE_WIDTH;
+    expect(paintBy.get('route-full-halo-core/line-width')).toBeCloseTo(
+      expectedCoreWidth,
+      9,
+    );
+    // Core is always fully feathered — triangular profile peaking at the
+    // line — regardless of the outer band's fade.
+    expect(paintBy.get('route-full-halo-core/line-blur')).toBeCloseTo(
+      expectedCoreWidth / 2,
+      9,
+    );
+    expect(paintBy.get('route-full-halo-core/line-color')).toBe('#ff00ff');
+    // Core visibility couples enabled + mode + falloff > 0.
+    expect(layoutBy.get('route-full-halo-core/visibility')).toBe('visible');
+    expect(layoutBy.get('route-trail-halo-core/visibility')).toBe('none');
+  });
+
+  it('core layers share the outer band gradient', () => {
+    const settings = withHalo({
+      ...HALO,
+      falloff: 0.5,
+      color: {
+        mode: 'gradient',
+        stops: [
+          { fraction: 0, color: '#ffffff' },
+          { fraction: 1, color: '#88ccff' },
+        ],
+      },
+    });
+    const { gradBy } = byKey(resolveStaticPaints(settings));
+    expect(gradBy.get('route-full-halo-core')).toEqual(
+      gradBy.get('route-full-halo'),
+    );
+    expect(gradBy.get('route-trail-halo-core')).toEqual(
+      gradBy.get('route-trail-halo'),
+    );
+  });
+
+  // ---- offset (drop shadow) ----
+
+  it('offset absent → line-translate [0, 0]; offsets emit reference-px translate on all four halo layers', () => {
+    const none = byKey(resolveStaticPaints(withHalo(HALO)));
+    expect(none.paintBy.get('route-full-halo/line-translate')).toEqual([0, 0]);
+
+    const offset = byKey(
+      resolveStaticPaints(
+        withHalo({ ...HALO, offset_x: 0.005, offset_y: -0.01 }),
+      ),
+    );
+    const expected = [
+      0.005 * PAINT_REFERENCE_WIDTH,
+      -0.01 * PAINT_REFERENCE_WIDTH,
+    ];
+    for (const layer of [
+      'route-full-halo',
+      'route-trail-halo',
+      'route-full-halo-core',
+      'route-trail-halo-core',
+    ]) {
+      expect(offset.paintBy.get(`${layer}/line-translate`)).toEqual(expected);
+    }
+  });
+
+  it('offset scales with surfaceScale (reference-space fraction, like every size)', () => {
+    const settings = withHalo({ ...HALO, offset_x: 0.01, offset_y: 0.02 });
+    const ref = byKey(resolveStaticPaints(settings, 1));
+    const half = byKey(resolveStaticPaints(settings, 0.5));
+    const refT = ref.paintBy.get('route-full-halo/line-translate') as number[];
+    const halfT = half.paintBy.get(
+      'route-full-halo/line-translate',
+    ) as number[];
+    expect(halfT[0]).toBeCloseTo(refT[0] * 0.5, 12);
+    expect(halfT[1]).toBeCloseTo(refT[1] * 0.5, 12);
+  });
+});
+
+describe('resolveStaticPaints — waypoint + POV halos', () => {
+  const HALO: NonNullable<MapSettings['waypoints']['halo']> = {
+    enabled: true,
+    color: { mode: 'solid', solid: '#00ffcc' },
+    size: 0.006,
+    fade: 0.4,
+    opacity: 0.5,
+    falloff: 0,
+    offset_x: 0,
+    offset_y: 0,
+  };
+
+  function byKey(resolved: ReturnType<typeof resolveStaticPaints>) {
+    const paintBy = new Map<string, unknown>();
+    for (const [layerId, prop, value] of resolved.paints) {
+      paintBy.set(`${layerId}/${prop}`, value);
+    }
+    const layoutBy = new Map<string, unknown>();
+    for (const [layerId, prop, value] of resolved.layouts) {
+      layoutBy.set(`${layerId}/${prop}`, value);
+    }
+    return { paintBy, layoutBy, haloComposites: resolved.haloComposites };
+  }
+
+  it('absent halos (legacy projects): all four marker halo layers hidden', () => {
+    const { layoutBy, haloComposites } = byKey(
+      resolveStaticPaints(DEFAULT_MAP_SETTINGS),
+    );
+    for (const layer of [
+      'waypoints-halo',
+      'waypoints-halo-core',
+      'live-marker-halo',
+      'live-marker-halo-core',
+    ]) {
+      expect(layoutBy.get(`${layer}/visibility`)).toBe('none');
+    }
+    // Defensive-read path: absent halos resolve to opacity 0 everywhere, so
+    // the composite bucket still carries exactly four groups and no NaN —
+    // the layers are hidden either way, so the composite is harmless.
+    expect(haloComposites).toHaveLength(4);
+    for (const group of haloComposites) {
+      expect(Number.isNaN(group.opacity)).toBe(false);
+    }
+  });
+
+  it('waypoints halo: radius = (circle_radius + spread) × w, circle-blur carries fade unscaled', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, halo: HALO },
+    };
+    const { paintBy, layoutBy, haloComposites } = byKey(
+      resolveStaticPaints(settings),
+    );
+    expect(layoutBy.get('waypoints-halo/visibility')).toBe('visible');
+    expect(layoutBy.get('waypoints-halo-core/visibility')).toBe('none');
+    const expectedRadius =
+      (DEFAULT_MAP_SETTINGS.waypoints.size.circle_radius + HALO.size) *
+      PAINT_REFERENCE_WIDTH;
+    expect(paintBy.get('waypoints-halo/circle-radius')).toBeCloseTo(
+      expectedRadius,
+      9,
+    );
+    expect(paintBy.get('waypoints-halo/circle-color')).toBe('#00ffcc');
+    // Falloff 0 (HALO.falloff here is explicitly 0) → group-composite
+    // degenerate case: in-FBO opacity 1, configured opacity moves to `g`.
+    expect(paintBy.get('waypoints-halo/circle-opacity')).toBe(1);
+    expect(haloComposites).toContainEqual({
+      layers: ['waypoints-halo', 'waypoints-halo-core'],
+      opacity: HALO.opacity,
+    });
+    // circle-blur is dimensionless — fade maps directly and must NOT ride
+    // the surface factor.
+    expect(paintBy.get('waypoints-halo/circle-blur')).toBe(HALO.fade);
+    const half = byKey(resolveStaticPaints(settings, 0.5));
+    expect(half.paintBy.get('waypoints-halo/circle-blur')).toBe(HALO.fade);
+    expect(half.paintBy.get('waypoints-halo/circle-radius')).toBeCloseTo(
+      expectedRadius * 0.5,
+      9,
+    );
+  });
+
+  it('waypoints halo gradient: interpolate on the per-feature progress property', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: {
+        ...DEFAULT_MAP_SETTINGS.waypoints,
+        halo: {
+          ...HALO,
+          color: {
+            mode: 'gradient',
+            stops: [
+              { fraction: 0, color: '#ff0000' },
+              { fraction: 1, color: '#0000ff' },
+            ],
+          },
+        },
+      },
+    };
+    const { paintBy } = byKey(resolveStaticPaints(settings));
+    expect(paintBy.get('waypoints-halo/circle-color')).toEqual([
+      'interpolate',
+      ['linear'],
+      ['get', 'progress'],
+      0,
+      '#ff0000',
+      1,
+      '#0000ff',
+    ]);
+    // Core twin shares the color expression.
+    expect(paintBy.get('waypoints-halo-core/circle-color')).toEqual(
+      paintBy.get('waypoints-halo/circle-color'),
+    );
+  });
+
+  it('POV halo: radius from the dot body for dot/shape markers, image_size/2 for registered image markers', () => {
+    const withPovHalo = (pov: Partial<MapSettings['pov']>): MapSettings => ({
+      ...DEFAULT_MAP_SETTINGS,
+      pov: { ...DEFAULT_MAP_SETTINGS.pov, halo: HALO, ...pov },
+    });
+
+    const dot = byKey(resolveStaticPaints(withPovHalo({})));
+    expect(dot.layoutBy.get('live-marker-halo/visibility')).toBe('visible');
+    expect(dot.paintBy.get('live-marker-halo/circle-radius')).toBeCloseTo(
+      (DEFAULT_MAP_SETTINGS.pov.size.dot_radius + HALO.size) *
+        PAINT_REFERENCE_WIDTH,
+      9,
+    );
+
+    // Image marker registered in the library → body radius image_size / 2.
+    const image = byKey(
+      resolveStaticPaints({
+        ...withPovHalo({ marker: { kind: 'image', image_id: 'abc123' } }),
+        marker_images: [
+          {
+            id: 'abc123',
+            icon_file: 'assets/marker-icon-abc123.png',
+            source_file: 'assets/marker-source-abc123.png',
+            source_name: 'x.png',
+            width: 512,
+            height: 512,
+          },
+        ],
+      }),
+    );
+    expect(image.paintBy.get('live-marker-halo/circle-radius')).toBeCloseTo(
+      (DEFAULT_MAP_SETTINGS.pov.size.image_size / 2 + HALO.size) *
+        PAINT_REFERENCE_WIDTH,
+      9,
+    );
+
+    // Unregistered image id collapses to the dot (mirrors the marker's own
+    // fallback), so the halo sizes for the dot that actually renders.
+    const missing = byKey(
+      resolveStaticPaints(
+        withPovHalo({ marker: { kind: 'image', image_id: 'nope' } }),
+      ),
+    );
+    expect(missing.paintBy.get('live-marker-halo/circle-radius')).toBeCloseTo(
+      (DEFAULT_MAP_SETTINGS.pov.size.dot_radius + HALO.size) *
+        PAINT_REFERENCE_WIDTH,
+      9,
+    );
+  });
+
+  it('marker halo falloff: outer dims, core rises and becomes visible; offsets emit circle-translate', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      pov: {
+        ...DEFAULT_MAP_SETTINGS.pov,
+        halo: { ...HALO, falloff: 0.5, offset_x: 0.002, offset_y: 0.004 },
+      },
+    };
+    const { paintBy, layoutBy, haloComposites } = byKey(
+      resolveStaticPaints(settings),
+    );
+    expect(layoutBy.get('live-marker-halo-core/visibility')).toBe('visible');
+    // Emitted opacities are the group-composite in-FBO remap: outerIn from
+    // `haloGroupPolicy`, core saturates to 1 (conceptual core > 0 whenever
+    // falloff > 0), and the composite `g` carries the on-line peak.
+    const conceptualOuter = HALO.opacity * (1 - 0.65 * 0.5);
+    const conceptualCore = HALO.opacity * 0.85 * 0.5;
+    const policy = haloGroupPolicy(conceptualOuter, conceptualCore);
+    expect(paintBy.get('live-marker-halo/circle-opacity')).toBeCloseTo(
+      policy.outerIn,
+      12,
+    );
+    expect(paintBy.get('live-marker-halo-core/circle-opacity')).toBe(1);
+    expect(haloComposites).toContainEqual({
+      layers: ['live-marker-halo', 'live-marker-halo-core'],
+      opacity: policy.g,
+    });
+    // Core hugs the marker: spread × HALO_CORE_SPREAD_FRACTION, fully soft.
+    expect(paintBy.get('live-marker-halo-core/circle-radius')).toBeCloseTo(
+      (DEFAULT_MAP_SETTINGS.pov.size.dot_radius + HALO.size * 0.35) *
+        PAINT_REFERENCE_WIDTH,
+      9,
+    );
+    expect(paintBy.get('live-marker-halo-core/circle-blur')).toBe(1);
+    const expectedTranslate = [
+      0.002 * PAINT_REFERENCE_WIDTH,
+      0.004 * PAINT_REFERENCE_WIDTH,
+    ];
+    expect(paintBy.get('live-marker-halo/circle-translate')).toEqual(
+      expectedTranslate,
+    );
+    expect(paintBy.get('live-marker-halo-core/circle-translate')).toEqual(
+      expectedTranslate,
+    );
   });
 });

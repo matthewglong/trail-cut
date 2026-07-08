@@ -102,7 +102,7 @@ describe('canonical auto-save payload (hydrateProjectState → buildSavePayload)
       __hypothetical_v10_field: { keep: true, nested: [1, 2, 3] },
     } as Project;
     const payload = buildSavePayload(base, hydrateProjectState(base, 'x'));
-    expect((payload as Record<string, unknown>).__hypothetical_v10_field).toEqual({
+    expect((payload as unknown as Record<string, unknown>).__hypothetical_v10_field).toEqual({
       keep: true,
       nested: [1, 2, 3],
     });

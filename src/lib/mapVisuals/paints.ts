@@ -35,6 +35,7 @@ import type { DecorationColor, MapSettings } from '../../types';
 import { colors } from '../../theme/tokens';
 import { pulsePairAt } from './animations';
 import { PAINT_REFERENCE_WIDTH, SHAPE_CANONICAL_RADIUS } from './styleSpec';
+import { MARKER_IMAGE_CANONICAL_SIZE } from './markerImage';
 import type { PaintUpdates } from './types';
 
 /** Active-waypoint halo opacity. The halo is a soft ring behind the dot —
@@ -169,6 +170,15 @@ export function buildPerFramePaints(
   const activeIconSize =
     (mapSettings.waypoints.size.active_radius * anchor) /
     SHAPE_CANONICAL_RADIUS;
+  // Image-marker sizes for the `waypoints-image` layer: longest side =
+  // shape diameter, so the divisor is the image canonical size halved
+  // (see the `defaultImageIconSize` derivation in styleSpec.ts).
+  const defaultImageIconSize =
+    (mapSettings.waypoints.size.circle_radius * anchor) /
+    (MARKER_IMAGE_CANONICAL_SIZE / 2);
+  const activeImageIconSize =
+    (mapSettings.waypoints.size.active_radius * anchor) /
+    (MARKER_IMAGE_CANONICAL_SIZE / 2);
 
   // ---- Color slots ----
   const primaryBase = decorationColorToBase(mapSettings.waypoints.color);
@@ -234,6 +244,7 @@ export function buildPerFramePaints(
       waypointSecondaryColor:
         secondaryColorExpr as DataDrivenPropertyValueSpecification<string>,
       waypointIconSize: defaultIconSize,
+      waypointImageIconSize: defaultImageIconSize,
       waypointHaloColor: haloColorOut,
       waypointHaloRadius: 0,
       waypointHaloOpacity: 0,
@@ -258,6 +269,12 @@ export function buildPerFramePaints(
     activeIconSize,
     defaultIconSize,
   ];
+  const imageIconSizeExpr: ExpressionSpecification = [
+    'case',
+    ['==', ['get', 'id'], activeWaypointId],
+    activeImageIconSize,
+    defaultImageIconSize,
+  ];
   const haloRadiusExpr: ExpressionSpecification = [
     'case',
     ['==', ['get', 'id'], activeWaypointId],
@@ -278,6 +295,8 @@ export function buildPerFramePaints(
       secondaryColorExpr as DataDrivenPropertyValueSpecification<string>,
     waypointIconSize:
       iconSizeExpr as DataDrivenPropertyValueSpecification<number>,
+    waypointImageIconSize:
+      imageIconSizeExpr as DataDrivenPropertyValueSpecification<number>,
     waypointHaloColor: haloColorOut,
     waypointHaloRadius:
       haloRadiusExpr as DataDrivenPropertyValueSpecification<number>,

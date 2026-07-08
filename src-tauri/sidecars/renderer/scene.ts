@@ -19,13 +19,26 @@ import {
   buildPerFrameState,
   outlineThicknessCanvasPx,
   resolveStaticPaints,
+  type HaloCompositeGroup,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_PULSE_B_LAYER,
   LIVE_MARKER_DOT_LAYER,
+  LIVE_MARKER_IMAGE_LAYER,
+  LIVE_MARKER_SHAPE_PRIMARY_LAYER,
+  LIVE_MARKER_SHAPE_SECONDARY_LAYER,
+  LIVE_MARKER_HALO_LAYER,
+  LIVE_MARKER_HALO_CORE_LAYER,
+  ROUTE_FULL_HALO_LAYER,
+  ROUTE_FULL_HALO_CORE_LAYER,
   ROUTE_FULL_LAYER,
+  ROUTE_TRAIL_HALO_LAYER,
+  ROUTE_TRAIL_HALO_CORE_LAYER,
   ROUTE_TRAIL_LAYER,
   WAYPOINTS_ACTIVE_HALO_LAYER,
+  WAYPOINTS_HALO_LAYER,
+  WAYPOINTS_HALO_CORE_LAYER,
+  WAYPOINTS_IMAGE_LAYER,
   WAYPOINTS_PRIMARY_LAYER,
   WAYPOINTS_SECONDARY_LAYER,
 } from '../../../src/lib/mapVisuals';
@@ -59,18 +72,39 @@ export interface StaticScene {
   staticSources: Array<[string, Record<string, unknown>]>;
   /** Decoration layer stack, bottom → top. Stacking order is part of the
    *  visual contract (mirrors MapView.tsx):
-   *  route-full → route-trail → waypoints-active-halo → waypoints-primary →
-   *  waypoints-secondary → live-marker-pulse → live-marker-pulse-b →
-   *  live-marker-dot. */
+   *  route-full-halo → route-full-halo-core → route-full →
+   *  route-trail-halo → route-trail-halo-core → route-trail →
+   *  waypoints-halo → waypoints-halo-core → waypoints-active-halo →
+   *  waypoints-primary → waypoints-secondary → waypoints-image →
+   *  live-marker-halo → live-marker-halo-core → live-marker-pulse →
+   *  live-marker-pulse-b → live-marker-dot → live-marker-shape-primary →
+   *  live-marker-shape-secondary → live-marker-image. */
   staticLayers: DecorationLayerSpec[];
   staticPaints: Array<[string, string, unknown]>;
   staticLayouts: Array<[string, string, unknown]>;
   staticGradients: Array<[string, unknown]>;
+  /** Setup-time seed for the engine-level halo group-opacity composite,
+   *  resolved from project-DEFAULT `mapSettings` (`resolveStaticPaints`'s
+   *  `haloComposites` bucket — always the four groups in fixed order, same
+   *  convention as `staticPaints`/`staticGradients` above). Halo opacity is
+   *  per-clip overridable (`MapOverrides.route/waypoints/pov.halo`), so this
+   *  seed is only correct for frames at the project defaults; each frame's
+   *  `buildFramePayload` re-resolves against the active clip's merged
+   *  settings and backends re-apply whenever that value changes. */
+  haloComposites: HaloCompositeGroup[];
   /** Outline thickness (canvas px) for the waypoint shapes' secondary slot,
    *  resolved from the active MapSettings — the same derivation MapView
    *  uses. Backends rasterize the SDF atlas themselves via
    *  `buildAllShapeIcons({ outlineThickness, pixelRatio })`. */
   shapeOutlineThickness: number;
+  /** Outline thickness (canvas px) for the POV shape presets' secondary
+   *  slot — the POV's own geometry (dot stroke over dot radius), resolved
+   *  from PROJECT settings like `shapeOutlineThickness`. Backends rasterize
+   *  the `pov-*` atlas via `buildShapeIconsFor('pov', 'pov-', …)`. Same
+   *  setup-only limitation as the waypoint atlas: per-clip stroke/radius
+   *  overrides re-resolve icon-size per frame but do NOT re-rasterize the
+   *  outline band mid-export. */
+  povShapeOutlineThickness: number;
 }
 
 /** Empty-LineString placeholder for the dynamic route-trail source. GL JS
@@ -113,14 +147,37 @@ export function buildStaticScene(payload: SetupCmd): StaticScene {
   // the label rides on the secondary symbol layer so icon + text share one
   // placement unit (see WAYPOINTS_SECONDARY_LAYER).
   const staticLayers = [
+    // Route halos interleave beneath their lines (full halo must stay below
+    // the trail line, so per-source pairs rather than both halos first).
+    // Each halo's falloff core twin sits between the outer band and the
+    // line it glows under.
+    ROUTE_FULL_HALO_LAYER,
+    ROUTE_FULL_HALO_CORE_LAYER,
     ROUTE_FULL_LAYER,
+    ROUTE_TRAIL_HALO_LAYER,
+    ROUTE_TRAIL_HALO_CORE_LAYER,
     ROUTE_TRAIL_LAYER,
+    // User halo (all waypoints) beneath the active "you are here" ring.
+    WAYPOINTS_HALO_LAYER,
+    WAYPOINTS_HALO_CORE_LAYER,
     WAYPOINTS_ACTIVE_HALO_LAYER,
     WAYPOINTS_PRIMARY_LAYER,
     WAYPOINTS_SECONDARY_LAYER,
+    // Library-image waypoint markers — non-SDF twin of the shape pair.
+    WAYPOINTS_IMAGE_LAYER,
+    // POV halo pair at the bottom of the live-marker stack — pulse rings
+    // and the marker body all paint over it.
+    LIVE_MARKER_HALO_LAYER,
+    LIVE_MARKER_HALO_CORE_LAYER,
     LIVE_MARKER_PULSE_LAYER,
     LIVE_MARKER_PULSE_B_LAYER,
     LIVE_MARKER_DOT_LAYER,
+    // POV marker alternates — always seeded (visibility 'none' until
+    // resolveStaticPaints flips one on), above the dot they replace.
+    // Mirrors MapView's onStyleLoad stack.
+    LIVE_MARKER_SHAPE_PRIMARY_LAYER,
+    LIVE_MARKER_SHAPE_SECONDARY_LAYER,
+    LIVE_MARKER_IMAGE_LAYER,
   ] as unknown as DecorationLayerSpec[];
 
   // Outline thickness resolved from the active MapSettings so the baked
@@ -129,6 +186,10 @@ export function buildStaticScene(payload: SetupCmd): StaticScene {
   const shapeOutlineThickness = outlineThicknessCanvasPx(
     payload.mapSettings.waypoints.size.stroke_width,
     payload.mapSettings.waypoints.size.circle_radius,
+  );
+  const povShapeOutlineThickness = outlineThicknessCanvasPx(
+    payload.mapSettings.pov.size.dot_stroke_width,
+    payload.mapSettings.pov.size.dot_radius,
   );
 
   // Static paint sizing + layouts — layer specs ship placeholder values for
@@ -148,7 +209,9 @@ export function buildStaticScene(payload: SetupCmd): StaticScene {
     staticPaints: staticPaintResolution.paints as Array<[string, string, unknown]>,
     staticLayouts: staticPaintResolution.layouts as Array<[string, string, unknown]>,
     staticGradients: staticPaintResolution.gradients as Array<[string, unknown]>,
+    haloComposites: staticPaintResolution.haloComposites,
     shapeOutlineThickness,
+    povShapeOutlineThickness,
   };
 }
 
@@ -220,6 +283,12 @@ export function buildFramePayload(
     // Dot opacity oscillates in `throb`; held at 1.0 in steady / sonar /
     // heartbeat per shapes-pov.md Part 2 §2.
     ['live-marker-dot', 'circle-opacity', state.paints.dotOpacity],
+    // Every alternate POV marker body inherits the dot's opacity animation
+    // — whichever layer is visible IS the marker body (three-way visibility
+    // swap via resolveStaticPaints). Mirrors MapView's per-frame tick.
+    ['live-marker-image', 'icon-opacity', state.paints.dotOpacity],
+    ['live-marker-shape-primary', 'icon-opacity', state.paints.dotOpacity],
+    ['live-marker-shape-secondary', 'icon-opacity', state.paints.dotOpacity],
   ];
   // `icon-size` is a layout property (not paint), so the active-state size
   // bump rides the layouts channel. Both symbol layers get the same value
@@ -228,11 +297,15 @@ export function buildFramePayload(
     ...staticResolution.layouts,
     ['waypoints-primary', 'icon-size', state.paints.waypointIconSize],
     ['waypoints-secondary', 'icon-size', state.paints.waypointIconSize],
+    // Image-marker twin: image-bridged icon-size (see paints.ts).
+    ['waypoints-image', 'icon-size', state.paints.waypointImageIconSize],
     // Primary uses the DRAW key (negative distance — paints later, on top;
     // allow-overlap true), secondary the PLACEMENT key (lower wins
-    // placement; allow-overlap false). See `paints.ts`.
+    // placement; allow-overlap false). See `paints.ts`. The image layer
+    // shares the primary's DRAW key (it also allow-overlaps).
     ['waypoints-primary', 'symbol-sort-key', state.paints.waypointSortKey],
     ['waypoints-secondary', 'symbol-sort-key', state.paints.waypointPlacementKey],
+    ['waypoints-image', 'symbol-sort-key', state.paints.waypointSortKey],
   ];
   // Per-frame line-gradient expressions — today always equal to the static
   // seed (no per-clip route-color overrides exist); the wiring stays
@@ -241,12 +314,20 @@ export function buildFramePayload(
   const gradients: Array<[string, unknown]> =
     staticResolution.gradients as Array<[string, unknown]>;
 
+  // Halo group-opacity composite — re-resolved from the SAME
+  // `staticResolution` as `paints`/`layouts`/`gradients` above, so a per-clip
+  // halo-opacity override (`MapOverrides.route/waypoints/pov.halo`) lands at
+  // the cut exactly like every other overlay-size/color override. `g` can
+  // differ clip-to-clip; the backend re-asserts it only when it changes.
+  const haloComposites = staticResolution.haloComposites;
+
   return {
     t,
     sources,
     paints,
     layouts,
     gradients,
+    haloComposites,
     camera: {
       center: { lng: state.camera.center.lng, lat: state.camera.center.lat },
       zoom: state.camera.zoom,

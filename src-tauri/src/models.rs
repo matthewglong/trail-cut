@@ -384,6 +384,44 @@ impl Default for DecorationColor {
     }
 }
 
+/// Optional halo effect behind a decoration — carried by all three
+/// decorations (`route.halo`, `waypoints.halo`, `pov.halo`). Mirrors
+/// `HaloSettings` in `src/types.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaloSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_halo_color")]
+    pub color: DecorationColor,
+    /// Spread beyond the decoration's own edge, fraction of the paint
+    /// reference width (like every other size field).
+    #[serde(default = "default_halo_size")]
+    pub size: f64,
+    /// Softness in [0, 1]: 0 = crisp edge, 1 = fully diffuse glow.
+    #[serde(default = "default_halo_fade")]
+    pub fade: f64,
+    /// Halo line-opacity in [0, 1].
+    #[serde(default = "default_halo_opacity")]
+    pub opacity: f64,
+    /// Radial falloff in [0, 1]: 0 = single even band (pre-falloff
+    /// behavior), 1 = bright core hugging the decoration + faint wide
+    /// skirt. Defaults to 0 so pre-falloff halo blocks render unchanged.
+    #[serde(default)]
+    pub falloff: f64,
+    /// Screen-space halo offset, X component — signed fraction of the paint
+    /// reference width (positive = right). Viewport-anchored drop-shadow
+    /// direction; see `src/types.ts`.
+    #[serde(default)]
+    pub offset_x: f64,
+    /// Screen-space halo offset, Y component (positive = down).
+    #[serde(default)]
+    pub offset_y: f64,
+    /// UI affordance — same GRADIENT → SOLID stash/restore semantics as
+    /// `RouteSettings.color_stops_cache`. Never read by the renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_stops_cache: Option<Vec<GradientStop>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CameraSettings {
     #[serde(default = "default_true")]
@@ -435,6 +473,10 @@ pub struct RouteSettings {
     pub color: DecorationColor,
     #[serde(default)]
     pub size: RouteSize,
+    /// Optional halo behind the route line. Absent ⇒ disabled — additive,
+    /// no schema bump (same precedent as `color_stops_cache`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halo: Option<HaloSettings>,
     /// UI affordance — stash of the last gradient stop array, populated when
     /// the user toggles GRADIENT → SOLID in the panel so toggling back
     /// restores the prior gradient. Never read by the renderer; see
@@ -450,6 +492,7 @@ impl Default for RouteSettings {
             mode: default_full(),
             color: DecorationColor::default(),
             size: RouteSize::default(),
+            halo: None,
             color_stops_cache: None,
         }
     }
@@ -498,6 +541,11 @@ pub struct WaypointsSettings {
     pub label_mode: String,
     #[serde(default = "default_active_waypoint_mode")]
     pub active_mode: String,
+    /// Project-level marker-image selection (schema v11) — id of a
+    /// `MapSettings.marker_images` entry. When set, wins over `shape`.
+    /// The UI keeps the pair mutually exclusive (picking a shape clears it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_image_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_color: Option<String>,
     /// Active-waypoint secondary highlight — mirrors `active_color` for the
@@ -505,6 +553,10 @@ pub struct WaypointsSettings {
     /// resolved per-waypoint color during the active state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_secondary_color: Option<String>,
+    /// Optional halo behind every waypoint marker. Absent ⇒ disabled —
+    /// additive, no schema bump (same precedent as `route.halo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halo: Option<HaloSettings>,
     /// UI affordance — stash of the last gradient stop array, populated when
     /// the user toggles GRADIENT → SOLID in the panel so toggling back
     /// restores the prior gradient. Never read by the renderer; see
@@ -527,8 +579,10 @@ impl Default for WaypointsSettings {
             size: WaypointsSize::default(),
             label_mode: default_label_mode(),
             active_mode: default_active_waypoint_mode(),
+            marker_image_id: None,
             active_color: None,
             active_secondary_color: None,
+            halo: None,
             color_stops_cache: None,
             secondary_color_stops_cache: None,
         }
@@ -547,6 +601,12 @@ pub struct PovSize {
     pub pulse_start_radius: f64,
     #[serde(default = "default_overlay_pulse_end_radius")]
     pub pulse_end_radius: f64,
+    /// Custom-image marker size (schema v10) — the image's LONGEST side as
+    /// a fraction of the 1080 paint reference width, like every other size
+    /// field. Only consumed while the POV marker is a library image
+    /// (`PovSettings.marker` = `PovMarker::Image`).
+    #[serde(default = "default_overlay_pov_image_size")]
+    pub image_size: f64,
 }
 
 impl Default for PovSize {
@@ -557,8 +617,51 @@ impl Default for PovSize {
             dot_stroke_width: default_overlay_live_marker_dot_stroke_width(),
             pulse_start_radius: default_overlay_pulse_start_radius(),
             pulse_end_radius: default_overlay_pulse_end_radius(),
+            image_size: default_overlay_pov_image_size(),
         }
     }
+}
+
+/// One entry of the shared project-level marker-image library
+/// (`MapSettings.marker_images`, schema v11 — generalized from the v10
+/// single `PovSettings.image`). Both files live in the bundle's `assets/`
+/// directory (copied by `import_marker_image`); paths are BUNDLE-RELATIVE
+/// so the `.trailcut` bundle stays self-contained and relocatable.
+/// `icon_file` is the baked render asset (always PNG, longest side ≤ 1024
+/// texels — the export renderer's addImage texture cap); `source_file`
+/// preserves the original upload (`.png`/`.svg`) for provenance and future
+/// re-bakes. `id` is the 16-hex content hash of the original upload — the
+/// entry's stable identity (content-addressed, so re-imports dedupe) and
+/// the basis of the MapLibre icon id `marker-image-<id>` on both surfaces.
+///
+/// NOTE: the TypeScript mirror (`MarkerImageRef` in `src/types.ts`) carries
+/// an additional TRANSIENT `path` field — the absolute icon path injected by
+/// `buildExportRequest` for the renderer sidecar. It is deliberately absent
+/// here so a save can never persist an absolute path into the bundle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkerImage {
+    pub id: String,
+    pub icon_file: String,
+    pub source_file: String,
+    pub source_name: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// POV marker selection (schema v11) — a built-in shape preset or an
+/// uploaded image from the shared library. `None` on `PovSettings.marker`
+/// means the default dot. On-disk shape uses the serde tag = "kind"
+/// convention (like `WaypointPosition`):
+/// `{ "kind": "shape", "shape": "ring" }` /
+/// `{ "kind": "image", "image_id": "<16-hex>" }`.
+/// Shape names: "dot" | "ring" | "square" | "diamond" (the dot IS the
+/// circle; validated by the frontend roster, stored as a plain string like
+/// every other shape name in this file).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PovMarker {
+    Shape { shape: String },
+    Image { image_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,6 +680,19 @@ pub struct PovSettings {
     pub pulse_style: String,
     #[serde(default = "default_pulse_rate")]
     pub pulse_rate: String,
+    /// Marker selection (schema v11) — shape preset or library image.
+    /// `None` means the default dot. Per-clip overridable via
+    /// `PovOverrides.marker`: every used texture registers once at export
+    /// setup, so per-clip swaps are plain icon-image layout changes at
+    /// cuts, not per-frame re-registration. Replaced the v10 single
+    /// `image: Option<PovImage>` field (migration v10→v11 moves that ref
+    /// into `MapSettings.marker_images` and points `marker` at it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<PovMarker>,
+    /// Optional halo behind the POV marker. Absent ⇒ disabled — additive,
+    /// no schema bump (same precedent as `route.halo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halo: Option<HaloSettings>,
 }
 
 impl Default for PovSettings {
@@ -587,6 +703,8 @@ impl Default for PovSettings {
             size: PovSize::default(),
             pulse_style: default_pulse_style(),
             pulse_rate: default_pulse_rate(),
+            marker: None,
+            halo: None,
         }
     }
 }
@@ -601,6 +719,12 @@ pub struct MapSettings {
     pub waypoints: WaypointsSettings,
     #[serde(default)]
     pub pov: PovSettings,
+    /// Shared project-level marker-image library (schema v11). Both the POV
+    /// and Waypoints decorations select from this one list. Skipped when
+    /// empty so pre-v11 bundles round-trip byte-identically until a first
+    /// upload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub marker_images: Vec<MarkerImage>,
 }
 
 fn default_full() -> String {
@@ -661,6 +785,11 @@ fn default_overlay_pulse_start_radius() -> f64 {
 fn default_overlay_pulse_end_radius() -> f64 {
     0.044
 }
+/// Custom POV image longest side: ~86 CSS px at the 1080 reference width.
+/// Mirrors `DEFAULT_MAP_SETTINGS.pov.size.image_size` in `src/types.ts`.
+fn default_overlay_pov_image_size() -> f64 {
+    0.08
+}
 fn default_label_mode() -> String {
     "numbered".to_string()
 }
@@ -691,6 +820,21 @@ fn default_pulse_style() -> String {
 fn default_pulse_rate() -> String {
     "medium".to_string()
 }
+/// Halo defaults mirror `DEFAULT_ROUTE_HALO` in `src/types.ts` — a soft
+/// white glow. They only matter for partially-written halo blocks (the UI
+/// always writes the full object).
+fn default_halo_color() -> DecorationColor {
+    default_white_decoration()
+}
+fn default_halo_size() -> f64 {
+    0.004
+}
+fn default_halo_fade() -> f64 {
+    0.5
+}
+fn default_halo_opacity() -> f64 {
+    0.6
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CameraOverrides {
@@ -718,8 +862,27 @@ pub struct RouteSizeOverrides {
 pub struct RouteOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Per-clip route color (solid or gradient) — full capability parity
+    /// with the project-level `RouteSettings.color`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<DecorationColor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<RouteSizeOverrides>,
+    /// Per-clip route halo — a complete `HaloSettings` blob (overrides are
+    /// atomic per halo, not per halo field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halo: Option<HaloSettings>,
+}
+
+/// Per-clip override of the project-default waypoint marker. Atomic:
+/// `shape` + `marker_image_id` are a mutually-exclusive pair (image wins),
+/// captured wholesale so a sparse override can express "image cleared, use
+/// my shape". Mirrors `WaypointMarkerOverride` in `src/types.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaypointsMarkerOverride {
+    pub shape: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_image_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -738,6 +901,15 @@ pub struct WaypointsSizeOverrides {
 pub struct WaypointsOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
+    /// Clip-level default color for ALL waypoints while the clip plays;
+    /// per-`Waypoint` entity colors still win per feature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<DecorationColor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary_color: Option<DecorationColor>,
+    /// Clip-level default marker (atomic shape/image pair).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<WaypointsMarkerOverride>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -748,6 +920,9 @@ pub struct WaypointsOverrides {
     pub active_secondary_color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<WaypointsSizeOverrides>,
+    /// Per-clip waypoints halo — complete `HaloSettings` blob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halo: Option<HaloSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -762,6 +937,8 @@ pub struct PovSizeOverrides {
     pub pulse_start_radius: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pulse_end_radius: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_size: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -776,6 +953,14 @@ pub struct PovOverrides {
     pub pulse_style: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pulse_rate: Option<String>,
+    /// Per-clip POV marker override (schema v11) — shape preset or library
+    /// image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<PovMarker>,
+    /// Per-clip POV halo — complete `HaloSettings` blob (solid color only,
+    /// same POV rule as the project-level halo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halo: Option<HaloSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -848,8 +1033,15 @@ pub struct Waypoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secondary_color: Option<String>,
     /// Per-waypoint shape override. None falls through to the project default.
+    /// Mutually exclusive with `marker_image_id` (UI clears one when setting
+    /// the other).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<String>,
+    /// Per-waypoint marker-image override (schema v11) — id of a
+    /// `MapSettings.marker_images` entry. When set, wins over both `shape`
+    /// and the project-level waypoint marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_image_id: Option<String>,
 }
 
 /// Project-level "transition feel" knob. Drives the duration multiplier for
@@ -975,7 +1167,18 @@ pub struct ExportGrid {
 /// default to their pre-v9 behavior (linear BT.2020 working space; no
 /// override), so the v8→v9 migration just stamps the version and existing
 /// exports stay byte-identical.
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+/// v10 adds the custom POV marker image (v10's `PovSettings.image`, an
+/// optional bundle-asset reference) and `PovSize.image_size` (+ its
+/// per-clip override). Purely additive — the v9→v10 migration just stamps
+/// the version; projects without an image render exactly as before.
+/// v11 generalizes that single image into the shared marker library:
+/// `MapSettings.marker_images` (uploads selectable by BOTH decorations),
+/// `PovSettings.marker` (shape preset or library image, per-clip
+/// overridable via `PovOverrides.marker`), and
+/// `WaypointsSettings.marker_image_id` / `Waypoint.marker_image_id`. The
+/// v10→v11 migration moves `pov.image` into the library and points
+/// `pov.marker` at it; everything else is additive.
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 fn default_schema_version() -> u32 {
     // Legacy files lack the field; treat them as v1 for migration purposes.
@@ -994,6 +1197,7 @@ impl Default for MapSettings {
             route: RouteSettings::default(),
             waypoints: WaypointsSettings::default(),
             pov: PovSettings::default(),
+            marker_images: Vec::new(),
         }
     }
 }
@@ -1279,6 +1483,7 @@ mod tests {
                 solid: "#bced09".to_string(),
             },
             size: RouteSize::default(),
+            halo: None,
             color_stops_cache: Some(vec![
                 GradientStop {
                     fraction: 0.0,
@@ -1326,8 +1531,10 @@ mod tests {
             size: WaypointsSize::default(),
             label_mode: "numbered".to_string(),
             active_mode: "latest_passed".to_string(),
+            marker_image_id: None,
             active_color: None,
             active_secondary_color: None,
+            halo: None,
             color_stops_cache: Some(vec![
                 GradientStop {
                     fraction: 0.0,

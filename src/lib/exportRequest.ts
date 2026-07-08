@@ -101,6 +101,13 @@ export interface ExportRequestInputs {
    *  only `'prores'` (the Rust validator enforces this; the UI hides
    *  invalid options upstream). */
   deliveryTarget?: DeliveryTarget;
+  /** Project bundle directory. Required when `mapSettings.marker_images`
+   *  is non-empty: the renderer sidecar never learns the bundle dir, so the
+   *  builder resolves every library entry's bundle-relative `icon_file` to
+   *  an absolute `path` on the wire copy of `mapSettings` (transient —
+   *  never persisted; the Rust `MarkerImage` model drops it). Projects
+   *  without marker images don't need it. */
+  projectDir?: string | null;
 }
 
 /** The shape Rust's `RenderExportRequest` deserializes. Matches the IPC
@@ -236,6 +243,33 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     inputs.clips,
   );
 
+  // Marker-image library: the renderer sidecar reads baked assets from
+  // disk at setup, but it never learns the bundle dir — resolve every
+  // library entry's bundle-relative icon_file to an absolute path HERE, on
+  // the wire copy only. Every entry (not just referenced ones) gets a
+  // path: the sidecar owns the "which ids are referenced" walk and fails
+  // loudly there, so this layer stays a dumb path resolver. Failing loudly
+  // when the bundle dir is missing beats shipping a request the worker can
+  // only reject with a less specific error.
+  let wireMapSettings = inputs.mapSettings;
+  if (inputs.mapSettings.marker_images.length > 0) {
+    if (!inputs.projectDir) {
+      throw new Error(
+        'buildExportRequest: mapSettings.marker_images is non-empty but no ' +
+          'projectDir was provided — the renderer needs the absolute paths ' +
+          'of the baked assets',
+      );
+    }
+    const projectDir = inputs.projectDir;
+    wireMapSettings = {
+      ...inputs.mapSettings,
+      marker_images: inputs.mapSettings.marker_images.map((entry) => ({
+        ...entry,
+        path: `${projectDir}/${entry.icon_file}`,
+      })),
+    };
+  }
+
   return {
     channel: inputs.channel,
     fps,
@@ -248,7 +282,7 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     timeline,
     route: inputs.route,
     clips: inputs.clips,
-    mapSettings: inputs.mapSettings,
+    mapSettings: wireMapSettings,
     waypoints: inputs.waypoints,
   };
 }
@@ -266,6 +300,8 @@ export interface ExportRequestContext {
   waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   layouts?: Project['layouts'];
+  /** Bundle dir — see `ExportRequestInputs.projectDir`. */
+  projectDir?: string | null;
 }
 
 /** Build a per-job request closure. The compiled timeline doesn't depend on
@@ -289,6 +325,7 @@ export function buildJobRequest(
     waypoints: context.waypoints,
     transitionFeel: context.transitionFeel,
     layouts: context.layouts,
+    projectDir: context.projectDir,
     resolution: job.quality,
     frameRate: { kind: 'explicit', fps: job.fps },
     deliveryTarget: job.deliveryTarget,

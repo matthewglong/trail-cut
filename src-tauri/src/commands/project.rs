@@ -70,7 +70,7 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
 
     let mut project = match version {
         1 => {
-            // Chain v1 → v2 → … → v9. Each step is value-level until the
+            // Chain v1 → v2 → … → v11. Each step is value-level until the
             // final `from_value` so a partially-migrated bundle (e.g. an
             // interrupted save) reads through cleanly.
             let v2 = migrate_v1_to_v2_value(raw)?;
@@ -80,7 +80,9 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
             let v8 = migrate_v7_to_v8_value(v7)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
         2 => {
             let v3 = migrate_v2_to_v3_value(raw)?;
@@ -89,7 +91,9 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
             let v8 = migrate_v7_to_v8_value(v7)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
         3 => {
             let v4 = migrate_v3_to_v4_value(raw)?;
@@ -97,36 +101,55 @@ pub fn load_project(project_dir: String) -> Result<Project, String> {
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
             let v8 = migrate_v7_to_v8_value(v7)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
         4 => {
             let v5 = migrate_v4_to_v5_value(raw)?;
             let v6 = migrate_v5_to_v6_value(v5)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
             let v8 = migrate_v7_to_v8_value(v7)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
         5 => {
             let v6 = migrate_v5_to_v6_value(raw)?;
             let v7 = migrate_v6_to_v7_value(v6)?;
             let v8 = migrate_v7_to_v8_value(v7)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
         6 => {
             let v7 = migrate_v6_to_v7_value(raw)?;
             let v8 = migrate_v7_to_v8_value(v7)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
         7 => {
             let v8 = migrate_v7_to_v8_value(raw)?;
-            migrate_v8_to_v9(v8)?
+            let v9 = migrate_v8_to_v9_value(v8)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
         }
-        8 => migrate_v8_to_v9(raw)?,
-        9 => serde_json::from_value::<Project>(raw)
-            .map_err(|e| format!("Failed to parse v9 project: {}", e))?,
+        8 => {
+            let v9 = migrate_v8_to_v9_value(raw)?;
+            let v10 = migrate_v9_to_v10_value(v9)?;
+            migrate_v10_to_v11(v10)?
+        }
+        9 => {
+            let v10 = migrate_v9_to_v10_value(raw)?;
+            migrate_v10_to_v11(v10)?
+        }
+        10 => migrate_v10_to_v11(raw)?,
+        11 => serde_json::from_value::<Project>(raw)
+            .map_err(|e| format!("Failed to parse v11 project: {}", e))?,
         _ => {
             return Err(format!(
-                "Unknown project schema version {} (this app supports v1–v9)",
+                "Unknown project schema version {} (this app supports v1–v11)",
                 version
             ));
         }
@@ -393,22 +416,136 @@ fn migrate_v7_to_v8(raw: serde_json::Value) -> Result<Project, String> {
 /// hardcoded constants), so the migration only stamps the version.
 fn migrate_v8_to_v9_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
     if let Some(obj) = raw.as_object_mut() {
-        obj.insert(
-            "schema_version".into(),
-            serde_json::Value::from(CURRENT_SCHEMA_VERSION),
-        );
+        obj.insert("schema_version".into(), serde_json::Value::from(9u32));
     } else {
         return Err("v8 project root is not a JSON object".into());
     }
     Ok(raw)
 }
 
-/// v8 → v9 migration returning a parsed Project. Used as the final step of the
-/// load chain for every version path.
+/// Test/back-compat helper: v8 → v9 migration that returns a parsed Project
+/// at v9. Wraps `migrate_v8_to_v9_value`.
+#[cfg(test)]
 fn migrate_v8_to_v9(raw: serde_json::Value) -> Result<Project, String> {
     let v9 = migrate_v8_to_v9_value(raw)?;
     let mut project: Project = serde_json::from_value(v9)
         .map_err(|e| format!("Failed to parse v8 project during v9 migration: {}", e))?;
+    project.schema_version = 9;
+    Ok(project)
+}
+
+/// v9 → v10 migration (value-form). Purely additive: v10 introduced the
+/// custom POV marker image (v10's `PovSettings.image`, since restructured by
+/// v11 into the marker library) and `PovSize.image_size` (+ per-clip
+/// override), all supplied by `#[serde(default)]` when absent — this step
+/// only stamps the version; the v10 → v11 step that follows owns the
+/// `pov.image` restructuring.
+fn migrate_v9_to_v10_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert("schema_version".into(), serde_json::Value::from(10u32));
+    } else {
+        return Err("v9 project root is not a JSON object".into());
+    }
+    Ok(raw)
+}
+
+/// Test/back-compat helper: v9 project value through the remainder of the
+/// chain (v10 stamp, then the v11 restructuring + terminal parse).
+#[cfg(test)]
+fn migrate_v9_to_v10(raw: serde_json::Value) -> Result<Project, String> {
+    let v10 = migrate_v9_to_v10_value(raw)?;
+    migrate_v10_to_v11(v10)
+}
+
+/// Extract the 16-hex content hash from a v10 baked-icon filename
+/// (`assets/pov-icon-<hash>.png`). Strict: anything that doesn't match the
+/// exact shape `import_pov_image`/`save_pov_icon` produced returns None —
+/// the migration must never guess an id for a corrupt bundle.
+fn parse_pov_icon_hash(icon_file: &str) -> Option<&str> {
+    let rest = icon_file.strip_prefix("assets/pov-icon-")?;
+    let hash = rest.strip_suffix(".png")?;
+    if hash.len() == 16 && hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
+/// v10 → v11 migration (value-form). v11 generalizes the single custom POV
+/// marker image into the shared project-level marker-image library:
+///
+/// - `map_settings.pov.image` (when present) moves to
+///   `map_settings.marker_images[0]` — gaining its content hash (parsed from
+///   the `assets/pov-icon-<hash>.png` filename) as the entry `id` — and
+///   `pov.marker` is pointed at it (`{"kind":"image","image_id":<hash>}`).
+///   An `icon_file` that doesn't match the strict v10 naming means a corrupt
+///   bundle: the image ref is DROPPED (loud log) rather than migrated with a
+///   guessed id — the project falls back to the default dot marker.
+/// - Everything else (`pov.marker`, `waypoints.marker_image_id`,
+///   `Waypoint.marker_image_id`, per-clip `pov.marker` overrides) is purely
+///   additive via `#[serde(default)]`.
+///
+/// v10 never persisted per-clip images, so `map_settings.pov.image` is the
+/// only site to transform.
+fn migrate_v10_to_v11_value(mut raw: serde_json::Value) -> Result<serde_json::Value, String> {
+    use serde_json::{json, Value};
+    let obj = raw
+        .as_object_mut()
+        .ok_or_else(|| "v10 project root is not a JSON object".to_string())?;
+
+    if let Some(ms) = obj.get_mut("map_settings").and_then(|v| v.as_object_mut()) {
+        let image = ms
+            .get_mut("pov")
+            .and_then(|p| p.as_object_mut())
+            .and_then(|p| p.remove("image"));
+        if let Some(image) = image {
+            let hash = image
+                .get("icon_file")
+                .and_then(|v| v.as_str())
+                .and_then(parse_pov_icon_hash)
+                .map(str::to_string);
+            match hash {
+                Some(hash) => {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("id".into(), Value::from(hash.clone()));
+                    for key in ["icon_file", "source_file", "source_name", "width", "height"] {
+                        if let Some(v) = image.get(key) {
+                            entry.insert(key.into(), v.clone());
+                        }
+                    }
+                    ms.entry("marker_images")
+                        .or_insert_with(|| json!([]))
+                        .as_array_mut()
+                        .ok_or_else(|| "map_settings.marker_images is not an array".to_string())?
+                        .push(Value::Object(entry));
+                    if let Some(pov) = ms.get_mut("pov").and_then(|p| p.as_object_mut()) {
+                        pov.insert("marker".into(), json!({ "kind": "image", "image_id": hash }));
+                    }
+                }
+                None => {
+                    eprintln!(
+                        "[migrate v10→v11] dropping pov.image with unparseable icon_file {:?} — \
+                         reverting to the default dot marker",
+                        image.get("icon_file")
+                    );
+                }
+            }
+        }
+    }
+
+    obj.insert(
+        "schema_version".into(),
+        serde_json::Value::from(CURRENT_SCHEMA_VERSION),
+    );
+    Ok(raw)
+}
+
+/// v10 → v11 migration returning a parsed Project. Used as the final step of
+/// the load chain for every version path.
+fn migrate_v10_to_v11(raw: serde_json::Value) -> Result<Project, String> {
+    let v11 = migrate_v10_to_v11_value(raw)?;
+    let mut project: Project = serde_json::from_value(v11)
+        .map_err(|e| format!("Failed to parse v10 project during v11 migration: {}", e))?;
     project.schema_version = CURRENT_SCHEMA_VERSION;
     Ok(project)
 }
@@ -1690,12 +1827,195 @@ mod tests {
             "waypoints": []
         });
         let project = migrate_v8_to_v9(v8).expect("v8 → v9 migration must succeed");
-        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(project.schema_version, 9);
         assert_eq!(
             project.working_color_space,
             crate::models::WorkingColorSpaceId::LinearBt2020Full,
         );
+    }
+
+    #[test]
+    fn migrate_v9_to_v10_stamps_version_and_defaults_pov_image() {
+        // v9 → v10 → v11 is purely additive for a bundle with no custom
+        // image: a v9 bundle with a populated pov block migrates with
+        // `marker: None`, an empty library, the default `image_size`, and
+        // every pre-existing pov field intact.
+        let v9 = serde_json::json!({
+            "schema_version": 9,
+            "version": 1,
+            "name": "v9 project",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": {
+                "camera": {},
+                "route": {},
+                "waypoints": {},
+                "pov": {
+                    "color": "#ff0000",
+                    "size": { "dot_radius": 0.021 }
+                }
+            },
+            "waypoints": []
+        });
+        let project = migrate_v9_to_v10(v9).expect("v9 → v11 migration must succeed");
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(project.schema_version, 11);
+        let settings = project
+            .map_settings
+            .as_ref()
+            .expect("map_settings must survive");
+        let pov = &settings.pov;
+        assert_eq!(pov.color, "#ff0000");
+        assert_eq!(pov.size.dot_radius, 0.021);
+        assert!(pov.marker.is_none());
+        assert!(settings.marker_images.is_empty());
+        assert_eq!(pov.size.image_size, 0.08);
+    }
+
+    #[test]
+    fn v11_marker_library_round_trips_through_save_load() {
+        // A project with a marker library + selections on both decorations
+        // must survive save → load with paths, ids, and dims intact.
+        let dir = std::env::temp_dir().join(format!(
+            "trailcut-test-{}-{}-markerlib",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut settings = MapSettings::default();
+        settings.marker_images.push(MarkerImage {
+            id: "deadbeef01234567".into(),
+            icon_file: "assets/marker-icon-deadbeef01234567.png".into(),
+            source_file: "assets/marker-source-deadbeef01234567.svg".into(),
+            source_name: "will.svg".into(),
+            width: 1024,
+            height: 812,
+        });
+        settings.pov.marker = Some(PovMarker::Image {
+            image_id: "deadbeef01234567".into(),
+        });
+        settings.pov.size.image_size = 0.11;
+        settings.waypoints.marker_image_id = Some("deadbeef01234567".into());
+        let project = Project {
+            map_settings: Some(settings),
+            ..Project::default()
+        };
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        save_project(project, dir_str.clone()).expect("save must succeed");
+        let reloaded = load_project(dir_str).expect("reload must succeed");
+        assert_eq!(reloaded.schema_version, CURRENT_SCHEMA_VERSION);
+        let settings = reloaded.map_settings.as_ref().unwrap();
+        assert_eq!(settings.marker_images.len(), 1);
+        let entry = &settings.marker_images[0];
+        assert_eq!(entry.id, "deadbeef01234567");
+        assert_eq!(entry.icon_file, "assets/marker-icon-deadbeef01234567.png");
+        assert_eq!(
+            entry.source_file,
+            "assets/marker-source-deadbeef01234567.svg"
+        );
+        assert_eq!(entry.source_name, "will.svg");
+        assert_eq!((entry.width, entry.height), (1024, 812));
+        assert_eq!(
+            settings.pov.marker,
+            Some(PovMarker::Image {
+                image_id: "deadbeef01234567".into()
+            })
+        );
+        assert_eq!(settings.pov.size.image_size, 0.11);
+        assert_eq!(
+            settings.waypoints.marker_image_id.as_deref(),
+            Some("deadbeef01234567")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v10_to_v11_moves_pov_image_into_library() {
+        // The v10 single `pov.image` becomes a library entry whose id is the
+        // content hash parsed from the baked-icon filename, with `pov.marker`
+        // pointing at it and the `image` key gone.
+        let v10 = serde_json::json!({
+            "schema_version": 10,
+            "version": 1,
+            "name": "v10 project",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": {
+                "camera": {},
+                "route": {},
+                "waypoints": {},
+                "pov": {
+                    "color": "#ff0000",
+                    "image": {
+                        "icon_file": "assets/pov-icon-00c0ffeec0ffee00.png",
+                        "source_file": "assets/pov-source-00c0ffeec0ffee00.svg",
+                        "source_name": "hiker.svg",
+                        "width": 1024,
+                        "height": 640
+                    }
+                }
+            },
+            "waypoints": []
+        });
+        let project = migrate_v10_to_v11(v10).expect("v10 → v11 migration must succeed");
+        assert_eq!(project.schema_version, 11);
+        let settings = project.map_settings.as_ref().expect("map_settings");
+        assert_eq!(settings.marker_images.len(), 1);
+        let entry = &settings.marker_images[0];
+        assert_eq!(entry.id, "00c0ffeec0ffee00");
+        assert_eq!(entry.icon_file, "assets/pov-icon-00c0ffeec0ffee00.png");
+        assert_eq!(entry.source_file, "assets/pov-source-00c0ffeec0ffee00.svg");
+        assert_eq!(entry.source_name, "hiker.svg");
+        assert_eq!((entry.width, entry.height), (1024, 640));
+        assert_eq!(
+            settings.pov.marker,
+            Some(PovMarker::Image {
+                image_id: "00c0ffeec0ffee00".into()
+            })
+        );
+        assert_eq!(settings.pov.color, "#ff0000");
+    }
+
+    #[test]
+    fn migrate_v10_to_v11_drops_unparseable_pov_image() {
+        // A corrupt/hand-edited icon_file that doesn't match the strict v10
+        // naming must NOT invent a library id — the ref is dropped and the
+        // project reverts to the default dot marker.
+        let v10 = serde_json::json!({
+            "schema_version": 10,
+            "version": 1,
+            "name": "corrupt v10 project",
+            "thumbnail": null,
+            "clips": [],
+            "selected_export_aspect": "9_16",
+            "map_settings": {
+                "camera": {},
+                "route": {},
+                "waypoints": {},
+                "pov": {
+                    "image": {
+                        "icon_file": "assets/renamed-by-hand.png",
+                        "source_file": "assets/pov-source-abc.svg",
+                        "source_name": "hiker.svg",
+                        "width": 1024,
+                        "height": 640
+                    }
+                }
+            },
+            "waypoints": []
+        });
+        let project = migrate_v10_to_v11(v10).expect("v10 → v11 migration must succeed");
+        let settings = project.map_settings.as_ref().expect("map_settings");
+        assert!(settings.marker_images.is_empty());
+        assert!(settings.pov.marker.is_none());
     }
 
     #[test]
@@ -1730,6 +2050,7 @@ mod tests {
                     color: None,
                     secondary_color: None,
                     shape: None,
+                    marker_image_id: None,
                 },
                 Waypoint {
                     id: "wp-b".into(),
@@ -1743,6 +2064,7 @@ mod tests {
                     color: None,
                     secondary_color: None,
                     shape: None,
+                    marker_image_id: None,
                 },
             ],
             ..Project::default()

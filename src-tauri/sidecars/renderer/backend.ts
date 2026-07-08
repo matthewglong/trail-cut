@@ -15,6 +15,7 @@
 
 import type { CompiledTimeline } from '../../../src/lib/cameraIntent';
 import type { Clip, Route, MapSettings, Waypoint } from '../../../src/types';
+import type { HaloCompositeGroup } from '../../../src/lib/mapVisuals';
 
 // ---- Protocol types (wire shapes from the Rust orchestrator) --------------
 
@@ -81,6 +82,15 @@ export interface FramePayload {
   layouts: Array<[string, string, unknown]>;
   /** `line-gradient` values `[layerId, expressionOrNull]`. */
   gradients: Array<[string, unknown]>;
+  /** Engine-level group-opacity composite config for the four halo layer
+   *  pairs, re-resolved per frame from the active clip's merged
+   *  MapSettings — same re-resolve-at-every-frame treatment as `paints`
+   *  (`staticResolution` in `scene.ts` `buildFramePayload`), because halo
+   *  opacity is a per-clip-overridable field (`MapOverrides.route/waypoints/
+   *  pov.halo`). Backends apply it as a config swap only when the JSON
+   *  differs from what they last applied — cheap engine-side, but not worth
+   *  re-sending unchanged every frame. */
+  haloComposites: HaloCompositeGroup[];
   camera: {
     center: { lng: number; lat: number };
     zoom: number;

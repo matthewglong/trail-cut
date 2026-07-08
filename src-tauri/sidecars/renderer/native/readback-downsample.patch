@@ -1,0 +1,410 @@
+diff --git a/include/mbgl/mtl/offscreen_texture.hpp b/include/mbgl/mtl/offscreen_texture.hpp
+index f291a7a..1811d2f 100644
+--- a/include/mbgl/mtl/offscreen_texture.hpp
++++ b/include/mbgl/mtl/offscreen_texture.hpp
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <mbgl/gfx/headless_backend.hpp>
+ #include <mbgl/gfx/offscreen_texture.hpp>
+ #include <mbgl/gfx/types.hpp>
+ 
+@@ -16,6 +17,9 @@ public:
+     bool isRenderable() override;
+ 
+     PremultipliedImage readStillImage() override;
++    /// On-GPU integer box-filter reduction before readback — see
++    /// gfx::HeadlessBackend::ReadbackDownsample for the exact semantics.
++    PremultipliedImage readStillImage(const gfx::HeadlessBackend::ReadbackDownsample& downsample);
+     const gfx::Texture2DPtr& getTexture() override;
+ };
+ 
+diff --git a/platform/default/include/mbgl/gfx/headless_backend.hpp b/platform/default/include/mbgl/gfx/headless_backend.hpp
+index e6a3c9e..41b3a67 100644
+--- a/platform/default/include/mbgl/gfx/headless_backend.hpp
++++ b/platform/default/include/mbgl/gfx/headless_backend.hpp
+@@ -5,7 +5,9 @@
+ #include <mbgl/gfx/renderer_backend.hpp>
+ #include <mbgl/util/image.hpp>
+ 
++#include <cstdint>
+ #include <memory>
++#include <optional>
+ 
+ namespace mbgl {
+ namespace gfx {
+@@ -22,7 +24,26 @@ public:
+         return Backend::Create<HeadlessBackend, Size, SwapBehaviour, gfx::ContextMode>(size, swapBehavior, contextMode);
+     }
+ 
++    /// Supersample-readback reduction: read the rendered frame reduced by an
++    /// exact `factor`× integer box filter to exactly `width`×`height` output
++    /// pixels. Output pixel (x,y) averages the factor×factor source block at
++    /// (x*factor, y*factor); source reads outside the actual framebuffer
++    /// contribute transparent black (zero-pad) while the divisor stays
++    /// factor². Rounding is round-half-up: (sum + n/2) / n, truncated.
++    struct ReadbackDownsample {
++        uint32_t factor;
++        uint32_t width;
++        uint32_t height;
++    };
++
+     virtual PremultipliedImage readStillImage() = 0;
++
++    /// Downsampled variant of readStillImage(). The base implementation reads
++    /// the full framebuffer and box-filters on the CPU; backends may override
++    /// with an on-GPU reduction (the Metal backend does). `std::nullopt`
++    /// means the plain full-size readback.
++    virtual PremultipliedImage readStillImage(const std::optional<ReadbackDownsample>& downsample);
++
+     virtual RendererBackend* getRendererBackend() = 0;
+     void setSize(Size);
+ 
+diff --git a/platform/default/include/mbgl/gfx/headless_frontend.hpp b/platform/default/include/mbgl/gfx/headless_frontend.hpp
+index 6c2d30a..9b6a9a8 100644
+--- a/platform/default/include/mbgl/gfx/headless_frontend.hpp
++++ b/platform/default/include/mbgl/gfx/headless_frontend.hpp
+@@ -56,6 +56,8 @@ public:
+     LatLng latLngForPixel(const ScreenCoordinate&);
+ 
+     PremultipliedImage readStillImage();
++    /// Downsampled readback — see gfx::HeadlessBackend::ReadbackDownsample.
++    PremultipliedImage readStillImage(const std::optional<gfx::HeadlessBackend::ReadbackDownsample>& downsample);
+     RenderResult render(Map&);
+     void renderOnce(Map&);
+     void renderFrame();
+diff --git a/platform/default/include/mbgl/mtl/headless_backend.hpp b/platform/default/include/mbgl/mtl/headless_backend.hpp
+index af7d1aa..ba00b5d 100644
+--- a/platform/default/include/mbgl/mtl/headless_backend.hpp
++++ b/platform/default/include/mbgl/mtl/headless_backend.hpp
+@@ -17,6 +17,8 @@ public:
+     void updateAssumedState() override;
+     gfx::Renderable& getDefaultRenderable() override;
+     PremultipliedImage readStillImage() override;
++    PremultipliedImage readStillImage(
++        const std::optional<gfx::HeadlessBackend::ReadbackDownsample>& downsample) override;
+     RendererBackend* getRendererBackend() override;
+     SwapBehaviour getSwapBehaviour();
+ 
+diff --git a/platform/default/src/mbgl/gfx/headless_backend.cpp b/platform/default/src/mbgl/gfx/headless_backend.cpp
+index a580024..8a774f2 100644
+--- a/platform/default/src/mbgl/gfx/headless_backend.cpp
++++ b/platform/default/src/mbgl/gfx/headless_backend.cpp
+@@ -1,5 +1,8 @@
+ #include <mbgl/gfx/headless_backend.hpp>
+ 
++#include <algorithm>
++#include <vector>
++
+ namespace mbgl {
+ namespace gfx {
+ 
+@@ -8,6 +11,48 @@ bool Backend::enableGPUExpressionEval = false;
+ HeadlessBackend::HeadlessBackend(Size size_)
+     : mbgl::gfx::Renderable(size_, nullptr) {}
+ 
++PremultipliedImage HeadlessBackend::readStillImage(const std::optional<ReadbackDownsample>& downsample) {
++    PremultipliedImage full = readStillImage();
++    if (!downsample) {
++        return full;
++    }
++    const uint32_t factor = downsample->factor;
++    const uint32_t outW = downsample->width;
++    const uint32_t outH = downsample->height;
++    if (factor == 1 && Size{outW, outH} == full.size) {
++        return full;
++    }
++    const uint32_t n = factor * factor;
++    const uint32_t half = n / 2;
++    const uint32_t srcW = full.size.width;
++    const uint32_t srcH = full.size.height;
++    auto out = std::make_unique<uint8_t[]>(size_t(outW) * outH * 4);
++    const uint8_t* src = full.data.get();
++    std::vector<uint32_t> acc(size_t(outW) * 4);
++    for (uint32_t oy = 0; oy < outH; ++oy) {
++        std::fill(acc.begin(), acc.end(), 0u);
++        for (uint32_t k = 0; k < factor; ++k) {
++            const uint32_t sy = oy * factor + k;
++            if (sy >= srcH) continue; // zero-pad rows contribute nothing
++            const uint8_t* row = src + size_t(sy) * srcW * 4;
++            const uint32_t copyW = std::min(outW * factor, srcW);
++            for (uint32_t sx = 0; sx < copyW; ++sx) {
++                const size_t o = size_t(sx / factor) * 4;
++                const uint8_t* s = row + size_t(sx) * 4;
++                acc[o] += s[0];
++                acc[o + 1] += s[1];
++                acc[o + 2] += s[2];
++                acc[o + 3] += s[3];
++            }
++        }
++        uint8_t* outRow = out.get() + size_t(oy) * outW * 4;
++        for (size_t i = 0; i < size_t(outW) * 4; ++i) {
++            outRow[i] = static_cast<uint8_t>((acc[i] + half) / n);
++        }
++    }
++    return {Size{outW, outH}, std::move(out)};
++}
++
+ void HeadlessBackend::setSize(Size size_) {
+     size = size_;
+     resource.reset();
+diff --git a/platform/default/src/mbgl/gfx/headless_frontend.cpp b/platform/default/src/mbgl/gfx/headless_frontend.cpp
+index 3760706..3099d92 100644
+--- a/platform/default/src/mbgl/gfx/headless_frontend.cpp
++++ b/platform/default/src/mbgl/gfx/headless_frontend.cpp
+@@ -132,6 +132,11 @@ PremultipliedImage HeadlessFrontend::readStillImage() {
+     return backend->readStillImage();
+ }
+ 
++PremultipliedImage HeadlessFrontend::readStillImage(
++    const std::optional<gfx::HeadlessBackend::ReadbackDownsample>& downsample) {
++    return backend->readStillImage(downsample);
++}
++
+ HeadlessFrontend::RenderResult HeadlessFrontend::render(Map& map) {
+     HeadlessFrontend::RenderResult result;
+     std::exception_ptr error;
+diff --git a/platform/default/src/mbgl/mtl/headless_backend.cpp b/platform/default/src/mbgl/mtl/headless_backend.cpp
+index c056234..9f98b20 100644
+--- a/platform/default/src/mbgl/mtl/headless_backend.cpp
++++ b/platform/default/src/mbgl/mtl/headless_backend.cpp
+@@ -29,6 +29,11 @@ public:
+ 
+     PremultipliedImage readStillImage() { return offscreenTexture->readStillImage(); }
+ 
++    PremultipliedImage readStillImage(const gfx::HeadlessBackend::ReadbackDownsample& downsample) {
++        // The context always hands this resource an mtl::OffscreenTexture.
++        return static_cast<mtl::OffscreenTexture*>(offscreenTexture.get())->readStillImage(downsample);
++    }
++
+     const RendererBackend& getBackend() const override { return context.getBackend(); }
+ 
+     const MTLCommandBufferPtr& getCommandBuffer() const override {
+@@ -86,6 +91,17 @@ PremultipliedImage HeadlessBackend::readStillImage() {
+     return getResource<HeadlessRenderableResource>().readStillImage();
+ }
+ 
++PremultipliedImage HeadlessBackend::readStillImage(
++    const std::optional<gfx::HeadlessBackend::ReadbackDownsample>& downsample) {
++    if (!downsample) {
++        return getResource<HeadlessRenderableResource>().readStillImage();
++    }
++    // On-GPU reduction — bit-identical to the gfx:: CPU fallback (see the
++    // kernel comment in mtl/offscreen_texture.cpp) but the full supersampled
++    // framebuffer never crosses to the CPU.
++    return getResource<HeadlessRenderableResource>().readStillImage(*downsample);
++}
++
+ RendererBackend* HeadlessBackend::getRendererBackend() {
+     return this;
+ }
+diff --git a/platform/node/src/node_map.cpp b/platform/node/src/node_map.cpp
+index 742fe09..0fb2414 100644
+--- a/platform/node/src/node_map.cpp
++++ b/platform/node/src/node_map.cpp
+@@ -48,6 +48,7 @@ struct NodeMap::RenderOptions {
+     double ySkew = 1;
+     std::vector<std::string> classes;
+     mbgl::MapDebugOptions debugOptions = mbgl::MapDebugOptions::NoDebug;
++    std::optional<mbgl::gfx::HeadlessBackend::ReadbackDownsample> downsample;
+ };
+ 
+ Nan::Persistent<v8::Function> NodeMap::constructor;
+@@ -129,6 +130,11 @@ ParseError)JS")
+ 
+     constructor.Reset(tpl->GetFunction(context).ToLocalChecked());
+     Nan::Set(target, Nan::New("Map").ToLocalChecked(), tpl->GetFunction(context).ToLocalChecked());
++
++    // Capability marker for render options.downsample (on-GPU/backend-side
++    // integer box readback reduction) — lets embedders feature-detect a
++    // patched/newer binding without a render round-trip.
++    Nan::Set(target, Nan::New("readbackDownsample").ToLocalChecked(), Nan::New(true));
+ }
+ 
+ /**
+@@ -383,6 +389,25 @@ NodeMap::RenderOptions NodeMap::ParseOptions(v8::Local<v8::Object> obj) {
+             Nan::To<int64_t>(Nan::Get(obj, Nan::New("height").ToLocalChecked()).ToLocalChecked()).ToChecked());
+     }
+ 
++    if (Nan::Has(obj, Nan::New("downsample").ToLocalChecked()).FromJust()) {
++        auto ds = Nan::To<v8::Object>(Nan::Get(obj, Nan::New("downsample").ToLocalChecked()).ToLocalChecked())
++                      .ToLocalChecked();
++        const auto getField = [&](const char* name) -> int64_t {
++            if (!Nan::Has(ds, Nan::New(name).ToLocalChecked()).FromJust()) {
++                throw mbgl::util::Exception(std::string("downsample option requires field: ") + name);
++            }
++            return Nan::To<int64_t>(Nan::Get(ds, Nan::New(name).ToLocalChecked()).ToLocalChecked()).ToChecked();
++        };
++        const int64_t factor = getField("factor");
++        const int64_t width = getField("width");
++        const int64_t height = getField("height");
++        if (factor < 1 || width < 1 || height < 1) {
++            throw mbgl::util::Exception("downsample factor/width/height must be positive integers");
++        }
++        options.downsample = mbgl::gfx::HeadlessBackend::ReadbackDownsample{
++            static_cast<uint32_t>(factor), static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
++    }
++
+     if (Nan::Has(obj, Nan::New("classes").ToLocalChecked()).FromJust()) {
+         auto classes = Nan::To<v8::Object>(Nan::Get(obj, Nan::New("classes").ToLocalChecked()).ToLocalChecked())
+                            .ToLocalChecked()
+@@ -537,13 +562,13 @@ void NodeMap::startRender(const NodeMap::RenderOptions& options) {
+ 
+     map->setProjectionMode(projectionOptions);
+ 
+-    map->renderStill(camera, options.debugOptions, [this](const std::exception_ptr& eptr) {
++    map->renderStill(camera, options.debugOptions, [this, downsample = options.downsample](const std::exception_ptr& eptr) {
+         if (eptr) {
+             error = eptr;
+             uv_async_send(async);
+         } else {
+             assert(!image.data);
+-            image = frontend->readStillImage();
++            image = frontend->readStillImage(downsample);
+             uv_async_send(async);
+         }
+     });
+diff --git a/src/mbgl/mtl/offscreen_texture.cpp b/src/mbgl/mtl/offscreen_texture.cpp
+index 71f9fa0..42d3951 100644
+--- a/src/mbgl/mtl/offscreen_texture.cpp
++++ b/src/mbgl/mtl/offscreen_texture.cpp
+@@ -6,9 +6,51 @@
+ 
+ #include <Metal/Metal.hpp>
+ 
++#include <stdexcept>
++#include <string>
++
+ namespace mbgl {
+ namespace mtl {
+ 
++// Exact-integer box downsample of the color attachment, run on-GPU before
++// readback. Semantics match gfx::HeadlessBackend::ReadbackDownsample (and the
++// CPU fallback in gfx/headless_backend.cpp) bit-for-bit: RGBA8Unorm reads
++// recover exact byte values (unorm→float is correctly rounded, so
++// round(v/255 × 255) == v), the sum stays integral, and (sum + n/2)/n is the
++// same round-half-up the CPU filter applies. Out-of-bounds source reads
++// contribute zero while the divisor stays factor² (zero-pad convention).
++static constexpr const char* kBoxDownsampleMSL = R"MSL(
++#include <metal_stdlib>
++using namespace metal;
++kernel void boxDownsample(texture2d<float, access::read> src [[texture(0)]],
++                          texture2d<float, access::write> dst [[texture(1)]],
++                          constant uint& factor [[buffer(0)]],
++                          uint2 gid [[thread_position_in_grid]]) {
++    if (gid.x >= dst.get_width() || gid.y >= dst.get_height()) {
++        return;
++    }
++    const uint sw = src.get_width();
++    const uint sh = src.get_height();
++    const uint n = factor * factor;
++    uint4 sum = uint4(0);
++    for (uint j = 0; j < factor; ++j) {
++        const uint sy = gid.y * factor + j;
++        if (sy >= sh) {
++            continue;
++        }
++        for (uint i = 0; i < factor; ++i) {
++            const uint sx = gid.x * factor + i;
++            if (sx >= sw) {
++                continue;
++            }
++            sum += uint4(round(src.read(uint2(sx, sy)) * 255.0));
++        }
++    }
++    const uint4 avg = (sum + n / 2) / n;
++    dst.write(float4(avg) / 255.0, gid);
++}
++)MSL";
++
+ class OffscreenTextureResource final : public RenderableResource {
+ public:
+     OffscreenTextureResource(Context& context_,
+@@ -103,6 +145,65 @@ public:
+         return {size, std::move(data)};
+     }
+ 
++    PremultipliedImage readStillImage(const gfx::HeadlessBackend::ReadbackDownsample& down) {
++        // Per-frame call on the render thread — drain autoreleased objects
++        // (texture descriptor, command buffer internals) every invocation,
++        // matching the explicit-pool convention in mtl/context.cpp.
++        const auto pool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
++
++        auto* srcTexture = static_cast<Texture2D*>(colorTexture.get())->getMetalTexture();
++        assert(srcTexture);
++
++        const auto& backend = context.getBackend();
++        auto* device = backend.getDevice().get();
++
++        if (!downsamplePipeline) {
++            NS::Error* error = nullptr;
++            auto source = NS::String::string(kBoxDownsampleMSL, NS::UTF8StringEncoding);
++            auto library = NS::TransferPtr(device->newLibrary(source, nullptr, &error));
++            if (!library) {
++                throw std::runtime_error(std::string("readback downsample kernel failed to compile: ") +
++                                         (error ? error->localizedDescription()->utf8String() : "unknown error"));
++            }
++            auto function = NS::TransferPtr(
++                library->newFunction(NS::String::string("boxDownsample", NS::UTF8StringEncoding)));
++            downsamplePipeline = NS::TransferPtr(device->newComputePipelineState(function.get(), &error));
++            if (!downsamplePipeline) {
++                throw std::runtime_error(std::string("readback downsample pipeline creation failed: ") +
++                                         (error ? error->localizedDescription()->utf8String() : "unknown error"));
++            }
++        }
++
++        auto descriptor = MTL::TextureDescriptor::texture2DDescriptor(
++            MTL::PixelFormatRGBA8Unorm, down.width, down.height, false);
++        descriptor->setUsage(MTL::TextureUsageShaderWrite);
++        descriptor->setStorageMode(MTL::StorageModeShared);
++        auto dstTexture = NS::TransferPtr(device->newTexture(descriptor));
++        if (!dstTexture) {
++            throw std::runtime_error("readback downsample destination texture allocation failed");
++        }
++
++        auto buffer = NS::RetainPtr(backend.getCommandQueue()->commandBuffer());
++        auto encoder = NS::RetainPtr(buffer->computeCommandEncoder());
++        encoder->setComputePipelineState(downsamplePipeline.get());
++        encoder->setTexture(srcTexture, 0);
++        encoder->setTexture(dstTexture.get(), 1);
++        uint32_t factor = down.factor;
++        encoder->setBytes(&factor, sizeof(factor), 0);
++        const MTL::Size threadsPerGroup = MTL::Size::Make(16, 16, 1);
++        const MTL::Size groups = MTL::Size::Make((down.width + 15) / 16, (down.height + 15) / 16, 1);
++        encoder->dispatchThreadgroups(groups, threadsPerGroup);
++        encoder->endEncoding();
++        buffer->commit();
++        buffer->waitUntilCompleted();
++
++        const NS::UInteger bytesPerRow = NS::UInteger(down.width) * 4;
++        auto data = std::make_unique<uint8_t[]>(size_t(down.width) * down.height * 4);
++        dstTexture->getBytes(data.get(), bytesPerRow, MTL::Region::Make2D(0, 0, down.width, down.height), 0);
++
++        return {Size{down.width, down.height}, std::move(data)};
++    }
++
+     gfx::Texture2DPtr& getTexture() {
+         assert(colorTexture);
+         return colorTexture;
+@@ -130,6 +231,10 @@ private:
+     gfx::Texture2DPtr stencilTexture;
+     MTLCommandBufferPtr commandBuffer;
+     MTLRenderPassDescriptorPtr renderPassDescriptor;
++    /// Lazily-compiled readback-downsample compute pipeline; lives as long as
++    /// the resource (i.e. per framebuffer size — HeadlessBackend::setSize
++    /// resets the resource), so steady-state rendering compiles it once.
++    NS::SharedPtr<MTL::ComputePipelineState> downsamplePipeline;
+ };
+ 
+ OffscreenTexture::OffscreenTexture(
+@@ -145,6 +250,10 @@ PremultipliedImage OffscreenTexture::readStillImage() {
+     return getResource<OffscreenTextureResource>().readStillImage();
+ }
+ 
++PremultipliedImage OffscreenTexture::readStillImage(const gfx::HeadlessBackend::ReadbackDownsample& downsample) {
++    return getResource<OffscreenTextureResource>().readStillImage(downsample);
++}
++
+ const gfx::Texture2DPtr& OffscreenTexture::getTexture() {
+     return getResource<OffscreenTextureResource>().getTexture();
+ }

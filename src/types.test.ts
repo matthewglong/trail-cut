@@ -10,7 +10,10 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_MAP_SETTINGS,
   resolveMapSettings,
+  computeClipOverrides,
+  leafPaths,
   type GradientStop,
+  type HaloSettings,
   type MapSettings,
 } from './types';
 
@@ -216,5 +219,257 @@ describe('resolveMapSettings — color_stops_cache passthrough', () => {
     };
     const resolved = resolveMapSettings(defaults, null);
     expect(resolved.waypoints.color_stops_cache).toEqual(cache);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-clip override expansion: everything the decoration panels edit is
+// overridable at the clip level — route color/halo, waypoint colors/marker/
+// halo, POV halo. These tests pin the merge (resolveMapSettings) and the
+// sparse diff (computeClipOverrides) for the new object-valued leaves.
+
+describe('resolveMapSettings — per-clip color/halo/marker overrides', () => {
+  const HALO: HaloSettings = {
+    enabled: true,
+    color: { mode: 'solid', solid: '#112233' },
+    size: 0.01,
+    fade: 0.25,
+    opacity: 0.5,
+    falloff: 0.4,
+    offset_x: 0.002,
+    offset_y: -0.002,
+  };
+
+  it('applies route.color override (validated) over the project color', () => {
+    const resolved = resolveMapSettings(DEFAULT_MAP_SETTINGS, {
+      route: { color: { mode: 'solid', solid: '#ff715b' } },
+    });
+    expect(resolved.route.color).toEqual({ mode: 'solid', solid: '#ff715b' });
+  });
+
+  it('validates an overridden route gradient (malformed falls back to solid)', () => {
+    const resolved = resolveMapSettings(DEFAULT_MAP_SETTINGS, {
+      route: {
+        color: { mode: 'gradient', stops: [{ fraction: 0, color: '#ff715b' }] },
+      },
+    });
+    // Single stop is invalid — degrades to the first stop's solid.
+    expect(resolved.route.color).toEqual({ mode: 'solid', solid: '#ff715b' });
+  });
+
+  it('applies halo overrides on all three decorations', () => {
+    const resolved = resolveMapSettings(DEFAULT_MAP_SETTINGS, {
+      route: { halo: HALO },
+      waypoints: { halo: HALO },
+      pov: { halo: HALO },
+    });
+    expect(resolved.route.halo).toEqual(HALO);
+    expect(resolved.waypoints.halo).toEqual(HALO);
+    expect(resolved.pov.halo).toEqual(HALO);
+  });
+
+  it('keeps the project halo when the override carries none', () => {
+    const defaults: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: { ...DEFAULT_MAP_SETTINGS.route, halo: HALO },
+    };
+    const resolved = resolveMapSettings(defaults, { route: { mode: 'none' } });
+    expect(resolved.route.halo).toEqual(HALO);
+  });
+
+  it('applies waypoints.color / secondary_color overrides', () => {
+    const resolved = resolveMapSettings(DEFAULT_MAP_SETTINGS, {
+      waypoints: {
+        color: {
+          mode: 'gradient',
+          stops: [
+            { fraction: 0, color: '#ff715b' },
+            { fraction: 1, color: '#2f52e0' },
+          ],
+        },
+        secondary_color: { mode: 'solid', solid: '#123456' },
+      },
+    });
+    expect(resolved.waypoints.color.mode).toBe('gradient');
+    expect(resolved.waypoints.secondary_color).toEqual({
+      mode: 'solid',
+      solid: '#123456',
+    });
+  });
+
+  it('applies the atomic waypoint marker override — image cleared by a shape override', () => {
+    const defaults: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: {
+        ...DEFAULT_MAP_SETTINGS.waypoints,
+        shape: 'circle',
+        marker_image_id: 'abc123',
+      },
+    };
+    const resolved = resolveMapSettings(defaults, {
+      waypoints: { marker: { shape: 'diamond' } },
+    });
+    // The pair is replaced wholesale: the project image must NOT leak
+    // through the merge.
+    expect(resolved.waypoints.shape).toBe('diamond');
+    expect(resolved.waypoints.marker_image_id).toBeUndefined();
+    // The transient `marker` leaf must not splat onto the resolved settings.
+    expect('marker' in resolved.waypoints).toBe(false);
+  });
+
+  it('applies an image marker override over a shape project default', () => {
+    const resolved = resolveMapSettings(DEFAULT_MAP_SETTINGS, {
+      waypoints: { marker: { shape: 'circle', marker_image_id: 'abc123' } },
+    });
+    expect(resolved.waypoints.marker_image_id).toBe('abc123');
+  });
+});
+
+describe('computeClipOverrides — object-valued leaves (deep-equal diff)', () => {
+  const HALO: HaloSettings = {
+    enabled: true,
+    color: { mode: 'solid', solid: '#112233' },
+    size: 0.01,
+    fade: 0.25,
+    opacity: 0.5,
+  };
+
+  it('records route.color when different; drops it when deep-equal', () => {
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: { mode: 'solid', solid: '#ff715b' },
+      },
+    };
+    expect(computeClipOverrides(next, DEFAULT_MAP_SETTINGS).route?.color).toEqual({
+      mode: 'solid',
+      solid: '#ff715b',
+    });
+    // Fresh (different-reference, same-value) object: no override.
+    const same: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: { ...DEFAULT_MAP_SETTINGS.route.color },
+      },
+    };
+    expect(computeClipOverrides(same, DEFAULT_MAP_SETTINGS).route).toBeUndefined();
+  });
+
+  it('records halo overrides on all three decorations; deep-equal drops them', () => {
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: { ...DEFAULT_MAP_SETTINGS.route, halo: HALO },
+      waypoints: { ...DEFAULT_MAP_SETTINGS.waypoints, halo: HALO },
+      pov: { ...DEFAULT_MAP_SETTINGS.pov, halo: HALO },
+    };
+    const overrides = computeClipOverrides(next, DEFAULT_MAP_SETTINGS);
+    expect(overrides.route?.halo).toEqual(HALO);
+    expect(overrides.waypoints?.halo).toEqual(HALO);
+    expect(overrides.pov?.halo).toEqual(HALO);
+
+    const project: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: { ...DEFAULT_MAP_SETTINGS.route, halo: HALO },
+    };
+    const sameHalo: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      // Same values, fresh objects — and an absent falloff must compare
+      // equal to the explicit 0 the seed writes.
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        halo: { ...HALO, color: { ...HALO.color }, falloff: 0 },
+      },
+    };
+    expect(computeClipOverrides(sameHalo, project).route).toBeUndefined();
+  });
+
+  it('halo diff ignores color_stops_cache (UI stash, not a visual diff)', () => {
+    const project: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: { ...DEFAULT_MAP_SETTINGS.route, halo: HALO },
+    };
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        halo: {
+          ...HALO,
+          color_stops_cache: [
+            { fraction: 0, color: '#000000' },
+            { fraction: 1, color: '#ffffff' },
+          ],
+        },
+      },
+    };
+    expect(computeClipOverrides(next, project).route).toBeUndefined();
+  });
+
+  it('records a DISABLED clip halo distinct from an absent project halo (config survives off-toggle)', () => {
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        halo: { ...HALO, enabled: false },
+      },
+    };
+    const overrides = computeClipOverrides(next, DEFAULT_MAP_SETTINGS);
+    expect(overrides.route?.halo).toEqual({ ...HALO, enabled: false });
+  });
+
+  it('records the waypoint marker atomically (shape edit under a project image clears the image)', () => {
+    const project: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: {
+        ...DEFAULT_MAP_SETTINGS.waypoints,
+        marker_image_id: 'abc123',
+      },
+    };
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      waypoints: {
+        ...DEFAULT_MAP_SETTINGS.waypoints,
+        shape: 'diamond',
+        marker_image_id: undefined,
+      },
+    };
+    const overrides = computeClipOverrides(next, project);
+    expect(overrides.waypoints?.marker).toEqual({ shape: 'diamond' });
+    // Round-trip: resolving the override reproduces `next`'s marker fields.
+    const resolved = resolveMapSettings(project, overrides);
+    expect(resolved.waypoints.shape).toBe('diamond');
+    expect(resolved.waypoints.marker_image_id).toBeUndefined();
+  });
+
+  it('records waypoints.color / secondary_color and enumerates the new leaf paths', () => {
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      route: {
+        ...DEFAULT_MAP_SETTINGS.route,
+        color: { mode: 'solid', solid: '#ff715b' },
+        halo: HALO,
+      },
+      waypoints: {
+        ...DEFAULT_MAP_SETTINGS.waypoints,
+        color: { mode: 'solid', solid: '#ff715b' },
+        secondary_color: { mode: 'solid', solid: '#123456' },
+        shape: 'pin',
+        halo: HALO,
+      },
+      pov: { ...DEFAULT_MAP_SETTINGS.pov, halo: HALO },
+    };
+    const overrides = computeClipOverrides(next, DEFAULT_MAP_SETTINGS);
+    expect(leafPaths(overrides)).toEqual(
+      new Set([
+        'route.color',
+        'route.halo',
+        'waypoints.color',
+        'waypoints.secondary_color',
+        'waypoints.marker',
+        'waypoints.halo',
+        'pov.halo',
+      ]),
+    );
   });
 });

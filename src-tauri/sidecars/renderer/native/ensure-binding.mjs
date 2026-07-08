@@ -2,14 +2,38 @@
 // renderer's native backend requires.
 //
 // The binding is upstream @maplibre/maplibre-gl-native at tag node-v6.4.1
-// plus `expose-setGestureInProgress.patch` (53 lines, binding-only —
-// platform/node/src/node_map.{cpp,hpp}; zero core-mbgl changes). The patch
-// exposes `map.setGestureInProgress(bool)` to JS, the exact analogue of the
-// GL JS `moving` painter flag our shipped renderer forces via
-// painterPatch.ts. Without it, raster (satellite) layers pixel-snap on
-// sub-pixel camera pans: 0.93 px RMS sawtooth vs 0.0795 px with the knob on
-// (measured, .spike/native-gl/jitter-report.md; production route:
-// .spike/native-gl/PRODUCTION_PATH.md).
+// plus three vendored patches:
+//   1. `expose-setGestureInProgress.patch` (binding-only —
+//      platform/node/src/node_map.{cpp,hpp}; zero core-mbgl changes).
+//      Exposes `map.setGestureInProgress(bool)` to JS, the exact analogue
+//      of the GL JS `moving` painter flag our shipped renderer forces via
+//      painterPatch.ts. Without it, raster (satellite) layers pixel-snap on
+//      sub-pixel camera pans: 0.93 px RMS sawtooth vs 0.0795 px with the
+//      knob on (measured, .spike/native-gl/jitter-report.md; production
+//      route: .spike/native-gl/PRODUCTION_PATH.md).
+//   2. `readback-downsample.patch` (binding + headless readback path).
+//      Adds the render option `downsample: {factor, width, height}` — an
+//      exact integer box filter run backend-side (on-GPU compute under
+//      Metal) before readback, so SSAA exports never ship the full
+//      supersampled framebuffer to JS nor box-filter it on the CPU
+//      (55–90% of per-frame cost pre-patch, and 2.5–6× worse under CPU
+//      contention). Byte-identical semantics to nativeBackend.ts's
+//      boxDownsample (zero-pad, (sum+n/2)/n truncated). Capability marker:
+//      `mbgl.readbackDownsample === true`.
+//   3. `group-composite.patch` (core + binding). Adds engine-level
+//      group-opacity compositing — `map.setGroupComposite([{layers,
+//      opacity}])` — modeled on the heatmap layer's offscreen pass: each
+//      configured group's member layers render into a full-viewport RGBA8
+//      offscreen texture, skipped in the main passes, then composite once
+//      src-over at the group opacity at the topmost member's z-slot. New
+//      Metal shader (heatmap-texture minus the color-ramp lookup).
+//      Capability marker: `mbgl.groupComposite === true`. Motivation:
+//      translucent halo self-overlap darkening (jitter sunbursts + the
+//      legitimate out-and-back retrace both double-blend under plain alpha
+//      compositing) — measured exact in
+//      `.spike/halo-composite/VERDICT.md`. Feature unused (no groups
+//      configured) renders byte-identical to the unpatched-for-this-feature
+//      binding.
 //
 // Staged layout (mirrors the npm package, resolvable by require()):
 //   src-tauri/binaries/mbgl-native-<triple>/
@@ -48,7 +72,11 @@ const repoRoot = resolve(here, '../../../..');
 const tauriRoot = resolve(repoRoot, 'src-tauri');
 
 const TAG = 'node-v6.4.1';
-const PATCH = resolve(here, 'expose-setGestureInProgress.patch');
+const PATCHES = [
+  resolve(here, 'expose-setGestureInProgress.patch'),
+  resolve(here, 'readback-downsample.patch'),
+  resolve(here, 'group-composite.patch'),
+];
 const ABI = process.versions.modules; // e.g. '127' for Node 22
 
 function hostTargetTriple() {
@@ -77,9 +105,21 @@ function verifyStaged() {
     process.execPath,
     ['-e', `
       const mbgl = require(${JSON.stringify(stagedDir)});
+      if (mbgl.readbackDownsample !== true) {
+        console.error('binding loads but lacks the readbackDownsample capability — unpatched build?');
+        process.exit(2);
+      }
       const m = new mbgl.Map({ request: () => {}, ratio: 1 });
       if (typeof m.setGestureInProgress !== 'function') {
         console.error('binding loads but lacks setGestureInProgress — unpatched build?');
+        process.exit(2);
+      }
+      if (mbgl.groupComposite !== true) {
+        console.error('binding loads but lacks the groupComposite capability — unpatched build?');
+        process.exit(2);
+      }
+      if (typeof m.setGroupComposite !== 'function') {
+        console.error('binding loads but lacks setGroupComposite — unpatched build?');
         process.exit(2);
       }
       m.release();
@@ -124,21 +164,63 @@ function buildFromSource() {
     ]);
   }
 
-  // Apply the vendored patch, idempotently: `--check` fails either when the
-  // patch no longer fits the tree (real error) or when it is already
-  // applied — `--reverse --check` succeeding distinguishes the latter.
-  const check = spawnSync('git', ['apply', '--check', PATCH], { cwd: srcDir });
-  if (check.status === 0) {
-    run('git', ['apply', PATCH], { cwd: srcDir });
-  } else {
-    const reverse = spawnSync('git', ['apply', '--reverse', '--check', PATCH], { cwd: srcDir });
-    if (reverse.status !== 0) {
+  // Detect how much of the patch stack is already applied, then forward-apply
+  // only the remainder. Per-patch idempotency checks that REVERSE-check each
+  // patch alone, in isolation, against the fully-patched tree are UNSOUND as
+  // soon as two patches touch the same file: group-composite.patch (patch 3)
+  // and expose-setGestureInProgress.patch (patch 1) both edit
+  // platform/node/src/node_map.{cpp,hpp}. Reversing patch 1 alone while
+  // patch 3's edits to that same file are still present changes the
+  // surrounding context patch 1's hunks expect, so `git apply --reverse
+  // --check` on patch 1 fails even though patch 1 genuinely is applied —
+  // shared-file poisoning of the per-patch reverse-check, not tree drift
+  // (confirmed 2026-07-07 by a manual reverse/reapply round trip that came
+  // back byte-identical). A single combined `git apply --check` across
+  // multiple patch files doesn't fix this either — verified empirically that
+  // multi-file `--check` does NOT reliably simulate cumulative state (a
+  // two-patch same-file repro where patch B depends on patch A's hunk lands
+  // fine via a real multi-file `git apply`, but the identical multi-file
+  // `--check` invocation reports "does not apply").
+  //
+  // FORWARD single-patch checks don't have this problem: `git apply --check`
+  // on patch i alone just asks "does the tree's current on-disk content match
+  // patch i's expected pre-image", a single-file, single-direction question
+  // with no cross-patch ordering ambiguity. Scanning patches in order, the
+  // first one whose forward check succeeds marks the applied/pending
+  // boundary — patches before it must already be applied (their pre-images
+  // no longer match) and patches from it onward are pending. If no patch's
+  // forward check succeeds, the stack is either fully applied or the tree is
+  // broken; disambiguate with exactly one reverse-check of the TOPMOST patch
+  // alone — safe because nothing is stacked on top of it, so it can never
+  // suffer the shared-file poisoning above.
+  let appliedPrefix = PATCHES.length;
+  for (let i = 0; i < PATCHES.length; i++) {
+    const forward = spawnSync('git', ['apply', '--check', PATCHES[i]], { cwd: srcDir });
+    if (forward.status === 0) {
+      appliedPrefix = i;
+      break;
+    }
+  }
+
+  if (appliedPrefix === PATCHES.length) {
+    const topPatch = PATCHES[PATCHES.length - 1];
+    const topReverse = spawnSync('git', ['apply', '--reverse', '--check', topPatch], { cwd: srcDir });
+    if (topReverse.status !== 0) {
       throw new Error(
-        `[ensure-binding] ${PATCH} neither applies nor is already applied at ${TAG} — ` +
-        `the source tree at ${srcDir} is dirty or the tag moved. Delete the dir and retry.`,
+        `[ensure-binding] no patch forward-applies, and the topmost patch (${topPatch}) does ` +
+        `not reverse either at ${TAG} — the source tree at ${srcDir} is dirty or the tag moved. ` +
+        `Delete the dir and retry.`,
       );
     }
-    console.error('[ensure-binding] patch already applied');
+    console.error(`[ensure-binding] patches already applied: ${PATCHES.length}/${PATCHES.length}`);
+  } else {
+    console.error(
+      `[ensure-binding] applying patches ${appliedPrefix + 1}..${PATCHES.length} ` +
+      `on applied prefix ${appliedPrefix}`,
+    );
+    for (const patch of PATCHES.slice(appliedPrefix)) {
+      run('git', ['apply', patch], { cwd: srcDir });
+    }
   }
 
   run('cmake', ['--preset', 'macos-metal-node', '-DCMAKE_BUILD_TYPE=Release'], { cwd: srcDir });

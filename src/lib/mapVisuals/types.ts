@@ -62,6 +62,16 @@ export interface PaintUpdates {
    *  `waypoints-secondary`) per frame via `setLayoutProperty` — they share
    *  the same size so the outline stays aligned with the fill. */
   waypointIconSize: DataDrivenPropertyValueSpecification<number> | number;
+  /** `icon-size` for the `waypoints-image` layer (library-image markers).
+   *  Same active-bump structure as `waypointIconSize` but bridged through
+   *  `MARKER_IMAGE_CANONICAL_SIZE / 2` instead of
+   *  `SHAPE_CANONICAL_RADIUS` — the image's longest side displays at the
+   *  shape DIAMETER (`2 × circle_radius`), so the one size slider drives
+   *  both marker kinds. Note the active-state size bump applies to image
+   *  markers too, but the SDF halo does not (it's an icon-halo effect on
+   *  the shape slots); the halo circle layer still lights up behind the
+   *  image. */
+  waypointImageIconSize: DataDrivenPropertyValueSpecification<number> | number;
   /** Active-waypoint halo color. Per [DECIDED] Q1: when
    *  `mapSettings.waypoints.active_color` is set the halo paints that flat
    *  hex; when unset, the halo mirrors the active waypoint's own resolved
@@ -110,6 +120,22 @@ export interface PaintUpdates {
    *  both the preview apply block and the renderer's per-frame paints
    *  array. */
   dotOpacity: number;
+}
+
+/** One engine-level group-opacity composite (`map.setGroupComposite` on
+ *  both the patched native renderer and the patched preview GL JS — see
+ *  `.spike/halo-composite/VERDICT.md`). Each member layer renders into a
+ *  shared offscreen target at its own (remapped) paint opacity, then the
+ *  flattened result composites over the map ONCE at `opacity` — this is
+ *  what stops a self-overlapping halo (route retraces, GPS-jitter
+ *  sunbursts) from visibly double-darkening where two translucent coats
+ *  would otherwise alpha-blend on top of each other. See
+ *  `haloGroupPolicy` in `styleSpec.ts` for the opacity-remap derivation. */
+export interface HaloCompositeGroup {
+  /** Member style-layer ids, bottom → top (outer band, then core twin). */
+  layers: string[];
+  /** Composite opacity applied once to the flattened group. */
+  opacity: number;
 }
 
 /** What `buildStyleSpec` returns to its caller. `style` is either an inline

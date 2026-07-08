@@ -24,7 +24,12 @@
 //     `disabledValues`.
 //   • Default 3 columns; pass `columns` for other arrangements.
 
-import { useState, type CSSProperties, type ReactElement } from 'react';
+import {
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type ReactElement,
+} from 'react';
 import { semantic, fonts, radii, typeScale } from '../theme/tokens';
 
 export interface GridPickerOption<T extends string> {
@@ -51,6 +56,16 @@ interface GridPickerProps<T extends string> {
   iconPixelSize?: number;
   /** Test-id prefix for each cell; defaults to `grid-picker-cell`. */
   testIdPrefix?: string;
+  /** Right-click handler for a cell. When provided, the cell's default
+   *  context menu is suppressed and this fires with the cell's value —
+   *  the marker gallery uses it for the delete-image flow. Consumers that
+   *  only want it on SOME cells (e.g. uploaded images but not built-in
+   *  presets) branch on the value themselves. */
+  onOptionContextMenu?: (value: T, event: ReactMouseEvent) => void;
+  /** Extra element rendered as the grid's LAST cell, after every option —
+   *  the marker gallery's dotted "upload" tile. Not part of the radio
+   *  semantics; the consumer owns its behavior/styling. */
+  trailingCell?: ReactElement;
 }
 
 const DEFAULT_COLUMNS = 3;
@@ -67,6 +82,8 @@ export default function GridPicker<T extends string>({
   ariaLabel,
   iconPixelSize = DEFAULT_ICON_PX,
   testIdPrefix = 'grid-picker-cell',
+  onOptionContextMenu,
+  trailingCell,
 }: GridPickerProps<T>) {
   const [hoveredValue, setHoveredValue] = useState<T | null>(null);
 
@@ -99,6 +116,14 @@ export default function GridPicker<T extends string>({
             }}
             onMouseEnter={() => setHoveredValue(opt.value)}
             onMouseLeave={() => setHoveredValue(null)}
+            onContextMenu={
+              onOptionContextMenu
+                ? (e) => {
+                    e.preventDefault();
+                    onOptionContextMenu(opt.value, e);
+                  }
+                : undefined
+            }
             title={opt.title ?? opt.label}
             data-testid={`${testIdPrefix}-${opt.value}`}
             style={cellStyle({ isActive, isDisabled: isCellDisabled, isHovered })}
@@ -110,6 +135,7 @@ export default function GridPicker<T extends string>({
           </button>
         );
       })}
+      {trailingCell}
     </div>
   );
 }

@@ -1,0 +1,801 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9a68048..bdcf0b2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -162,6 +162,7 @@ list(APPEND INCLUDE_FILES
+     ${PROJECT_SOURCE_DIR}/include/mbgl/util/suppress_copies.hpp
+ )
+ list(APPEND SRC_FILES
++    ${PROJECT_SOURCE_DIR}/src/mbgl/gfx/context.cpp
+     ${PROJECT_SOURCE_DIR}/src/mbgl/gfx/drawable.cpp
+     ${PROJECT_SOURCE_DIR}/src/mbgl/gfx/drawable_builder.cpp
+     ${PROJECT_SOURCE_DIR}/src/mbgl/gfx/drawable_builder_impl.hpp
+diff --git a/cmake/metal.cmake b/cmake/metal.cmake
+index 1a36178..8d79567 100644
+--- a/cmake/metal.cmake
++++ b/cmake/metal.cmake
+@@ -84,6 +84,7 @@ list(APPEND
+         ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/fill.cpp
+         ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/fill_extrusion.cpp
+         ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/heatmap.cpp
++        ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/group_composite.cpp
+         ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/heatmap_texture.cpp
+         ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/hillshade.cpp
+         ${PROJECT_SOURCE_DIR}/src/mbgl/shaders/mtl/hillshade_prepare.cpp
+diff --git a/include/mbgl/gfx/context.hpp b/include/mbgl/gfx/context.hpp
+index 01816e0..67983cb 100644
+--- a/include/mbgl/gfx/context.hpp
++++ b/include/mbgl/gfx/context.hpp
+@@ -82,6 +82,15 @@ public:
+     virtual void reduceMemoryUsage() = 0;
+ 
+     virtual std::unique_ptr<OffscreenTexture> createOffscreenTexture(Size, TextureChannelDataType) = 0;
++    /// TrailCut vendored patch 3 — overload with explicit depth/stencil
++    /// attachment flags (group-composite targets need stencil for tile
++    /// clipping). Only the Metal backend honors the flags; the base fallback
++    /// ignores them. The feature is reachable only via the node binding,
++    /// which is Metal-only today.
++    virtual std::unique_ptr<OffscreenTexture> createOffscreenTexture(Size size,
++                                                                      TextureChannelDataType type,
++                                                                      bool depth,
++                                                                      bool stencil);
+ 
+     template <RenderbufferPixelType pixelType>
+     Renderbuffer<pixelType> createRenderbuffer(const Size size) {
+diff --git a/include/mbgl/mtl/context.hpp b/include/mbgl/mtl/context.hpp
+index 3dd2ab3..889d9b5 100644
+--- a/include/mbgl/mtl/context.hpp
++++ b/include/mbgl/mtl/context.hpp
+@@ -106,7 +106,7 @@ public:
+ 
+     void setDirtyState() override;
+ 
+-    std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size, gfx::TextureChannelDataType, bool, bool);
++    std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size, gfx::TextureChannelDataType, bool, bool) override;
+ 
+     std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size, gfx::TextureChannelDataType) override;
+ 
+diff --git a/include/mbgl/renderer/group_composite.hpp b/include/mbgl/renderer/group_composite.hpp
+new file mode 100644
+index 0000000..efe2613
+--- /dev/null
++++ b/include/mbgl/renderer/group_composite.hpp
+@@ -0,0 +1,29 @@
++// TrailCut vendored patch 3 — group-composite configuration.
++//
++// A group composite renders a designated set of style layers (identified by
++// layer id) into a full-viewport offscreen target each frame — at whatever
++// opacities those layers carry — then composites the result over the main
++// framebuffer ONCE, src-over, at `opacity`, at the z-position of the
++// topmost member layer. Because the offscreen pass saturates instead of
++// re-blending against the map, translucent self-overlap within the group
++// (e.g. a route halo crossing itself) cannot exceed the composite opacity:
++// the classic "group opacity" semantics of 2D compositors.
++#pragma once
++
++#include <string>
++#include <vector>
++
++namespace mbgl {
++
++struct GroupCompositeConfig {
++    /// Style layer ids forming the group. Members are rendered into the
++    /// offscreen target in their existing z-order and skipped in the main
++    /// passes; the composite draws at the topmost member's slot. Layers
++    /// that don't exist (or aren't currently rendered) are ignored; a group
++    /// with no live members is a no-op.
++    std::vector<std::string> layers;
++    /// Composite opacity in [0, 1], applied once to the whole group.
++    float opacity = 1.0f;
++};
++
++} // namespace mbgl
+diff --git a/include/mbgl/renderer/renderer.hpp b/include/mbgl/renderer/renderer.hpp
+index 4d2e793..7718f71 100644
+--- a/include/mbgl/renderer/renderer.hpp
++++ b/include/mbgl/renderer/renderer.hpp
+@@ -14,6 +14,7 @@ namespace mbgl {
+ 
+ class RendererObserver;
+ class RenderedQueryOptions;
++struct GroupCompositeConfig; // TrailCut vendored patch 3
+ class SourceQueryOptions;
+ class UpdateParameters;
+ 
+@@ -108,6 +109,11 @@ public:
+     const std::vector<PlacedSymbolData>& getPlacedSymbolsData() const;
+ 
+     // Memory
++    /// TrailCut vendored patch 3 — group-composite: render each configured
++    /// set of style layers offscreen and composite once at a single opacity
++    /// (see mbgl/renderer/group_composite.hpp). Pass an empty vector to clear.
++    void setGroupComposites(std::vector<GroupCompositeConfig>);
++
+     void setTileCacheEnabled(bool);
+     bool getTileCacheEnabled() const;
+     void reduceMemoryUse();
+diff --git a/include/mbgl/shaders/mtl/group_composite.hpp b/include/mbgl/shaders/mtl/group_composite.hpp
+new file mode 100644
+index 0000000..0b75b60
+--- /dev/null
++++ b/include/mbgl/shaders/mtl/group_composite.hpp
+@@ -0,0 +1,98 @@
++// TrailCut vendored patch 3 — group-composite shader (Metal).
++//
++// Composites a group-composite render target (a set of style layers
++// rendered offscreen at full opacity) over the main framebuffer in one
++// src-over pass at a single configurable opacity. The RTT content is
++// premultiplied, so scaling all four channels by `opacity` is the exact
++// "group opacity" composite.
++//
++// Structurally a clone of HeatmapTextureShader minus the color-ramp
++// lookup. The UBO layout and every binding index deliberately mirror the
++// heatmap-texture numerology so the C++ side can reuse
++// HeatmapTexturePropsUBO / idHeatmapTexturePropsUBO / idHeatmapImageTexture
++// / idHeatmapPosVertexAttribute without touching the generated
++// shader_defines tables:
++//   MSL idGroupCompositePropsUBO = drawableReservedUBOCount
++//     == MSL idHeatmapTexturePropsUBO (same value, distinct compilation)
++//   MSL attribute index groupCompositeUBOCount + 0
++//     == heatmapTextureUBOCount + 0
++#pragma once
++
++#include <mbgl/shaders/heatmap_texture_layer_ubo.hpp>
++#include <mbgl/shaders/shader_source.hpp>
++#include <mbgl/shaders/mtl/shader_program.hpp>
++
++namespace mbgl {
++namespace shaders {
++
++constexpr auto groupCompositeShaderPrelude = R"(
++
++enum {
++    idGroupCompositePropsUBO = drawableReservedUBOCount,
++    groupCompositeUBOCount
++};
++
++struct alignas(16) GroupCompositePropsUBO {
++    /*  0 */ float4x4 matrix;
++    /* 64 */ float opacity;
++    /* 68 */ float pad1;
++    /* 72 */ float pad2;
++    /* 76 */ float pad3;
++    /* 80 */
++};
++static_assert(sizeof(GroupCompositePropsUBO) == 5 * 16, "wrong size");
++
++)";
++
++template <>
++struct ShaderSource<BuiltIn::GroupCompositeShader, gfx::Backend::Type::Metal> {
++    static constexpr auto name = "GroupCompositeShader";
++    static constexpr auto vertexMainFunction = "vertexMain";
++    static constexpr auto fragmentMainFunction = "fragmentMain";
++
++    static const std::array<AttributeInfo, 1> attributes;
++    static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
++    static const std::array<TextureInfo, 1> textures;
++
++    static constexpr auto prelude = groupCompositeShaderPrelude;
++    static constexpr auto source = R"(
++
++struct VertexStage {
++    short2 pos [[attribute(groupCompositeUBOCount + 0)]];
++};
++
++struct FragmentStage {
++    float4 position [[position, invariant]];
++    float2 pos;
++};
++
++FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
++                                device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
++                                device const GroupCompositePropsUBO& props [[buffer(idGroupCompositePropsUBO)]]) {
++
++    const float2 pos = float2(vertx.pos);
++    const float4 position = props.matrix * float4(pos * paintParams.world_size, 0, 1);
++
++    return {
++        .position    = position,
++        .pos         = pos,
++    };
++}
++
++half4 fragment fragmentMain(FragmentStage in [[stage_in]],
++                            device const GroupCompositePropsUBO& props [[buffer(idGroupCompositePropsUBO)]],
++                            texture2d<float, access::sample> image [[texture(0)]],
++                            sampler image_sampler [[sampler(0)]]) {
++
++#if defined(OVERDRAW_INSPECTOR)
++    return half4(1.0);
++#endif
++
++    const float4 color = image.sample(image_sampler, in.pos);
++    return half4(color * props.opacity);
++}
++)";
++};
++
++} // namespace shaders
++} // namespace mbgl
+diff --git a/include/mbgl/shaders/shader_source.hpp b/include/mbgl/shaders/shader_source.hpp
+index 339f002..8c43ed5 100644
+--- a/include/mbgl/shaders/shader_source.hpp
++++ b/include/mbgl/shaders/shader_source.hpp
+@@ -41,7 +41,8 @@ enum class BuiltIn {
+     SymbolIconShader,
+     SymbolSDFShader,
+     SymbolTextAndIconShader,
+-    WideVectorShader
++    WideVectorShader,
++    GroupCompositeShader // TrailCut vendored patch 3
+ };
+ 
+ /// @brief Select shader source based on a program type and a desired
+diff --git a/platform/node/src/node_map.cpp b/platform/node/src/node_map.cpp
+index 0fb2414..27d968d 100644
+--- a/platform/node/src/node_map.cpp
++++ b/platform/node/src/node_map.cpp
+@@ -4,6 +4,7 @@
+ #include "node_conversion.hpp"
+ 
+ #include <mbgl/renderer/renderer.hpp>
++#include <mbgl/renderer/group_composite.hpp>
+ #include <mbgl/gfx/headless_frontend.hpp>
+ #include <mbgl/style/conversion/source.hpp>
+ #include <mbgl/style/conversion/layer.hpp>
+@@ -112,6 +113,7 @@ ParseError)JS")
+     Nan::SetPrototypeMethod(tpl, "setBearing", SetBearing);
+     Nan::SetPrototypeMethod(tpl, "setPitch", SetPitch);
+     Nan::SetPrototypeMethod(tpl, "setGestureInProgress", SetGestureInProgress);
++    Nan::SetPrototypeMethod(tpl, "setGroupComposite", SetGroupComposite);
+     Nan::SetPrototypeMethod(tpl, "setLight", SetLight);
+     Nan::SetPrototypeMethod(tpl, "setAxonometric", SetAxonometric);
+     Nan::SetPrototypeMethod(tpl, "setXSkew", SetXSkew);
+@@ -135,6 +137,10 @@ ParseError)JS")
+     // integer box readback reduction) — lets embedders feature-detect a
+     // patched/newer binding without a render round-trip.
+     Nan::Set(target, Nan::New("readbackDownsample").ToLocalChecked(), Nan::New(true));
++
++    // Capability marker for map.setGroupComposite (offscreen group-opacity
++    // compositing of designated layer sets — TrailCut vendored patch 3).
++    Nan::Set(target, Nan::New("groupComposite").ToLocalChecked(), Nan::New(true));
+ }
+ 
+ /**
+@@ -1133,6 +1139,68 @@ void NodeMap::SetGestureInProgress(const Nan::FunctionCallbackInfo<v8::Value>& i
+     info.GetReturnValue().SetUndefined();
+ }
+ 
++// TrailCut vendored patch 3 — exposes Renderer::setGroupComposites.
++// Argument: an array of {layers: string[], opacity: number} descriptors; an
++// empty array clears every group. Each group's layers render offscreen at
++// their configured paint opacities and composite over the map ONCE at the
++// group opacity, so translucent self-overlap within the group cannot darken
++// beyond it (group-opacity semantics).
++void NodeMap::SetGroupComposite(const Nan::FunctionCallbackInfo<v8::Value>& info) {
++    auto nodeMap = Nan::ObjectWrap::Unwrap<NodeMap>(info.Holder());
++    if (!nodeMap->map) return Nan::ThrowError(releasedMessage());
++
++    if (info.Length() <= 0 || !info[0]->IsArray()) {
++        return Nan::ThrowTypeError("First argument must be an array of {layers, opacity} groups");
++    }
++
++    std::vector<mbgl::GroupCompositeConfig> configs;
++    auto groups = info[0].As<v8::Array>();
++    for (uint32_t i = 0; i < groups->Length(); ++i) {
++        auto entryValue = Nan::Get(groups, i).ToLocalChecked();
++        if (!entryValue->IsObject()) {
++            return Nan::ThrowTypeError("Each group must be an object with layers/opacity");
++        }
++        auto entry = Nan::To<v8::Object>(entryValue).ToLocalChecked();
++
++        auto layersValue = Nan::Get(entry, Nan::New("layers").ToLocalChecked()).ToLocalChecked();
++        if (!layersValue->IsArray()) {
++            return Nan::ThrowTypeError("Group field 'layers' must be an array of layer id strings");
++        }
++        mbgl::GroupCompositeConfig config;
++        auto layers = layersValue.As<v8::Array>();
++        for (uint32_t j = 0; j < layers->Length(); ++j) {
++            auto layerValue = Nan::Get(layers, j).ToLocalChecked();
++            if (!layerValue->IsString()) {
++                return Nan::ThrowTypeError("Group field 'layers' must contain only strings");
++            }
++            config.layers.emplace_back(*Nan::Utf8String(layerValue));
++        }
++
++        auto opacityValue = Nan::Get(entry, Nan::New("opacity").ToLocalChecked()).ToLocalChecked();
++        if (!opacityValue->IsNumber()) {
++            return Nan::ThrowTypeError("Group field 'opacity' must be a number");
++        }
++        const double opacity = Nan::To<double>(opacityValue).ToChecked();
++        if (!(opacity >= 0.0 && opacity <= 1.0)) {
++            return Nan::ThrowTypeError("Group field 'opacity' must be in [0, 1]");
++        }
++        config.opacity = static_cast<float>(opacity);
++        configs.emplace_back(std::move(config));
++    }
++
++    try {
++        if (auto* renderer = nodeMap->frontend->getRenderer()) {
++            renderer->setGroupComposites(std::move(configs));
++        } else {
++            return Nan::ThrowError("Renderer is not available");
++        }
++    } catch (const std::exception& ex) {
++        return Nan::ThrowError(ex.what());
++    }
++
++    info.GetReturnValue().SetUndefined();
++}
++
+ void NodeMap::SetLight(const Nan::FunctionCallbackInfo<v8::Value>& info) {
+     using namespace mbgl::style;
+     using namespace mbgl::style::conversion;
+diff --git a/platform/node/src/node_map.hpp b/platform/node/src/node_map.hpp
+index 57c42b3..984f443 100644
+--- a/platform/node/src/node_map.hpp
++++ b/platform/node/src/node_map.hpp
+@@ -61,6 +61,7 @@ public:
+     static void SetBearing(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetPitch(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetGestureInProgress(const Nan::FunctionCallbackInfo<v8::Value>&);
++    static void SetGroupComposite(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetLight(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetAxonometric(const Nan::FunctionCallbackInfo<v8::Value>&);
+     static void SetXSkew(const Nan::FunctionCallbackInfo<v8::Value>&);
+diff --git a/src/mbgl/gfx/context.cpp b/src/mbgl/gfx/context.cpp
+new file mode 100644
+index 0000000..eeb8178
+--- /dev/null
++++ b/src/mbgl/gfx/context.cpp
+@@ -0,0 +1,19 @@
++// TrailCut vendored patch 3 — out-of-line gfx::Context definitions.
++#include <mbgl/gfx/context.hpp>
++#include <mbgl/gfx/offscreen_texture.hpp>
++
++namespace mbgl {
++namespace gfx {
++
++std::unique_ptr<OffscreenTexture> Context::createOffscreenTexture(const Size size,
++                                                                  const TextureChannelDataType type,
++                                                                  bool /*depth*/,
++                                                                  bool /*stencil*/) {
++    // Base fallback: attachment flags unsupported — only the Metal backend
++    // overrides this (the group-composite feature is reachable only through
++    // the Metal-only node binding today).
++    return createOffscreenTexture(size, type);
++}
++
++} // namespace gfx
++} // namespace mbgl
+diff --git a/src/mbgl/mtl/renderer_backend.cpp b/src/mbgl/mtl/renderer_backend.cpp
+index 9fc8a8a..4394b6b 100644
+--- a/src/mbgl/mtl/renderer_backend.cpp
++++ b/src/mbgl/mtl/renderer_backend.cpp
+@@ -22,6 +22,7 @@
+ #include <mbgl/shaders/mtl/fill.hpp>
+ #include <mbgl/shaders/mtl/fill_extrusion.hpp>
+ #include <mbgl/shaders/mtl/heatmap.hpp>
++#include <mbgl/shaders/mtl/group_composite.hpp>
+ #include <mbgl/shaders/mtl/heatmap_texture.hpp>
+ #include <mbgl/shaders/mtl/hillshade.hpp>
+ #include <mbgl/shaders/mtl/hillshade_prepare.hpp>
+@@ -133,7 +134,8 @@ void RendererBackend::initShaders(gfx::ShaderRegistry& shaders, const ProgramPar
+                   shaders::BuiltIn::SymbolIconShader,
+                   shaders::BuiltIn::SymbolSDFShader,
+                   shaders::BuiltIn::SymbolTextAndIconShader,
+-                  shaders::BuiltIn::WideVectorShader>(shaders, programParameters);
++                  shaders::BuiltIn::WideVectorShader,
++                  shaders::BuiltIn::GroupCompositeShader>(shaders, programParameters);
+ }
+ 
+ } // namespace mtl
+diff --git a/src/mbgl/renderer/paint_parameters.hpp b/src/mbgl/renderer/paint_parameters.hpp
+index abcac59..1c1e6d8 100644
+--- a/src/mbgl/renderer/paint_parameters.hpp
++++ b/src/mbgl/renderer/paint_parameters.hpp
+@@ -102,6 +102,17 @@ public:
+     /// Clear the stencil buffer, even if there are no tile masks (for 3D)
+     void clearStencil();
+ 
++    /// TrailCut vendored patch 3 — forget which tile clipping masks have
++    /// been drawn WITHOUT touching the GPU. Needed when a frame renders
++    /// multiple render passes whose stencil attachments are independent
++    /// (group-composite offscreen targets): masks drawn into one pass's
++    /// stencil are not present in the next pass's cleared attachment, so
++    /// each pass must redraw them lazily.
++    void resetTileClippingMasks() {
++        nextStencilID = 1;
++        tileClippingMaskIDs.clear();
++    }
++
+     /// @brief Get a stencil mode for rendering constrined to the specified tile ID.
+     /// The tile ID must have been present in the set previously passed to `renderTileClippingMasks`
+     gfx::StencilMode stencilModeForClipping(const UnwrappedTileID&) const;
+diff --git a/src/mbgl/renderer/renderer.cpp b/src/mbgl/renderer/renderer.cpp
+index c321d97..c493ca0 100644
+--- a/src/mbgl/renderer/renderer.cpp
++++ b/src/mbgl/renderer/renderer.cpp
+@@ -143,6 +143,10 @@ const std::vector<PlacedSymbolData>& Renderer::getPlacedSymbolsData() const {
+     return impl->orchestrator.getPlacedSymbolsData();
+ }
+ 
++void Renderer::setGroupComposites(std::vector<GroupCompositeConfig> configs) {
++    impl->setGroupComposites(std::move(configs));
++}
++
+ void Renderer::setTileCacheEnabled(bool enable) {
+     impl->orchestrator.setTileCacheEnabled(enable);
+ }
+diff --git a/src/mbgl/renderer/renderer_impl.cpp b/src/mbgl/renderer/renderer_impl.cpp
+index 1ea642f..53c4e74 100644
+--- a/src/mbgl/renderer/renderer_impl.cpp
++++ b/src/mbgl/renderer/renderer_impl.cpp
+@@ -1,5 +1,14 @@
+ #include <mbgl/renderer/renderer_impl.hpp>
+ 
++// TrailCut vendored patch 3 — group-composite includes
++#include <mbgl/gfx/drawable_builder.hpp>
++#include <mbgl/gfx/offscreen_texture.hpp>
++#include <mbgl/gfx/vertex_attribute.hpp>
++#include <mbgl/shaders/heatmap_texture_layer_ubo.hpp>
++#include <mbgl/shaders/shader_defines.hpp>
++#include <mbgl/util/convert.hpp>
++#include <mbgl/util/mat4.hpp>
++
+ #include <mbgl/geometry/line_atlas.hpp>
+ #include <mbgl/gfx/backend_scope.hpp>
+ #include <mbgl/gfx/context.hpp>
+@@ -85,6 +94,188 @@ void Renderer::Impl::setObserver(RendererObserver* observer_) {
+     observer = observer_ ? observer_ : &nullObserver();
+ }
+ 
++// ---- TrailCut vendored patch 3 — group-composite ---------------------------
++// See mbgl/renderer/group_composite.hpp for the semantics. The mechanism is
++// the heatmap offscreen pattern generalized: members render into a
++// full-viewport RGBA8 offscreen texture (WITH depth+stencil — line layers
++// stencil-clip their tiles), and a fullscreen quad composites that texture
++// src-over at the group opacity, at the topmost member's z-slot.
++
++void Renderer::Impl::setGroupComposites(std::vector<GroupCompositeConfig> configs) {
++    groupComposites.clear();
++    groupCompositeMembers.clear();
++    groupCompositeAnchors.clear();
++    groupComposites.reserve(configs.size());
++    for (auto& config : configs) {
++        GroupCompositeState state;
++        state.config = std::move(config);
++        groupComposites.emplace_back(std::move(state));
++    }
++}
++
++void Renderer::Impl::updateGroupComposites(PaintParameters& parameters) {
++    groupCompositeMembers.clear();
++    groupCompositeAnchors.clear();
++    if (groupComposites.empty()) {
++        return;
++    }
++    auto& context = parameters.context;
++    const auto size = staticData->backendSize;
++
++    for (auto& state : groupComposites) {
++        state.members.clear();
++        state.active = false;
++
++        // Resolve member layer groups by name. visitLayerGroups iterates in
++        // ascending layer-index order, so `members` ends up z-sorted.
++        orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
++            for (const auto& id : state.config.layers) {
++                if (layerGroup.getName() == id) {
++                    state.members.push_back(&layerGroup);
++                    break;
++                }
++            }
++        });
++        bool anyDrawables = false;
++        for (const auto* member : state.members) {
++            if (member->getDrawableCount() > 0) {
++                anyDrawables = true;
++                break;
++            }
++        }
++        if (state.members.empty() || !anyDrawables) {
++            continue; // nothing to composite this frame — zero overhead
++        }
++
++        if (state.offscreenTexture && state.offscreenTexture->getTexture()->getSize() != size) {
++            // Recreate wholesale on resize: the offscreen owns depth/stencil
++            // attachments too, and the composite drawable holds the texture.
++            state.offscreenTexture.reset();
++            state.compositeGroup.reset();
++        }
++        if (!state.offscreenTexture) {
++            state.offscreenTexture = context.createOffscreenTexture(
++                size, gfx::TextureChannelDataType::UnsignedByte, /*depth=*/true, /*stencil=*/true);
++            state.compositeGroup.reset();
++        }
++        if (!state.shader) {
++            state.shader = context.getGenericShader(*staticData->shaders, "GroupCompositeShader");
++            if (!state.shader) {
++                continue;
++            }
++        }
++        if (!state.compositeGroup) {
++            state.compositeGroup = context.createLayerGroup(
++                state.members.back()->getLayerIndex(), /*initialCapacity=*/1, "group-composite");
++            if (!state.compositeGroup) {
++                continue;
++            }
++            // Fullscreen quad drawable — the heatmap composite recipe minus
++            // the color ramp. The quad statics are shared with heatmap.
++            auto vertices = std::make_shared<gfx::VertexVector<HeatmapTextureLayoutVertex>>(
++                RenderStaticData::heatmapTextureVertices());
++            const auto vertexCount = vertices->elements();
++            auto vertexAttrs = context.createVertexAttributeArray();
++            if (const auto& attr = vertexAttrs->set(shaders::idHeatmapPosVertexAttribute)) {
++                attr->setSharedRawData(std::move(vertices),
++                                       offsetof(HeatmapLayoutVertex, a1),
++                                       /*vertexOffset=*/0,
++                                       sizeof(HeatmapLayoutVertex),
++                                       gfx::AttributeDataType::Short2);
++            }
++            auto builder = context.createDrawableBuilder("group-composite");
++            builder->setShader(std::static_pointer_cast<gfx::ShaderProgramBase>(state.shader));
++            builder->setEnableDepth(false);
++            builder->setColorMode(gfx::ColorMode::alphaBlended());
++            builder->setCullFaceMode(gfx::CullFaceMode::disabled());
++            builder->setRenderPass(RenderPass::Translucent);
++            builder->setVertexAttributes(std::move(vertexAttrs));
++            builder->setRawVertices({}, vertexCount, gfx::AttributeDataType::Short2);
++            SegmentVector segments = RenderStaticData::heatmapTextureSegments();
++            builder->setSegments(
++                gfx::Triangles(), RenderStaticData::quadTriangleIndices().vector(), segments.data(), segments.size());
++            builder->setTexture(state.offscreenTexture->getTexture(), shaders::idHeatmapImageTexture);
++            builder->flush(context);
++            auto* compositeLayerGroup = static_cast<LayerGroup*>(state.compositeGroup.get());
++            for (auto& drawable : builder->clearDrawables()) {
++                compositeLayerGroup->addDrawable(std::move(drawable));
++            }
++        }
++
++        // Composite UBO: fullscreen ortho + the group opacity. Reuses the
++        // heatmap-texture UBO layout/slot — the shader mirrors its numerology.
++        mat4 matrix;
++        matrix::ortho(matrix, 0, size.width, size.height, 0, -1, 1);
++        const shaders::HeatmapTexturePropsUBO propsUBO = {.matrix = util::cast<float>(matrix),
++                                                          .opacity = state.config.opacity,
++                                                          .pad1 = 0,
++                                                          .pad2 = 0,
++                                                          .pad3 = 0};
++        state.compositeGroup->mutableUniformBuffers().createOrUpdate(
++            shaders::idHeatmapTexturePropsUBO, &propsUBO, context);
++
++        state.active = true;
++        for (auto* member : state.members) {
++            groupCompositeMembers.insert(member);
++        }
++        groupCompositeAnchors[state.members.back()] = &state;
++    }
++}
++
++void Renderer::Impl::renderGroupCompositeTargets(PaintParameters& parameters) {
++    for (auto& state : groupComposites) {
++        if (!state.active) {
++            continue;
++        }
++        // This pass has its own freshly-cleared stencil attachment — any
++        // clipping masks recorded for a previous pass don't exist in it.
++        parameters.resetTileClippingMasks();
++        parameters.renderPass = parameters.encoder->createRenderPass("group-composite-target",
++                                                                     {.renderable = *state.offscreenTexture,
++                                                                      .clearColor = Color{0.0f, 0.0f, 0.0f, 0.0f},
++                                                                      .clearDepth = 1.0f,
++                                                                      .clearStencil = 0});
++        // Members' shaders read the global paint params (line widths are
++        // computed from units_to_pixels) — bind them to this pass like the
++        // main pass does.
++        parameters.context.bindGlobalUniformBuffers(*parameters.renderPass);
++
++        const gfx::ScissorRect prevScissorRect = parameters.scissorRect;
++        const auto& texSize = state.offscreenTexture->getTexture()->getSize();
++        parameters.scissorRect = {.x = 0, .y = 0, .width = texSize.width, .height = texSize.height};
++
++        const auto memberCount = state.members.size();
++        // Mirror RenderTarget::render's pass structure over the members.
++        parameters.pass = RenderPass::Opaque;
++        parameters.depthRangeSize = 1 -
++                                    (memberCount + 2) * PaintParameters::numSublayers * PaintParameters::depthEpsilon;
++        parameters.currentLayer = 0;
++        for (auto it = state.members.rbegin(); it != state.members.rend(); ++it) {
++            (*it)->render(orchestrator, parameters);
++            parameters.currentLayer++;
++        }
++
++        parameters.pass = RenderPass::Translucent;
++        parameters.depthRangeSize = 1 -
++                                    (memberCount + 2) * PaintParameters::numSublayers * PaintParameters::depthEpsilon;
++        parameters.currentLayer = static_cast<uint32_t>(memberCount) - 1;
++        for (auto* member : state.members) {
++            member->render(orchestrator, parameters);
++            if (parameters.currentLayer > 0) {
++                parameters.currentLayer--;
++            }
++        }
++
++        parameters.context.unbindGlobalUniformBuffers(*parameters.renderPass);
++        parameters.renderPass.reset();
++        parameters.encoder->present(*state.offscreenTexture);
++        parameters.scissorRect = prevScissorRect;
++    }
++    // The main pass's stencil attachment starts cleared too — make it
++    // redraw its own clipping masks rather than trusting ours.
++    parameters.resetTileClippingMasks();
++}
++
+ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<UpdateParameters>& updateParameters) {
+     MLN_TRACE_FUNC();
+     auto& context = backend.getContext();
+@@ -255,6 +446,11 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+ 
+     orchestrator.processChanges();
+ 
++    // TrailCut vendored patch 3 — group-composite maintenance (needs the
++    // orchestrator's layer groups current; must precede the upload pass so
++    // the composite quad's buffers upload below).
++    updateGroupComposites(parameters);
++
+     // Upload layer groups
+     {
+         const auto uploadPass = parameters.encoder->createUploadPass("layerGroup-upload",
+@@ -284,6 +480,13 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+         // Give the render targets a chance to upload
+         orchestrator.visitRenderTargets([&](RenderTarget& renderTarget) { renderTarget.upload(*uploadPass); });
+ 
++        // TrailCut vendored patch 3 — upload the group-composite quads
++        for (auto& groupComposite : groupComposites) {
++            if (groupComposite.active && groupComposite.compositeGroup) {
++                groupComposite.compositeGroup->upload(*uploadPass);
++            }
++        }
++
+         // Upload the Debug layer group
+         orchestrator.visitDebugLayerGroups([&](LayerGroupBase& layerGroup) { layerGroup.upload(*uploadPass); });
+     }
+@@ -378,7 +581,11 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+         // draw layer groups, opaque pass
+         parameters.currentLayer = 0;
+         orchestrator.visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
+-            layerGroup.render(orchestrator, parameters);
++            // TrailCut vendored patch 3 — group-composite members render
++            // offscreen; skip here but keep the depth-slot counters stable.
++            if (groupCompositeMembers.find(&layerGroup) == groupCompositeMembers.end()) {
++                layerGroup.render(orchestrator, parameters);
++            }
+             parameters.currentLayer++;
+         });
+     };
+@@ -392,7 +599,17 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+         // draw layer groups, translucent pass
+         parameters.currentLayer = static_cast<uint32_t>(orchestrator.numLayerGroups()) - 1;
+         orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
+-            layerGroup.render(orchestrator, parameters);
++            // TrailCut vendored patch 3 — substitute the group composite at
++            // the topmost member's slot; other members are skipped (they
++            // already rendered into the offscreen target).
++            if (groupCompositeMembers.find(&layerGroup) != groupCompositeMembers.end()) {
++                if (const auto anchorHit = groupCompositeAnchors.find(&layerGroup);
++                    anchorHit != groupCompositeAnchors.end()) {
++                    anchorHit->second->compositeGroup->render(orchestrator, parameters);
++                }
++            } else {
++                layerGroup.render(orchestrator, parameters);
++            }
+             if (parameters.currentLayer > 0) {
+                 parameters.currentLayer--;
+             }
+@@ -429,6 +646,8 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
+         drawable3DPass();
+     }
+     drawableTargetsPass();
++    // TrailCut vendored patch 3 — render group-composite offscreen targets
++    renderGroupCompositeTargets(parameters);
+     commonClearPass();
+     context.bindGlobalUniformBuffers(*parameters.renderPass);
+     drawableOpaquePass();
+diff --git a/src/mbgl/renderer/renderer_impl.hpp b/src/mbgl/renderer/renderer_impl.hpp
+index b1137d2..efbe1b1 100644
+--- a/src/mbgl/renderer/renderer_impl.hpp
++++ b/src/mbgl/renderer/renderer_impl.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include <mbgl/renderer/render_orchestrator.hpp>
++#include <mbgl/renderer/group_composite.hpp>
+ #include <mbgl/gfx/context_observer.hpp>
+ 
+ #if MLN_RENDER_BACKEND_METAL
+@@ -8,8 +9,11 @@
+ #include <Foundation/Foundation.hpp>
+ #endif // MLN_RENDER_BACKEND_METAL
+ 
++#include <map>
+ #include <memory>
++#include <set>
+ #include <string>
++#include <vector>
+ 
+ namespace mbgl {
+ 
+@@ -17,7 +21,11 @@ class RendererObserver;
+ class RenderStaticData;
+ class RenderTree;
+ 
++class PaintParameters;
++
+ namespace gfx {
++class OffscreenTexture;
++class ShaderProgramBase;
+ class RendererBackend;
+ class ShadeRegistry;
+ class DynamicTextureAtlas;
+@@ -43,6 +51,31 @@ private:
+ 
+     void reduceMemoryUse();
+ 
++    // TrailCut vendored patch 3 — group-composite (see mbgl/renderer/group_composite.hpp).
++    void setGroupComposites(std::vector<GroupCompositeConfig>);
++    /// Per-frame maintenance: resolve member layer groups, (re)create the
++    /// offscreen texture + composite quad, write the composite UBO. Runs
++    /// after the orchestrator's layer-group update, before the upload pass.
++    void updateGroupComposites(PaintParameters&);
++    /// Render each active group's members into its offscreen texture.
++    /// Runs with the orchestrator render targets, before the main pass.
++    void renderGroupCompositeTargets(PaintParameters&);
++
++    struct GroupCompositeState {
++        GroupCompositeConfig config;
++        std::unique_ptr<gfx::OffscreenTexture> offscreenTexture;
++        LayerGroupBasePtr compositeGroup;
++        std::shared_ptr<gfx::ShaderProgramBase> shader;
++        std::vector<LayerGroupBase*> members; // this frame, ascending z-order
++        bool active = false;
++    };
++    std::vector<GroupCompositeState> groupComposites;
++    /// Members to skip in the main opaque/translucent passes this frame.
++    std::set<const LayerGroupBase*> groupCompositeMembers;
++    /// Topmost member of each active group → its state; the composite quad
++    /// draws at this member's slot in the translucent pass.
++    std::map<const LayerGroupBase*, GroupCompositeState*> groupCompositeAnchors;
++
+     // TODO: Move orchestrator to Map::Impl.
+     RenderOrchestrator orchestrator;
+ 
+diff --git a/src/mbgl/shaders/mtl/group_composite.cpp b/src/mbgl/shaders/mtl/group_composite.cpp
+new file mode 100644
+index 0000000..bd7605a
+--- /dev/null
++++ b/src/mbgl/shaders/mtl/group_composite.cpp
+@@ -0,0 +1,22 @@
++// TrailCut vendored patch 3 — group-composite shader info arrays (Metal).
++#include <mbgl/shaders/mtl/group_composite.hpp>
++#include <mbgl/shaders/shader_defines.hpp>
++
++namespace mbgl {
++namespace shaders {
++
++using GroupCompositeShaderSource = ShaderSource<BuiltIn::GroupCompositeShader, gfx::Backend::Type::Metal>;
++
++// The attribute index and the texture/attribute global ids reuse the
++// heatmap-texture values on purpose: the MSL side of this shader declares
++// the identical numerology (see group_composite.hpp), so no new entries in
++// the generated shader_defines tables are needed.
++const std::array<AttributeInfo, 1> GroupCompositeShaderSource::attributes = {
++    AttributeInfo{heatmapTextureUBOCount + 0, gfx::AttributeDataType::Short2, idHeatmapPosVertexAttribute},
++};
++const std::array<TextureInfo, 1> GroupCompositeShaderSource::textures = {
++    TextureInfo{0, idHeatmapImageTexture},
++};
++
++} // namespace shaders
++} // namespace mbgl

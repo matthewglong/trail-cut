@@ -37,3 +37,16 @@ pipeline-visuals/
 
 # Quarantined cruft — preserved on disk, never read (deny-listed in .claude/settings.json)
 attic/
+
+# GL JS halo parity gate — rebuildable artifacts (run.mjs regenerates); the
+# measured receipts (out/report.json + PNGs) stay tracked deliberately
+scripts/gljs-halo-parity/harness.bundle.js
+scripts/gljs-halo-parity/out/_pristine/
+scripts/gljs-halo-parity/out/_pack/
+
+# Raw spike workspaces (node_modules/venvs/video captures/caches, tens of GB) —
+# rescued findings live in docs/spikes/ instead of committing the workspace
+.spike/
+
+# Claude Code agent worktrees — local tooling state, not project source
+.claude/worktrees/

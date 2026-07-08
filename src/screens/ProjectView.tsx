@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import Timeline from '../components/Timeline';
 import MapView from '../components/MapView';
 import MapToolbar from '../components/MapToolbar/MapToolbar';
@@ -13,8 +14,13 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { CameraPreset, Clip, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
-import { resolveMapSettings, computeClipOverrides, leafPaths } from '../types';
+import type { CameraPreset, Clip, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, MarkerImageRef, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
+import {
+  resolveMapSettings,
+  computeClipOverrides,
+  leafPaths,
+} from '../types';
+import { removeMarkerImage } from '../lib/markerLibrary';
 import type { AspectRatio } from '../lib/layout';
 import type { PendingImport, ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 import SourceFormatConfirmDialog from '../components/SourceFormatConfirmDialog';
@@ -105,6 +111,7 @@ interface ProjectViewProps {
 }
 
 export default function ProjectView({
+  projectDir,
   projectName,
   setProjectName,
   editingName,
@@ -223,6 +230,47 @@ export default function ProjectView({
       ));
     }
   }, [mapScope, selectedClipId, mapSettings, setMapSettings, setClips]);
+
+  // ---- Marker-image library (schema v11) ----
+  // Library mutations are PROJECT-level regardless of toolbar scope: an
+  // upload from clip scope still writes `mapSettings.marker_images` (the
+  // clip-override diff has no marker_images channel, deliberately). The
+  // delete flow applies the shared `removeMarkerImage` transform — one
+  // atomic pass reverting every use across project settings, per-clip
+  // overrides, and per-waypoint overrides — and only THEN removes the
+  // bundle asset files, so a failed file deletion can never leave a
+  // dangling reference.
+  const handleMarkerImagesChange = useCallback(
+    (next: MarkerImageRef[]) => {
+      setMapSettings((prev) => ({ ...prev, marker_images: next }));
+    },
+    [setMapSettings],
+  );
+
+  const handleMarkerImageDelete = useCallback(
+    (id: string) => {
+      const entry = mapSettings.marker_images.find((m) => m.id === id);
+      const next = removeMarkerImage(
+        { mapSettings, clips, waypoints },
+        id,
+      );
+      setMapSettings(next.mapSettings);
+      setClips(next.clips);
+      setWaypoints(next.waypoints);
+      if (entry && projectDir) {
+        invoke('delete_marker_image', {
+          projectDir,
+          iconFile: entry.icon_file,
+          sourceFile: entry.source_file,
+        }).catch((err) => {
+          // State is already consistent (no references remain); the orphaned
+          // files are harmless but worth a loud console note.
+          console.error('[ProjectView] marker asset deletion failed:', err);
+        });
+      }
+    },
+    [mapSettings, clips, waypoints, setMapSettings, setClips, setWaypoints, projectDir],
+  );
 
   // True when the selected clip has any stored map overrides. Used to surface
   // the reset pill in project scope — handleMapToolbarChange already nulls out
@@ -669,6 +717,10 @@ export default function ProjectView({
               waypoints={waypoints}
               onWaypointsChange={setWaypoints}
               indexedRoute={indexedRoute}
+              projectDir={projectDir}
+              onMarkerImagesChange={handleMarkerImagesChange}
+              onMarkerImageDelete={handleMarkerImageDelete}
+              projectSettings={mapSettings}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
@@ -682,6 +734,7 @@ export default function ProjectView({
                 mapSettings={toolbarSettings}
                 aspect={previewAspectToAspectRatio(previewAspect)}
                 layouts={projectLayouts}
+                projectDir={projectDir}
                 onSelectClip={handleSelectClip}
               />
               <div
@@ -760,6 +813,7 @@ export default function ProjectView({
         waypoints={waypoints}
         transitionFeel={transitionFeel}
         projectLayouts={projectLayouts}
+        projectDir={projectDir}
       />
       <SourceFormatConfirmDialog
         open={pendingImportClips !== null}

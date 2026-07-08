@@ -81,6 +81,10 @@ export interface ExportModalProps {
   waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   projectLayouts: ProjectLayouts;
+  /** Project bundle directory — `buildExportRequest` resolves the custom
+   *  POV image's bundle-relative asset path against it for the renderer
+   *  (schema v10). */
+  projectDir?: string | null;
 }
 
 const EMPTY_GRID: ExportGridModel = { cells: {}, output_dir: null };
@@ -166,6 +170,7 @@ export function ExportModal({
   waypoints,
   transitionFeel,
   projectLayouts,
+  projectDir,
 }: ExportModalProps) {
   const [view, setView] = useState<View>('select');
   const [configState, setConfigState] = useState<ConfigState | null>(null);
@@ -512,6 +517,7 @@ export function ExportModal({
       waypoints,
       transitionFeel,
       layouts: projectLayouts,
+      projectDir,
     };
     const buildRequest = (job: ExportJob): RenderExportRequest =>
       buildJobRequest(context, job);

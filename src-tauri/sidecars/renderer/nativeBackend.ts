@@ -37,9 +37,17 @@
 //
 // SSAA: the Map's constructor-time `ratio` carries the full pixelRatio
 // (resolution multiplier × supersample factor), so native renders at
-// `framebuffer` dims; this backend downsamples to `readback` dims in the
-// worker with an exact integer box filter (the factor is an integer by
-// construction — framebuffer = slot × factor in build_setup_payload).
+// `framebuffer` dims. The reduction to `readback` dims happens INSIDE the
+// patched binding (render option `downsample`, an exact integer box filter
+// run on-GPU before readback — readback-downsample.patch): the full
+// supersampled framebuffer never crosses to JS, and the worker's CPU does
+// no per-pixel work. The factor is an integer by construction (framebuffer
+// = slot × factor in build_setup_payload). At factor 1 the option is
+// omitted and the full-size readback path is byte-identical to the
+// pre-patch binding (what the golden gate pins). boxDownsample below is
+// the same filter in JS — kept as the executable spec the parity test
+// checks the binding against, and as the reference for the binding's
+// zero-pad/rounding semantics.
 //
 // ALPHA CONVENTION (decide once, document loudly): the native readback is
 // PREMULTIPLIED RGBA, sRGB-encoded, gamma-space-blended — byte-identical to
@@ -61,8 +69,9 @@
 // spike's numbers are darwin-arm64; re-run the oracles per platform when
 // those artifacts exist.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { PNG } from 'pngjs';
 
 import type {
   FramePayload,
@@ -76,7 +85,18 @@ import {
   type DecorationLayerSpec,
   type StaticScene,
 } from './scene';
-import { buildAllShapeIcons } from '../../../src/lib/mapVisuals/shapes';
+import {
+  buildAllShapeIcons,
+  buildShapeIconsFor,
+  transparentSdfEntry,
+} from '../../../src/lib/mapVisuals/shapes';
+import {
+  buildMarkerImageIcon,
+  transparentRasterEntry,
+  type RgbaBitmap,
+} from '../../../src/lib/mapVisuals/markerImage';
+import { referencedMarkerImageIds } from '../../../src/lib/markerLibrary';
+import { PAINT_REFERENCE_WIDTH } from '../../../src/lib/mapVisuals/styleSpec';
 import type { TileCache } from './tileCache';
 import { fetchUrl } from './fetchUrl';
 
@@ -107,6 +127,10 @@ interface MbglMap {
       zoom: number;
       bearing: number;
       pitch: number;
+      /** Patched-binding SSAA reduction: exact integer box filter to
+       *  width×height, run backend-side (on-GPU under Metal) before
+       *  readback. Omitted at factor 1. */
+      downsample?: { factor: number; width: number; height: number };
     },
     cb: (err: Error | null, buffer?: Buffer) => void,
   ): void;
@@ -123,6 +147,11 @@ interface MbglMap {
   setPaintProperty(layerId: string, prop: string, value: unknown): void;
   setLayoutProperty(layerId: string, prop: string, value: unknown): void;
   setGestureInProgress?(inProgress: boolean): void;
+  /** Patched-binding engine-level group-opacity composite (patch 3,
+   *  native/group-composite.patch). Members are matched by style layer id at
+   *  render time; an absent/hidden layer is simply ignored, and a group with
+   *  no live members costs nothing. Passing `[]` clears every group. */
+  setGroupComposite?(groups: Array<{ layers: string[]; opacity: number }>): void;
 }
 
 interface MbglModule {
@@ -130,6 +159,12 @@ interface MbglModule {
     ratio: number;
     request: (req: MbglRequest, callback: MbglRequestCallback) => void;
   }) => MbglMap;
+  /** Capability marker set by readback-downsample.patch — feature-detects
+   *  the render `downsample` option without a render round-trip. */
+  readbackDownsample?: boolean;
+  /** Capability marker set by group-composite.patch — feature-detects
+   *  `Map#setGroupComposite` without needing a live Map instance. */
+  groupComposite?: boolean;
 }
 
 const RESOURCE_KIND_TILE = 3;
@@ -195,10 +230,11 @@ function normalizeGeojson(data: unknown): unknown {
 // ---- Source-spec overrides at the native boundary (port contract 2) ----------
 //
 // `buffer: 0` on the point sources that feed translucent circle layers.
-//   - live-marker: pulse/pulse-b circles cross tile-buffer bands constantly
-//     under follow-cam — the measured brightness-pop case.
-//   - waypoints: feeds the active-halo circle layer (same defect class) AND
-//     two symbol layers. Symbol quads aren't clipped at tile edges and
+//   - live-marker: pulse/pulse-b circles (and the user halo circle pair)
+//     cross tile-buffer bands constantly under follow-cam — the measured
+//     brightness-pop case.
+//   - waypoints: feeds the active-halo + user-halo circle layers (same
+//     defect class) AND two symbol layers. Symbol quads aren't clipped at tile edges and
 //     placement dedupes through the cross-tile index, so buffer:0 is safe
 //     for symbols — verified empirically by the waypoints-buffer probe run
 //     against this backend (see .spike/native-gl production-worker oracles).
@@ -315,6 +351,12 @@ export class NativeBackend implements RendererBackend {
   private layersBySource = new Map<string, DecorationLayerSpec[]>();
   /** JSON of each dynamic source's current data — refresh dedup. */
   private lastSourceJson = new Map<string, string>();
+  /** JSON of the last `haloComposites` config applied to the engine —
+   *  re-assert dedup (the config swap is cheap engine-side, but spamming an
+   *  unchanged array every frame is pointless). Reassigned unconditionally
+   *  at the end of every `setup()` (including `recycle()`'s re-setup), so it
+   *  never survives stale across a map rebuild. */
+  private lastGroupCompositeJson: string | null = null;
 
   constructor(private tileCache: TileCache) {}
 
@@ -377,6 +419,24 @@ export class NativeBackend implements RendererBackend {
     }
 
     const mbgl = loadBinding();
+
+    // Supersampled exports need the binding's readback-downsample support
+    // (readback-downsample.patch). Same loud-failure contract as
+    // setGestureInProgress below: a binding without it would force the
+    // full framebuffer across to JS and a CPU box filter per frame — the
+    // measured 55–90% per-frame cost this patch removed. Never degrade
+    // silently.
+    if (
+      (payload.framebuffer.w !== payload.readback.w || payload.framebuffer.h !== payload.readback.h)
+      && !mbgl.readbackDownsample
+    ) {
+      throw new Error(
+        'native backend: binding lacks readbackDownsample — this is a build without ' +
+        'native/readback-downsample.patch. Run `npm run build:native-binding` to provision the ' +
+        'patched binding. Refusing to fall back to the per-frame CPU box filter.',
+      );
+    }
+
     if (this.map) {
       this.map.release();
       this.map = null;
@@ -412,6 +472,29 @@ export class NativeBackend implements RendererBackend {
     }
     map.setGestureInProgress(true);
 
+    // Group-composite capability (patch 3, native/group-composite.patch) —
+    // unconditional, same treatment as setGestureInProgress above, but for a
+    // different reason: this one isn't gated on "does THIS project use
+    // halos". `resolveStaticPaints` now ALWAYS emits in-FBO halo opacities
+    // (haloGroupPolicy's remapped outerIn/coreIn on the outer/core layers
+    // themselves) — those values are only correct once the engine flattens
+    // each pair through the composite. Rendering them on an engine that
+    // won't apply it silently mis-renders any halo with non-zero falloff
+    // (the outer and core bands blend independently instead of as one
+    // group), and a fully-opaque-looking halo can still be wrong at the
+    // pixel level. An unpatched binding here is a build defect, not a style
+    // mismatch, so this must throw even on exports with every halo disabled.
+    if (mbgl.groupComposite !== true || typeof map.setGroupComposite !== 'function') {
+      map.release();
+      throw new Error(
+        'native backend: binding lacks group-composite support (missing the ' +
+        "'groupComposite' capability marker and/or Map#setGroupComposite) — this is a " +
+        'build without native/group-composite.patch. Run `npm run build:native-binding` ' +
+        '(or `npm run build:renderer`) to provision the patched binding. Refusing to ' +
+        'render halo layers whose opacity is only correct under the engine composite.',
+      );
+    }
+
     // 3D buildings (map_style === '3d') — soft-failure semantics (carried
     // over from the pre-cutover renderer): the layer expects the
     // 'openmaptiles' source; not all styles have it.
@@ -442,13 +525,23 @@ export class NativeBackend implements RendererBackend {
       this.layersBySource.set(layer.source, arr);
     }
 
-    // SDF shape icons — the same pure rasterizer the preview runs
-    // (`buildAllShapeIcons`), executed in-process. Port contract 5:
+    // SDF shape icons — the same pure rasterizers the preview runs
+    // (`buildAllShapeIcons` for the waypoint atlas, `buildShapeIconsFor`
+    // for the POV shape presets, plus the two transparent placeholders of
+    // the SDF/raster layer split), executed in-process. Port contract 5:
     // Buffer + dims-in-options signature.
-    for (const { id, icon, options } of buildAllShapeIcons({
-      outlineThickness: scene.shapeOutlineThickness,
-      pixelRatio: payload.pixelRatio,
-    })) {
+    for (const { id, icon, options } of [
+      ...buildAllShapeIcons({
+        outlineThickness: scene.shapeOutlineThickness,
+        pixelRatio: payload.pixelRatio,
+      }),
+      ...buildShapeIconsFor('pov', 'pov-', {
+        outlineThickness: scene.povShapeOutlineThickness,
+        pixelRatio: payload.pixelRatio,
+      }),
+      transparentSdfEntry(payload.pixelRatio),
+      transparentRasterEntry(),
+    ]) {
       const data = icon.data as Uint8Array | Uint8ClampedArray;
       map.addImage(
         id,
@@ -462,12 +555,178 @@ export class NativeBackend implements RendererBackend {
       );
     }
 
+    this.registerMarkerImages(map, payload);
+
     this.applyStatics(map, scene);
+
+    // Setup-time seed for the halo group-opacity composite — project
+    // defaults, since no clip is "active" yet. `renderFrame` re-asserts
+    // whenever a frame's re-resolved value differs from what's applied.
+    // Non-null assertion: the capability gate above already threw if
+    // `setGroupComposite` were absent, but TS drops the narrowing across the
+    // intervening addSource/addLayer/addImage calls.
+    map.setGroupComposite!(scene.haloComposites);
+    this.lastGroupCompositeJson = JSON.stringify(scene.haloComposites);
 
     this.map = map;
     process.stderr.write(
       `[renderer] setup done in ${Date.now() - t0}ms (backend=native, verbose=${VERBOSE})\n`,
     );
+  }
+
+  /** Register every REFERENCED marker-library image (project POV marker,
+   *  per-clip POV marker overrides, project waypoint marker, per-waypoint
+   *  overrides). The baked master PNGs live in the project bundle; the
+   *  request builder (`exportRequest.ts`) resolves each entry's absolute
+   *  `path` because this worker never learns the bundle dir. Decode =
+   *  pngjs — each master is ALWAYS the frontend bake's output (plain 8-bit
+   *  RGBA, ICC folded into sRGB at bake time), so a pure-JS decoder is
+   *  sufficient and both surfaces see identical pixels. Each texture is
+   *  resampled through the same shared `buildMarkerImageIcon` the preview
+   *  uses, at the LARGEST display size any of its uses can request — POV
+   *  `image_size` (project or per-clip override) and/or the waypoint
+   *  diameter (2 × circle/active radius, per-clip overrides included) — so
+   *  every frame's `icon-size` samples at ≤ 1 texel per framebuffer pixel.
+   *  Registered `sdf: false` — full-color bitmaps, straight alpha (the
+   *  binding premultiplies on upload, same as GL JS). All failures are
+   *  LOUD: a referenced id missing from the library, or a missing/corrupt
+   *  asset, must kill the export with a real message — never render a
+   *  marker-less video silently. */
+  private registerMarkerImages(map: MbglMap, payload: SetupCmd): void {
+    const settings = payload.mapSettings;
+    const referenced = referencedMarkerImageIds(
+      settings,
+      payload.clips,
+      payload.waypoints,
+    );
+    if (referenced.size === 0) return;
+
+    // Which channel(s) reference each id — POV and waypoints have distinct
+    // display-size ceilings.
+    const povIds = new Set<string>();
+    if (settings.pov.marker?.kind === 'image') {
+      povIds.add(settings.pov.marker.image_id);
+    }
+    for (const clip of payload.clips) {
+      const marker = clip.map_overrides?.pov?.marker;
+      if (marker?.kind === 'image') povIds.add(marker.image_id);
+    }
+    const waypointIds = new Set<string>();
+    if (settings.waypoints.marker_image_id !== undefined) {
+      waypointIds.add(settings.waypoints.marker_image_id);
+    }
+    for (const wp of payload.waypoints) {
+      if (wp.marker_image_id !== undefined) waypointIds.add(wp.marker_image_id);
+    }
+
+    // POV ceiling: project image_size or any per-clip override.
+    let povFraction = settings.pov.size.image_size;
+    for (const clip of payload.clips) {
+      const override = clip.map_overrides?.pov?.size?.image_size;
+      if (typeof override === 'number' && override > povFraction) {
+        povFraction = override;
+      }
+    }
+    // Waypoint ceiling: the DIAMETER at the largest radius any frame can
+    // request (steady-state or active bump, per-clip size overrides
+    // included) — images display longest-side = 2 × radius.
+    let waypointRadius = Math.max(
+      settings.waypoints.size.circle_radius,
+      settings.waypoints.size.active_radius,
+    );
+    for (const clip of payload.clips) {
+      const size = clip.map_overrides?.waypoints?.size;
+      waypointRadius = Math.max(
+        waypointRadius,
+        size?.circle_radius ?? 0,
+        size?.active_radius ?? 0,
+      );
+    }
+    const waypointFraction = 2 * waypointRadius;
+
+    // Defensive `?? []`: the Rust orchestrator omits the field when the
+    // library is empty (serde skip_serializing_if) — but reaching here
+    // with referenced ids and NO library is exactly the corrupt case the
+    // loud per-id check below reports.
+    const byId = new Map(
+      (settings.marker_images ?? []).map((m) => [m.id, m]),
+    );
+    for (const id of referenced) {
+      const ref = byId.get(id);
+      if (!ref) {
+        throw new Error(
+          `native backend: marker image '${id}' is referenced by the project ` +
+          'but missing from mapSettings.marker_images — corrupt project state. ' +
+          'Refusing to render without the selected marker.',
+        );
+      }
+      if (!ref.path) {
+        throw new Error(
+          `native backend: marker image '${id}' carries no absolute \`path\` — ` +
+          'the export request builder must resolve the bundle asset ' +
+          '(see exportRequest.ts). Refusing to render without the marker.',
+        );
+      }
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(ref.path);
+      } catch (err) {
+        throw new Error(
+          `native backend: marker image asset unreadable at ${ref.path}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      let decoded: PNG;
+      try {
+        decoded = PNG.sync.read(bytes);
+      } catch (err) {
+        throw new Error(
+          `native backend: marker image asset at ${ref.path} failed to decode ` +
+          `as PNG: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      const master: RgbaBitmap = {
+        width: decoded.width,
+        height: decoded.height,
+        data: new Uint8Array(
+          decoded.data.buffer,
+          decoded.data.byteOffset,
+          decoded.data.byteLength,
+        ),
+      };
+      const fraction = Math.max(
+        povIds.has(id) ? povFraction : 0,
+        waypointIds.has(id) ? waypointFraction : 0,
+      );
+      // Export cssViewport IS the reference space (surfaceScale 1), so the
+      // display size is just fraction × PAINT_REFERENCE_WIDTH; density
+      // comes from payload.pixelRatio (resolution multiplier × SSAA).
+      const entry = buildMarkerImageIcon(
+        id,
+        master,
+        fraction * PAINT_REFERENCE_WIDTH,
+        payload.pixelRatio,
+      );
+      map.addImage(
+        entry.id,
+        Buffer.from(
+          entry.icon.data.buffer,
+          entry.icon.data.byteOffset,
+          entry.icon.data.byteLength,
+        ),
+        {
+          width: entry.icon.width,
+          height: entry.icon.height,
+          pixelRatio: entry.options.pixelRatio,
+          sdf: false,
+        },
+      );
+      verbose(
+        `[renderer native] ${entry.id} registered ${entry.icon.width}x${entry.icon.height} ` +
+        `(master ${master.width}x${master.height}, pixelRatio ${entry.options.pixelRatio})\n`,
+      );
+    }
   }
 
   private applyStatics(map: MbglMap, scene: StaticScene): void {
@@ -551,7 +810,33 @@ export class NativeBackend implements RendererBackend {
     for (const [layerId, value] of frame.gradients) {
       map.setPaintProperty(layerId, 'line-gradient', value);
     }
+    // Re-assert the halo group-opacity composite only when this frame's
+    // re-resolved config differs from what's currently applied — this is
+    // what makes a per-clip halo-opacity override (`MapOverrides.route/
+    // waypoints/pov.halo`) land at the cut. The config swap itself is cheap
+    // engine-side, but re-sending an identical 4-group array every frame
+    // (the common case — most exports never override halo opacity) is
+    // pointless work in the per-frame hot path.
+    const groupCompositeJson = JSON.stringify(frame.haloComposites);
+    if (groupCompositeJson !== this.lastGroupCompositeJson) {
+      // Non-null assertion: validated present at setup (see the capability
+      // gate there); TS can't see across the two methods that it's checked.
+      map.setGroupComposite!(frame.haloComposites);
+      this.lastGroupCompositeJson = groupCompositeJson;
+    }
     const applyMs = Date.now() - tStart;
+
+    // ---- SSAA factor: framebuffer dims → readback dims ----
+    const fb = payload.framebuffer;
+    const rb = payload.readback;
+    const factorW = fb.w / rb.w;
+    const factorH = fb.h / rb.h;
+    if (factorW !== factorH || !Number.isInteger(factorW) || factorW < 1) {
+      throw new Error(
+        `native backend: non-integer/anisotropic SSAA factor (fb ${fb.w}x${fb.h}, readback ${rb.w}x${rb.h})`,
+      );
+    }
+    const factor = factorW;
 
     const renderStart = Date.now();
     const raw = await new Promise<Buffer>((resolve, reject) => {
@@ -563,6 +848,12 @@ export class NativeBackend implements RendererBackend {
           zoom: frame.camera.zoom,
           bearing: frame.camera.bearing,
           pitch: frame.camera.pitch,
+          // In-binding SSAA reduction (on-GPU under Metal). The binding
+          // zero-pads/crops the ≤1 px css×ratio dim drift to exactly
+          // readback dims — the same convention boxDownsample implements.
+          // Omitted at factor 1 so the unsupersampled path (what the
+          // golden gate pins) is byte-identical to the pre-patch binding.
+          ...(factor > 1 ? { downsample: { factor, width: rb.w, height: rb.h } } : {}),
         },
         (err, buffer) => {
           if (err || !buffer) reject(err ?? new Error('native render returned no buffer'));
@@ -572,27 +863,21 @@ export class NativeBackend implements RendererBackend {
     });
     const renderMs = Date.now() - renderStart;
 
-    // ---- SSAA downsample: framebuffer dims → readback dims ----
+    // ---- Factor-1 drift pad/crop (JS-side, unchanged path) ----
     const downStart = Date.now();
-    const fb = payload.framebuffer;
-    const rb = payload.readback;
-    const factorW = fb.w / rb.w;
-    const factorH = fb.h / rb.h;
-    if (factorW !== factorH || !Number.isInteger(factorW) || factorW < 1) {
-      throw new Error(
-        `native backend: non-integer/anisotropic SSAA factor (fb ${fb.w}x${fb.h}, readback ${rb.w}x${rb.h})`,
-      );
-    }
-    const factor = factorW;
-    const actual = resolveActualDims(
-      raw.length, fb.w, fb.h,
-      payload.cssViewport.w, payload.cssViewport.h, payload.pixelRatio,
-    );
     let rgba: Buffer;
-    if (factor === 1 && actual.w === fb.w && actual.h === fb.h) {
+    if (factor > 1) {
+      // Already reduced to readback dims inside the binding; the byte-count
+      // assert below is the integrity check.
       rgba = raw;
     } else {
-      rgba = boxDownsample(raw, actual.w, actual.h, fb.w, fb.h, factor);
+      const actual = resolveActualDims(
+        raw.length, fb.w, fb.h,
+        payload.cssViewport.w, payload.cssViewport.h, payload.pixelRatio,
+      );
+      rgba = actual.w === fb.w && actual.h === fb.h
+        ? raw
+        : boxDownsample(raw, actual.w, actual.h, fb.w, fb.h, factor);
     }
     const downMs = Date.now() - downStart;
 
@@ -605,7 +890,7 @@ export class NativeBackend implements RendererBackend {
     }
     verbose(
       `[renderer native f=${frameIndex}] apply=${applyMs}ms render=${renderMs}ms ` +
-      `down=${downMs}ms actual=${actual.w}x${actual.h} refreshed=${refreshed}\n`,
+      `down=${downMs}ms rgba=${rgba.length}B refreshed=${refreshed}\n`,
     );
     return {
       rgba,

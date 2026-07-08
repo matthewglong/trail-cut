@@ -570,3 +570,91 @@ describe('buildJobRequest — per-job quality + fps', () => {
     expect(req.layout.layout).toBe(stored);
   });
 });
+
+describe('buildExportRequest — marker library path resolution (schema v11)', () => {
+  const IMAGE_A = {
+    id: '0123456789abcdef',
+    icon_file: 'assets/pov-icon-0123456789abcdef.png',
+    source_file: 'assets/pov-source-0123456789abcdef.png',
+    source_name: 'will.png',
+    width: 300,
+    height: 376,
+  };
+  const IMAGE_B = {
+    id: 'fedcba9876543210',
+    icon_file: 'assets/marker-icon-fedcba9876543210.png',
+    source_file: 'assets/marker-source-fedcba9876543210.svg',
+    source_name: 'flag.svg',
+    width: 512,
+    height: 512,
+  };
+  const withLibrary = (): MapSettings => ({
+    ...DEFAULT_MAP_SETTINGS,
+    marker_images: [IMAGE_A, IMAGE_B],
+    pov: {
+      ...DEFAULT_MAP_SETTINGS.pov,
+      marker: { kind: 'image', image_id: IMAGE_A.id },
+    },
+  });
+
+  it('injects an absolute asset path onto EVERY library entry of the wire copy only', () => {
+    const inputs = { ...baseInputs(), mapSettings: withLibrary(), projectDir: '/Users/x/Hike.trailcut' };
+    const req = buildExportRequest(inputs);
+    expect(req.mapSettings.marker_images[0].path).toBe(
+      '/Users/x/Hike.trailcut/assets/pov-icon-0123456789abcdef.png',
+    );
+    // Every entry gets a path — the sidecar decides what's referenced.
+    expect(req.mapSettings.marker_images[1].path).toBe(
+      '/Users/x/Hike.trailcut/assets/marker-icon-fedcba9876543210.png',
+    );
+    // Everything else on the refs survives verbatim.
+    expect(req.mapSettings.marker_images[0].icon_file).toBe(IMAGE_A.icon_file);
+    expect(req.mapSettings.marker_images[0].source_name).toBe('will.png');
+    // The marker selection rides through untouched.
+    expect(req.mapSettings.pov.marker).toEqual({
+      kind: 'image',
+      image_id: IMAGE_A.id,
+    });
+    // The INPUT settings object must not be mutated — `path` is a
+    // wire-copy-only field (never lands in React state / persistence).
+    expect(inputs.mapSettings.marker_images[0].path).toBeUndefined();
+    expect(inputs.mapSettings.marker_images[1].path).toBeUndefined();
+  });
+
+  it('throws loudly when the library is non-empty but projectDir is missing', () => {
+    expect(() =>
+      buildExportRequest({ ...baseInputs(), mapSettings: withLibrary() }),
+    ).toThrow(/marker_images is non-empty but no\s+projectDir/);
+  });
+
+  it('does not touch mapSettings when the library is empty', () => {
+    const inputs = { ...baseInputs(), projectDir: '/Users/x/Hike.trailcut' };
+    const req = buildExportRequest(inputs);
+    expect(req.mapSettings).toBe(inputs.mapSettings);
+    expect(req.mapSettings.marker_images).toEqual([]);
+  });
+
+  it('threads projectDir from the shared context through buildJobRequest', () => {
+    const context: ExportRequestContext = {
+      clips: [makeClip()],
+      route: makeRoute(),
+      mapSettings: withLibrary(),
+      waypoints: [],
+      projectDir: '/Users/x/Hike.trailcut',
+    };
+    const j: ExportJob = {
+      id: 'job-1',
+      aspect: '9_16',
+      channel: 'composite',
+      quality: '1080p',
+      fps: 30,
+      deliveryTarget: 'sdr_h265',
+      outputPath: '/tmp/out.mp4',
+      filename: 'out.mp4',
+    } as unknown as ExportJob;
+    const req = buildJobRequest(context, j);
+    expect(req.mapSettings.marker_images[0].path).toBe(
+      '/Users/x/Hike.trailcut/assets/pov-icon-0123456789abcdef.png',
+    );
+  });
+});

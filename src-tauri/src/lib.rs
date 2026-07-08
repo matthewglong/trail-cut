@@ -33,6 +33,9 @@ pub fn run() {
             commands::get_camera_presets,
             commands::set_camera_preset,
             commands::remove_camera_preset,
+            commands::import_marker_image,
+            commands::save_marker_icon,
+            commands::delete_marker_image,
             export::render_export,
         ])
         .run(tauri::generate_context!())

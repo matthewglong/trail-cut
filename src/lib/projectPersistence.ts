@@ -103,6 +103,9 @@ export function mergeMapSettings(
       ...incoming.pov,
       size: { ...defaults.pov.size, ...incoming.pov?.size },
     },
+    // The Rust model omits the field entirely while the library is empty
+    // (`skip_serializing_if = "Vec::is_empty"`), so backfill the default.
+    marker_images: incoming.marker_images ?? defaults.marker_images,
   };
 }
 

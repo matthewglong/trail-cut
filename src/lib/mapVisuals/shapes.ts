@@ -345,7 +345,11 @@ export const SHAPES: Record<WaypointShape, ShapeDescriptor> = {
           outlineThickness * pixelRatio,
         ),
       ),
-    domains: ['waypoint', 'pov'],
+    // Waypoint-only: in the POV picker the classic pulsing DOT (the
+    // `live-marker-dot` circle layer, pixel-identical to pre-v11 output)
+    // stands in for the circle — offering an SDF circle there too would be
+    // a redundant near-duplicate. See `PovMarkerShape` in types.ts.
+    domains: ['waypoint'],
   },
   ring: {
     name: 'ring',
@@ -489,6 +493,58 @@ export function buildAllShapeIcons(
     });
   }
   return out;
+}
+
+/** Build the SDF icons for one domain under a caller-chosen id prefix —
+ *  the POV marker shape presets register as `pov-<shape>-primary` /
+ *  `pov-<shape>-secondary` via `buildShapeIconsFor('pov', 'pov-', opts)`,
+ *  rasterized with the POV's own outline geometry
+ *  (`outlineThicknessCanvasPx(pov.size.dot_stroke_width,
+ *  pov.size.dot_radius)`) rather than the waypoint stroke. Same
+ *  registration contract as `buildAllShapeIcons` (which keeps the
+ *  waypoint-prefixed atlas: every catalog shape declares the `'waypoint'`
+ *  domain, so it is equivalent to this function with domain `'waypoint'`
+ *  and prefix `'waypoint-'`). */
+export function buildShapeIconsFor(
+  domain: ShapeDomain,
+  idPrefix: string,
+  opts: ShapeBuildOptions,
+): ShapeRegistryEntry[] {
+  const out: ShapeRegistryEntry[] = [];
+  for (const desc of shapesFor(domain)) {
+    out.push({
+      id: `${idPrefix}${desc.name}-primary`,
+      icon: desc.primary(opts),
+      options: { sdf: true, pixelRatio: opts.pixelRatio },
+    });
+    out.push({
+      id: `${idPrefix}${desc.name}-secondary`,
+      icon: desc.secondary
+        ? desc.secondary(opts)
+        : transparentIcon(opts.pixelRatio),
+      options: { sdf: true, pixelRatio: opts.pixelRatio },
+    });
+  }
+  return out;
+}
+
+/** MapLibre image id of the transparent SDF placeholder icon. Waypoint
+ *  features whose marker is a library IMAGE resolve their `waypoints-primary`
+ *  / `waypoints-secondary` icon-image to this id — a symbol layer's bucket
+ *  must stay homogeneous in SDF-ness (MapLibre refuses to mix SDF and
+ *  non-SDF icons in one layer), so the shape layers "hide" image-marked
+ *  features by drawing transparent pixels instead of switching icon type. */
+export const TRANSPARENT_SDF_ICON_ID = 'marker-transparent-sdf';
+
+/** addImage-ready transparent SDF placeholder (see
+ *  `TRANSPARENT_SDF_ICON_ID`). Registered on both surfaces alongside the
+ *  shape atlas. */
+export function transparentSdfEntry(pixelRatio: number): ShapeRegistryEntry {
+  return {
+    id: TRANSPARENT_SDF_ICON_ID,
+    icon: transparentIcon(pixelRatio),
+    options: { sdf: true, pixelRatio },
+  };
 }
 
 // ---------------------------------------------------------------------------

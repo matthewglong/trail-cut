@@ -79,6 +79,15 @@ export function waypointLocation(
  *
  *  Visited-mode filtering is *not* applied here — that's a per-frame
  *  concern. */
+/** The `override_marker` feature property for one waypoint: the marker
+ *  image wins over the shape (matching the settings-level precedence),
+ *  `null` when the waypoint overrides neither. Shared by the static build
+ *  and the visited-mode rebuild so the two paths can't drift. */
+function waypointMarkerProperty(wp: Waypoint): string | null {
+  if (wp.marker_image_id !== undefined) return `image:${wp.marker_image_id}`;
+  return wp.shape ?? null;
+}
+
 function buildWaypointsCollection(
   waypoints: Waypoint[],
   indexedRoute: IndexedRoute | null,
@@ -116,10 +125,13 @@ function buildWaypointsCollection(
         // mode silently loses the override.
         override_color: wp.color ?? null,
         override_secondary_color: wp.secondary_color ?? null,
-        // Per-waypoint shape override. `null` when unset so the
-        // icon-image `coalesce(get(override_shape), projectShape)` in
-        // `resolveStaticPaints` falls through to the project default.
-        override_shape: wp.shape ?? null,
+        // Per-waypoint marker override: `image:<library id>` when a marker
+        // image is chosen, else the shape name, else `null` so the
+        // icon-image `coalesce(get(override_marker), projectMarker)` in
+        // `resolveStaticPaints` falls through to the project default. One
+        // property carries both kinds so a single `match` expression can
+        // route each feature to the SDF shape layers or the image layer.
+        override_marker: waypointMarkerProperty(wp),
       },
       geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
     });
@@ -322,7 +334,10 @@ export function buildPerFrameSourceData(args: {
             label: wp.label,
             progress,
             override_color: wp.color ?? null,
-            override_shape: wp.shape ?? null,
+            // (`override_secondary_color` was missing here pre-v11 — visited
+            // mode silently dropped per-waypoint secondary colors.)
+            override_secondary_color: wp.secondary_color ?? null,
+            override_marker: waypointMarkerProperty(wp),
           },
           geometry: { type: 'Point', coordinates: [loc.lng, loc.lat] },
         });

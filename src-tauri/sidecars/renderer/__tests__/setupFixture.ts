@@ -150,6 +150,8 @@ export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
         ...(overrides.pov?.size ?? {}),
       },
     },
+    marker_images:
+      overrides.marker_images ?? DEFAULT_MAP_SETTINGS.marker_images,
   };
 
   const indexedRoute = route ? indexRoute(route) : null;

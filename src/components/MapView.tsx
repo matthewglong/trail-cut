@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import maplibregl from 'maplibre-gl';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { Clip, Route, MapSettings, Waypoint } from '../types';
 import {
@@ -22,17 +23,47 @@ import {
   resolveStaticPaints,
   buildPerFrameState,
   buildAllShapeIcons,
+  buildShapeIconsFor,
+  buildMarkerImageIcon,
+  markerImageIconId,
   outlineThicknessCanvasPx,
+  transparentRasterEntry,
+  transparentSdfEntry,
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_PULSE_B_LAYER,
   LIVE_MARKER_DOT_LAYER,
+  LIVE_MARKER_IMAGE_LAYER,
+  LIVE_MARKER_SHAPE_PRIMARY_LAYER,
+  LIVE_MARKER_SHAPE_SECONDARY_LAYER,
+  MARKER_IMAGE_ICON_PREFIX,
+  PAINT_REFERENCE_WIDTH,
+  LIVE_MARKER_HALO_LAYER,
+  LIVE_MARKER_HALO_CORE_LAYER,
+  ROUTE_FULL_HALO_LAYER,
+  ROUTE_FULL_HALO_CORE_LAYER,
   ROUTE_FULL_LAYER,
+  ROUTE_TRAIL_HALO_LAYER,
+  ROUTE_TRAIL_HALO_CORE_LAYER,
   ROUTE_TRAIL_LAYER,
   WAYPOINTS_ACTIVE_HALO_LAYER,
+  WAYPOINTS_HALO_LAYER,
+  WAYPOINTS_HALO_CORE_LAYER,
+  WAYPOINTS_IMAGE_LAYER,
   WAYPOINTS_PRIMARY_LAYER,
   WAYPOINTS_SECONDARY_LAYER,
+  type HaloCompositeGroup,
+  type RgbaBitmap,
 } from '../lib/mapVisuals';
+import { loadMarkerMasterRgba } from '../lib/markerImageBrowser';
+
+/** The group-composite surface the vendored maplibre-gl patch adds
+ *  (`patches/maplibre-gl+*.patch`, the GL JS twin of the native binding's
+ *  patch 3). Declared locally because the patch modifies the shipped dist
+ *  bundle, not the package's type declarations. */
+interface GroupCompositeMap extends maplibregl.Map {
+  setGroupComposite(groups: HaloCompositeGroup[]): void;
+}
 
 interface MapViewProps {
   /** The compiled project-time timeline. Single source of truth for camera
@@ -89,6 +120,10 @@ interface MapViewProps {
    *  whole record keeps this component's derivation identical to the export
    *  pipeline's `resolve_slots` fallback semantics. */
   layouts: ProjectLayouts;
+  /** Project bundle directory — needed to resolve `pov.image`'s
+   *  bundle-relative asset path for the custom POV marker. null before a
+   *  project is open (the image effect no-ops). */
+  projectDir?: string | null;
   onSelectClip?: (clipId: string) => void;
 }
 
@@ -103,6 +138,7 @@ export default function MapView({
   mapSettings,
   aspect,
   layouts,
+  projectDir,
   onSelectClip,
 }: MapViewProps) {
   const onSelectClipRef = useRef(onSelectClip);
@@ -257,6 +293,23 @@ export default function MapView({
     map.isMoving = () => true;
     map.isZooming = () => true;
     map.isRotating = () => true;
+    // Halo group compositing is engine-level (the vendored maplibre-gl
+    // patch — the GL JS twin of the native binding's patch 3): each halo
+    // layer pair renders into a transparent offscreen target and composites
+    // over the map ONCE at the group opacity, so translucent self-overlap
+    // (out-and-back retraces, GPS-jitter sunbursts) can't double-blend.
+    // `resolveStaticPaints` emits IN-FBO halo opacities on the assumption
+    // that the composite is applied — an unpatched engine would render
+    // falloff halos visibly wrong. Fail loud, mirroring the native
+    // backend's capability gates (nativeBackend.ts): a missing patch is a
+    // build defect, never a degrade-gracefully condition.
+    if (typeof (map as unknown as Partial<GroupCompositeMap>).setGroupComposite !== 'function') {
+      throw new Error(
+        'maplibre-gl lacks setGroupComposite — the vendored group-composite ' +
+        'patch is not applied. Run `npm install` (postinstall runs ' +
+        'patch-package) and restart; do not render halos on an unpatched engine.',
+      );
+    }
     map.addControl(new maplibregl.NavigationControl(), 'top-right');
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
 
@@ -312,6 +365,12 @@ export default function MapView({
           data: emptyLine,
           lineMetrics: true,
         });
+        // Halo beneath its line (add order = paint order). Interleaved
+        // per-source — the full-route halo must stay below the trail line,
+        // which itself draws above everything route-full paints. The
+        // falloff core twin sits between the outer band and the line.
+        map.addLayer(ROUTE_FULL_HALO_LAYER);
+        map.addLayer(ROUTE_FULL_HALO_CORE_LAYER);
         map.addLayer(ROUTE_FULL_LAYER);
       }
       if (!map.getSource('route-trail')) {
@@ -320,11 +379,15 @@ export default function MapView({
           data: emptyLine,
           lineMetrics: true,
         });
+        map.addLayer(ROUTE_TRAIL_HALO_LAYER);
+        map.addLayer(ROUTE_TRAIL_HALO_CORE_LAYER);
         map.addLayer(ROUTE_TRAIL_LAYER);
       }
       if (!map.getSource('waypoints')) {
         map.addSource('waypoints', { type: 'geojson', data: emptyFc });
         // Layer stack on the shared `waypoints` source (bottom → top):
+        //   waypoints-halo(-core) (optional user halo behind EVERY marker —
+        //                          `waypoints.halo`)
         //   waypoints-active-halo (semi-transparent ring behind the active
         //                          waypoint's shape)
         //   waypoints-primary     (filled silhouette SDF; tinted by primary color)
@@ -338,15 +401,31 @@ export default function MapView({
         // so the user-visible stroke matches the shape silhouette exactly.
         // The label rides the secondary's symbol so the two compose as a
         // single drawable unit during collision detection.
+        map.addLayer(WAYPOINTS_HALO_LAYER);
+        map.addLayer(WAYPOINTS_HALO_CORE_LAYER);
         map.addLayer(WAYPOINTS_ACTIVE_HALO_LAYER);
         map.addLayer(WAYPOINTS_PRIMARY_LAYER);
         map.addLayer(WAYPOINTS_SECONDARY_LAYER);
+        // Library-image markers — non-SDF twin of the shape pair, directly
+        // above waypoints-secondary (labels stay on secondary, so
+        // image-marked waypoints keep their labels).
+        map.addLayer(WAYPOINTS_IMAGE_LAYER);
       }
       if (!map.getSource('live-marker')) {
         map.addSource('live-marker', { type: 'geojson', data: emptyFc });
+        // POV halo pair at the bottom of the live-marker stack — pulse
+        // rings and the marker body all paint over it.
+        map.addLayer(LIVE_MARKER_HALO_LAYER);
+        map.addLayer(LIVE_MARKER_HALO_CORE_LAYER);
         map.addLayer(LIVE_MARKER_PULSE_LAYER);
         map.addLayer(LIVE_MARKER_PULSE_B_LAYER);
         map.addLayer(LIVE_MARKER_DOT_LAYER);
+        // POV marker alternates — always seeded (visibility 'none' until
+        // resolveStaticPaints flips one on), stacked above the dot they
+        // replace: SDF shape pair, then the library-image symbol.
+        map.addLayer(LIVE_MARKER_SHAPE_PRIMARY_LAYER);
+        map.addLayer(LIVE_MARKER_SHAPE_SECONDARY_LAYER);
+        map.addLayer(LIVE_MARKER_IMAGE_LAYER);
       }
 
       // Register SDF icons for every waypoint shape × both slots
@@ -374,10 +453,27 @@ export default function MapView({
         mapSettingsRef.current.waypoints.size.stroke_width,
         mapSettingsRef.current.waypoints.size.circle_radius,
       );
-      for (const { id, icon, options } of buildAllShapeIcons({
-        outlineThickness: initialThickness,
-        pixelRatio: devicePixelRatioRef.current,
-      })) {
+      // POV shape presets rasterize with the POV's own outline geometry
+      // (dot stroke over dot radius), not the waypoint stroke — the two
+      // decorations' size systems are independent.
+      const initialPovThickness = outlineThicknessCanvasPx(
+        mapSettingsRef.current.pov.size.dot_stroke_width,
+        mapSettingsRef.current.pov.size.dot_radius,
+      );
+      for (const { id, icon, options } of [
+        ...buildAllShapeIcons({
+          outlineThickness: initialThickness,
+          pixelRatio: devicePixelRatioRef.current,
+        }),
+        ...buildShapeIconsFor('pov', 'pov-', {
+          outlineThickness: initialPovThickness,
+          pixelRatio: devicePixelRatioRef.current,
+        }),
+        // Transparent placeholders — the "hidden" arm of the SDF/raster
+        // layer split (see WAYPOINTS_IMAGE_LAYER's spec).
+        transparentSdfEntry(devicePixelRatioRef.current),
+        transparentRasterEntry(),
+      ]) {
         if (map.hasImage(id)) map.removeImage(id);
         map.addImage(
           id,
@@ -385,6 +481,9 @@ export default function MapView({
           options,
         );
       }
+      // Marker-image textures re-register through their dedicated effect
+      // below (it depends on styleVersion, which the style.load handler
+      // bumps at the end of this callback).
 
       // Seed static data once. Route-fit + waypoint-seed effects below redo
       // this on subsequent route/clips/styleVersion changes.
@@ -571,6 +670,15 @@ export default function MapView({
         if (!map.getLayer(layerId)) continue;
         map.setPaintProperty(layerId, 'line-gradient', value);
       }
+      // Halo group composites — the fourth resolver bucket, same contract
+      // as paints/layouts/gradients: mapVisuals computes each decoration's
+      // composite opacity `g` while the member layers carry remapped in-FBO
+      // opacities (see `haloGroupPolicy`). The engine matches member ids at
+      // render time and ignores absent/hidden layers, so asserting before
+      // onStyleLoad seeds the decoration stack is safe; re-runs here cover
+      // style swaps and per-clip halo-opacity overrides. This is the ONLY
+      // allowed `setGroupComposite` site preview-side.
+      (map as GroupCompositeMap).setGroupComposite(resolved.haloComposites);
     };
     if (styleReadyRef.current) apply();
   }, [styleVersion, mapSettings, displayScale]);
@@ -590,15 +698,31 @@ export default function MapView({
   // image atlas) also triggers a re-register at the current thickness.
   const strokeWidth = mapSettings.waypoints.size.stroke_width;
   const circleRadius = mapSettings.waypoints.size.circle_radius;
+  const povDotStrokeWidth = mapSettings.pov.size.dot_stroke_width;
+  const povDotRadius = mapSettings.pov.size.dot_radius;
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
       const thickness = outlineThicknessCanvasPx(strokeWidth, circleRadius);
-      for (const { id, icon, options } of buildAllShapeIcons({
-        outlineThickness: thickness,
-        pixelRatio: devicePixelRatio,
-      })) {
+      const povThickness = outlineThicknessCanvasPx(
+        povDotStrokeWidth,
+        povDotRadius,
+      );
+      for (const { id, icon, options } of [
+        ...buildAllShapeIcons({
+          outlineThickness: thickness,
+          pixelRatio: devicePixelRatio,
+        }),
+        // POV shape-preset atlas — its outline geometry rides the POV size
+        // fields, so it re-rasterizes on those deps too.
+        ...buildShapeIconsFor('pov', 'pov-', {
+          outlineThickness: povThickness,
+          pixelRatio: devicePixelRatio,
+        }),
+        transparentSdfEntry(devicePixelRatio),
+        transparentRasterEntry(),
+      ]) {
         if (map.hasImage(id)) map.removeImage(id);
         map.addImage(
           id,
@@ -612,7 +736,124 @@ export default function MapView({
       map.triggerRepaint();
     };
     if (styleReadyRef.current) apply();
-  }, [strokeWidth, circleRadius, styleVersion, devicePixelRatio]);
+  }, [
+    strokeWidth,
+    circleRadius,
+    povDotStrokeWidth,
+    povDotRadius,
+    styleVersion,
+    devicePixelRatio,
+  ]);
+
+  // ---- Register / refresh the marker-image library textures ----
+  // Decodes each library entry's baked render asset
+  // (assets/marker-icon-<hash>.png; legacy pov-icon-<hash>.png) once per
+  // file and re-registers every `marker-image-<id>` texture whenever
+  // anything that determines density changes: the library itself, the POV
+  // image_size, the waypoint radii, the pane's display scale, the monitor
+  // DPR, or a style swap (which clears the image atlas). The WHOLE library
+  // registers (not just currently-selected images) so tile clicks and
+  // per-clip/per-waypoint override switches are instant. Each texture is
+  // built at the LARGEST size any use can request — POV image_size or the
+  // waypoint diameter (2 × circle_radius, active bump included) — so one
+  // registration covers every use.
+  //
+  // Decoded masters are cached by URL so slider drags only pay the
+  // resample, not a fetch+decode. The async chain is guarded by an epoch
+  // token so a stale decode can never register over a newer one.
+  // Defensive `?? []`: the Rust model omits `marker_images` from the wire
+  // payload while the library is empty (`skip_serializing_if = "Vec::is_empty"`)
+  // — every existing project bundle predates this schema-v11 field, so this
+  // is the common case, not an edge case. Every other `mapSettings.marker_images`
+  // read in the codebase (types.ts's `resolveMapSettings`, projectPersistence's
+  // `mergeMapSettings`, styleSpec.ts) already guards this; this one didn't,
+  // and the unguarded `.map()` below threw on first mount for such a project
+  // (uncaught in a passive effect, no ErrorBoundary anywhere in the app →
+  // blank screen).
+  const markerImages = mapSettings.marker_images ?? [];
+  const povImageSize = mapSettings.pov.size.image_size;
+  const waypointActiveRadius = mapSettings.waypoints.size.active_radius;
+  const markerMasterCacheRef = useRef<Map<string, RgbaBitmap>>(new Map());
+  const markerImageEpochRef = useRef(0);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    // Gate the WHOLE body on style readiness like every sibling effect: the
+    // synchronous cleanup below calls `map.listImages()`, which throws
+    // "Style is not done loading" (via MapLibre's `_checkLoaded`) before the
+    // style finishes. `styleVersion` is in the dep list and the `style.load`
+    // handler bumps it right after flipping `styleReadyRef`, so this re-runs
+    // and registers the textures the moment the style is ready.
+    if (!styleReadyRef.current) return;
+    const epoch = ++markerImageEpochRef.current;
+
+    // Drop registrations for entries no longer in the library (deleted
+    // markers) so a stale texture can't linger in the atlas.
+    const wanted = new Set(markerImages.map((m) => markerImageIconId(m.id)));
+    for (const id of map.listImages()) {
+      if (id.startsWith(MARKER_IMAGE_ICON_PREFIX) && !wanted.has(id)) {
+        map.removeImage(id);
+      }
+    }
+    if (markerImages.length === 0 || !projectDir) return;
+
+    const displayCssLongest =
+      Math.max(povImageSize, 2 * circleRadius, 2 * waypointActiveRadius) *
+      PAINT_REFERENCE_WIDTH *
+      displayScale;
+
+    const apply = async () => {
+      for (const ref of markerImages) {
+        const url = convertFileSrc(`${projectDir}/${ref.icon_file}`);
+        let master = markerMasterCacheRef.current.get(url);
+        if (!master) {
+          const decoded = await loadMarkerMasterRgba(url).then(
+            (m) => m,
+            (err: unknown) => {
+              // Loud per-image; the remaining entries still register. A
+              // selected marker with a missing/corrupt file renders nothing
+              // (visibly wrong rather than a silent fallback); the export
+              // sidecar separately fails LOUD at setup.
+              console.error(
+                `[MapView] marker image ${ref.id} (${ref.icon_file}) failed to decode:`,
+                err,
+              );
+              return null;
+            },
+          );
+          if (!decoded) continue;
+          master = decoded;
+          markerMasterCacheRef.current.set(url, decoded);
+        }
+        if (epoch !== markerImageEpochRef.current || !mapRef.current) return;
+        const entry = buildMarkerImageIcon(
+          ref.id,
+          master,
+          displayCssLongest,
+          devicePixelRatio,
+        );
+        if (map.hasImage(entry.id)) map.removeImage(entry.id);
+        map.addImage(
+          entry.id,
+          { width: entry.icon.width, height: entry.icon.height, data: entry.icon.data },
+          entry.options,
+        );
+      }
+      map.triggerRepaint();
+    };
+    void apply().catch((err) => {
+      console.error('[MapView] marker image registration failed:', err);
+    });
+  }, [
+    markerImages,
+    povImageSize,
+    circleRadius,
+    waypointActiveRadius,
+    displayScale,
+    devicePixelRatio,
+    styleVersion,
+    projectDir,
+  ]);
 
   // ---- Waypoint static seed ----
   // Whenever waypoints/route/mapSettings/styleVersion changes, push the full
@@ -740,6 +981,16 @@ export default function MapView({
           map.setLayoutProperty('waypoints-secondary', 'symbol-sort-key',
             state.paints.waypointPlacementKey);
         }
+        if (map.getLayer('waypoints-image')) {
+          // Image-marker twin of the primary slot: same sort-key (draw
+          // order — allow-overlap layer), image-bridged icon-size (divisor
+          // MARKER_IMAGE_CANONICAL_SIZE/2 instead of
+          // SHAPE_CANONICAL_RADIUS). No icon-color — bitmaps draw verbatim.
+          map.setLayoutProperty('waypoints-image', 'icon-size',
+            state.paints.waypointImageIconSize);
+          map.setLayoutProperty('waypoints-image', 'symbol-sort-key',
+            state.paints.waypointSortKey);
+        }
         if (map.getLayer('waypoints-active-halo')) {
           // Halo radius/opacity collapse to 0 when no waypoint is active so
           // the always-seeded layer stays invisible without `visibility`
@@ -771,6 +1022,23 @@ export default function MapView({
           // 0.35 → 1.0); held at 1.0 in steady / sonar / heartbeat per
           // `shapes-pov.md` Part 2 §2.
           map.setPaintProperty('live-marker-dot', 'circle-opacity',
+            state.paints.dotOpacity);
+        }
+        if (map.getLayer('live-marker-image')) {
+          // Every alternate POV marker body inherits the dot's opacity
+          // animation — whichever layer is visible IS the marker body
+          // (three-way visibility swap via resolveStaticPaints), so
+          // `throb` breathes them identically. Mirrored in scene.ts for
+          // the export renderer.
+          map.setPaintProperty('live-marker-image', 'icon-opacity',
+            state.paints.dotOpacity);
+        }
+        if (map.getLayer('live-marker-shape-primary')) {
+          map.setPaintProperty('live-marker-shape-primary', 'icon-opacity',
+            state.paints.dotOpacity);
+        }
+        if (map.getLayer('live-marker-shape-secondary')) {
+          map.setPaintProperty('live-marker-shape-secondary', 'icon-opacity',
             state.paints.dotOpacity);
         }
       }

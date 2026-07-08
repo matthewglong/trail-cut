@@ -350,8 +350,14 @@ export interface Waypoint {
    *  `color`. Has no visible effect on one-color shapes (`ring`). */
   secondary_color?: string;
   /** Per-waypoint shape override. When set, wins over
-   *  `mapSettings.waypoints.shape`. */
+   *  `mapSettings.waypoints.shape`. Mutually exclusive with
+   *  `marker_image_id` — the UI clears one when setting the other. */
   shape?: WaypointShape;
+  /** Per-waypoint marker-image override — id of a `MapSettings.marker_images`
+   *  entry. When set, wins over both `shape` and the project-level waypoint
+   *  marker. The waypoint-level choice (image if set, else `shape`) wins
+   *  wholesale over the project-level one. */
+  marker_image_id?: string;
 }
 
 // ---------- shared decoration value types ----------
@@ -366,6 +372,75 @@ export interface GradientStop {
   /** CSS color string (hex or rgb()). */
   color: string;
 }
+
+/** Optional halo effect behind a decoration — carried by all three
+ *  decorations (`route.halo`, `waypoints.halo`, `pov.halo`). Optional and
+ *  additive — absent means disabled, and existing v11 projects round-trip
+ *  unchanged with the field missing (same precedent as `color_stops_cache`
+ *  / `pov.marker`). */
+export interface HaloSettings {
+  /** Explicit flag (rather than presence-of-object) so toggling the halo
+   *  off preserves the user's color/size/fade/opacity config. */
+  enabled: boolean;
+  /** Solid or gradient-by-distance, same capability as the route line.
+   *  POV halos are solid-only in the UI (single point — nothing to
+   *  gradient across); resolvers fall back to the first stop defensively. */
+  color: DecorationColor;
+  /** Spread beyond the decoration's own edge, as a fraction of
+   *  `PAINT_REFERENCE_WIDTH` like every other size field. The route halo
+   *  line's total width is `decoration width + 2 × size`; marker halo
+   *  circles get `marker radius + size`. */
+  size: number;
+  /** Softness in [0, 1]: 0 = crisp edge, 1 = fully diffuse glow. Maps to
+   *  MapLibre `line-blur` as `fade × haloTotalWidth / 2` on the route (blur
+   *  eats inward from each edge, so half-width is full feather) and to the
+   *  dimensionless `circle-blur` on marker halos (1 = only the center at
+   *  full opacity — the same triangular profile). */
+  fade: number;
+  /** Halo `line-opacity` / `circle-opacity` in [0, 1]. */
+  opacity: number;
+  /** Radial falloff in [0, 1]: how sharply the glow's intensity decays
+   *  outward from the decoration. 0 = today's single even band; 1 = a
+   *  bright soft core hugging the decoration with a faint wide skirt.
+   *  Implemented by dimming the outer halo layer and raising a narrower,
+   *  fully-feathered "core" twin (`*-halo-core` layers) — see the
+   *  `HALO_FALLOFF_*` constants in `styleSpec.ts`. Optional and additive:
+   *  absent reads as 0, which keeps pre-falloff projects pixel-identical. */
+  falloff?: number;
+  /** Screen-space halo offset, X component — signed fraction of
+   *  `PAINT_REFERENCE_WIDTH` (positive = right). With a dark color, some
+   *  fade/falloff, and a nonzero offset the halo doubles as a drop shadow.
+   *  Viewport-anchored (`*-translate-anchor: 'viewport'`): the shadow
+   *  direction stays fixed on screen regardless of map bearing, like a
+   *  real drop shadow. Optional and additive; absent reads as 0. */
+  offset_x?: number;
+  /** Screen-space halo offset, Y component (positive = down). */
+  offset_y?: number;
+  /** UI affordance — same GRADIENT → SOLID stash/restore semantics as
+   *  `RouteSettings.color_stops_cache`. Never read by the renderer. */
+  color_stops_cache?: GradientStop[];
+}
+
+/** Seed config used when the user first toggles a route halo on: a soft
+ *  white glow ~15 CSS px wide (at reference scale) around the default
+ *  ~6.5 px line. */
+export const DEFAULT_ROUTE_HALO: HaloSettings = {
+  enabled: true,
+  color: { mode: 'solid', solid: '#ffffff' },
+  size: 0.004,
+  fade: 0.5,
+  opacity: 0.6,
+  falloff: 0,
+  offset_x: 0,
+  offset_y: 0,
+};
+
+/** Seed config for the marker halos (waypoints + POV): same soft white glow,
+ *  slightly wider spread so it reads against the larger marker footprint. */
+export const DEFAULT_MARKER_HALO: HaloSettings = {
+  ...DEFAULT_ROUTE_HALO,
+  size: 0.006,
+};
 
 /** Waypoint shape roster. Each name resolves to a `ShapeDescriptor` in
  *  `src/lib/mapVisuals/shapes.ts`, which carries the primary + (optional)
@@ -409,6 +484,11 @@ export interface RouteSettings {
   mode: TriMode;
   color: DecorationColor;
   size: RouteSize;
+  /** Optional halo behind the route line (both full-route and slime-trail
+   *  variants). Absent ⇒ disabled — resolvers read it defensively, so no
+   *  schema bump. Per-clip overridable via `MapOverrides.route.halo`
+   *  (diffed atomically with `haloSettingsEquals`). */
+  halo?: HaloSettings;
   /** UI affordance — stash of the last gradient stop array, populated when
    *  the user toggles GRADIENT → SOLID so toggling back restores the prior
    *  gradient. Never read by the renderer — see `color-gradient.md` §13.
@@ -447,6 +527,12 @@ export interface WaypointsSettings {
    *  `Waypoint.secondary_color`. One-color shapes (`ring`) ignore this. */
   secondary_color: DecorationColor;
   shape: WaypointShape;
+  /** Project-level marker-image selection — id of a
+   *  `MapSettings.marker_images` entry. When set, wins over `shape`.
+   *  Mutually exclusive with `shape` in the UI (picking a shape clears it),
+   *  so there is no precedence ambiguity in practice. Per-waypoint override
+   *  via `Waypoint.marker_image_id` / `Waypoint.shape`. */
+  marker_image_id?: string;
   size: WaypointsSize;
   label_mode: WaypointLabelMode;
   active_mode: ActiveWaypointMode;
@@ -458,6 +544,13 @@ export interface WaypointsSettings {
    *  `active_color` so the two slots flip together when the user activates
    *  a waypoint. */
   active_secondary_color?: string;
+  /** Optional halo behind every waypoint marker (all kinds — shapes and
+   *  library images; a blurred circle painted beneath the marker stack).
+   *  Absent ⇒ disabled — resolvers read it defensively, so no schema bump.
+   *  Per-clip overridable via `MapOverrides.waypoints.halo`. Gradient
+   *  colors sample the waypoint's own trail progress, same as the
+   *  primary-color gradient. */
+  halo?: HaloSettings;
   /** UI affordance — stash of the last gradient stop array for the PRIMARY
    *  color, populated when the user toggles GRADIENT → SOLID so toggling
    *  back restores the prior gradient. Never read by the renderer — see
@@ -474,6 +567,144 @@ export interface PovSize {
   dot_stroke_width: number;
   pulse_start_radius: number;
   pulse_end_radius: number;
+  /** Custom-image marker size — the image's LONGEST side, as a fraction of
+   *  `PAINT_REFERENCE_WIDTH` like every other size field. Only consumed
+   *  while the POV marker is an image (`pov.marker.kind === 'image'`). */
+  image_size: number;
+}
+
+/** One entry of the shared project-level marker-image library
+ *  (`MapSettings.marker_images`) — a user-uploaded image stored inside the
+ *  project bundle's `assets/` directory (copied at import by the
+ *  `import_marker_image` command — bundle-relative paths so the bundle stays
+ *  self-contained and relocatable). The `icon_file` PNG is the baked
+ *  render asset both preview and export consume (SVG uploads are
+ *  rasterized to it at import; PNG uploads are normalized to sRGB through
+ *  the same canvas) — see `lib/mapVisuals/markerImage.ts` for the pipeline.
+ *  Both decorations select from this one library: POV via
+ *  `pov.marker = { kind: 'image', image_id }`, waypoints via
+ *  `waypoints.marker_image_id` / `Waypoint.marker_image_id`. */
+export interface MarkerImageRef {
+  /** 16-hex content hash of the original upload — the entry's stable id.
+   *  Forms the MapLibre icon id `marker-image-<id>` on both surfaces and
+   *  (for new imports) the asset filenames. Content-addressed, so
+   *  re-importing the same file dedupes instead of duplicating. */
+  id: string;
+  /** Bundle-relative path of the baked render asset (always a PNG, longest
+   *  side ≤ 1024 texels). Legacy v10 `assets/pov-icon-<hash>.png` names
+   *  keep working — the ref stores the full relative path. */
+  icon_file: string;
+  /** Bundle-relative path of the original upload (`.png` or `.svg`),
+   *  preserved verbatim for provenance / future re-bakes. */
+  source_file: string;
+  /** The upload's original filename — UI display only. */
+  source_name: string;
+  /** Baked master texel dims (icon_file's). */
+  width: number;
+  height: number;
+  /** TRANSIENT absolute path to `icon_file`, injected by
+   *  `buildExportRequest` so the renderer sidecar (which never learns the
+   *  bundle dir) can read the asset. Never persisted: the Rust `MarkerImage`
+   *  model has no such field, so serde drops it on save. */
+  path?: string;
+}
+
+/** POV marker preset roster. `'dot'` is the classic pulsing dot rendered by
+ *  the `live-marker-dot` circle layer (it IS the circle — the SDF circle is
+ *  not offered for POV); the rest render as SDF symbol icons
+ *  (`pov-<shape>-primary/-secondary`) tinted by the POV colors, sharing the
+ *  waypoint shape catalog's pov-domain descriptors (`shapes.ts`). */
+export type PovMarkerShape = 'dot' | 'ring' | 'square' | 'diamond';
+
+/** The POV marker selection — a built-in shape preset or an uploaded image
+ *  from the shared library. Absent ⇒ `{ kind: 'shape', shape: 'dot' }`.
+ *  The pulse is orthogonal: it applies to every marker kind. */
+export type PovMarker =
+  | { kind: 'shape'; shape: PovMarkerShape }
+  | { kind: 'image'; image_id: string };
+
+/** The default POV marker used when `pov.marker` is absent. */
+export const DEFAULT_POV_MARKER: PovMarker = { kind: 'shape', shape: 'dot' };
+
+/** Resolve a possibly-absent `pov.marker` to its effective value. */
+export function povMarkerOf(pov: PovSettings): PovMarker {
+  return pov.marker ?? DEFAULT_POV_MARKER;
+}
+
+/** Deep equality for `PovMarker` values — `computeClipOverrides` needs this
+ *  because `pov.marker` is the first object-valued override leaf and `!==`
+ *  would mark every unchanged marker as an override. Treats absent as the
+ *  default dot so "explicit dot" and "unset" compare equal. */
+export function povMarkerEquals(
+  a: PovMarker | undefined,
+  b: PovMarker | undefined,
+): boolean {
+  const ea = a ?? DEFAULT_POV_MARKER;
+  const eb = b ?? DEFAULT_POV_MARKER;
+  if (ea.kind === 'shape' && eb.kind === 'shape') return ea.shape === eb.shape;
+  if (ea.kind === 'image' && eb.kind === 'image') {
+    return ea.image_id === eb.image_id;
+  }
+  return false;
+}
+
+/** Pairwise gradient-stop equality. Colors compare case-insensitively —
+ *  swatch writes are lowercase but hand-edited project files may not be,
+ *  and `#FF0000` vs `#ff0000` is not a visual difference worth an
+ *  override entry. */
+export function gradientStopsEqual(
+  a: readonly GradientStop[],
+  b: readonly GradientStop[],
+): boolean {
+  if (a.length !== b.length) return false;
+  return a.every(
+    (s, i) =>
+      s.fraction === b[i].fraction &&
+      s.color.toLowerCase() === b[i].color.toLowerCase(),
+  );
+}
+
+/** Deep equality for `DecorationColor` — needed by `computeClipOverrides`
+ *  for the route/waypoints color override leaves (object-valued; `!==`
+ *  would record an override on every toolbar emit). */
+export function decorationColorEquals(
+  a: DecorationColor,
+  b: DecorationColor,
+): boolean {
+  if (a.mode === 'solid' && b.mode === 'solid') {
+    return a.solid.toLowerCase() === b.solid.toLowerCase();
+  }
+  if (a.mode === 'gradient' && b.mode === 'gradient') {
+    return gradientStopsEqual(a.stops, b.stops);
+  }
+  return false;
+}
+
+/** Deep equality for `HaloSettings` override leaves. Compares every
+ *  rendering-relevant field (optionals normalized to their absent-reads-as
+ *  defaults, so "explicit 0 falloff" equals "unset") and deliberately
+ *  IGNORES `color_stops_cache` — the stash is a UI affordance the renderer
+ *  never reads, and a cache-only difference must not record an override.
+ *  When a halo override IS recorded, the whole object (cache included)
+ *  is stored, so the stash still round-trips inside an active override.
+ *  Absent compares equal only to absent: a disabled-but-configured halo
+ *  differs from "no halo" so the user's clip-scope config survives an
+ *  off-toggle, mirroring the project-scope semantics of `enabled`. */
+export function haloSettingsEquals(
+  a: HaloSettings | undefined,
+  b: HaloSettings | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    a.enabled === b.enabled &&
+    decorationColorEquals(a.color, b.color) &&
+    a.size === b.size &&
+    a.fade === b.fade &&
+    a.opacity === b.opacity &&
+    (a.falloff ?? 0) === (b.falloff ?? 0) &&
+    (a.offset_x ?? 0) === (b.offset_x ?? 0) &&
+    (a.offset_y ?? 0) === (b.offset_y ?? 0)
+  );
 }
 
 export interface PovSettings {
@@ -490,6 +721,21 @@ export interface PovSettings {
   size: PovSize;
   pulse_style: PovPulseStyle;
   pulse_rate: PovPulseRate;
+  /** Marker selection — shape preset or library image. Absent ⇒ the default
+   *  dot (see `DEFAULT_POV_MARKER`). Per-clip overridable via
+   *  `MapOverrides.pov.marker` — every used texture registers once at setup
+   *  on both surfaces, so per-clip swaps are just `icon-image` layout
+   *  changes at cuts (no per-frame re-registration). Replaced the v10
+   *  single `image?: PovImageRef` field (migration v10→v11 moves that ref
+   *  into `MapSettings.marker_images` and points `marker` at it). */
+  marker?: PovMarker;
+  /** Optional halo behind the POV marker (every marker kind — a blurred
+   *  circle painted beneath the pulse + marker stack, sized off the
+   *  marker's body radius). Absent ⇒ disabled — resolvers read it
+   *  defensively, so no schema bump. Per-clip overridable via
+   *  `MapOverrides.pov.halo`. Solid color only (single point — nothing to
+   *  gradient across, same rule as the POV colors). */
+  halo?: HaloSettings;
 }
 
 // ---------- top-level types ----------
@@ -499,24 +745,64 @@ export interface MapSettings {
   route: RouteSettings;
   waypoints: WaypointsSettings;
   pov: PovSettings;
+  /** Shared project-level marker-image library (schema v11). Both the POV
+   *  and Waypoints decorations select from this one list; selection is
+   *  independent per decoration. Library mutations are project-level
+   *  regardless of toolbar scope and MUST NOT flow through
+   *  `computeClipOverrides` — they ride dedicated callbacks. */
+  marker_images: MarkerImageRef[];
 }
 
-/** Hand-curated nested override shape. Color and shape on waypoints live on
- *  the `Waypoint` entity, not here. */
+/** Per-clip override of the project-default waypoint marker. Atomic on
+ *  purpose: `shape` and `marker_image_id` are a mutually-exclusive pair
+ *  (image wins when set), and a sparse override can't express "image
+ *  cleared, use my shape" with two independent optional fields — JSON drops
+ *  `undefined` keys, so the project's image would leak through the merge.
+ *  One object leaf captures both fields wholesale, like `PovMarker`. */
+export interface WaypointMarkerOverride {
+  shape: WaypointShape;
+  marker_image_id?: string;
+}
+
+/** Hand-curated nested override shape. Everything the decoration panels
+ *  edit is per-clip overridable (route color/halo included — the old
+ *  "route color is project-wide" rule is retired). The only project-pinned
+ *  MapSettings field is the `marker_images` LIBRARY (an asset list, not a
+ *  look); per-Waypoint colors/markers additionally live on the `Waypoint`
+ *  entity and win over the clip-level values here.
+ *
+ *  Object-valued leaves (`color`, `halo`, `marker`) are diffed with their
+ *  deep-equal comparators (`decorationColorEquals`, `haloSettingsEquals`,
+ *  `povMarkerEquals`), never `!==`. Gradient-stash caches
+ *  (`color_stops_cache`) are deliberately NOT overridable — they're UI
+ *  affordances the renderer never reads, and diffing them would record
+ *  invisible overrides (a halo override carries its own cache inside the
+ *  `HaloSettings` blob, which is fine — it rides the object). */
 export interface MapOverrides {
   camera?: Partial<CameraSettings>;
   map_style?: MapStyleId;
   route?: {
     mode?: TriMode;
+    /** Solid or gradient, full capability parity with project scope. */
+    color?: DecorationColor;
     size?: Partial<RouteSize>;
+    halo?: HaloSettings;
   };
   waypoints?: {
     mode?: TriMode;
+    /** Clip-level default for ALL waypoints while this clip plays; a
+     *  per-Waypoint `Waypoint.color` still wins per feature. */
+    color?: DecorationColor;
+    secondary_color?: DecorationColor;
+    /** Clip-level default marker (see `WaypointMarkerOverride`); a
+     *  per-Waypoint `shape`/`marker_image_id` still wins per feature. */
+    marker?: WaypointMarkerOverride;
     size?: Partial<WaypointsSize>;
     label_mode?: WaypointLabelMode;
     active_mode?: ActiveWaypointMode;
     active_color?: string;
     active_secondary_color?: string;
+    halo?: HaloSettings;
   };
   pov?: {
     color?: string;
@@ -524,6 +810,11 @@ export interface MapOverrides {
     size?: Partial<PovSize>;
     pulse_style?: PovPulseStyle;
     pulse_rate?: PovPulseRate;
+    /** Per-clip marker override (shape preset or library image). The first
+     *  object-valued override leaf — diffed with `povMarkerEquals`, never
+     *  `!==`. */
+    marker?: PovMarker;
+    halo?: HaloSettings;
   };
 }
 
@@ -568,10 +859,15 @@ export const DEFAULT_MAP_SETTINGS: MapSettings = {
       dot_stroke_width: 0.005,
       pulse_start_radius: 0.016,
       pulse_end_radius: 0.044,
+      // Custom-image longest side: ~86 CSS px at the 1080 reference width —
+      // a readable marker without dominating the map. Only consumed while
+      // the POV marker is a library image.
+      image_size: 0.08,
     },
     pulse_style: 'sonar',
     pulse_rate: 'medium',
   },
+  marker_images: [],
 };
 
 /** Minimum fractional separation enforced between adjacent gradient stops.
@@ -703,24 +999,46 @@ export function resolveMapSettings(
         ),
       },
       pov: defaults.pov,
+      // Defensive `?? []`: wire payloads may omit the field (the Rust
+      // model skips it when empty).
+      marker_images: defaults.marker_images ?? [],
     };
   }
+  // The atomic waypoint-marker override leaf is NOT a WaypointsSettings
+  // field — destructure it out so the block spread below can't splat a
+  // stray `marker` key onto the resolved settings, then apply its two
+  // fields (as a pair — see `WaypointMarkerOverride`) explicitly.
+  const { marker: wpMarkerOverride, ...wpOverrides } =
+    overrides.waypoints ?? {};
   return {
     camera: { ...defaults.camera, ...overrides.camera },
     route: {
       ...defaults.route,
       ...overrides.route,
-      color: validateGradient(defaults.route.color, projectRouteSolid),
+      color: validateGradient(
+        overrides.route?.color ?? defaults.route.color,
+        projectRouteSolid,
+      ),
       size: { ...defaults.route.size, ...overrides.route?.size },
     },
     waypoints: {
       ...defaults.waypoints,
-      ...overrides.waypoints,
-      color: validateGradient(defaults.waypoints.color, projectWaypointsSolid),
+      ...wpOverrides,
+      color: validateGradient(
+        overrides.waypoints?.color ?? defaults.waypoints.color,
+        projectWaypointsSolid,
+      ),
       secondary_color: validateGradient(
-        defaults.waypoints.secondary_color,
+        overrides.waypoints?.secondary_color ??
+          defaults.waypoints.secondary_color,
         projectWaypointsSecondarySolid,
       ),
+      shape: wpMarkerOverride
+        ? wpMarkerOverride.shape
+        : defaults.waypoints.shape,
+      marker_image_id: wpMarkerOverride
+        ? wpMarkerOverride.marker_image_id
+        : defaults.waypoints.marker_image_id,
       size: { ...defaults.waypoints.size, ...overrides.waypoints?.size },
     },
     pov: {
@@ -728,6 +1046,10 @@ export function resolveMapSettings(
       ...overrides.pov,
       size: { ...defaults.pov.size, ...overrides.pov?.size },
     },
+    // The library is project-level and not overridable — per-clip resolves
+    // must still carry it so both surfaces can resolve `image_id`s.
+    // Defensive `?? []` for wire payloads that omit the empty field.
+    marker_images: defaults.marker_images ?? [],
   };
 }
 
@@ -737,17 +1059,25 @@ export type OverridePath =
   | `camera.${keyof CameraSettings}`
   | 'map_style'
   | 'route.mode'
+  | 'route.color'
+  | 'route.halo'
   | `route.size.${keyof RouteSize}`
   | 'waypoints.mode'
+  | 'waypoints.color'
+  | 'waypoints.secondary_color'
+  | 'waypoints.marker'
   | 'waypoints.label_mode'
   | 'waypoints.active_mode'
   | 'waypoints.active_color'
   | 'waypoints.active_secondary_color'
+  | 'waypoints.halo'
   | `waypoints.size.${keyof WaypointsSize}`
   | 'pov.color'
   | 'pov.secondary_color'
   | 'pov.pulse_style'
   | 'pov.pulse_rate'
+  | 'pov.marker'
+  | 'pov.halo'
   | `pov.size.${keyof PovSize}`;
 
 export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
@@ -759,6 +1089,8 @@ export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
   }
   if (overrides.map_style !== undefined) out.add('map_style');
   if (overrides.route?.mode !== undefined) out.add('route.mode');
+  if (overrides.route?.color !== undefined) out.add('route.color');
+  if (overrides.route?.halo !== undefined) out.add('route.halo');
   if (overrides.route?.size) {
     for (const k of Object.keys(overrides.route.size) as (keyof RouteSize)[]) {
       out.add(`route.size.${k}` as OverridePath);
@@ -766,12 +1098,18 @@ export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
   }
   if (overrides.waypoints) {
     if (overrides.waypoints.mode !== undefined) out.add('waypoints.mode');
+    if (overrides.waypoints.color !== undefined) out.add('waypoints.color');
+    if (overrides.waypoints.secondary_color !== undefined) {
+      out.add('waypoints.secondary_color');
+    }
+    if (overrides.waypoints.marker !== undefined) out.add('waypoints.marker');
     if (overrides.waypoints.label_mode !== undefined) out.add('waypoints.label_mode');
     if (overrides.waypoints.active_mode !== undefined) out.add('waypoints.active_mode');
     if (overrides.waypoints.active_color !== undefined) out.add('waypoints.active_color');
     if (overrides.waypoints.active_secondary_color !== undefined) {
       out.add('waypoints.active_secondary_color');
     }
+    if (overrides.waypoints.halo !== undefined) out.add('waypoints.halo');
     if (overrides.waypoints.size) {
       for (const k of Object.keys(overrides.waypoints.size) as (keyof WaypointsSize)[]) {
         out.add(`waypoints.size.${k}` as OverridePath);
@@ -783,6 +1121,8 @@ export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
     if (overrides.pov.secondary_color !== undefined) out.add('pov.secondary_color');
     if (overrides.pov.pulse_style !== undefined) out.add('pov.pulse_style');
     if (overrides.pov.pulse_rate !== undefined) out.add('pov.pulse_rate');
+    if (overrides.pov.marker !== undefined) out.add('pov.marker');
+    if (overrides.pov.halo !== undefined) out.add('pov.halo');
     if (overrides.pov.size) {
       for (const k of Object.keys(overrides.pov.size) as (keyof PovSize)[]) {
         out.add(`pov.size.${k}` as OverridePath);
@@ -821,13 +1161,51 @@ export function computeClipOverrides(
   // route
   const route: NonNullable<MapOverrides['route']> = {};
   if (next.route.mode !== project.route.mode) route.mode = next.route.mode;
+  // Object-valued leaves (color / halo): deep-equal, not `!==` — reference
+  // comparison would record an override on every toolbar emit. Same rule
+  // as `pov.marker`.
+  if (!decorationColorEquals(next.route.color, project.route.color)) {
+    route.color = next.route.color;
+  }
+  if (!haloSettingsEquals(next.route.halo, project.route.halo)) {
+    route.halo = next.route.halo;
+  }
   const routeSize = diffPartial(next.route.size, project.route.size);
   if (routeSize) route.size = routeSize;
   if (Object.keys(route).length) out.route = route;
 
-  // waypoints (no color, no shape — those live on Waypoint)
+  // waypoints (clip-level defaults; per-Waypoint entity overrides still win
+  // per feature and never flow through here)
   const wp: NonNullable<MapOverrides['waypoints']> = {};
   if (next.waypoints.mode !== project.waypoints.mode) wp.mode = next.waypoints.mode;
+  if (!decorationColorEquals(next.waypoints.color, project.waypoints.color)) {
+    wp.color = next.waypoints.color;
+  }
+  if (
+    !decorationColorEquals(
+      next.waypoints.secondary_color,
+      project.waypoints.secondary_color,
+    )
+  ) {
+    wp.secondary_color = next.waypoints.secondary_color;
+  }
+  // Marker: shape + marker_image_id diff as ONE atomic leaf (the pair is
+  // mutually exclusive and a sparse two-field diff can't express "image
+  // cleared" — see `WaypointMarkerOverride`).
+  if (
+    next.waypoints.shape !== project.waypoints.shape ||
+    next.waypoints.marker_image_id !== project.waypoints.marker_image_id
+  ) {
+    wp.marker = {
+      shape: next.waypoints.shape,
+      ...(next.waypoints.marker_image_id !== undefined
+        ? { marker_image_id: next.waypoints.marker_image_id }
+        : {}),
+    };
+  }
+  if (!haloSettingsEquals(next.waypoints.halo, project.waypoints.halo)) {
+    wp.halo = next.waypoints.halo;
+  }
   if (next.waypoints.label_mode !== project.waypoints.label_mode) {
     wp.label_mode = next.waypoints.label_mode;
   }
@@ -858,6 +1236,14 @@ export function computeClipOverrides(
   }
   if (next.pov.pulse_rate !== project.pov.pulse_rate) {
     pov.pulse_rate = next.pov.pulse_rate;
+  }
+  // Object-valued leaf: deep-equal, not `!==` — reference comparison would
+  // record an override on every toolbar emit even when the marker matches.
+  if (!povMarkerEquals(next.pov.marker, project.pov.marker)) {
+    pov.marker = next.pov.marker ?? DEFAULT_POV_MARKER;
+  }
+  if (!haloSettingsEquals(next.pov.halo, project.pov.halo)) {
+    pov.halo = next.pov.halo;
   }
   const povSize = diffPartial(next.pov.size, project.pov.size);
   if (povSize) pov.size = povSize;

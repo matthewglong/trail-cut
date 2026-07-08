@@ -33,6 +33,7 @@ import type {
   Clip,
   MapSettings,
   MapStyleId,
+  MarkerImageRef,
   OverridePath,
   Waypoint,
 } from '../../types';
@@ -91,6 +92,19 @@ interface MapToolbarProps {
    *  gradient editor can compute waypoint Mercator fractions for snap
    *  ticks + the trail preview SVG. Null when no GPX is loaded. */
   indexedRoute: IndexedRoute | null;
+  /** Project bundle directory — passed to the marker galleries for image
+   *  upload (assets are copied into the bundle) + thumbnail resolution. */
+  projectDir?: string | null;
+  /** Marker-library write — full next `marker_images` list. Project-level
+   *  regardless of scope; see DecorationPanelProps.onMarkerImagesChange. */
+  onMarkerImagesChange?: (next: MarkerImageRef[]) => void;
+  /** Confirmed marker-image delete — the parent reverts every use and
+   *  removes the bundle assets. */
+  onMarkerImageDelete?: (id: string) => void;
+  /** PROJECT-level MapSettings (unresolved by clip overrides) — the
+   *  clip-scope "Reset to project" write-back source for every override
+   *  pill in the decoration panels. */
+  projectSettings?: MapSettings | null;
 }
 
 const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
@@ -122,6 +136,10 @@ export default function MapToolbar({
   waypoints,
   onWaypointsChange,
   indexedRoute,
+  projectDir,
+  onMarkerImagesChange,
+  onMarkerImageDelete,
+  projectSettings,
 }: MapToolbarProps) {
   const followOn = settings.camera.follow_playhead;
   const bearingAuto = settings.camera.bearing_mode === 'auto';
@@ -364,6 +382,7 @@ export default function MapToolbar({
               triggerRef={routeTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
               indexedRoute={indexedRoute}
+              projectSettings={projectSettings}
               position={positions.route ?? undefined}
               onPositionChange={(pos) => setPositionFor('route', pos)}
               size={panelSize.route}
@@ -405,6 +424,10 @@ export default function MapToolbar({
               triggerRef={waypointsTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
               indexedRoute={indexedRoute}
+              projectDir={projectDir}
+              onMarkerImagesChange={onMarkerImagesChange}
+              onMarkerImageDelete={onMarkerImageDelete}
+              projectSettings={projectSettings}
               position={positions.waypoints ?? undefined}
               onPositionChange={(pos) => setPositionFor('waypoints', pos)}
               size={panelSize.waypoints}
@@ -446,6 +469,10 @@ export default function MapToolbar({
               triggerRef={povTriggerRef}
               currentClipOrdinal={currentClipOrdinal}
               indexedRoute={indexedRoute}
+              projectDir={projectDir}
+              onMarkerImagesChange={onMarkerImagesChange}
+              onMarkerImageDelete={onMarkerImageDelete}
+              projectSettings={projectSettings}
               position={positions.pov ?? undefined}
               onPositionChange={(pos) => setPositionFor('pov', pos)}
               size={panelSize.pov}
