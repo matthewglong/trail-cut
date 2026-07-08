@@ -258,10 +258,13 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
                 push(&mut out, ["-tag:v", "hvc1", "-q:v", "65"]);
             } else {
                 // libx265 — preset/crf measured on the crispness probe:
-                // `fast`/17 + the chroma QP offsets in X265_DELIVERY_TUNING
-                // hold decoration chroma edges at ≥0.88 Sobel retention vs
-                // the lossless pre-encode tap (vs 0.55 for the old VT path).
-                push(&mut out, ["-tag:v", "hvc1", "-preset", "fast", "-crf", "17"]);
+                // `veryfast`/17 + the chroma QP offsets in X265_DELIVERY_TUNING
+                // hold decoration chroma edges at gate parity with `fast`
+                // (0.95–1.05 retention, vs 0.55 for the old VT path) at ~half
+                // the encode wall (41.7s vs 80.8s, 152×4K real frames).
+                // `ultrafast` is REJECTED: its 1.19–1.29 "retention" is
+                // SAO-off ringing inflating gradient energy, not fidelity.
+                push(&mut out, ["-tag:v", "hvc1", "-preset", "veryfast", "-crf", "17"]);
             }
             push(&mut out, ["-pix_fmt", "yuv420p"]);
             push_color_flags_from_cs(&mut out, &out_cs);
@@ -299,7 +302,7 @@ pub fn delivery_encoder_args(target: DeliveryTarget, encoder: &EncoderChoice) ->
                         "-profile:v",
                         "main10",
                         "-preset",
-                        "fast",
+                        "veryfast",
                         "-crf",
                         "17",
                     ],
@@ -726,10 +729,10 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("-c:v libx265"), "{}", joined);
         assert!(joined.contains("-tag:v hvc1"), "{}", joined);
-        // Decoration-crispness settings (2026-07-03 probe): fast/17 + the
-        // chroma QP offsets, measured ≥0.88 Cr Sobel retention vs the
-        // lossless pre-encode tap.
-        assert!(joined.contains("-preset fast"), "{}", joined);
+        // Decoration-crispness settings (2026-07-03 probe): veryfast/17 + the
+        // chroma QP offsets, measured at gate parity with `fast` (0.95–1.05
+        // retention) vs the lossless pre-encode tap, at ~half the encode wall.
+        assert!(joined.contains("-preset veryfast"), "{}", joined);
         assert!(joined.contains("-crf 17"), "{}", joined);
         assert!(
             joined.contains(
@@ -767,7 +770,7 @@ mod tests {
         assert!(joined.contains("-c:v libx265"), "{}", joined);
         assert!(joined.contains("-profile:v main10"), "{}", joined);
         assert!(joined.contains("-pix_fmt yuv420p10le"), "{}", joined);
-        assert!(joined.contains("-preset fast"), "{}", joined);
+        assert!(joined.contains("-preset veryfast"), "{}", joined);
         assert!(joined.contains("-crf 17"), "{}", joined);
         assert!(
             joined.contains(

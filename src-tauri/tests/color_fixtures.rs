@@ -2183,6 +2183,260 @@ fn composite_chains_verbose_dry_run_no_silent_chroma_downconvert() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 4 / fix C′ — composite decoration-fidelity gate.
+//
+// The 10-bit `yuva444p10le` overlay lift quantizes the working space onto a
+// 10-bit INTEGER grid clamped to [0,1]. Fix C wrapped that lift in a LINEAR
+// ÷32/×32 headroom; because the ÷32 ran in linear light it crushed the
+// anchored SDR-origin map (linear 0–2.03) into the bottom ~6.3% of the grid —
+// a 256-step ramp collapsed to 66 distinct levels and flat decoration colors
+// shifted hue up to 12.5° (the HDR-only grit / wrong-hue / shimmer Matthew saw
+// on HLG+PQ hand exports). Fix C′ replaces that with a PQ TRANSPORT curve
+// (`composite_transport_encode`/`_decode`); PQ allocates 10-bit codes
+// perceptually so the bottom of the range keeps its precision.
+//
+// This gate runs the REAL production color-stream sandwich
+// (`map_ingest_filter_for_delivery(HDR)` → encode → yuva444p10le lift → back to
+// gbrpf32le → decode) on PQ delivery (PQ is the worst case — its EOTF stretches
+// the bottom of the range hardest) and asserts the empirically-validated
+// targets: a black→anchored-white ramp keeps ≥250 of 256 distinct levels, and
+// flat saturated decoration colors hold hue within <1° of a pure-float
+// reference (the same ingest WITHOUT the lift). Models the probe in
+// /tmp/hdr-grit-probe/ (D_pq_transport.raw + hueD_*). A regression to the
+// linear headroom collapses the ramp to ~66 levels and the hue blows past 1°.
+
+/// Run RGBA8 frames through `[0:v]{filter_body}[out]` and return the decoded
+/// `gbrpf32le` planes of the first frame as (G, B, R), each `w*h` f32 samples.
+/// No encoder — the filter output is read straight back as rawvideo, so the
+/// only quantization is whatever `filter_body` itself performs.
+fn run_working_space_color_path(
+    filter_body: &str,
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let filter_complex = format!("[0:v]{filter_body}[out]");
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &format!("{w}x{h}"),
+            "-r",
+            "1",
+            "-i",
+            "pipe:0",
+            "-filter_complex",
+            &filter_complex,
+            "-map",
+            "[out]",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gbrpf32le",
+            "pipe:1",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn ffmpeg");
+    {
+        use std::io::Write;
+        let stdin = child.stdin.as_mut().expect("ffmpeg stdin");
+        stdin.write_all(rgba).expect("write rgba frames");
+    }
+    let out = child.wait_with_output().expect("await ffmpeg");
+    assert!(
+        out.status.success(),
+        "working-space color path failed.\nfilter_complex=`{}`\nstderr:\n{}",
+        filter_complex,
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let plane = w * h;
+    let need = plane * 4 * 3;
+    assert!(
+        out.stdout.len() >= need,
+        "decoded gbrpf32le frame too short: got {} bytes, need {} (3 planes × {} f32)",
+        out.stdout.len(),
+        need,
+        plane,
+    );
+    let read_plane = |base: usize| -> Vec<f32> {
+        (0..plane)
+            .map(|i| {
+                let o = base + i * 4;
+                f32::from_le_bytes([
+                    out.stdout[o],
+                    out.stdout[o + 1],
+                    out.stdout[o + 2],
+                    out.stdout[o + 3],
+                ])
+            })
+            .collect()
+    };
+    // gbrpf32le plane order is G, B, R.
+    let g = read_plane(0);
+    let b = read_plane(plane * 4);
+    let r = read_plane(plane * 4 * 2);
+    (g, b, r)
+}
+
+/// The pure-float reference body: map ingest only (no 10-bit lift).
+fn float_reference_body() -> String {
+    use trail_cut_lib::util::color::map_ingest_filter_for_delivery;
+    let cs = trail_cut_lib::export::DeliveryTarget::HdrPq.output_color_space();
+    format!("{},format=gbrpf32le", map_ingest_filter_for_delivery(&cs))
+}
+
+/// The REAL production HDR composite sandwich body: map ingest → PQ transport
+/// encode → 10-bit `yuva444p10le` lift → back to `gbrpf32le` → PQ transport
+/// decode. Exactly the seam `build_composite_filter_complex` splices around the
+/// overlay (`down` … `format=yuva444p10le` … `format=gbrpf32le` … `up`), minus
+/// the overlay itself (the quantization lives in the format hops, not overlay).
+fn pq_transport_sandwich_body() -> String {
+    use trail_cut_lib::util::color::map_ingest_filter_for_delivery;
+    use trail_cut_lib::util::color_space::{
+        composite_transport_decode, composite_transport_encode,
+    };
+    let cs = trail_cut_lib::export::DeliveryTarget::HdrPq.output_color_space();
+    format!(
+        "{ingest},{down},format=yuva444p10le,format=gbrpf32le,{up},format=gbrpf32le",
+        ingest = map_ingest_filter_for_delivery(&cs),
+        down = composite_transport_encode(),
+        up = composite_transport_decode(),
+    )
+}
+
+#[test]
+fn composite_pq_transport_ramp_retains_distinct_levels() {
+    assert_ffmpeg_on_path();
+    assert_ffmpeg_has_zscale();
+
+    // 256-wide black→white gray ramp (R=G=B=x), 8 identical rows.
+    const W: usize = 256;
+    const H: usize = 8;
+    let mut rgba = Vec::with_capacity(W * H * 4);
+    for _ in 0..H {
+        for x in 0..W {
+            let v = x as u8;
+            rgba.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+
+    // Distinct levels in the first row's green plane, quantized to 1e-5 (far
+    // finer than the ~0.008 spacing of 256 steps over linear 0–2.03, so true
+    // levels survive while sub-code float noise collapses).
+    let distinct = |g: &[f32]| -> usize {
+        let mut set = std::collections::BTreeSet::new();
+        for &val in &g[0..W] {
+            set.insert((val as f64 * 1.0e5).round() as i64);
+        }
+        set.len()
+    };
+
+    let (g_ref, _, _) = run_working_space_color_path(&float_reference_body(), &rgba, W, H);
+    let (g_pq, _, _) = run_working_space_color_path(&pq_transport_sandwich_body(), &rgba, W, H);
+
+    let ref_levels = distinct(&g_ref);
+    let pq_levels = distinct(&g_pq);
+
+    // Sanity: the pure-float reference must itself be a near-full ramp.
+    assert!(
+        ref_levels >= 250,
+        "pure-float reference ramp is not full ({ref_levels}/256) — harness broken \
+         (sRGB EOTF is strictly monotonic, so the reference must keep ~256 levels)",
+    );
+    assert!(
+        pq_levels >= 250,
+        "PQ-transport composite sandwich collapsed the ramp to {pq_levels}/256 distinct \
+         levels (reference {ref_levels}). This is the fix-C ÷32 linear-headroom \
+         quantization COMING BACK (it crushed 256→66). fix C′ (CANON §1.12) must keep \
+         ≥250: the PQ transport curve around the 10-bit lift, HDR delivery only. Do not \
+         loosen this floor.",
+    );
+}
+
+/// Hue angle (degrees, -180..180) of a linear RGB triple via the standard
+/// hexagonal chroma projection. Uniform scaling (e.g. the ×2.03 anchor) leaves
+/// it invariant, so float-ref and sandwich hues are directly comparable.
+fn hue_deg(r: f64, g: f64, b: f64) -> f64 {
+    let alpha = 0.5 * (2.0 * r - g - b);
+    let beta = (3.0_f64).sqrt() / 2.0 * (g - b);
+    beta.atan2(alpha).to_degrees()
+}
+
+fn angular_delta_deg(a: f64, b: f64) -> f64 {
+    let mut d = (a - b).abs() % 360.0;
+    if d > 180.0 {
+        d = 360.0 - d;
+    }
+    d
+}
+
+#[test]
+fn composite_pq_transport_preserves_decoration_hue() {
+    assert_ffmpeg_on_path();
+    assert_ffmpeg_has_zscale();
+
+    // The three saturated decoration colors the probe used (sRGB hex).
+    const COLORS: [(u8, u8, u8, &str); 3] = [
+        (0xE5, 0x39, 0x35, "red 0xE53935"),
+        (0x1E, 0x88, 0xE5, "blue 0x1E88E5"),
+        (0x32, 0xCD, 0x32, "green 0x32CD32"),
+    ];
+    const W: usize = 64;
+    const H: usize = 64;
+
+    let center_rgb = |g: &[f32], b: &[f32], r: &[f32]| -> (f64, f64, f64) {
+        let (x0, x1, y0, y1) = (W / 4, 3 * W / 4, H / 4, 3 * H / 4);
+        let (mut sr, mut sg, mut sb, mut n) = (0.0f64, 0.0f64, 0.0f64, 0u64);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = y * W + x;
+                sr += r[i] as f64;
+                sg += g[i] as f64;
+                sb += b[i] as f64;
+                n += 1;
+            }
+        }
+        (sr / n as f64, sg / n as f64, sb / n as f64)
+    };
+
+    for (cr, cg, cb, label) in COLORS {
+        let mut rgba = Vec::with_capacity(W * H * 4);
+        for _ in 0..(W * H) {
+            rgba.extend_from_slice(&[cr, cg, cb, 255]);
+        }
+
+        let (gr, br, rr) = run_working_space_color_path(&float_reference_body(), &rgba, W, H);
+        let (gp, bp, rp) = run_working_space_color_path(&pq_transport_sandwich_body(), &rgba, W, H);
+
+        let (rf, gf, bf) = center_rgb(&gr, &br, &rr);
+        let (rq, gq, bq) = center_rgb(&gp, &bp, &rp);
+
+        let hue_ref = hue_deg(rf, gf, bf);
+        let hue_pq = hue_deg(rq, gq, bq);
+        let delta = angular_delta_deg(hue_ref, hue_pq);
+
+        assert!(
+            delta < 1.0,
+            "{label}: PQ-transport composite sandwich shifted hue by {delta:.3}° \
+             (ref {hue_ref:.2}° vs sandwich {hue_pq:.2}°). fix-C's linear ÷32 headroom \
+             shifted flat decoration hues up to 12.5°; fix C′ (CANON §1.12) must hold \
+             <1°. Do not loosen this tolerance.",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Decoration-crispness delivery gate (2026-07-03).
 //
 // Map decorations (POV dot, pulse rings, trail line, waypoint marks) are flat

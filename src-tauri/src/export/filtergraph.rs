@@ -24,7 +24,7 @@ use crate::models::Clip;
 use crate::export::delivery::push_color_flags_from_cs;
 use crate::util::color::{map_ingest_filter, map_ingest_filter_for_delivery, WORKING_SPACE_PIX_FMT};
 use crate::util::color_space::{
-    delivery_zscale_chain, linear_gain_filter, ColorSpace, COMPOSITE_HEADROOM,
+    composite_transport_decode, composite_transport_encode, delivery_zscale_chain, ColorSpace,
 };
 
 /// Argv chunks ready to splat into the full FFmpeg invocation, plus the
@@ -615,26 +615,38 @@ fn build_composite_filter_complex(
 
     // Phase 4 (HDR port): the delivery target's output color space drives
     // (a) the SDR-origin BT.2408 reference-white anchor at every ingest
-    // (fix B — clips below, map further down) and (b) the composite-headroom
-    // gate (fix C). For SDR delivery both collapse to no-ops and every chain
+    // (fix B — clips below, map further down) and (b) the composite transport
+    // curve (fix C′). For SDR delivery both collapse to no-ops and every chain
     // is byte-identical to pre-Phase-4.
     let delivery_cs = delivery_target.output_color_space();
     let hdr_delivery = delivery_cs.transfer.is_hdr();
-    // Composite headroom (fix C): the 10-bit `yuva444p10le` lift around
-    // `overlay` clamps working-space values to [0,1] — HDR video (linear up
-    // to ~24.6 at npl=100) and the anchored 2.03 map white would clip.
-    // ÷H is spliced immediately before every COLOR-stream lift (map/vc/bg —
-    // never the gray mask) and ×H immediately after the post-overlay return
-    // to `gbrpf32le`, H=32. HDR delivery only: H=32 on SDR regresses the
-    // gradient 209→85 distinct levels (Session 4), and SDR content never
-    // exceeds 1.0 anyway.
+    // Composite transport curve (fix C′ — supersedes the fix-C linear ÷32/×32
+    // headroom; CANON §1.12). The 10-bit `yuva444p10le` lift around `overlay`
+    // quantizes the working space onto a 10-bit INTEGER grid clamped to [0,1] —
+    // HDR video (linear up to ~24.6 at npl=100) and the anchored 2.03 map white
+    // both exceed 1.0 and would clip. Fix C used to scale DOWN by H=32 before
+    // the lift and UP after, but that ÷32 ran in LINEAR light, crushing the
+    // anchored SDR-origin map (linear 0–2.03) into the bottom ~6.3% of the grid:
+    // a 256-step ramp collapsed to 66 distinct levels and flat decoration colors
+    // shifted hue up to 12.5° — the HDR-only grit / wrong-hue / shimmer Matthew
+    // saw (PQ worst; its EOTF stretches the bottom of the range hardest).
+    //
+    // Fix C′ wraps the SAME lift in a PQ TRANSPORT curve instead: `down` encodes
+    // linear→PQ before the lift (PQ allocates 10-bit codes perceptually, so the
+    // bottom of the range keeps its precision), `up` decodes PQ→linear (npl=100,
+    // the absolute working convention) after. Measured 256/256 levels, ≤0.33°
+    // hue vs pure float. The splice POINTS are unchanged from fix C: `down`
+    // immediately before every COLOR-stream lift (map/vc/bg — never the gray
+    // mask), `up` immediately after the post-overlay return to `gbrpf32le`.
+    // HDR delivery only: SDR never exceeds 1.0, and a PQ round-trip there would
+    // needlessly requantize the gradient (same regression H=32 caused on SDR).
     let down = if hdr_delivery {
-        format!("{},", linear_gain_filter(1.0 / COMPOSITE_HEADROOM))
+        format!("{},", composite_transport_encode())
     } else {
         String::new()
     };
     let up = if hdr_delivery {
-        format!(",{}", linear_gain_filter(COMPOSITE_HEADROOM))
+        format!(",{}", composite_transport_decode())
     } else {
         String::new()
     };
@@ -3163,10 +3175,10 @@ mod tests {
     /// emits it — byte-pinned in `color_space::tests`.
     const ANCHOR_2_03: &str =
         "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=1.015:gg=1.015:bb=1.015";
-    /// ÷32 headroom down-gain (fix C).
-    const HEADROOM_DOWN: &str = "colorchannelmixer=rr=0.03125:gg=0.03125:bb=0.03125";
-    /// ×32 headroom up-gain (fix C): five 2.0 stages.
-    const HEADROOM_UP: &str = "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2";
+    /// PQ transport encode (fix C′): linear→PQ before the 10-bit lift.
+    const TRANSPORT_DOWN: &str = "zscale=t=smpte2084";
+    /// PQ transport decode (fix C′): PQ→linear (npl=100) after the lift.
+    const TRANSPORT_UP: &str = "zscale=tin=smpte2084:t=linear:npl=100";
 
     /// Every composite mode × mask combination the builder supports.
     /// (Split structurally has no mask.)
@@ -3209,13 +3221,15 @@ mod tests {
     }
 
     #[test]
-    fn composite_hdr_delivery_anchors_sdr_origins_and_wraps_lifts_in_headroom() {
+    fn composite_hdr_delivery_anchors_sdr_origins_and_wraps_lifts_in_pq_transport() {
         // Fix B: SDR-origin streams (every clip here is SDR; the map always
         // is) carry the ×2.03 BT.2408 anchor at their ingest tails.
-        // Fix C: every COLOR-stream lift to yuva444p10le is preceded by ÷32
-        // and the single post-overlay restore to gbrpf32le is followed by
-        // ×32 — protecting the anchored (>1.0) values through the 10-bit
-        // integer lift.
+        // Fix C′: every COLOR-stream lift to yuva444p10le is preceded by the PQ
+        // transport encode (linear→PQ) and the single post-overlay restore to
+        // gbrpf32le is followed by the decode (PQ→linear, npl=100) — so the
+        // anchored (>1.0) values cross the 10-bit integer grid PQ-coded, where
+        // the bottom of the range keeps its precision (256/256 levels) instead
+        // of being crushed into the bottom 6.3% by the retired ÷32 (66 levels).
         for target in [DeliveryTarget::HdrHlg, DeliveryTarget::HdrPq] {
             for (mode, mask) in all_composite_shapes() {
                 let fc = build_fc_for_target(mode, mask, target);
@@ -3232,22 +3246,27 @@ mod tests {
                     "{label}: map ingest must carry the ×2.03 anchor; fc: {fc}",
                 );
 
-                // (C) EVERY yuva444p10le lift is preceded by ÷32 — the lift
-                // count and the down-gain count must match exactly.
+                // (C′) EVERY yuva444p10le lift is preceded by the PQ encode —
+                // the lift count and the encode count must match exactly.
                 let lifts = fc.matches("format=yuva444p10le[").count();
                 let guarded = fc
-                    .matches(&format!("{HEADROOM_DOWN},format=yuva444p10le["))
+                    .matches(&format!("{TRANSPORT_DOWN},format=yuva444p10le["))
                     .count();
                 assert!(lifts > 0, "{label}: expected yuva lifts; fc: {fc}");
                 assert_eq!(
                     guarded, lifts,
-                    "{label}: every color-stream lift must be ÷32-guarded ({guarded}/{lifts}); fc: {fc}",
+                    "{label}: every color-stream lift must be PQ-encode-wrapped ({guarded}/{lifts}); fc: {fc}",
                 );
 
-                // (C) restore followed by ×32, feeding [vout_w].
+                // (C′) restore followed by the PQ decode, feeding [vout_w].
                 assert!(
-                    fc.contains(&format!("format=gbrpf32le,{HEADROOM_UP}[vout_w]")),
-                    "{label}: post-overlay restore must apply ×32 before [vout_w]; fc: {fc}",
+                    fc.contains(&format!("format=gbrpf32le,{TRANSPORT_UP}[vout_w]")),
+                    "{label}: post-overlay restore must apply the PQ decode before [vout_w]; fc: {fc}",
+                );
+                // The retired linear headroom must be entirely gone.
+                assert!(
+                    !fc.contains("colorchannelmixer=rr=0.03125"),
+                    "{label}: fix-C ÷32 headroom must be gone; fc: {fc}",
                 );
 
                 // (D) HDR finishing carries the HQ chroma subsample split.
@@ -3256,11 +3275,11 @@ mod tests {
                     "{label}: HDR finishing must use the HQ chroma split; fc: {fc}",
                 );
 
-                // The gray corner mask is alpha, not color — never gained.
+                // The gray corner mask is alpha, not color — never transported.
                 if mask.is_some() {
                     assert!(
-                        !fc.contains(&format!("{HEADROOM_DOWN},format=gray")),
-                        "{label}: the mask must NOT be headroom-scaled; fc: {fc}",
+                        !fc.contains(&format!("{TRANSPORT_DOWN},format=gray")),
+                        "{label}: the mask must NOT be PQ-transported; fc: {fc}",
                     );
                 }
             }
@@ -3268,18 +3287,31 @@ mod tests {
     }
 
     #[test]
-    fn composite_sdr_delivery_emits_no_anchor_and_no_headroom() {
-        // SDR delivery gate: anchor and headroom are both HDR-delivery-only.
-        // No colorchannelmixer may appear anywhere — the composite chain is
-        // byte-identical to pre-Phase-4 (the existing SDR composite tests
-        // pin the exact strings; this is the explicit negative guard).
+    fn composite_sdr_delivery_emits_no_anchor_and_no_transport() {
+        // SDR delivery gate: anchor and PQ transport are both HDR-delivery-only.
+        // No colorchannelmixer (anchor/old headroom) AND no composite PQ
+        // transport may appear anywhere — the composite chain is byte-identical
+        // to pre-Phase-4 (the existing SDR composite tests pin the exact
+        // strings; this is the explicit negative guard).
         for target in [DeliveryTarget::SdrH264, DeliveryTarget::SdrH265, DeliveryTarget::Prores] {
             for (mode, mask) in all_composite_shapes() {
                 let fc = build_fc_for_target(mode, mask, target);
+                let label = format!("{target:?}/{mode:?}/mask={}", mask.is_some());
                 assert!(
                     !fc.contains("colorchannelmixer"),
-                    "{target:?}/{mode:?}/mask={}: SDR/ProRes delivery must not gain-scale; fc: {fc}",
-                    mask.is_some(),
+                    "{label}: SDR/ProRes delivery must not gain-scale; fc: {fc}",
+                );
+                // The composite PQ transport (fix C′) is the linear→PQ encode
+                // wrapped around the overlay lift; it must never appear on SDR.
+                // (Per-clip SDR ingest legitimately contains other zscale hops,
+                // but never the `zscale=t=smpte2084,format=yuva444p10le` seam.)
+                assert!(
+                    !fc.contains("zscale=t=smpte2084,format=yuva444p10le"),
+                    "{label}: SDR/ProRes delivery must not PQ-transport the lift; fc: {fc}",
+                );
+                assert!(
+                    !fc.contains("zscale=tin=smpte2084:t=linear:npl=100"),
+                    "{label}: SDR/ProRes delivery must not PQ-decode the lift; fc: {fc}",
                 );
             }
         }

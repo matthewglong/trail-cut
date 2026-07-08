@@ -351,11 +351,49 @@ pub const SDR_REF_WHITE_NITS: f64 = 100.0;
 /// BT.2408 HDR graphics / diffuse reference white.
 pub const HDR_REF_WHITE_NITS: f64 = 203.0;
 
-/// Composite headroom factor. Real iPhone HLG peaks at linear 24.6 at npl=100
-/// (Session 4) → H must exceed that; H=16 clips. H=32 covers HLG + PQ to
-/// ~3200 nit. PQ above ~3200 nit clips (PORT_DESIGN §6 known bound). Applied
-/// ONLY on HDR delivery — H=32 on SDR regresses the gradient 209→85 levels.
-pub const COMPOSITE_HEADROOM: f64 = 32.0;
+/// Composite transport curve (fix C′ — supersedes the fix-C linear ÷32/×32
+/// headroom; CANON §1.12). The 10-bit `yuva444p10le` overlay lift quantizes the
+/// working space onto a 10-bit INTEGER grid clamped to [0,1]. Fix C protected
+/// the >1.0 HDR values by scaling DOWN by H=32 before the lift and UP after —
+/// but that ÷32 ran in LINEAR light, crushing the anchored SDR-origin map
+/// (linear 0–2.03 after the ×2.03 BT.2408 anchor) into the bottom ~6.3% of the
+/// grid: a 256-step ramp collapsed to 66 distinct levels and flat decoration
+/// colors shifted hue up to 12.5° — the HDR-only grit / wrong-hue / temporal
+/// shimmer Matthew saw on HLG+PQ hand exports (PQ worst because its EOTF
+/// stretches the bottom of the range hardest). Footage spans ~77% of the range
+/// + sensor noise dithers, so it looked fine; SDR has no ÷32, so it was fine.
+///
+/// Fix C′ replaces the linear gain sandwich with a PQ TRANSPORT curve around
+/// the same lift: `encode` maps linear→PQ before the lift (PQ allocates 10-bit
+/// codes perceptually, so the bottom of the range keeps its precision) and
+/// `decode` maps PQ→linear after. Measured 256/256 levels and ≤0.33° hue vs a
+/// pure-float reference (probe `/tmp/hdr-grit-probe/D_pq_transport.raw`). PQ
+/// encodes absolute luminance 0–10,000 nits, so at the npl=100 working
+/// convention (linear 1.0 = 100 nits) it covers linear 0–100 with no clipping —
+/// which RETIRES fix C's "PQ source >3200 nit clips at H=32" bound (the new
+/// ceiling is PQ's own 10k-nit format limit). HDR delivery ONLY: SDR never
+/// exceeds 1.0, so it gets neither (a PQ round-trip there would needlessly
+/// requantize the gradient, the same regression H=32 caused on SDR).
+///
+/// `encode` is spliced immediately before every COLOR-stream lift (map/vc/bg —
+/// never the gray mask); `decode` immediately after the post-overlay return to
+/// `gbrpf32le`. The decode `npl` is the absolute working-space convention
+/// (`default_npl_for(Pq)` = 100 nits = linear 1.0); the encode infers the same
+/// default, which is why the round-trip is identity.
+pub fn composite_transport_encode() -> String {
+    format!("zscale=t={}", Transfer::Pq.zscale())
+}
+
+/// Inverse of [`composite_transport_encode`] — PQ-coded → linear working space
+/// at the npl=100 absolute convention. See that function for the full rationale.
+pub fn composite_transport_decode() -> String {
+    format!(
+        "zscale=tin={tin}:t={t}:npl={npl}",
+        tin = Transfer::Pq.zscale(),
+        t = Transfer::Linear.zscale(),
+        npl = default_npl_for(Transfer::Pq).expect("PQ carries an npl by default_npl_for"),
+    )
+}
 
 /// Linear-light gain that anchors an SDR-ORIGIN source to the delivery's
 /// reference white. Returns `Some(2.03)` IFF the source is SDR-origin
@@ -670,25 +708,38 @@ mod tests {
     fn linear_gain_filter_decompositions() {
         // Worked decompositions from the HDR-port build spec
         // (docs/spikes/IMPLEMENTATION.md §1) — these strings are spliced
-        // verbatim into filtergraphs, so they are byte-pinned here.
+        // verbatim into filtergraphs, so they are byte-pinned here. (The fix-C
+        // ÷32/×32 composite-headroom cases were retired by fix C′ — the PQ
+        // transport curve below replaces them; see
+        // `composite_transport_round_trip_strings`.)
         assert_eq!(linear_gain_filter(1.0), "");
-        // B anchor ×2.03 → [2.0, 1.015].
+        // B anchor ×2.03 → [2.0, 1.015]. Still live (the SDR-origin ingest
+        // anchor is unchanged by fix C′).
         assert_eq!(
             linear_gain_filter(2.03),
             "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=1.015:gg=1.015:bb=1.015",
         );
-        // C ÷H (H=32): one stage — the ±2.0 cap is an upper bound only.
+    }
+
+    #[test]
+    fn composite_transport_round_trip_strings() {
+        // Fix C′ (CANON §1.12): the PQ transport curve that wraps the 10-bit
+        // overlay lift on HDR delivery. These strings are spliced verbatim into
+        // the composite filtergraph (as `down`/`up`), so they are byte-pinned.
+        // Empirically validated to 256/256 distinct levels + ≤0.33° hue vs a
+        // pure-float reference (probe /tmp/hdr-grit-probe/D_pq_transport.raw).
+        assert_eq!(composite_transport_encode(), "zscale=t=smpte2084");
         assert_eq!(
-            linear_gain_filter(1.0 / COMPOSITE_HEADROOM),
-            "colorchannelmixer=rr=0.03125:gg=0.03125:bb=0.03125",
+            composite_transport_decode(),
+            "zscale=tin=smpte2084:t=linear:npl=100",
         );
-        // C ×H: 2⁵ = 32 → five 2.0 stages.
-        assert_eq!(
-            linear_gain_filter(COMPOSITE_HEADROOM),
-            "colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,\
-             colorchannelmixer=rr=2:gg=2:bb=2,colorchannelmixer=rr=2:gg=2:bb=2,\
-             colorchannelmixer=rr=2:gg=2:bb=2",
-        );
+        // The decode npl is the absolute working-space convention — tied to
+        // default_npl_for so the two never drift.
+        assert_eq!(default_npl_for(Transfer::Pq), Some(100));
+        assert!(composite_transport_decode().contains(&format!(
+            "npl={}",
+            default_npl_for(Transfer::Pq).unwrap()
+        )));
     }
 
     #[test]

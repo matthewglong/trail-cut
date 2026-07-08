@@ -1,7 +1,7 @@
 {
   "doc": "Shared parity fixture for the persisted Project wire shape (ship review Phase 2a, defect 3 — pattern copied from layout_parity.json). The Rust test (src-tauri/tests/project_parity.rs) deserializes `project` into models::Project, re-serializes, and asserts EXACT JSON equality — a field dropped, renamed, or defaulted by the Rust shape fails per-key. The TS test (src/lib/__tests__/projectPersistence.test.ts) loads the SAME fixture and runs it through the actual canonical auto-save path (hydrateProjectState -> buildSavePayload), asserting deep equality — a field dropped by the save path fails there. AUTHORING RULES: (1) every Project field must be present, populated, and NON-default so a drop-to-default is detectable; (2) optional serde fields (skip_serializing_if) must be present-with-value or absent, never null; (3) every Rust f64 field must be float-formatted (14.5, 90.0 — never 14 or 90) or serde_json Value equality fails on integer-vs-float repr; (4) map_settings must populate every key of the TS DEFAULT_MAP_SETTINGS or the load-path merge adds keys and the TS round-trip fails; (5) schema_version must equal CURRENT_SCHEMA_VERSION (asserted — re-author this fixture on every schema bump); (6) working_color_space has a single variant today which serde always skips on serialize — the Rust test documents this one exception. When you add a persisted field to models::Project / types.ts Project, add it here (and to PROJECT_WIRE_KEYS in the TS test) or the suites fail.",
   "project": {
-    "schema_version": 9,
+    "schema_version": 11,
     "version": 1,
     "name": "Parity Hike",
     "thumbnail": "/Hikes/Parity.trailcut/thumbnails/clip-1.jpg",
@@ -12,12 +12,28 @@
         "filename": "hike-001.mov",
         "created_at": "2026-05-01T08:30:00-07:00",
         "duration_ms": 42000,
-        "gps": { "lat": 47.6062, "lng": -122.3321 },
+        "gps": {
+          "lat": 47.6062,
+          "lng": -122.3321
+        },
         "resolution": "3840x2160",
         "frame_rate": 59.94,
-        "trim": { "in_ms": 1500, "out_ms": 38000 },
-        "focal_point": { "x": 0.4, "y": 0.6, "zoom": 1.3 },
-        "effects": { "stabilize": { "enabled": true, "shakiness": 7 }, "speed": 1.5 },
+        "trim": {
+          "in_ms": 1500,
+          "out_ms": 38000
+        },
+        "focal_point": {
+          "x": 0.4,
+          "y": 0.6,
+          "zoom": 1.3
+        },
+        "effects": {
+          "stabilize": {
+            "enabled": true,
+            "shakiness": 7
+          },
+          "speed": 1.5
+        },
         "visible": false,
         "map_overrides": {
           "camera": {
@@ -29,24 +45,153 @@
             "bearing_stops": 5
           },
           "map_style": "3d",
-          "route": { "mode": "visited", "size": { "width": 0.01 } },
+          "route": {
+            "mode": "visited",
+            "color": {
+              "mode": "gradient",
+              "stops": [
+                {
+                  "fraction": 0.0,
+                  "color": "#ff7700"
+                },
+                {
+                  "fraction": 1.0,
+                  "color": "#0077ff"
+                }
+              ]
+            },
+            "size": {
+              "width": 0.01
+            },
+            "halo": {
+              "enabled": true,
+              "color": {
+                "mode": "solid",
+                "solid": "#220033"
+              },
+              "size": 0.007,
+              "fade": 0.2,
+              "opacity": 0.55,
+              "falloff": 0.1,
+              "offset_x": 0.001,
+              "offset_y": 0.002,
+              "color_stops_cache": [
+                {
+                  "fraction": 0.0,
+                  "color": "#555555"
+                },
+                {
+                  "fraction": 1.0,
+                  "color": "#666666"
+                }
+              ]
+            }
+          },
           "waypoints": {
             "mode": "none",
+            "color": {
+              "mode": "solid",
+              "solid": "#aa1122"
+            },
+            "secondary_color": {
+              "mode": "gradient",
+              "stops": [
+                {
+                  "fraction": 0.0,
+                  "color": "#001122"
+                },
+                {
+                  "fraction": 1.0,
+                  "color": "#221100"
+                }
+              ]
+            },
+            "marker": {
+              "shape": "pin",
+              "marker_image_id": "fedcba9876543210"
+            },
             "label_mode": "labeled",
             "active_mode": "none",
             "active_color": "#ff0000",
             "active_secondary_color": "#00ff00",
-            "size": { "circle_radius": 0.03, "active_radius": 0.04, "stroke_width": 0.005, "label_size": 0.02 }
+            "size": {
+              "circle_radius": 0.03,
+              "active_radius": 0.04,
+              "stroke_width": 0.005,
+              "label_size": 0.02
+            },
+            "halo": {
+              "enabled": false,
+              "color": {
+                "mode": "solid",
+                "solid": "#ffeecc"
+              },
+              "size": 0.009,
+              "fade": 0.15,
+              "opacity": 0.4,
+              "falloff": 0.25,
+              "offset_x": -0.001,
+              "offset_y": 0.001,
+              "color_stops_cache": [
+                {
+                  "fraction": 0.0,
+                  "color": "#777777"
+                },
+                {
+                  "fraction": 1.0,
+                  "color": "#888888"
+                }
+              ]
+            }
           },
           "pov": {
             "color": "#123456",
             "secondary_color": "#654321",
-            "size": { "pulse_radius": 0.02, "dot_radius": 0.02, "dot_stroke_width": 0.006, "pulse_start_radius": 0.02, "pulse_end_radius": 0.05 },
+            "size": {
+              "pulse_radius": 0.02,
+              "dot_radius": 0.02,
+              "dot_stroke_width": 0.006,
+              "pulse_start_radius": 0.02,
+              "pulse_end_radius": 0.05,
+              "image_size": 0.12
+            },
             "pulse_style": "heartbeat",
-            "pulse_rate": "fast"
+            "pulse_rate": "fast",
+            "marker": {
+              "kind": "shape",
+              "shape": "ring"
+            },
+            "halo": {
+              "enabled": true,
+              "color": {
+                "mode": "solid",
+                "solid": "#11ff88"
+              },
+              "size": 0.011,
+              "fade": 0.65,
+              "opacity": 0.35,
+              "falloff": 0.5,
+              "offset_x": 0.002,
+              "offset_y": -0.003,
+              "color_stops_cache": [
+                {
+                  "fraction": 0.0,
+                  "color": "#999999"
+                },
+                {
+                  "fraction": 1.0,
+                  "color": "#aaaaaa"
+                }
+              ]
+            }
           }
         },
-        "entry_transition": { "enabled": false, "duration_ms": 800, "entry_bias": -0.5, "feel": "natural" },
+        "entry_transition": {
+          "enabled": false,
+          "duration_ms": 800,
+          "entry_bias": -0.5,
+          "feel": "natural"
+        },
         "pix_fmt": "yuv420p10le",
         "color_primaries": "bt2020",
         "color_trc": "arib-std-b67",
@@ -79,8 +224,18 @@
         "resolution": null,
         "frame_rate": null,
         "trim": null,
-        "focal_point": { "x": 0.5, "y": 0.5, "zoom": 1.0 },
-        "effects": { "stabilize": { "enabled": false, "shakiness": 5 }, "speed": 1.0 },
+        "focal_point": {
+          "x": 0.5,
+          "y": 0.5,
+          "zoom": 1.0
+        },
+        "effects": {
+          "stabilize": {
+            "enabled": false,
+            "shakiness": 5
+          },
+          "speed": 1.0
+        },
         "visible": true,
         "pix_fmt": null,
         "color_primaries": null,
@@ -97,22 +252,46 @@
       "source_path": "/Hikes/trail.gpx",
       "format": "gpx",
       "trackpoints": [
-        { "lat": 47.6, "lng": -122.3, "elevation": 120.5, "timestamp": "2026-05-01T08:31:00Z" },
-        { "lat": 47.61, "lng": -122.31, "elevation": null, "timestamp": null }
+        {
+          "lat": 47.6,
+          "lng": -122.3,
+          "elevation": 120.5,
+          "timestamp": "2026-05-01T08:31:00Z"
+        },
+        {
+          "lat": 47.61,
+          "lng": -122.31,
+          "elevation": null,
+          "timestamp": null
+        }
       ]
     },
     "layouts": {
       "9_16": {
         "mode": "pip",
         "inset_source": "map",
-        "inset": { "x": 0.65, "y": 0.78, "w": 0.32, "h": 0.18 },
+        "inset": {
+          "x": 0.65,
+          "y": 0.78,
+          "w": 0.32,
+          "h": 0.18
+        },
         "corner_radius": 0.012
       },
-      "4_5": { "mode": "split", "video_side": "top", "divider": 0.55 },
+      "4_5": {
+        "mode": "split",
+        "video_side": "top",
+        "divider": 0.55
+      },
       "16_9": {
         "mode": "pip",
         "inset_source": "video",
-        "inset": { "x": 0.05, "y": 0.05, "w": 0.3, "h": 0.3 },
+        "inset": {
+          "x": 0.05,
+          "y": 0.05,
+          "w": 0.3,
+          "h": 0.3
+        },
         "corner_radius": 0.02
       }
     },
@@ -131,14 +310,60 @@
         "color": {
           "mode": "gradient",
           "stops": [
-            { "fraction": 0.0, "color": "#ff0000" },
-            { "fraction": 1.0, "color": "#0000ff" }
+            {
+              "fraction": 0.0,
+              "color": "#ff0000"
+            },
+            {
+              "fraction": 1.0,
+              "color": "#0000ff"
+            }
           ]
         },
-        "size": { "width": 0.008 },
+        "size": {
+          "width": 0.008
+        },
+        "halo": {
+          "enabled": true,
+          "color": {
+            "mode": "gradient",
+            "stops": [
+              {
+                "fraction": 0.0,
+                "color": "#ffffff"
+              },
+              {
+                "fraction": 1.0,
+                "color": "#88ccff"
+              }
+            ]
+          },
+          "size": 0.005,
+          "fade": 0.35,
+          "opacity": 0.45,
+          "falloff": 0.4,
+          "offset_x": 0.003,
+          "offset_y": -0.002,
+          "color_stops_cache": [
+            {
+              "fraction": 0.0,
+              "color": "#333333"
+            },
+            {
+              "fraction": 1.0,
+              "color": "#444444"
+            }
+          ]
+        },
         "color_stops_cache": [
-          { "fraction": 0.0, "color": "#111111" },
-          { "fraction": 1.0, "color": "#222222" }
+          {
+            "fraction": 0.0,
+            "color": "#111111"
+          },
+          {
+            "fraction": 1.0,
+            "color": "#222222"
+          }
         ]
       },
       "waypoints": {
@@ -146,49 +371,168 @@
         "color": {
           "mode": "gradient",
           "stops": [
-            { "fraction": 0.0, "color": "#bced09" },
-            { "fraction": 1.0, "color": "#09bced" }
+            {
+              "fraction": 0.0,
+              "color": "#bced09"
+            },
+            {
+              "fraction": 1.0,
+              "color": "#09bced"
+            }
           ]
         },
-        "secondary_color": { "mode": "solid", "solid": "#101010" },
+        "secondary_color": {
+          "mode": "solid",
+          "solid": "#101010"
+        },
         "shape": "diamond",
-        "size": { "circle_radius": 0.03, "active_radius": 0.035, "stroke_width": 0.006, "label_size": 0.02 },
+        "marker_image_id": "fedcba9876543210",
+        "size": {
+          "circle_radius": 0.03,
+          "active_radius": 0.035,
+          "stroke_width": 0.006,
+          "label_size": 0.02
+        },
         "label_mode": "labeled",
         "active_mode": "none",
         "active_color": "#ffaa00",
         "active_secondary_color": "#00aaff",
+        "halo": {
+          "enabled": true,
+          "color": {
+            "mode": "gradient",
+            "stops": [
+              {
+                "fraction": 0.0,
+                "color": "#22ff22"
+              },
+              {
+                "fraction": 1.0,
+                "color": "#2222ff"
+              }
+            ]
+          },
+          "size": 0.007,
+          "fade": 0.25,
+          "opacity": 0.55,
+          "falloff": 0.6,
+          "offset_x": -0.004,
+          "offset_y": 0.005,
+          "color_stops_cache": [
+            {
+              "fraction": 0.0,
+              "color": "#777777"
+            },
+            {
+              "fraction": 1.0,
+              "color": "#888888"
+            }
+          ]
+        },
         "color_stops_cache": [
-          { "fraction": 0.0, "color": "#333333" },
-          { "fraction": 1.0, "color": "#444444" }
+          {
+            "fraction": 0.0,
+            "color": "#333333"
+          },
+          {
+            "fraction": 1.0,
+            "color": "#444444"
+          }
         ],
         "secondary_color_stops_cache": [
-          { "fraction": 0.0, "color": "#555555" },
-          { "fraction": 1.0, "color": "#666666" }
+          {
+            "fraction": 0.0,
+            "color": "#555555"
+          },
+          {
+            "fraction": 1.0,
+            "color": "#666666"
+          }
         ]
       },
       "pov": {
         "color": "#ff00ff",
         "secondary_color": "#00ffff",
-        "size": { "pulse_radius": 0.02, "dot_radius": 0.018, "dot_stroke_width": 0.006, "pulse_start_radius": 0.018, "pulse_end_radius": 0.05 },
+        "size": {
+          "pulse_radius": 0.02,
+          "dot_radius": 0.018,
+          "dot_stroke_width": 0.006,
+          "pulse_start_radius": 0.018,
+          "pulse_end_radius": 0.05,
+          "image_size": 0.095
+        },
         "pulse_style": "throb",
-        "pulse_rate": "slow"
-      }
+        "pulse_rate": "slow",
+        "marker": {
+          "kind": "image",
+          "image_id": "0123456789abcdef"
+        },
+        "halo": {
+          "enabled": true,
+          "color": {
+            "mode": "solid",
+            "solid": "#111122"
+          },
+          "size": 0.009,
+          "fade": 0.7,
+          "opacity": 0.35,
+          "falloff": 0.8,
+          "offset_x": 0.006,
+          "offset_y": 0.008
+        }
+      },
+      "marker_images": [
+        {
+          "id": "0123456789abcdef",
+          "icon_file": "assets/pov-icon-0123456789abcdef.png",
+          "source_file": "assets/pov-source-0123456789abcdef.svg",
+          "source_name": "hiker.svg",
+          "width": 1024,
+          "height": 768
+        },
+        {
+          "id": "fedcba9876543210",
+          "icon_file": "assets/marker-icon-fedcba9876543210.png",
+          "source_file": "assets/marker-source-fedcba9876543210.png",
+          "source_name": "summit-flag.png",
+          "width": 512,
+          "height": 640
+        }
+      ]
     },
     "transition_feel": "snappy",
     "start_camera": {
-      "center": { "lat": 47.605, "lng": -122.33 },
+      "center": {
+        "lat": 47.605,
+        "lng": -122.33
+      },
       "zoom": 11.5,
       "bearing": 30.0,
       "pitch": 45.0
     },
-    "default_entry_transition": { "enabled": true, "duration_ms": 1200, "entry_bias": 0.25, "feel": "slow" },
+    "default_entry_transition": {
+      "enabled": true,
+      "duration_ms": 1200,
+      "entry_bias": 0.25,
+      "feel": "slow"
+    },
     "last_export_selection": {
       "cells": {
         "4_5-composite": [
-          { "id": "chip-1", "quality": "2160p", "fps": 60, "delivery_target": "hdr_hlg" }
+          {
+            "id": "chip-1",
+            "quality": "2160p",
+            "fps": 60,
+            "delivery_target": "hdr_hlg"
+          }
         ],
         "9_16-map_only": [
-          { "id": "chip-2", "quality": "720p", "fps": 24, "delivery_target": "sdr_h264" }
+          {
+            "id": "chip-2",
+            "quality": "720p",
+            "fps": 24,
+            "delivery_target": "sdr_h264"
+          }
         ]
       },
       "output_dir": "/Exports/TrailCut"
@@ -199,18 +543,26 @@
         "position": {
           "kind": "wall_clock_ms",
           "ms": 120000.0,
-          "fallback_gps": { "lat": 47.6, "lng": -122.3 }
+          "fallback_gps": {
+            "lat": 47.6,
+            "lng": -122.3
+          }
         },
         "label": "Trailhead",
         "source": "clip",
         "clip_id": "clip-1",
         "color": "#ff8800",
         "secondary_color": "#0088ff",
-        "shape": "pin"
+        "shape": "pin",
+        "marker_image_id": "fedcba9876543210"
       },
       {
         "id": "wp-2",
-        "position": { "kind": "fixed", "lat": 47.62, "lng": -122.35 },
+        "position": {
+          "kind": "fixed",
+          "lat": 47.62,
+          "lng": -122.35
+        },
         "label": "Summit",
         "source": "manual",
         "color": "#22cc22",
