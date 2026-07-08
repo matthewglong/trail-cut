@@ -98,7 +98,7 @@ is superseded — see §5.3.)
 and the round-trip identity tests `hdr_video_round_trip_{hlg,pq}_*` in
 `src-tauri/tests/color_fixtures.rs`.
 
-### 1.12 SDR-origin→HDR anchor (×2.03 at ingest) + HDR-gated composite headroom — DECIDED
+### 1.12 SDR-origin→HDR anchor (×2.03 at ingest) + HDR-gated composite PQ transport — DECIDED
 
 The per-origin × per-delivery matrix: SDR-origin sources (the map canvas is always
 sRGB/SDR-origin; SDR clips; developed log clips) delivered to an HDR target carry a
@@ -107,21 +107,47 @@ graphics white / 100-nit SDR diffuse white, proven byte-equivalent to `npl=203`
 finishing). HDR-origin sources are NEVER anchored (they carry absolute nits); SDR→SDR is
 native. Gains are emitted by `linear_gain_filter` (a clamp-free `colorchannelmixer`
 chain, stages ≤2.0 — `geq` clamps [0,1] and `exposure` caps ±3 stops, both unusable).
-The composite's 10-bit `yuva444p10le` overlay lift clamps to [0,1], so on HDR delivery
-every color-stream lift is wrapped in ÷32 … ×32 headroom (`COMPOSITE_HEADROOM = 32`;
-H=16 clips real iPhone HLG which peaks at linear 24.6; PQ above ~3200 nit clips — known
-bound). SDR delivery gets neither (headroom regresses the SDR gradient 209→85 levels).
+
+The composite's 10-bit `yuva444p10le` overlay lift quantizes the working space onto a
+10-bit INTEGER grid clamped to [0,1], so on HDR delivery every color-stream lift is
+wrapped in a **PQ transport curve** (fix C′): `composite_transport_encode`
+(`zscale=t=smpte2084`, linear→PQ) immediately before the lift, `composite_transport_decode`
+(`zscale=tin=smpte2084:t=linear:npl=100`, PQ→linear at the npl=100 absolute convention)
+immediately after the post-overlay return to `gbrpf32le`. PQ allocates 10-bit codes
+perceptually, so the anchored SDR-origin map (linear 0–2.03) keeps its precision through
+the grid: measured **256/256 distinct levels and ≤0.33° hue** vs a pure-float reference.
+SDR delivery gets neither anchor nor transport (a PQ round-trip there would needlessly
+requantize the gradient).
+
+> **History — fix C → C′ (2026-06-12).** The original fix C wrapped the lift in a LINEAR
+> ÷32/×32 headroom (`COMPOSITE_HEADROOM = 32`). Because the ÷32 ran in linear light it
+> crushed the anchored map (linear 0–2.03) into the bottom ~6.3% of the grid — a 256-step
+> ramp collapsed to **66 distinct levels** and flat decoration colors shifted hue up to
+> **12.5°** (the HDR-only grit / wrong-hue / temporal shimmer Matthew saw on HLG+PQ hand
+> exports; PQ worst because its EOTF stretches the bottom of the range hardest; footage
+> spans ~77% of the range + sensor noise dithers, so it looked fine; SDR has no ÷32, so it
+> was fine). Root-caused + empirically proven in `/tmp/hdr-grit-probe/`; fixed by the PQ
+> transport above (probe `D_pq_transport.raw`). This **retires** the old "PQ source >3200
+> nit clips at H=32" bound: PQ encodes absolute 0–10,000 nits, so at npl=100 (linear 1.0 =
+> 100 nits) the transport covers linear 0–100 with no clipping — the new ceiling is PQ's
+> own 10k-nit format limit.
+
 4:2:0 finishing splits the fused `format=` hop into 4:4:4 → lanczos chroma resample →
 4:2:0 (HQ subsample, both SDR and HDR).
 **Authority**: `src-tauri/src/util/color_space.rs` (`sdr_origin_anchor_gain`,
-`linear_gain_filter`, `COMPOSITE_HEADROOM`), `src-tauri/src/export/filtergraph.rs`
-(`build_composite_filter_complex`), `src-tauri/src/export/delivery.rs`
-(`delivery_finishing_filter`); decoded-frame gates: `hdr_reference_white_tracer_*`,
-`hdr_video_round_trip_*`, `composite_chains_verbose_dry_run_*`,
-`sdr_delivery_map_white_stays_at_sdr_white` in `src-tauri/tests/color_fixtures.rs`.
-Known bounds (flagged, not hidden): HDR→SDR delivery still hard-clips highlights
-(tone-map operator is a Matthew-confirmed follow-up, NOT part of Phase 4); PQ >3200 nit
-clips at H=32.
+`linear_gain_filter`, `composite_transport_encode`/`composite_transport_decode`),
+`src-tauri/src/export/filtergraph.rs` (`build_composite_filter_complex`),
+`src-tauri/src/export/delivery.rs` (`delivery_finishing_filter`); decoded-frame gates:
+`hdr_reference_white_tracer_*`, `hdr_video_round_trip_*`, `composite_chains_verbose_dry_run_*`,
+`sdr_delivery_map_white_stays_at_sdr_white`,
+`composite_pq_transport_ramp_retains_distinct_levels`,
+`composite_pq_transport_preserves_decoration_hue` in `src-tauri/tests/color_fixtures.rs`;
+string pins `composite_transport_round_trip_strings`,
+`composite_hdr_delivery_anchors_sdr_origins_and_wraps_lifts_in_pq_transport`,
+`composite_sdr_delivery_emits_no_anchor_and_no_transport`.
+Known bound (flagged, not hidden): HDR→SDR delivery still hard-clips highlights
+(tone-map operator is a Matthew-confirmed follow-up, NOT part of Phase 4). The fix-C
+"PQ >3200 nit at H=32" bound is RETIRED (see history above).
 
 ### 1.6 Every `overlay` pins `:format=yuv444p10` — DECIDED
 
@@ -199,10 +225,13 @@ mirrored in `src/lib/layout.ts`; `PAINT_REFERENCE_WIDTH` at `src/lib/mapVisuals/
 
 Settled sub-decisions (do not relitigate): **no sub-1080p rendering** (720p = render
 1080p + FFmpeg downsample; sub-1 pixelRatio puts MapLibre in a barely-tested regime —
-label snap, dasharray, tile-zoom glitches); **per-clip camera zoom is one number**;
-**preview keeps the `log2(pane/canonical)` compensation** for WYSIWYG authoring.
+label snap, dasharray, tile-zoom glitches); **per-clip camera zoom is one number**.
 Negative knowledge: the early "render-then-crop" and "aspect-agnostic preview" drafts
 were wrong — aspect must change the visible area.
+[2026-07-03 history: this entry originally said "preview keeps the `log2(pane/canonical)`
+compensation" — that pane-width-coupled compensation was removed at 955d45c and the
+preview's display anchoring is now §2.6's fixed screen-fit scale, which is NOT a function
+of pane width.]
 
 ### 2.2 SSAA supersampling ≥2× with on-GPU downsample — DECIDED
 
@@ -232,10 +261,25 @@ module imported by both runtimes), not by discipline.
 
 Route / Waypoints / POV each own their color/gradient configuration; there is no shared
 palette. Linking is a one-shot copy button, never a live binding. Route + Waypoints
-support gradients (parameterized by trail distance); per-clip waypoint overrides and POV
-are solid-only. Decoration sizes are fractions of the 1080-CSS-px reference width
-(perceived-scale invariance). Landed via the map-decorations commits (`9d498ad`…`bf4ebeb`);
-see `docs/map-decorations/` (noting `data-model.md` has drifted — `src/types.ts` wins).
+support gradients (parameterized by trail distance); POV is solid-only (single point,
+nothing to gradient across). Decoration sizes are fractions of the 1080-CSS-px reference
+width (perceived-scale invariance). Landed via the map-decorations commits
+(`9d498ad`…`bf4ebeb`); see `docs/map-decorations/` (noting `data-model.md` has drifted —
+`src/types.ts` wins).
+
+**Everything is per-clip overridable (2026-07-07 revision).** Every MapSettings-derived
+decoration control carries full capability parity in clip scope: route color (solid AND
+gradient), all three halos, waypoint colors/gradients, and a clip-level default waypoint
+marker. The earlier "route color is project-wide" and "halo is project-level only" rules
+are REJECTED — the only project-pinned MapSettings field is the `marker_images` asset
+library. Object-valued override leaves (`color`, `halo`, `marker`) diff by deep-equal
+comparators in `src/types.ts` (`decorationColorEquals`, `haloSettingsEquals`,
+`povMarkerEquals`), never by reference. The clip-level waypoint marker override is one
+atomic `{shape, marker_image_id?}` leaf (a sparse two-field diff can't express "image
+cleared"). PER-WAYPOINT entity overrides (`Waypoint.color`/`shape`/`marker_image_id`,
+solid-only) are unchanged and win per feature over the clip-level values; in clip scope
+the panel stacks both surfaces (clip-level control first, associated-waypoint control
+below it).
 
 ### 2.5 Export map renderer — maplibre-gl-native, cutover complete — DECIDED
 
@@ -305,13 +349,36 @@ vs 0.75/0.58 expected through the real composite argv —
    — trust the runtime prototype.
 
 **SSAA + alpha convention**: native's constructor-time `ratio` carries the full
-pixelRatio (resolution multiplier × SSAA factor); the worker downsamples framebuffer →
-readback with an exact integer box filter in **premultiplied, gamma (sRGB) space**
-(`boxDownsample`), and the wire buffer stays premultiplied — byte-identical semantics to
-GL JS `gl.readPixels` (MECHANICAL_VERDICT §2). Downstream exposure is nil: the map
-paints an opaque basemap (alpha=255 measured on every pixel) and the composite replaces
-map alpha wholesale with the Rust corner mask (§4.4 / corner_mask.rs). The §1.3 sRGB
-ingest anchor carries over with NO contract change.
+pixelRatio (resolution multiplier × SSAA factor); the framebuffer → readback reduction
+is an exact integer box filter in **premultiplied, gamma (sRGB) space**, and the wire
+buffer stays premultiplied — byte-identical semantics to GL JS `gl.readPixels`
+(MECHANICAL_VERDICT §2). Downstream exposure is nil: the map paints an opaque basemap
+(alpha=255 measured on every pixel) and the composite replaces map alpha wholesale with
+the Rust corner mask (§4.4 / corner_mask.rs). The §1.3 sRGB ingest anchor carries over
+with NO contract change.
+
+**SSAA reduction venue (DECIDED 2026-07-03 — in-binding, on-GPU).** The reduction runs
+INSIDE the patched binding via the render option `downsample: {factor, width, height}`
+(`native/readback-downsample.patch`): a Metal compute pass over the offscreen color
+texture, so only the slot-sized buffer (e.g. 7.6MB, not 42MB) crosses GPU→CPU and the
+worker does zero per-pixel CPU work. `nativeBackend.ts::boxDownsample` survives as the
+executable spec; the binding must match it byte-for-byte (zero-pad, divisor stays
+factor², `(sum+n/2)/n` truncated) — pinned by
+`sidecars/renderer/__tests__/readbackDownsample.test.ts`, whose flat-scene case is an
+exact rounding-mode probe. At factor 1 the option is omitted (byte-identical pre-patch
+readback path — what `golden_frame_parity_native` pins; gate re-run green 2026-07-03).
+The backend fails LOUD on a binding without the `mbgl.readbackDownsample` capability
+whenever the export is supersampled — no CPU-filter fallback (§1.11 loud-failure rule).
+History: the worker briefly did this reduction as a single-threaded JS box filter
+(cutover..2026-07-03) — measured 55–90% of per-frame time at the 9:16 4K cell and
+2.5–6× worse under CPU contention (the "8× export slowdown" report, which forensics
+showed was two different grid cells plus that contention — no engine regression).
+Isolated A/B at fb 3676×2068 factor 2: render+reduce+readback 81ms → 12ms median.
+Related correction: the 2026-06-04 spike's "57×" number compared full-framebuffer PNG
+writes vs CDP base64 screenshots — NEITHER side included this reduction; treat it as
+directional only. Non-Metal backends (future win32/ANGLE route) inherit a shared CPU
+fallback in core with identical semantics (`gfx/headless_backend.cpp`) — a GL fast path
+is an optimization to make when task 130 lands that platform.
 
 **Determinism bound (measured 2026-07-02)**: mbgl/Metal re-renders of an identical
 frame wobble by ±1 LSB on a handful of AA edge pixels across worker boots (0–10 px of
@@ -326,6 +393,104 @@ staged dir via `bundle.resources`). The upstream PR is the exit ramp — NOT pos
 Matthew decides when (draft package: `.spike/native-gl/UPSTREAM_PR_DRAFT.md`). Task 130
 ships the staged dir per platform; Windows rides upstream's prebuilt matrix (win32
 included) — darwin-arm64 is the only measured platform today.
+
+### 2.6 Reference space + honest preview scale (the B1/B2 framing fix) — DECIDED
+
+**Decision (2026-07-03, Matthew's world-pick after the anchor/world spike rounds).**
+There is ONE map scale space — the **reference space**: the canonical 1080p-class CSS
+frame per aspect (short side 1080). `mapSettings.camera.zoom` and every decoration-size
+fraction are denominated in it; **exports render it verbatim** (aspect = frame shape,
+layout's map slot = crop window, pixelRatio = resolution — none of them touch scale).
+Consequences Matthew explicitly chose (α = 0 in the spike's interpolation family):
+growing the map band's share of the frame shows MORE WORLD at the same scale — never a
+rescale; the perceived-scale-invariance spec (§2.1) is preserved, and World 2
+("one composition", band-fraction rescaling) is REJECTED for the knobs (region-fit
+intents remain intrinsically per-band).
+
+**The preview was the only broken surface**: it displayed reference values 1:1 in its
+own pane CSS px, so played-back exports (compressed by playback fit) read ~2× smaller
+than the pane (measured 2.08× for 9:16, 1.38× for 16:9). Fix — the pane renders the
+reference space at the fixed factor **`previewDisplayScale(aspect, screen)`** =
+fullscreen-fit of the canonical frame on the current display: camera `zoom +
+log2(scale)` (`withDisplayScale`), decoration paints `× scale` (the `surfaceScale`
+parameter threaded through `resolveStaticPaints` / `buildPerFrameState` — §2.3 contract
+intact; the renderer resolves at scale 1, proven byte-identical by the untouched golden
+gate). The factor depends only on (aspect, screen) — NEVER pane width — so dragging the
+pane reveals/crops geography at constant perceived scale, and stored knob values remain
+machine-independent (no schema change; existing projects' exports are unchanged).
+Camera intents in the preview resolve against the aspect's canonical MAP-SLOT css dims
+(`canonicalSlotCss`, = the renderer's cssViewport), closing the region-fit divergence
+(preview used to fit against the full frame).
+
+Empirical gate (production worker, Abel's Hike, `.spike/refspace-gate/`): POV dot
+30.00 pt pane vs 30.43 pt fullscreen-played export (9:16), 46.50 vs 46.86 pt (16:9);
+trail 5.00 vs 5.11 pt (9:16), 8.00 vs 7.88 pt (16:9) — was 2.08×/1.38× off. Divider
+demo: band h 0.269→0.45 at same zoom = identical decoration px, 67% more world.
+Accepted approximations (do not "fix" without a real complaint): basemap label/road
+styling follows the style's own zoom curves rather than exact ×scale (near-invisible in
+the gate renders); perceived parity is exact at fullscreen playback on the editing
+display and proportional elsewhere — a compromise Matthew accepted, since a shipped
+file has no physical scale until a player sizes it.
+**Authority**: `src/lib/layout.ts` (`canonicalSlotCss`, `previewDisplayScale`),
+`src/lib/cameraIntent.ts` (`withDisplayScale`), `surfaceScale` params in
+`src/lib/mapVisuals/{styleSpec,paints,perFrame}.ts`, applied in
+`src/components/MapView.tsx`.
+
+### 2.7 Halo group-opacity compositing — engine-level, BOTH engines, ship together — DECIDED
+
+**Decision (2026-07-07, from the halo-composite spike GO — `.spike/halo-composite/VERDICT.md`).**
+Translucent halos double-blend wherever the decoration overlaps itself (out-and-back
+retrace: the exact `1−(1−o)²` artifact; GPS-jitter sunbursts; X-crossing corners).
+There is NO style-spec fix — MapLibre blends each layer against the map with plain
+alpha. The shipped fix is **group-opacity compositing in the engine**, on both engines
+at once: each halo layer pair renders into a full-viewport TRANSPARENT offscreen target
+(with depth+stencil — line layers stencil-clip their tiles) at remapped in-FBO
+opacities, members are skipped in the main translucent pass, and one fullscreen quad
+composites the group src-over at opacity `g` at the topmost member's z-slot. The FBO
+saturates instead of re-blending, so any number of self-crossings renders as ONE coat.
+
+- **Policy lives in mapVisuals** (§2.3 contract): `haloGroupPolicy(outer, core)` →
+  `g = 1−(1−outer)(1−core)` (today's on-line peak), in-FBO `outerIn = outer/g`,
+  `coreIn = core>0 ? 1 : 0` (the general peak-match formula collapses to 1 because
+  `g−outer = core·(1−outer)` identically). Point-identical to the old direct blend
+  everywhere the halo does NOT self-overlap — proven algebraically in the code comment
+  and measured to 4 decimals on both engines. `resolveStaticPaints` emits the in-FBO
+  values as the halo layers' own opacities plus a fourth bucket
+  `haloComposites` (FOUR groups: route-full, route-trail, waypoints, live-marker pairs
+  — waypoint/POV circle halos get the fix for free). Per-clip halo-opacity overrides
+  re-resolve `g` at cuts; the export worker re-sends on change (JSON-compare), the
+  preview re-applies via the statics effect.
+- **Engines**: export = native patch 3 (`sidecars/renderer/native/group-composite.patch`,
+  capability `mbgl.groupComposite`); preview = vendored maplibre-gl patch
+  (`patches/maplibre-gl+5.22.0.patch` via patch-package on the UNMINIFIED dev bundle +
+  exact-match Vite alias, capability `maplibregl.groupComposite`). Both consumers FAIL
+  LOUD on a missing capability (§1.11 discipline) — the resolver's in-FBO opacities are
+  only correct under the composite, so an unpatched engine is a build defect.
+  **Ship rule: the two patches travel together or not at all.**
+- **Measured** (native: `.spike/halo-composite/`; GL JS: `scripts/gljs-halo-parity/`):
+  out-and-back overlap 0.749→0.497/0.503 σ=0 (= single coat, both engines); jitter
+  bounded by one coat; falloff-0.7 single-coat profile unchanged (0.311→0.3115, both);
+  gradient crossings resolve as clean occlusion; feature off = byte-identical (MD5)
+  on BOTH engines; +2.3 ms/frame at a 4K framebuffer ≈ +3% of a healthy export frame.
+- **The trap pair (both live in the offscreen stencil path)**: native — tile clipping
+  masks drawn in the offscreen pass poison the main pass's mask bookkeeping
+  (`resetTileClippingMasks()` around each independent stencil attachment); GL JS —
+  `createFramebuffer(w,h,depth,stencil)` creates attachment WRAPPERS only, and a
+  color-only FBO is still framebuffer-complete, so a missing
+  `depthAttachment.set(createRenderbuffer(DEPTH_STENCIL,…))` silently disables tile
+  discrimination (coverage stacks `1−(1−α)^k` near tile boundaries; invisible at
+  falloff 0, caught by the falloff-0.7 policy-fidelity gate).
+- **Bounds**: group members must be z-contiguous (true for our pairs by scene.ts /
+  MapView construction — the composite draws at the topmost member's slot);
+  `waypoints-active-halo` (the "you are here" ring) is deliberately NOT grouped; the
+  native base `createOffscreenTexture(size,type,depth,stencil)` fallback ignores the
+  flags on non-Metal backends — must be honored per-backend before any upstream PR
+  (same unposted-PR status as §2.5).
+
+**Authority**: `haloGroupPolicy` + `haloComposites` in `src/lib/mapVisuals/styleSpec.ts`;
+applied in `src-tauri/sidecars/renderer/{scene,backend,nativeBackend}.ts` (export) and
+`src/components/MapView.tsx` (preview). Gates: `scripts/gljs-halo-parity/run.mjs`
+(README has the full parity table) + the untouched native golden gate.
 
 ---
 
@@ -345,6 +510,47 @@ IPC protocol, and "codec preference never silently falls back" are canon in
 `docs/export/PLAN.md` + `LAYOUT.md` + `plans/export-controls.md`, with the caveat that the
 wire-shape and encode tables there are stale — `src-tauri/src/export/protocol.rs` and
 `delivery.rs` win.
+
+### 3.3 HEVC delivery encodes through SOFTWARE libx265; hardware is fallback-only — DECIDED
+
+Root cause of the fuzzy delivered decorations (the sharpness half of B1; the sizing half
+was §2.6): the encoder stage, not the pipeline. The 2026-07-03 stage-separation probe
+(renderer readback → lossless FFV1 tap of `[vout]` → delivered file, production argv,
+three aspect×resolution configs) measured the composite filtergraph essentially
+transparent (SDR 4:4:4 tap keeps 94.5% of decoration-band edge energy) and 4:2:0
+subsampling bounded and not the visible ceiling at 4K — but `hevc_videotoolbox -q:v 50`
+retained only ~0.55 of the decorations' Cr-plane edge energy (starved ~13 Mbps at 4K
+AND structurally poor on chroma-only edges: at `-q:v 80` with 5× the bits it still
+measured below libx265 crf18). Decorations are exactly that failure mode — flat
+high-chroma shapes with near-zero luma contrast.
+
+Decision: `EncoderClass::Hevc` candidates prefer libx265 on every platform (VT / nvenc /
+qsv / amf are fallback-only, VT bumped q:v 50→65 so the fallback doesn't starve);
+delivery settings `-preset fast -crf 17` + `cbqpoffs=-2:crqpoffs=-2` (measured: SdrH265
+Cr retention 0.55→0.90, HdrHlg Cb 0.76→0.97, HdrPq Cr 0.54→1.16; export wall ≈1.4–1.7×
+VT — the float filtergraph dominates). SdrH264 (libx264 crf18, healthy) and ProRes
+unchanged. The probe cache is policy-versioned (`ENCODER_POLICY_VERSION`) so warm caches
+pick up candidate-order changes. Enforced by the decoded-frame gate
+`delivery_encode_preserves_decoration_chroma_edges` (Cb/Cr edge retention ≥0.80 through
+the real argv per codec target + libx265-selection pin + loud no-libx265 precondition).
+**Authority**: `src-tauri/src/export/encoder.rs` (candidate order + policy version),
+`delivery.rs` (per-target argv), `tests/color_fixtures.rs` (gate). Commit `1345ded`.
+Licensing note for task 130 (§6.2): libx264/libx265 are GPL — the "own-CI LGPL FFmpeg
+build" plan conflicts with both this and the pre-existing SdrH264 path; resolve in the
+ship-deps lane.
+
+Same-day follow-up (2026-07-03, preset relaxation): the "≈1.4–1.7× VT" wall estimate did
+NOT hold at 4K on real content — a 152-frame 16:9 4K HdrPq hand export measured 1m51s
+wall, of which ~81s was the libx265 `fast` encode alone (~5× the per-frame cost of the
+old VT path; at 4K the encoder dominates, not the float filtergraph). Preset sweep
+through the retention gate on an M1 Pro (152×4K real frames): `fast` 80.8s / gate
+0.98–1.05; **`veryfast` 41.7s / gate 0.95–1.05 — parity, now shipped**; `superfast`
+43.4s / 0.91–1.07 (early ringing signs, no speed win over veryfast); `ultrafast`
+REJECTED — its 1.19–1.29 "retention" is SAO-off ringing inflating gradient energy, a
+reminder that the gate floor alone cannot rank presets (energy ratios far above 1.0 are
+an artifact signature, not fidelity). Explicit x265 pool/frame-thread tuning measured
+zero effect (x265 already saturates the machine at 4K). crf and the chroma QP offsets
+unchanged.
 
 ---
 
@@ -515,8 +721,9 @@ Was the single most valuable undone item the doc reconciliation surfaced: HDR-HL
 exports were dark because SDR map graphics were encoded scene-linear (white → ~62% HLG)
 instead of anchored at BT.2408 reference white (203 nit / 75% HLG; PQ same bug — 0.58
 signal). **Fixed by the Phase 4 HDR port** — implemented as the ×2.03 SDR-origin ingest
-anchor (proven equivalent to npl=203 finishing), npl=100 absolute working space, and
-HDR-gated composite headroom; see DECIDED §1.5 + §1.12 (which now carry the convention)
+anchor (proven equivalent to npl=203 finishing), npl=100 absolute working space, and the
+HDR-gated composite PQ transport curve (fix C′, which replaced fix C's linear ÷32/×32
+headroom — see §1.12 history); see DECIDED §1.5 + §1.12 (which now carry the convention)
 and §4.8 for the underlying 203-nit convention.
 
 The Phase 3 tracer oracle (`hdr_reference_white_tracer_{hlg,pq}` in

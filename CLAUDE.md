@@ -32,7 +32,7 @@ src/                       # React frontend
     MapView.tsx            # Live MapLibre preview (applies mapVisuals tuples — see contract below)
     EditToolbar/           # Per-clip edit controls (zoom, speed, crop preview)
     MapToolbar/            # Map decoration control panel — ColorSection (+ GradientEditor),
-                           #   ShapeSection, DecorationPanel (Route / Waypoints / POV)
+                           #   MarkerSection (preset + image marker gallery), DecorationPanel (Route / Waypoints / POV)
     WaypointsPanel/        # Waypoint decoration UI
     LayoutConfigurator/    # Split-layout (map+video) configurator
     LayoutPreview/         # Layout preview rendering
@@ -41,8 +41,8 @@ src/                       # React frontend
   lib/
     mapVisuals/            # SINGLE SOURCE OF TRUTH for map rendering (see contract below)
                            #   styleSpec.ts (resolveStaticPaints), perFrame.ts (buildPerFrameState),
-                           #   paints.ts, shapes.ts, sources.ts, animations.ts, types.ts
-    layout.ts, cameraIntent.ts, routeLocation.ts, waypoints.ts,
+                           #   paints.ts, shapes.ts, markerImage.ts, sources.ts, animations.ts, types.ts
+    layout.ts, cameraIntent.ts, routeLocation.ts, waypoints.ts, markerLibrary.ts,
     exportRequest.ts, exportEstimate.ts, exportFilenames.ts, sourceFormat.ts, livePlayhead.ts
   hooks/                   # useProject, useMediaImport, useExportQueue, etc.
   theme/                   # tokens.ts, common.ts
@@ -51,9 +51,9 @@ src-tauri/                 # Rust backend
   src/
     main.rs                # Entry point
     lib.rs                 # Tauri builder, registers commands
-    models.rs              # Data types (Clip, Route, Project, MapSettings, etc.); CURRENT_SCHEMA_VERSION = 9
+    models.rs              # Data types (Clip, Route, Project, MapSettings, etc.); CURRENT_SCHEMA_VERSION = 11
     commands/              # Tauri commands, one module per area:
-                           #   media, project, recent, gpx, ffmpeg, encoder, camera_presets
+                           #   media, project, recent, gpx, ffmpeg, encoder, camera_presets, image
     export/                # Export pipeline: orchestrator, clip_chain, filtergraph, layout,
                            #   resolution, delivery, encoder, ffmpeg_sink/runner, corner_mask,
                            #   protocol (sidecar IPC), ffprobe, sink, error
@@ -66,8 +66,9 @@ src-tauri/                 # Rust backend
 
 ## Rust backend commands (registered in `lib.rs`)
 - **Import / scan**: `scan_directory`, `import_media` (any mix of files/dirs)
-- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v9 migration chain), `rename_project`, `delete_project`
+- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v11 migration chain), `rename_project`, `delete_project`
 - **GPX**: `parse_gpx` (optionally copies into bundle)
+- **Marker-image library**: `import_marker_image` (validates + copies original into `assets/`), `save_marker_icon` (persists the webview-baked render PNG, authoritative dims), `delete_marker_image` (removes both assets; frontend reverts all uses first)
 - **Proxies / thumbnails**: `generate_proxy`, `regenerate_proxy_for_class`, `generate_thumbnail`, `generate_thumbnail_at`
 - **Recents**: `get_recent_projects`, `register_recent_project` (registry in `~/.trailcut/recent.json`)
 - **Export**: `render_export`, `resolve_output_dir`, `probe_encoders`
@@ -77,9 +78,10 @@ src-tauri/                 # Rust backend
 Self-contained directories with `.trailcut` extension:
 ```
 MyHike.trailcut/
-  project.json          # schema-versioned (currently v9): clips, route, MapSettings, export grid/configs
+  project.json          # schema-versioned (currently v11): clips, route, MapSettings, export grid/configs
   proxies/              # 720p proxy videos (hash-based filenames)
   thumbnails/           # thumbnail JPGs
+  assets/               # marker-library images (marker-source-<hash>.<ext> original + marker-icon-<hash>.png baked render asset; legacy v10 pov-* names still valid)
   route.gpx             # copied GPS data (if imported)
 ```
 Source videos are linked (absolute paths), not copied. `project.json` is schema-versioned (`CURRENT_SCHEMA_VERSION` in `models.rs`); `load_project` runs the migration chain (`migrate_vN_to_vN+1` in `commands/project.rs`). Known migration scope cuts are tracked in `EXPORT_GAPS.md`.
@@ -125,7 +127,8 @@ Source videos are linked (absolute paths), not copied. `project.json` is schema-
 - **Map transitions ARE the transitions**: transitions between clips are driven by geography, not a separate editing concept.
 - **Proxy-based preview**: 720p H.264 proxies + CSS/browser effect preview; FFmpeg for real processing at export.
 - **mapVisuals single-source-of-truth contract**: anything derivable from `MapSettings` flows through `resolveStaticPaints` / `buildPerFrameState` in `src/lib/mapVisuals/`. Both `MapView.tsx` (preview) and the renderer sidecar apply the same returned tuples — never write an ad-hoc `setPaintProperty`/`setLayoutProperty` in `MapView` for `MapSettings`-derived state, or preview and export silently diverge. Zoom + decoration sizes are denominated in the **reference space** (canonical 1080p-class css frame; exports render it verbatim); the preview displays it at the fixed `previewDisplayScale(aspect, screen)` factor via the resolvers' `surfaceScale` parameter — never at raw pane pixels (`docs/CANON.md` §2.6).
-- **Map decorations are independent**: Route / Waypoints / POV each own their color/gradient config (no shared palette); linking is a one-shot copy button, not a binding. Route + Waypoints support gradient (by trail distance); per-clip waypoint overrides and POV are solid-only.
+- **Map decorations are independent**: Route / Waypoints / POV each own their color/gradient config (no shared palette); linking is a one-shot copy button, not a binding. Route + Waypoints support gradient (by trail distance); POV is solid-only (single point). **Everything is per-clip overridable** (`MapOverrides` — route color/halo, waypoint colors/marker/halo, all POV fields; full capability parity incl. gradients; object-valued leaves diff via deep-equal comparators in `src/types.ts`); the only project-pinned MapSettings field is the marker-image LIBRARY (`MapSettings.marker_images`) — one shared project-level list, both tools show every upload, SELECTION stays independent per decoration. Per-Waypoint entity overrides (solid-only) still win per feature over clip-level values. Each decoration also owns an optional **halo** block (`route.halo` / `waypoints.halo` / `pov.halo`, additive — no schema bump): color (gradient where the decoration supports it; POV solid-only) / spread / fade / falloff / opacity / offset X-Y. Falloff renders via a second fully-feathered `*-halo-core` layer (opacity redistribution — `HALO_FALLOFF_*` in `styleSpec.ts`); offsets are viewport-anchored `*-translate` px (drop-shadow direction fixed on screen). Halo self-overlap (out-and-back retraces, GPS-jitter sunbursts) is solved by **engine-level group-opacity compositing** on BOTH engines (`docs/CANON.md` §2.7): `haloGroupPolicy` in mapVisuals emits in-FBO opacities + a `haloComposites` bucket that consumers MUST apply via `map.setGroupComposite` (native patch 3 for export, `patches/maplibre-gl+*.patch` for preview — the two patches ship together; consumers fail loud on a missing capability).
+- **Marker library (schema v11)**: both decorations pick their marker from a preset gallery + a shared upload library. Waypoints: the 5 shapes or a library image (`waypoints.marker_image_id`; per-waypoint override on `Waypoint.shape`/`Waypoint.marker_image_id`, mutually exclusive). POV: dot + pov-domain shapes (ring/square/diamond, SDF `pov-<shape>-*` icons tinted by POV colors) or a library image, via `pov.marker` (`{kind:'shape'|'image'}`), per-clip overridable through `map_overrides.pov.marker` (deep-equal diffed — first object-valued override leaf); the pulse applies to every marker kind, and the default dot keeps the original circle layer for pixel parity. Bake-once-consume-twice: the webview canvas rasterizes/normalizes each upload into `assets/marker-icon-<hash>.png` (≤1024 texels, sRGB) at import; preview (browser decode) and the export sidecar (pngjs) both resample that ONE master through `mapVisuals/markerImage.ts` → `map.addImage('marker-image-<id>', …, {sdf:false})`. Image markers render on dedicated non-SDF symbol layers (`waypoints-image`, `live-marker-image`) with transparent placeholders on the SDF side — MapLibre cannot mix SDF and non-SDF icons in one layer. Sizes are reference-space (POV `pov.size.image_size`; waypoints display images at the shape diameter `2×circle_radius`). The renderer never learns the bundle dir — `buildExportRequest` injects transient absolute `path`s on every library entry; the sidecar registers only REFERENCED ids and fails loud on missing ones. Deleting a library image (right-click tile → confirm) reverts every use via `lib/markerLibrary.ts` then removes the assets.
 - **Perceived-scale invariance**: same route + export settings must look the same apparent scale across aspect ratios and resolutions — aspect changes shape/visible-area only, resolution changes pixel density only.
 - **HDR is first-class and CURRENT**: `HdrHlg` and `HdrPq` delivery are shipped today, co-equal with SDR — never reason from an SDR default. Pipeline decisions must keep BT.2020 working-space primaries; SDR-only simplifications are off the table (see `docs/CANON.md` §1.9/§5.2).
 - **Asset protocol**: Tauri `protocol-asset` with `$HOME/**` scope serves local files to the webview via `convertFileSrc`.

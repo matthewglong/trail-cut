@@ -35,6 +35,24 @@ fix C′ as landed or touch the CANON/PROGRESS "closed" wording until the
 temporal gate is green. This is a COLOR-seam bug, NOT the renderer —
 decoration crispness + any native-renderer work stay Phase 5 renderer-lane
 scope and cannot fix this crawl.
+[2026-07-03 UPDATE — the probe RAN (independent audit, session log cont. 4):
+the hypothesis is HALF-right. The steep-slope amplifier is real and explains
+PQ>HLG, but it is the DELIVERY OETF, not the composite transport — the honest
+float baseline (no lift at all) already swings 1–5 codes per 1-LSB wobble,
+and fix C's ÷32 was an accidental temporal DEADBAND (gain 0.0) that hid the
+crawl behind banding. Fix C′ measures ≈ the float baseline: it neither causes
+nor amplifies the crawl. Audit verdict: COMMIT fix C′ AS-IS (Matthew's call —
+hold is his); keep Phase 4 open on the crawl itself; re-aim the remaining
+temporal work at the renderer flat-fill wobble (source) and the delivery-curve
+seam (amplifier): stabilize the flat fill upstream, or a deliberate temporal
+dither/dead-band applied knowingly. The eventual temporal gate must treat
+"fix C′ ≈ float baseline" as CORRECT, i.e. it gates the delivered crawl
+amplitude, not the transport. ALSO RESOLVED 2026-07-03: delivered decoration
+crispness (B1 sharpness half) was root-caused to the HEVC hardware encoder
+and fixed at `1345ded` (CANON §3.3, session log cont. 3) — when Matthew
+re-eyeballs HLG/PQ after committing fix C′, the encoder mush that previously
+sat ON TOP of the quantization grit is gone too, so the crawl is the one
+remaining HDR-map defect.]
 
 **fix C′ landed — record (2026-06-12):** `color_space.rs` —
 `COMPOSITE_HEADROOM` removed; `composite_transport_encode()`
@@ -93,13 +111,15 @@ entries (HDR→SDR tone map, proxy-npl divergence).
 
 ## Test baseline (canonical, post-cutover `8110f70` + fix C′ in the working tree)
 
-`npm run test:run` → **928 passed | 7 skipped (935), 0 failed** (frontend
-untouched by fix C′ and the cutover).
-`cargo test` (no skips) → **381 passed, 0 failed, 1 ignored** (346 lib +
-23 color_fixtures + 1 ignored + 1 encoder_probe + 2 layout_parity + 4
+`npm run test:run` → **953 passed | 7 skipped (960), 0 failed** (was 928/7;
++25 from the 58724e7 reference-space fix).
+`cargo test` (no skips) → **382 passed, 0 failed, 2 ignored** (346 lib +
+24 color_fixtures + 2 ignored + 1 encoder_probe + 2 layout_parity + 4
 orchestrator + 4 project_parity + 1 native_hdr_composite). Includes fix C′
 (uncommitted: lib +1 `composite_transport_round_trip_strings`,
-color_fixtures +2 `composite_pq_transport_*`); the cutover removed the two
+color_fixtures +2 `composite_pq_transport_*`) and the 1345ded crispness
+work (color_fixtures +1 `delivery_encode_preserves_decoration_chroma_edges`,
++1 ignored argv-emitter `decoration_probe`); the cutover removed the two
 chrome-path resolution tests and kept the 4 orchestrator e2e tests
 (default-path n1/n2 + explicit-pin native_n1/n2, all native now). The
 `hdr_reference_white_tracer_*` tests stay GREEN; any failure anywhere is a
@@ -686,3 +706,255 @@ live only inside a historical phase record.
   Worker-count default (2) still carries chrome-era tuning — perf
   follow-up flagged in orchestrator.rs. Color-seam lane untouched (fix C′
   still uncommitted in the working tree by design).
+- **2026-07-02 (cont. 5) — Phase B: the two export-quality bugs CHARACTERIZED
+  (measured); reframed by Matthew mid-session; no code changed.** Probe
+  harness: `.spike/b2-probe/` (driver.ts gained an optional 6th-arg style
+  override; runner.mjs drives the production worker over stdio; xcorr.mjs
+  measures basemap shift via NCC). Reference project: Abel's Hike, 9:16 4K
+  composite → map slot 1838×1034 px = 919×517 css (multiplier 2 × SSAA 2,
+  pixelRatio 4); 16:9 4K → slot 1216×2160 px = 608×1080 css.
+  **Geometry probes — the native renderer is EXACT on both styles:**
+  (1) vector basemap shift t2500→t4000 measured 28.16 px vs 28.16 expected
+  (prior session); satellite same probe 28.143 vs 28.163 (0.07%, NCC 0.9998).
+  (2) Satellite tile selection ground-truthed via a fresh
+  `TRAILCUT_TILE_CACHE_DIR` + sha256(url) cache probing: native fetches
+  **z=20** Esri tiles at map zoom 19 (tileSize-256 convention, = GL JS;
+  constructor ratio=4 does NOT change selection). (3) Tile-in-frame
+  registration: bearing-0 frame vs the direct-fetched z20 tile upscaled 2× —
+  NCC 0.996 at sub-pixel offset 0.38 px. So satellite softness = source
+  ceiling, not engine: Esri World Imagery tops out at z=20 here (z=21
+  returns an HTTP-200 "Map data not yet available" placeholder, which also
+  defeats parent-tile fallback), i.e. 1 source px per css px is the physical
+  max while 4K readback wants 2. Chrome A/B for engine attribution was
+  STARTED (worktree at 7988c2a, chrome fetches z=20 too) then **DROPPED on
+  Matthew's direction — he accepts native; engine attribution is not the
+  question.** Worktree left at `.claude/worktrees/chrome-cmp` (disposable).
+  **Matthew's reframe of the bugs:** B1 = the DECORATIONS (POV dot, pulse
+  rings, slime trail, waypoints) are fuzzy in exports — not enterprise-
+  overlay crisp; B2 = exports look more zoomed OUT than the preview and
+  decorations look much smaller relative to the frame; "mathematically
+  correct but not what the user expects."
+  **Root cause (both bugs, one mechanism + known co-factors):** every
+  decoration size is `fraction × PAINT_REFERENCE_WIDTH` (fixed 1080) = fixed
+  CSS px on every surface, and zoom is applied verbatim (955d45c removed
+  pane compensation) — so relative visual weight and geographic FOV scale
+  with the css width of whatever surface you look at. Editor map pane ≈ 35%
+  of the window (~525 css px on a MacBook) vs 919 css for the 9:16 export
+  band vs 608 css for the 16:9 band. 9:16 export therefore shows ~1.75× more
+  geography across the band than the pane shows, with decorations ~1.75×
+  smaller relative to it (trail: 1.13% of pane width vs 0.65% of band).
+  16:9 (608 ≈ 525) barely diverges — matches Matthew flagging the 9:16
+  export. The preview additionally resolves camera intents against the FULL
+  canonical 1080p viewport while the renderer resolves against SLOT css dims
+  (region-fit divergence, MapView.tsx:455/:628 vs scene.ts) — dormant for
+  this project's fixed-zoom follow but a real B2 co-factor for region fits.
+  B1 coupling: decorations at half the preview's relative size land in the
+  crunch zone of 4:2:0 chroma + player downscale (trail = 11.88 px on a
+  2160-wide frame ≈ 2 px displayed), which is where the known
+  decoration-crispness gap (owner: deferred lane; HQ subsample landed) bites
+  hardest — and preview at dpr=2 with no encode always looks cleaner than
+  delivered video, feeding the perception gap. Pre-composite decoration
+  rendering is objectively clean (verified at 1:1 in probe frames).
+  **Proposed direction (NOT landed — Matthew's call):** (1) make the editor
+  map pane a WYSIWYG facsimile of the current aspect's export slot —
+  slot-shaped, letterboxed, uniformly scaled k = pane/slot (geometry via
+  displayZoom + log2(k), paints × k through resolveStaticPaints — must ride
+  mapVisuals, never ad-hoc); this also closes the region-intent viewport
+  mismatch by resolving preview intents against slot css dims like the
+  renderer does. (2) Product decision: re-anchor decoration sizes to SLOT
+  width instead of fixed 1080 (restores composition weight per band; NOTE
+  this deliberately trades away cross-aspect px-size invariance — conflicts
+  with the standing perceived-scale-invariance spec, so it needs Matthew's
+  explicit choice + a schema/knob migration story). Re-anchoring ZOOM to
+  slot width was considered and NOT recommended (violates the same spec;
+  after WYSIWYG lands the user can just re-tune zoom). Stale
+  `displayZoom` comment at `src/lib/layout.ts:58` should be fixed when the
+  B2 fix lands. STOPPED here per plan — awaiting Matthew's decision.
+- **2026-07-02 (cont. 6) — B2 direction CONFIRMED by Matthew + sizing-anchor
+  bake-off RENDERED (spike, no src changes).** Matthew approved the model:
+  declarative renderer inputs ("this wide × this tall, this zoom, decorations
+  of x/y/z — all calculation done BEFORE pushing to inputs") + WYSIWYG pane,
+  and asked to drop the fixed-1080 anchor, proposing longest-side-of-export;
+  requested a spike comparing approaches with UX predictability across
+  machines/aspects/qualities as the bar. Spike: `.spike/b2-probe/driver.ts`
+  gained a JSON 6th arg `{style?, zoomDelta?, sizeScale?}` (sizeScale
+  multiplies all `*.size.*` fractions = swapping the paint anchor, exact
+  because every consumer is linear in fraction × anchor). 7 single-frame 4K
+  renders through the production native worker (Abel's Hike, t=2500, zoom 19)
+  → `.spike/anchor-spike/`: today's 9:16 + 16:9, tuned 9:16 (trail 1.9% of
+  band = pane weight, s=1.7505), and the 16:9 consequence of each anchor
+  policy tuned to that same 9:16 (fixed-px s=1.7505, slot-width s=1.1581,
+  frame-width s=3.112, frame-height ≈ today), plus a zoom+0.808 "pane
+  transplant" illustration. KEY COLLAPSE for the 16:9/9:16 pair: canonical
+  css frames are 1920×1080 / 1080×1920, so Matthew's longest-side ≡ fixed-px
+  (differs from today only by a retunable constant; diverges only on 1:1/4:5),
+  and frame-height ≡ today within 1.5% for these layouts. Real finalists:
+  A fixed-px/longest-side (constant ground scale, near-constant on-phone size
+  6.3→7.7pt, keeps perceived-scale spec) vs B slot-width fraction (constant
+  band composition 1.90%, ground varies 1.5×, breaks the spec); frame-width
+  (13.7pt, 3.1× ground) and frame-height are dominated. Comparison artifact
+  (device-scale-honest phone frames + 1:1 crops + decision table):
+  https://claude.ai/code/artifact/9e1fede5-d175-4918-9fb9-cfbe349ac77d
+  AWAITING Matthew's policy pick; then design the framing-resolver +
+  WYSIWYG implementation through mapVisuals (incl. knob migration so
+  existing projects keep their look).
+- **2026-07-02 (cont. 7) — round 2: ZOOM folded into the policy + the pane
+  itself rendered as the reference (Matthew's two asks).** Matthew leaned A
+  but flagged (a) the FOV/zoom mismatch is the same disease and can't be
+  waved off as "re-tune later," and (b) the artifact lacked the preview
+  reference being judged against. Measured his actual surfaces from his
+  screenshots + display (1512×982 pt MacBook Pro 14"): editor map pane =
+  442×529 pt css; QuickTime 16:9 band displays 608 css in 479 pt → export
+  shows 1.38× more geography at ~same on-screen size, trail 10→7.9 pt (9:16
+  = same failure at 2.08×). Pane REPRODUCED through the production worker
+  (setup.json overridden to cssViewport 442×529 @ pixelRatio 2, zoom 19
+  verbatim) — matches his editor screenshot. KEY REFRAME: zoom + size share
+  one anchor decision, and once the user tunes the editing aspect to their
+  intended framing, both coherent worlds produce the IDENTICAL tuned render
+  (16:9 tuned = zoom+0.46016, sizes ×1.37557); they fork only on the OTHER
+  aspects: World 1 "one shared map" (absolute zoom + css-px sizes → 9:16
+  shows 1.51× framing, trail 1.50% band, 5.0 pt phone, map 0.82× optical)
+  vs World 2 "one composition" (band-fraction zoom + sizes → 9:16 = s
+  2.07919/zd 1.05601, reproduces framing exactly, 2.26% band, 7.5 pt phone,
+  1.24× optical; satellite z20 source ceiling bites ~1 level sooner;
+  retires the cross-aspect invariance spec deliberately). Both worlds keep
+  decoration GROUND footprint constant and both kill preview↔export
+  surprise via the WYSIWYG facsimile pane (knob anchors to a FIXED
+  reference in both — never the live pane). World 1 escape hatch noted:
+  layouts are already per-aspect, so per-aspect zoom/size offsets could
+  close its ~20% drift. Renders in `.spike/anchor-spike/` (pane-sim,
+  tuned-169, w1-916, w2-916); artifact v2 (same URL) at
+  https://claude.ai/code/artifact/9e1fede5-d175-4918-9fb9-cfbe349ac77d —
+  AWAITING Matthew's world pick.
+- **2026-07-03 — B1/B2 framing fix LANDED: reference space formalized + honest
+  preview scale (CANON §2.6).** Matthew picked the world: exports keep ONE
+  absolute scale space (the canonical 1080p-class css frame; zoom + sizes
+  verbatim, α=0 — bigger map band = more world, same depth; §2.1 spec
+  PRESERVED, World 2 rejected for knobs), and the fix lands entirely
+  preview-side: the pane was interpreting reference values 1:1 in its own
+  css px (the measured 2.08×/1.38× played-back shrink). MapView now renders
+  the reference space at the FIXED factor `previewDisplayScale(aspect,
+  screen)` (fullscreen-fit of the canonical frame on the current display —
+  never a function of pane size, so pane drags reveal/crop at constant
+  perceived scale) via `withDisplayScale` (zoom + log2(k)) and a
+  `surfaceScale` param threaded through resolveStaticPaints /
+  buildPerFramePaints / buildPerFrameState (renderer resolves at scale 1 —
+  defaulted, byte-identical). Preview camera intents now resolve against the
+  aspect's canonical MAP-SLOT css dims (`canonicalSlotCss` = renderer
+  cssViewport) — closes the cont.-5 region-fit divergence (MapView used the
+  full 1080p frame). NO schema change: stored zoom/sizes were always
+  reference-space; exports unchanged (golden gate green on the rebuilt
+  bundle); Matthew re-tunes framing against the now-honest pane. Stale docs
+  fixed en route: layout.ts `canonicalMapCssWidth` comment (pre-955d45c
+  compensation), backend.ts cssViewport comment ("= canonicalMapCssWidth" —
+  wrong since the lever model), CANON §2.1 compensation clause → history
+  note. Tests: +25 frontend (layout helpers, surfaceScale linearity/identity,
+  withDisplayScale) → Vitest 953/7/0; renderer 18/18; golden
+  `golden_frame_parity_native` green. Empirical gate through the production
+  worker (Abel's Hike, `.spike/refspace-gate/`, display-honest composites):
+  POV dot 30.00pt pane vs 30.43pt fullscreen export (9:16) / 46.50 vs
+  46.86pt (16:9); trail 5.00 vs 5.11pt / 8.00 vs 7.88pt — pre-fix these were
+  2.08×/1.38× apart. Divider demo (inset h 0.269→0.45, same zoom): identical
+  decoration px, ~67% more world. Code committed by explicit path;
+  CANON/PROGRESS edits left uncommitted (same files carry the color lane's
+  uncommitted hunks). Follow-ups (small, non-blocking): same-DPR monitor
+  moves don't refresh the screen-fit factor until a DPR flip/remount;
+  MapPositioningModal untouched (no zoom writes there).
+- **2026-07-03 (cont. 2) — export-slowdown forensics CLOSED + SSAA reduction
+  moved on-GPU into the binding (CANON §2.5).** The "native got 8× slower"
+  report resolved by log archaeology (the pre-cutover flag-run app log
+  survived in a session scratchpad): the remembered ~10s run was the 9x16
+  sdr-h265 cell (PIP map slot 1838×1034, fb 3676×2068, 166f@24, down med
+  55ms, map phase ≈9.5s — real and consistent), the ~80s run was the 16x9
+  hdr-pq cell (split map pane 1216×2160, fb 2432×4320, 191f@30, heaviest
+  ffmpeg channel) — different cells, NO native→native regression: the same
+  16x9 cell rendered ~10–12s five times pre- AND post-cutover in that log;
+  one degraded run (down med 66→166ms, everything ×2.5) coincided with
+  cargo-rebuild churn — CPU contention, which the single-threaded JS
+  boxDownsample (55–90% of frame time) amplified 2.5–6×. Fix landed
+  (Matthew picked option A): `native/readback-downsample.patch` — render
+  option `downsample:{factor,width,height}`, a Metal compute pass over the
+  offscreen color texture with byte-identical semantics to boxDownsample
+  (integer sums, (sum+n/2)/n truncated, zero-pad), slot-sized readback only
+  (7.6MB vs 42MB); shared CPU fallback in core for non-Metal backends;
+  capability marker `mbgl.readbackDownsample`, worker fails LOUD without it
+  on supersampled exports; factor-1 path byte-untouched. Raster anti-snap
+  (setGestureInProgress, patch 1) intact — patch 2 is post-render only.
+  Gates: new `readbackDownsample.test.ts` 3/3 (flat-scene case = exact
+  rounding-mode probe, byte-identical; fill-edge case within the ±1-LSB
+  wobble class), renderer suite 21/21, `golden_frame_parity_native` green.
+  Measured: production worker on the 9x16 payload — per-frame down
+  55–90ms → 0ms, total med 90→39ms; isolated A/B at fb 3676×2068
+  (tile-free): 81→12ms median. ensure-binding.mjs now applies/verifies both
+  patches; binding rebuilt + staged (abi-127). Next pole for export wall
+  time is the ffmpeg half (SDR composite encoded at 0.287x in the Jul 2
+  log; HDR-PQ chains heavier) — untouched this session. Upstream-PR note:
+  patch 2 is core+binding (not binding-only like patch 1); fold into the
+  eventual upstream conversation.
+- **2026-07-03 (cont. 3) — DECORATION CRISPNESS ROOT-CAUSED + FIXED (commit
+  `1345ded`): the encoder was the fuzz; HEVC delivery now encodes through
+  software libx265.** Stage-separation probe (scratchpad `crisp-probe/`,
+  argv emitter `src-tauri/tests/decoration_probe.rs` `#[ignore]`d): 48
+  production map frames (Abel's Hike, native worker, 9:16 4K slot
+  1838×1034) → the REAL `build_composite_filtergraph` argv per target →
+  three taps: lossless FFV1 of `[vout]` (post-filtergraph 4:2:0), a 4:4:4
+  finishing variant, and the delivered encode; per-plane PSNR + decoration-
+  band Sobel-retention vs each stage, plus 4× visual crops. FINDINGS:
+  (a) filtergraph transparent (SDR 4:4:4 tap keeps 94.5% band energy;
+  ProRes 95% at 67 dB); (b) 4:2:0 bounded, NOT the visible ceiling at 4K —
+  the pre-encoder 4:2:0 tap is visually indistinguishable from the renderer
+  frame, so the "a 720p YouTube upload does crisp overlays through the same
+  4:2:0" argument holds in our own pipeline; (c) `hevc_videotoolbox -q:v 50`
+  (SdrH265 default + BOTH HDR targets) starved the encode (~13 Mbps at 4K)
+  and structurally crushed the chroma-only decoration edges: Cr Sobel
+  retention 0.55 (SdrH265) / 0.54 (HdrPq), Y 39.7 dB — and `-q:v 80` at 5×
+  the bitrate STILL measured below libx265 crf18, so it's not bits alone;
+  (d) SdrH264 (libx264 crf18) and ProRes were already healthy — matches
+  Matthew's reports (SdrH265 is the app default). FIX (see CANON §3.3):
+  Hevc candidates libx265-first on all platforms (hardware fallback-only,
+  VT q:v 50→65), delivery `-preset fast -crf 17` + `cbqpoffs=-2:crqpoffs=-2`
+  (chroma QP down 2 — bits exactly where the failure mode lives), probe
+  cache policy-versioned so warm caches re-probe (the new gate caught that
+  hole LIVE — a stale `encoder.json` kept selecting VT). Validated: 9:16 4K
+  Cr 0.55→0.90 / HLG Cb 0.76→0.97 / PQ Cr 0.54→1.16 (+7–9 dB chroma);
+  16:9 4K split 0.85–0.99; 9:16 1080p 0.78–0.94 vs old VT 0.48–0.83;
+  export wall ≈1.4–1.7× VT (float filtergraph dominates either way). NEW
+  LOUD GATE `delivery_encode_preserves_decoration_chroma_edges`
+  (color_fixtures.rs): real composite argv per codec target over synthetic
+  decoration frames + moving clip, FFV1 tap of the identical filtergraph,
+  Cb/Cr edge retention ≥0.80 (shipping settings measure 0.98–1.05) +
+  libx265-selection pin + hard-fail without libx265 in ffmpeg. Suites:
+  cargo green (lib 346, color_fixtures 24), Vitest 953/7/0, renderer 21/21,
+  golden gate green. Commit contains ONLY crispness hunks (filtergraph.rs /
+  color_fixtures.rs staged via hand-built blobs; fix C′ hunks verified
+  still intact in the working tree). Task-130 licensing flag: libx264/x265
+  are GPL vs the planned LGPL ffmpeg build — ship-deps lane must resolve.
+  Also confirmed en route: the icon addImage-pixelRatio spike lead is
+  ALREADY effectively in production post-cutover (nativeBackend bakes at
+  payload.pixelRatio; preview at devicePixelRatio) — memory updated.
+  Evidence artifact (before/after crops + metrics + audit verdict):
+  https://claude.ai/code/artifact/e1c6743d-2a1c-4223-8a65-b80bf59c8a25
+- **2026-07-03 (cont. 4) — fix C′ AUDIT (independent agent): COMMIT AS-IS;
+  the PQ temporal crawl is PRE-EXISTING and was merely UNMASKED.** Audit
+  re-verified the static fix (round-trip true identity ±1/1024 code across
+  the no-clip range — the one property the scale-invariant hue/level gates
+  can't see; alpha-safe by construction; no clipping to 10k nits; ProRes/SDR
+  byte-identical; suites green). CROWN FINDING (empirical, delivered-luma
+  gain per 1-LSB input wobble through production-reconstructed chains):
+  fix C's ÷32 was an ACCIDENTAL TEMPORAL DEADBAND — gain 0.0 at every
+  luminance (its coarse linear bin swallowed sub-LSB wobble; that same
+  coarseness WAS the 66-level banding). The honest float baseline (no lift
+  at all) already swings 1–5 codes/LSB — the amplifier is the DELIVERY
+  PQ/HLG OETF's steep low end, not the composite transport; fix C′ tracks
+  the float baseline exactly (PQ gain 4/4/2/2/1 vs no-op 5/3/3/2/1;
+  PQ>HLG confirmed, matching Matthew's eyeball). Consequences: committing
+  fix C′ does not worsen the crawl (it exists either way); reverting to
+  fix C would only hide it behind worse banding+hue (leveling down — off
+  the table). NEXT-ACTION item 1's temporal-probe plan should re-aim at the
+  renderer flat-fill wobble (source) + delivery-curve seam (amplifier), NOT
+  the transport curve; the eventual temporal gate must expect fix C′ ≈
+  float baseline (that reading is CORRECT, not a failure). Minor flag to
+  attach to the fix C′ commit: overlay-time blending now happens in
+  PQ-encoded space — immaterial today (opaque map; only the corner-arc
+  partial-alpha pixels blend) but flag before any future partial-alpha
+  overlay compositing. Commit decision remains Matthew's (standing hold).
