@@ -272,9 +272,30 @@ pub struct LayoutDescriptor {
     /// `#[serde(default)]` keeps pre-controls wire data deserializing cleanly.
     #[serde(default)]
     pub resolution: OutputResolution,
+    /// Map magnification `k` for the exported aspect, read out of
+    /// `Project.map_magnification` by `buildExportRequest`. `1.0` is the
+    /// identity. Consumed ONLY by `build_setup_payload` (export/mod.rs), which
+    /// divides the css viewport by it and multiplies `pixelRatio` by it — it
+    /// does not enter `resolve_slots`, so `resolved` stays `k`-independent and
+    /// the parity deep-compare in `validate_request` is unaffected. Range is
+    /// enforced there (`[0.5, 2.0]`, loud — never clamped).
+    /// `#[serde(default)]` keeps pre-magnification wire data deserializing.
+    #[serde(default = "default_magnification")]
+    pub magnification: f64,
     pub layout: LayoutConfig,
     pub resolved: SlotResolution,
 }
+
+fn default_magnification() -> f64 {
+    1.0
+}
+
+/// Inclusive bounds on [`LayoutDescriptor::magnification`]. Enforced at the IPC
+/// boundary by `validate_request` (export/mod.rs) — loudly, never by clamping.
+/// The frontend's slider mirrors these; anything outside them reaching Rust is
+/// a tampered payload or a hand-edited project file.
+pub const MIN_MAGNIFICATION: f64 = 0.5;
+pub const MAX_MAGNIFICATION: f64 = 2.0;
 
 // --- helpers ----------------------------------------------------------------
 
@@ -1033,5 +1054,51 @@ mod tests {
         assert_eq!(cmv2160.css_w, 1080);
         assert_eq!(cmv2160.css_h, 1920);
         assert_eq!(cmv2160.pixel_ratio, 2.0);
+    }
+
+    // ---- LayoutDescriptor.magnification: wire compatibility --------------
+
+    #[test]
+    fn layout_descriptor_without_magnification_deserializes_to_identity() {
+        // Pre-magnification wire payloads (and any frontend that never sets
+        // the field) must land on 1.0, not 0.0 — a zero would divide the css
+        // viewport to nothing inside `build_setup_payload`.
+        let raw = r#"{
+            "aspect": "9_16",
+            "layout": {"mode": "split", "video_side": "top", "divider": 0.5},
+            "resolved": {
+                "output": {"w": 1080, "h": 1920},
+                "map_slot": {"x": 0, "y": 960, "w": 1080, "h": 960},
+                "video_slot": {"x": 0, "y": 0, "w": 1080, "h": 960},
+                "corner_radius_px": 0,
+                "corner_radius_slot": "none"
+            }
+        }"#;
+        let d: LayoutDescriptor = serde_json::from_str(raw).expect("must deserialize");
+        assert_eq!(d.magnification, 1.0);
+        // The sibling `resolution` default is unaffected by the new field.
+        assert_eq!(d.resolution, OutputResolution::default());
+    }
+
+    #[test]
+    fn layout_descriptor_magnification_round_trips() {
+        let layout = default_split_layout(AspectRatio::NineSixteen);
+        let resolved = resolve_slots(&layout, AspectRatio::NineSixteen, OutputResolution::P1080);
+        let d = LayoutDescriptor {
+            aspect: AspectRatio::NineSixteen,
+            resolution: OutputResolution::P1080,
+            magnification: 1.75,
+            layout,
+            resolved,
+        };
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(
+            json.contains("\"magnification\":1.75"),
+            "magnification must ride the wire: {}",
+            json,
+        );
+        let back: LayoutDescriptor = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.magnification, 1.75);
+        assert_eq!(back, d);
     }
 }

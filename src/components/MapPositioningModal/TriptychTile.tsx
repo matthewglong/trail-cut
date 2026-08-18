@@ -7,9 +7,14 @@ import {
   type ReactNode,
 } from 'react';
 import { LayoutConfigurator } from '../LayoutConfigurator';
+import NumberStepper from '../NumberStepper';
 import {
   clampLayout,
   defaultLayout,
+  MAGNIFICATION_DEFAULT,
+  MAGNIFICATION_MAX,
+  MAGNIFICATION_MIN,
+  MAGNIFICATION_STEP,
   OUTPUT_DIMS,
   synthesizeLayoutForMode,
   type AspectRatio,
@@ -23,9 +28,23 @@ export interface TriptychTileProps {
   label: string;
   layout: LayoutConfig;
   onChange: (next: LayoutConfig) => void;
+  /** This aspect's magnification factor — how much the map render is blown
+   *  up relative to the frame. Lives in the footer rather than a frame
+   *  corner: all four corners are claimable by the existing chrome (the PiP
+   *  placement in `cornerPlacement.ts` uses `bl` as its escape hatch), and
+   *  the knob is a numeric field, not a glanceable badge. */
+  magnification: number;
+  onMagnificationChange: (next: number) => void;
 }
 
-export function TriptychTile({ aspect, label, layout, onChange }: TriptychTileProps) {
+export function TriptychTile({
+  aspect,
+  label,
+  layout,
+  onChange,
+  magnification,
+  onMagnificationChange,
+}: TriptychTileProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
@@ -54,8 +73,13 @@ export function TriptychTile({ aspect, label, layout, onChange }: TriptychTilePr
     onChange(clampLayout(synthesizeLayoutForMode(next, aspect), aspect));
   };
 
+  // Reset is per-tile "give me this ratio's framing back", and magnification
+  // is part of that framing — leaving a 1.8× behind after a reset would read
+  // as the button not working. Both channels fire; the parent applies them to
+  // the two independent stores.
   const handleReset = () => {
     onChange(defaultLayout(aspect));
+    onMagnificationChange(MAGNIFICATION_DEFAULT);
   };
 
   return (
@@ -99,6 +123,21 @@ export function TriptychTile({ aspect, label, layout, onChange }: TriptychTilePr
         <ChromeSlot corner={corners.reset} testid={`tile-${aspect}-reset`}>
           <ResetButton label={label} aspect={aspect} onClick={handleReset} />
         </ChromeSlot>
+      </div>
+
+      <div style={footerStyle} data-testid={`tile-${aspect}-footer`}>
+        <span style={footerLabelStyle}>Magnification</span>
+        <div data-testid={`tile-${aspect}-magnification`}>
+          <NumberStepper
+            value={magnification}
+            min={MAGNIFICATION_MIN}
+            max={MAGNIFICATION_MAX}
+            step={MAGNIFICATION_STEP}
+            decimals={1}
+            unit="×"
+            onChange={onMagnificationChange}
+          />
+        </div>
       </div>
     </div>
   );
@@ -304,14 +343,39 @@ function Bracket({ position }: BracketProps) {
 }
 
 // ─── tile container ───────────────────────────────────────────────────────
-// The tile *is* the frame now: no header band, no internal padding. Width
-// derives from the parent flex layout (proportional to aspect ratio); the
-// frame fills the cell so all three tiles render at the same effective scale.
+// The frame carries no header band and no internal padding. Width derives
+// from the parent grid (columns proportional to aspect ratio); the frame
+// fills the cell so all three tiles render at the same effective scale. The
+// magnification row sits BELOW the frame — putting a numeric field inside
+// would eat drag surface and fight the corner-placement chrome.
 
 const tileStyle: CSSProperties = {
   display: 'flex',
+  flexDirection: 'column',
   position: 'relative',
   background: semantic.surfaceDeep,
+};
+
+const footerStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  // Aligns with the frame's chrome inset so the row reads as part of the
+  // tile rather than a separate strip.
+  padding: `6px ${CHROME_INSET_PX}px 0`,
+};
+
+const footerLabelStyle: CSSProperties = {
+  fontFamily: "'JetBrains Mono', 'SF Mono', ui-monospace, monospace",
+  fontSize: 9,
+  fontWeight: 600,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: semantic.fgFaint,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 };
 
 const viewportStyle: CSSProperties = {

@@ -23,6 +23,7 @@ import {
   mergeMapSettings,
   seededLayouts,
 } from '../projectPersistence';
+import { defaultMagnifications } from '../layout';
 import rawFixture from '../../../src-tauri/tests/fixtures/project_parity.json';
 
 interface Fixture {
@@ -46,6 +47,7 @@ const PROJECT_WIRE_KEYS = {
   clips: true,
   route: true,
   layouts: true,
+  map_magnification: true,
   selected_export_aspect: true,
   map_settings: true,
   transition_feel: true,
@@ -175,5 +177,96 @@ describe('mergeMapSettings — legacy shims (moved from useProject, pinned here)
     } as MapSettings;
     const merged = mergeMapSettings(DEFAULT_MAP_SETTINGS, legacy);
     expect(merged.route.size.width).toBe(0.042);
+  });
+
+  it('round-trips transition (present rides through whole; absent stays absent)', () => {
+    const transition = {
+      travel: {
+        enabled: true,
+        sync: false,
+        playhead: {
+          ...DEFAULT_MAP_SETTINGS.pov,
+          marker: { kind: 'shape', shape: 'ring' },
+        },
+        draw_route: false,
+      },
+      ease_in: { style: 'pop', speed: 'fast' },
+    };
+    const withTransition = {
+      ...fixture.project.map_settings!,
+      transition,
+    } as MapSettings;
+    const merged = mergeMapSettings(DEFAULT_MAP_SETTINGS, withTransition);
+    expect(merged.transition).toEqual(transition);
+    // A bundle without the field must not grow one.
+    expect(
+      mergeMapSettings(DEFAULT_MAP_SETTINGS, fixture.project.map_settings)
+        .transition,
+    ).toBeUndefined();
+  });
+});
+
+describe('map_magnification — hydrate / save asymmetry', () => {
+  // The field is optional on disk and ABSENT means "all three aspects at
+  // 1.0". Hydration fills the record so the UI always has three numbers;
+  // the save path drops it again while it holds the identity, so a project
+  // that never touches the knob writes exactly the bytes it used to.
+
+  it('default-fills the whole record when the bundle omits the field', () => {
+    const without = { ...fixture.project };
+    delete without.map_magnification;
+    expect(hydrateProjectState(without, 'x').mapMagnifications).toEqual(
+      defaultMagnifications(),
+    );
+  });
+
+  it('default-fills only the missing aspects of a partial record', () => {
+    // Hand-edited bundles. A one-aspect record must not leave `undefined`
+    // in the other two slots — every consumer multiplies by these.
+    const partial = {
+      ...fixture.project,
+      map_magnification: { '9_16': 1.5 },
+    } as unknown as Project;
+    expect(hydrateProjectState(partial, 'x').mapMagnifications).toEqual({
+      '9_16': 1.5,
+      '4_5': 1.0,
+      '16_9': 1.0,
+    });
+  });
+
+  it('omits the field from the save payload when every aspect is 1.0', () => {
+    const base = fixture.project;
+    const live = {
+      ...hydrateProjectState(base, 'x'),
+      mapMagnifications: defaultMagnifications(),
+    };
+    const payload = buildSavePayload(base, live);
+    expect('map_magnification' in payload).toBe(false);
+  });
+
+  it('drops a stale on-disk value when the user dials back to 1.0', () => {
+    // The base spread would otherwise resurrect the value the bundle was
+    // loaded with — the same class of bug the spread exists to prevent, in
+    // the opposite direction.
+    const base = { ...fixture.project, map_magnification: { '9_16': 1.8, '4_5': 1.0, '16_9': 1.0 } };
+    const live = {
+      ...hydrateProjectState(base, 'x'),
+      mapMagnifications: defaultMagnifications(),
+    };
+    expect('map_magnification' in buildSavePayload(base, live)).toBe(false);
+  });
+
+  it('persists a non-identity record verbatim, and round-trips it', () => {
+    const base = fixture.project;
+    const set = { '9_16': 1.5, '4_5': 0.8, '16_9': 1.0 };
+    const payload = buildSavePayload(base, {
+      ...hydrateProjectState(base, 'x'),
+      mapMagnifications: set,
+    });
+    expect(payload.map_magnification).toEqual(set);
+    // Reload → save again: the value survives untouched.
+    const reloaded = hydrateProjectState(payload, 'x');
+    expect(reloaded.mapMagnifications).toEqual(set);
+    expect(buildSavePayload(payload, reloaded).map_magnification).toEqual(set);
   });
 });

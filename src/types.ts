@@ -707,6 +707,183 @@ export function haloSettingsEquals(
   );
 }
 
+/** Travel — the playhead-travel behavior of the Transition decoration
+ *  (`TransitionSettings.travel`). When enabled, the traveling playhead
+ *  (plus gradient progress and waypoint activation — everything driven by
+ *  the synthesized wall-clock) runs along the route path across the
+ *  transition window INTO a clip instead of teleporting at the cut. The
+ *  DESTINATION clip's resolved value governs the whole window (the
+ *  transition "into" a clip belongs to that clip). Absent ⇒ off —
+ *  resolvers read it defensively.
+ *
+ *  The playhead and the route drawing are INDEPENDENT toggles: the route
+ *  can draw along the transition with the traveling playhead hidden, and
+ *  vice versa. */
+export interface TravelSettings {
+  enabled: boolean;
+  /** Show the traveling playhead marker during the window. Absent reads as
+   *  true (the marker is the point of the feature; hiding it is the
+   *  opt-out). */
+  show_playhead?: boolean;
+  /** true (the default): the traveling playhead is SYNCED to the actual
+   *  playhead — it wears the destination clip's full resolved POV look
+   *  (marker, colors, size, pulse, halo) for the entire window. false: the
+   *  `playhead` block below styles it instead, with full POV capability. */
+  sync?: boolean;
+  /** Custom traveling-playhead style, consumed only while `sync` is false.
+   *  A full POV-style block (same shape as `MapSettings.pov`) so the
+   *  traveling playhead can differ from the actual playhead in every way —
+   *  e.g. a 10px heartbeat-pulsing circle while the clip playhead is a
+   *  20px pulse-less image. Seeded by copying the current resolved POV
+   *  when the user unsyncs (one-shot copy, decoration-linking precedent).
+   *  Within this block `marker` absent means the default dot (normal
+   *  `PovSettings` semantics — there is no "track the clip marker" state;
+   *  that intent is `sync: true`). */
+  playhead?: PovSettings;
+  /** Draw the route trail along with the travel (absent reads as true).
+   *  ON: the visited trail follows the synthesized wall-clock through the
+   *  window — forced visible (in the route's resolved style) even while
+   *  the route decoration mode is 'none'. OFF: the trail keeps the
+   *  pre-travel behavior (advances with the source clip until the cut,
+   *  holds, then snaps at window exit) while only the playhead travels.
+   *  A simple on/off by design — the drawn route always wears the route
+   *  decoration's own resolved style, no separate style params. */
+  draw_route?: boolean;
+}
+
+/** Normalized reads for the optional `TravelSettings` toggles — absent
+ *  fields read as their defaults (`show_playhead`/`sync`/`draw_route` all
+ *  true). Shared by resolvers, comparators, and the toolbar so "what does
+ *  an absent field mean" can never drift. */
+export function travelShowPlayhead(t: TravelSettings): boolean {
+  return t.show_playhead !== false;
+}
+export function travelSync(t: TravelSettings): boolean {
+  return t.sync !== false;
+}
+export function travelDrawRoute(t: TravelSettings): boolean {
+  return t.draw_route !== false;
+}
+
+/** Deep equality for the POV-style block (`MapSettings.pov` /
+ *  `TravelSettings.playhead`). Field-by-field over every rendering-relevant
+ *  field; `marker` compares through `povMarkerEquals` (absent = dot) and
+ *  `halo` through `haloSettingsEquals` (absent strict, cache ignored). */
+export function povStyleEquals(a: PovSettings, b: PovSettings): boolean {
+  return (
+    a.color.toLowerCase() === b.color.toLowerCase() &&
+    a.secondary_color.toLowerCase() === b.secondary_color.toLowerCase() &&
+    a.size.pulse_radius === b.size.pulse_radius &&
+    a.size.dot_radius === b.size.dot_radius &&
+    a.size.dot_stroke_width === b.size.dot_stroke_width &&
+    a.size.pulse_start_radius === b.size.pulse_start_radius &&
+    a.size.pulse_end_radius === b.size.pulse_end_radius &&
+    a.size.image_size === b.size.image_size &&
+    a.pulse_style === b.pulse_style &&
+    a.pulse_rate === b.pulse_rate &&
+    povMarkerEquals(a.marker, b.marker) &&
+    haloSettingsEquals(a.halo, b.halo)
+  );
+}
+
+/** Deep equality for `TravelSettings` override leaves. Absence compares
+ *  strictly (halo precedent — absent equals only absent): a configured
+ *  travel block differs from "no travel". The optional toggles compare
+ *  NORMALIZED (absent = default) so `{ enabled: true }` and its explicit
+ *  spelled-out twin never record a phantom override. `playhead` compares
+ *  absence strictly — a stored custom style differs from none, even while
+ *  `sync` is true and it isn't being consumed (the config survives a
+ *  re-sync round trip, same rule as a disabled halo). */
+export function travelSettingsEquals(
+  a: TravelSettings | undefined,
+  b: TravelSettings | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.enabled !== b.enabled) return false;
+  if (travelShowPlayhead(a) !== travelShowPlayhead(b)) return false;
+  if (travelSync(a) !== travelSync(b)) return false;
+  if (travelDrawRoute(a) !== travelDrawRoute(b)) return false;
+  if (a.playhead === undefined || b.playhead === undefined) {
+    return a.playhead === undefined && b.playhead === undefined;
+  }
+  return povStyleEquals(a.playhead, b.playhead);
+}
+
+/** Ease style for the POV marker's seam animations. Each is a pure
+ *  {scale, opacity} envelope evaluated per frame (like the pulse — pause
+ *  freezes it mid-animation, export reproduces it exactly):
+ *  - 'pop'  — scale in with a slight overshoot-and-settle (out plays the
+ *             reverse: quick shrink).
+ *  - 'fade' — opacity ramp, size untouched.
+ *  - 'grow' — plain scale ramp, no overshoot. */
+export type EaseStyle = 'pop' | 'fade' | 'grow';
+
+/** Ease duration per phase. Fixed-at-the-cut anchoring (Matthew's pick):
+ *  the duration comes from the speed, NOT from the transition window's
+ *  length, so back-to-back short clips get the same snap as long ones.
+ *  slow ≈ 650 ms, medium ≈ 400 ms, fast ≈ 250 ms per phase (constants in
+ *  `mapVisuals/animations.ts`). */
+export type EaseSpeed = 'slow' | 'medium' | 'fast';
+
+/** One seam-ease config (`TransitionSettings.ease_in` / `.ease_out`).
+ *  Absent ⇒ none — the marker jumps, today's default. */
+export interface SeamEase {
+  style: EaseStyle;
+  speed: EaseSpeed;
+}
+
+export function seamEaseEquals(
+  a: SeamEase | undefined,
+  b: SeamEase | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.style === b.style && a.speed === b.speed;
+}
+
+/** The TRANSITION decoration — everything that happens to the playhead at
+ *  clip seams, as one top-level MapSettings block with its own toolbar
+ *  section. Three optional LAYERS that stack (each absent ⇒ off; a fully
+ *  absent block ⇒ today's hard jump):
+ *
+ *  - `travel` — the playhead travels the route across the transition
+ *    window instead of teleporting (see `TravelSettings`).
+ *  - `ease_out` — how THIS clip's playhead animates OUT at the seam where
+ *    it leaves. On a non-traveled seam it plays just before the cut; on a
+ *    traveled seam it softens the style crossfade at window ENTRY (clip
+ *    marker → traveling marker); it also plays at the very end of the
+ *    project for the last clip.
+ *  - `ease_in` — how THIS clip's playhead animates IN. Non-traveled seam:
+ *    just after the cut; traveled seam: the style crossfade at window
+ *    EXIT (traveling marker → clip marker); also at project start for the
+ *    first clip.
+ *
+ *  A seam therefore reads TWO clips' resolved blocks: the outgoing clip's
+ *  `ease_out` and the incoming clip's `ease_in` (+ `travel`), which is
+ *  exactly per-clip resolution doing its normal job. Absent ⇒ off — no
+ *  schema bump (halo precedent). Atomic per-clip override blob via
+ *  `MapOverrides.transition`, diffed with `transitionSettingsEquals`. */
+export interface TransitionSettings {
+  travel?: TravelSettings;
+  ease_in?: SeamEase;
+  ease_out?: SeamEase;
+}
+
+/** Deep equality for `TransitionSettings` override leaves. Absence strict
+ *  at the block level (halo precedent); each sub-block compares through
+ *  its own comparator (which normalize their optional toggles, so no
+ *  phantom overrides between minimal and spelled-out spellings). */
+export function transitionSettingsEquals(
+  a: TransitionSettings | undefined,
+  b: TransitionSettings | undefined,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return (
+    travelSettingsEquals(a.travel, b.travel) &&
+    seamEaseEquals(a.ease_in, b.ease_in) &&
+    seamEaseEquals(a.ease_out, b.ease_out)
+  );
+}
+
 export interface PovSettings {
   /** Primary color — tints the POV marker's body (today's `live-marker-dot`
    *  fill; once POV gains shape variants, the primary SDF slot). Solid only:
@@ -745,6 +922,11 @@ export interface MapSettings {
   route: RouteSettings;
   waypoints: WaypointsSettings;
   pov: PovSettings;
+  /** The Transition decoration — everything that happens to the playhead
+   *  at clip seams: route travel + seam eases (see `TransitionSettings`).
+   *  Absent ⇒ off. Additive — no schema bump. Its own block (not a POV
+   *  field) because it owns per-seam behavior that spans decorations. */
+  transition?: TransitionSettings;
   /** Shared project-level marker-image library (schema v11). Both the POV
    *  and Waypoints decorations select from this one list; selection is
    *  independent per decoration. Library mutations are project-level
@@ -816,6 +998,10 @@ export interface MapOverrides {
     marker?: PovMarker;
     halo?: HaloSettings;
   };
+  /** Per-clip Transition override. `travel` + `ease_in` govern the seam
+   *  INTO this clip; `ease_out` governs the seam OUT of it. Atomic blob
+   *  (halo precedent), diffed with `transitionSettingsEquals`. */
+  transition?: TransitionSettings;
 }
 
 export const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -999,6 +1185,7 @@ export function resolveMapSettings(
         ),
       },
       pov: defaults.pov,
+      transition: defaults.transition,
       // Defensive `?? []`: wire payloads may omit the field (the Rust
       // model skips it when empty).
       marker_images: defaults.marker_images ?? [],
@@ -1041,11 +1228,16 @@ export function resolveMapSettings(
         : defaults.waypoints.marker_image_id,
       size: { ...defaults.waypoints.size, ...overrides.waypoints?.size },
     },
+    // `marker` and `halo` are atomic blobs and ride the spread: an override
+    // replaces the whole block, absent inherits the project's.
     pov: {
       ...defaults.pov,
       ...overrides.pov,
       size: { ...defaults.pov.size, ...overrides.pov?.size },
     },
+    // Atomic top-level blob: an override replaces the whole transition
+    // block.
+    transition: overrides.transition ?? defaults.transition,
     // The library is project-level and not overridable — per-clip resolves
     // must still carry it so both surfaces can resolve `image_id`s.
     // Defensive `?? []` for wire payloads that omit the empty field.
@@ -1078,7 +1270,8 @@ export type OverridePath =
   | 'pov.pulse_rate'
   | 'pov.marker'
   | 'pov.halo'
-  | `pov.size.${keyof PovSize}`;
+  | `pov.size.${keyof PovSize}`
+  | 'transition';
 
 export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
   const out = new Set<OverridePath>();
@@ -1129,6 +1322,7 @@ export function leafPaths(overrides: MapOverrides): Set<OverridePath> {
       }
     }
   }
+  if (overrides.transition !== undefined) out.add('transition');
   return out;
 }
 
@@ -1249,6 +1443,13 @@ export function computeClipOverrides(
   if (povSize) pov.size = povSize;
   if (Object.keys(pov).length) out.pov = pov;
 
+  // transition (atomic top-level blob — the whole block records or none of
+  // it, same as the halos; deep-equal via `transitionSettingsEquals`,
+  // never `!==`)
+  if (!transitionSettingsEquals(next.transition, project.transition)) {
+    out.transition = next.transition;
+  }
+
   return out;
 }
 
@@ -1273,6 +1474,7 @@ export type {
   PipLayout,
   SplitLayout,
   ProjectLayouts,
+  MapMagnifications,
   SlotResolution,
   PixelRect,
   OutputDimensions,
@@ -1281,7 +1483,12 @@ export type {
   OutputResolution,
 } from './lib/layout';
 
-import type { AspectRatio, ProjectLayouts, OutputResolution } from './lib/layout';
+import type {
+  AspectRatio,
+  ProjectLayouts,
+  MapMagnifications,
+  OutputResolution,
+} from './lib/layout';
 
 /** Channel selector for the export pipeline. Mirrors the Rust enum-by-string
  *  in `RenderExportRequest.channel` and the union already exported from
@@ -1410,6 +1617,12 @@ export interface Project {
    *  aspect" — the Rust `load_project` backfill respects post-100 nulls but
    *  re-seeds them for pre-100 bundles. */
   layouts: ProjectLayouts;
+  /** Per-aspect map magnification. Optional on disk: absent means all three
+   *  aspects sit at 1 (the identity), and the save path omits the field
+   *  while that holds so bundles that never touch the knob are byte-
+   *  identical to what earlier builds wrote. See {@link MapMagnifications}
+   *  for the mechanism. */
+  map_magnification?: MapMagnifications;
   /** Aspect that the export pipeline targets (task 100). Creative-content
    *  state — travels with the project bundle. The Rust side guarantees this
    *  field is populated on every load (serde default for pre-100 bundles

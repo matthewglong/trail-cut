@@ -14,7 +14,7 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { CameraPreset, Clip, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, MarkerImageRef, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
+import type { CameraPreset, Clip, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapMagnifications, MapSettings, MarkerImageRef, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
 import {
   resolveMapSettings,
   computeClipOverrides,
@@ -69,6 +69,12 @@ interface ProjectViewProps {
   transitionFeel: TransitionFeel | undefined;
   projectLayouts: ProjectLayouts;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
+  /** Per-aspect map magnification (see `MapMagnifications`). Owned by App
+   *  state alongside `projectLayouts` so edits ride the same auto-save
+   *  path; the positioning modal edits it, MapView previews it, and the
+   *  export queue sends each job its aspect's factor. */
+  mapMagnifications: MapMagnifications;
+  setMapMagnifications: React.Dispatch<React.SetStateAction<MapMagnifications>>;
   /** Last user-confirmed Export modal selection (task 280). The Export
    *  modal prefills aspects/channels/output folder from this on open;
    *  `null` means "no prior export — start clean". App-level state owns the
@@ -128,6 +134,8 @@ export default function ProjectView({
   transitionFeel,
   projectLayouts,
   setProjectLayouts,
+  mapMagnifications,
+  setMapMagnifications,
   lastExportSelection,
   setLastExportSelection,
   waypoints,
@@ -732,8 +740,12 @@ export default function ProjectView({
                 route={route}
                 playheadMs={playheadMs}
                 mapSettings={toolbarSettings}
+                projectMapSettings={mapSettings}
                 aspect={previewAspectToAspectRatio(previewAspect)}
                 layouts={projectLayouts}
+                magnification={
+                  mapMagnifications[previewAspectToAspectRatio(previewAspect)]
+                }
                 projectDir={projectDir}
                 onSelectClip={handleSelectClip}
               />
@@ -791,6 +803,10 @@ export default function ProjectView({
         onLayoutChange={(aspect, next) =>
           setProjectLayouts((prev) => ({ ...prev, [aspect]: next }))
         }
+        magnifications={mapMagnifications}
+        onMagnificationChange={(aspect, value) =>
+          setMapMagnifications((prev) => ({ ...prev, [aspect]: value }))
+        }
       />
       <WaypointsPanel
         open={waypointsPanelOpen}
@@ -813,6 +829,7 @@ export default function ProjectView({
         waypoints={waypoints}
         transitionFeel={transitionFeel}
         projectLayouts={projectLayouts}
+        mapMagnifications={mapMagnifications}
         projectDir={projectDir}
       />
       <SourceFormatConfirmDialog

@@ -525,7 +525,79 @@ describe('canonicalSlotCss', () => {
       expect(previewViewport.h).toBe(rendererViewport.cssH);
       expect(rendererViewport.pixelRatio).toBe(1);
     });
+
+    it(`${aspect}: lever-model parity holds under magnification too`, () => {
+      // Magnification is the third lever: css viewport ÷ k, pixelRatio × k.
+      // The preview must resolve intents against the SAME shrunken viewport
+      // or a magnified export would reframe relative to what the pane showed.
+      // 1.4 is deliberately not a clean divisor of any slot dimension, so
+      // this also pins that both sides round the same way.
+      const k = 1.4;
+      const layout = defaultSplitLayout(aspect);
+      const slotPx = resolveSlots(layout, aspect, '1080p').map_slot;
+      const rendererViewport = canonicalMapViewport(
+        aspect,
+        slotPx.w,
+        slotPx.h,
+        '1080p',
+        k,
+      );
+      const previewViewport = canonicalSlotCss(layout, aspect, k);
+      expect(previewViewport.w).toBe(rendererViewport.cssW);
+      expect(previewViewport.h).toBe(rendererViewport.cssH);
+      // The two levers cancel: the framebuffer still lands on the slot's
+      // pixel dims, up to the css rounding carried through pixelRatio
+      // (worst case k/2 px, i.e. sub-pixel — the composite is unchanged).
+      expect(rendererViewport.pixelRatio).toBe(k);
+      expect(
+        Math.abs(rendererViewport.cssW * rendererViewport.pixelRatio - slotPx.w),
+      ).toBeLessThanOrEqual(k / 2);
+      expect(
+        Math.abs(rendererViewport.cssH * rendererViewport.pixelRatio - slotPx.h),
+      ).toBeLessThanOrEqual(k / 2);
+    });
   }
+
+  it('k = 1 is the identity (magnification is opt-in, absent ⇒ unchanged)', () => {
+    // Pins the back-compat half of the feature: every pre-magnification
+    // caller (and every project that never touches the knob) resolves the
+    // exact viewport it always did.
+    for (const aspect of aspects) {
+      const layout = defaultSplitLayout(aspect);
+      expect(canonicalSlotCss(layout, aspect, 1)).toEqual(
+        canonicalSlotCss(layout, aspect),
+      );
+    }
+  });
+
+  it('k = 2 halves the css viewport (the map lays out in half the css px)', () => {
+    for (const aspect of aspects) {
+      const layout = defaultSplitLayout(aspect);
+      const base = canonicalSlotCss(layout, aspect);
+      expect(canonicalSlotCss(layout, aspect, 2)).toEqual({
+        w: Math.round(base.w / 2),
+        h: Math.round(base.h / 2),
+      });
+    }
+  });
+
+  it('k < 1 pulls back: the viewport grows past the slot', () => {
+    const layout = defaultSplitLayout('9_16');
+    const base = canonicalSlotCss(layout, '9_16');
+    const pulled = canonicalSlotCss(layout, '9_16', 0.5);
+    expect(pulled).toEqual({ w: base.w * 2, h: base.h * 2 });
+  });
+
+  it('rounds half-away-from-zero, matching Rust f64::round on the export side', () => {
+    // 9:16 @ 1080p split at 0.5 → map slot 1080×960. k = 1.6 puts both axes
+    // on non-integers (675, 600) and k = 3.2 lands w on an exact .5 case
+    // (1080 / 3.2 = 337.5 → 338), which is where Math.round and a
+    // truncating implementation would diverge.
+    const layout = defaultSplitLayout('9_16');
+    expect(canonicalSlotCss(layout, '9_16')).toEqual({ w: 1080, h: 960 });
+    expect(canonicalSlotCss(layout, '9_16', 1.6)).toEqual({ w: 675, h: 600 });
+    expect(canonicalSlotCss(layout, '9_16', 3.2)).toEqual({ w: 338, h: 300 });
+  });
 
   it('respects an explicit pip layout (map inset dims, not the frame)', () => {
     const pip = defaultPipLayout('9_16');

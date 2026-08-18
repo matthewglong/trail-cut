@@ -306,9 +306,12 @@ export function buildPerFramePaints(
       sortKeyExpr as DataDrivenPropertyValueSpecification<number>,
     waypointPlacementKey:
       placementKeyExpr as DataDrivenPropertyValueSpecification<number>,
-    pulseRadius: pulse.a.radius,
+    // Pulse radii ride the surface factor exactly like the no-active branch
+    // above — the pulse has nothing to do with waypoint active state, so
+    // the two branches must emit identical pulse values.
+    pulseRadius: pulse.a.radius * surfaceScale,
     pulseOpacity: pulse.a.opacity,
-    pulseRadiusB: pulse.b.radius,
+    pulseRadiusB: pulse.b.radius * surfaceScale,
     pulseOpacityB: pulse.b.opacity,
     dotOpacity: pulse.a.dotOpacity,
   };

@@ -296,6 +296,96 @@ export function progressUpTo(
   return dist / total;
 }
 
+/** Cumulative geodesic distance (metres, `cumulativeDistMeters` space) the
+ *  hiker has covered at a wall-clock time. The travel-transition animation
+ *  interpolates in THIS space ("real ground distance at constant eased
+ *  speed"), then inverts back through `wallClockAtDistance` — geodesic, not
+ *  Mercator, because the traveling marker should cross real terrain
+ *  uniformly; `line-progress` parity is unaffected (the synthesized
+ *  wall-clock still flows through `progressUpTo` for gradients).
+ *
+ *  Semantics mirror `progressUpTo`:
+ *    - Before route start → 0; at/after route end → totalDistMeters.
+ *    - Inside a tractable gap → linear-in-time interpolation.
+ *    - Inside an over-MAX_INTERPOLATION_GAP_MS gap → snaps to the previous
+ *      point's distance (no pretend movement across coverage holes). */
+export function distanceAtWallClock(
+  wallClockMs: number,
+  route: IndexedRoute,
+): number {
+  if (wallClockMs <= route.minTimeMs) return 0;
+  if (wallClockMs >= route.maxTimeMs) return route.totalDistMeters;
+
+  const pts = route.points;
+  const cum = route.cumulativeDistMeters;
+  const i = bisectLeft(pts, wallClockMs);
+
+  if (i <= 0) return 0;
+  if (i >= pts.length) return route.totalDistMeters;
+  if (pts[i].timeMs === wallClockMs) return cum[i];
+
+  const before = pts[i - 1];
+  const after = pts[i];
+  const gap = after.timeMs - before.timeMs;
+  if (gap <= 0) return cum[i - 1];
+  if (gap > MAX_INTERPOLATION_GAP_MS) return cum[i - 1];
+  const t = (wallClockMs - before.timeMs) / gap;
+  return cum[i - 1] + t * (cum[i] - cum[i - 1]);
+}
+
+/** Find the first index whose cumulative value is >= target. `cum` is
+ *  monotone non-decreasing (flat runs at duplicate/stationary points). */
+function bisectLeftCumulative(cum: number[], target: number): number {
+  let lo = 0;
+  let hi = cum.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (cum[mid] < target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Invert `distanceAtWallClock`: the wall-clock time at which the hiker
+ *  first reached a cumulative geodesic distance. Clamps outside
+ *  `[0, totalDistMeters]`. Within a moving segment the time is
+ *  distance-proportional; on stationary plateaus (one distance spanning
+ *  many timestamps — paused recording, GPS-jitter-free rests) it returns
+ *  the EARLIEST time at that distance. Callers needing boundary continuity
+ *  across plateaus must clamp the result to their own time window (the
+ *  travel trace in `mapVisuals/perFrame.ts` does — same position either
+ *  way, only downstream time-keyed state like waypoint activation could
+ *  shift, bounded by the clamp).
+ *
+ *  Deliberately gap-agnostic: inverting into an over-
+ *  MAX_INTERPOLATION_GAP_MS hole yields a time inside the hole, where
+ *  `locationAt` applies its normal fallback — a travel animation sweeping
+ *  a coverage hole momentarily shows the fallback position rather than
+ *  pretending the route covers it. */
+export function wallClockAtDistance(
+  distMeters: number,
+  route: IndexedRoute,
+): number {
+  const pts = route.points;
+  const cum = route.cumulativeDistMeters;
+  if (distMeters <= 0) return route.minTimeMs;
+  const target = Math.min(distMeters, route.totalDistMeters);
+
+  const i = bisectLeftCumulative(cum, target);
+  if (i <= 0) return pts[0].timeMs;
+  if (i >= pts.length) return route.maxTimeMs;
+  // Exact hit — bisectLeft lands on the FIRST index at this distance, so a
+  // plateau resolves to its earliest timestamp.
+  if (cum[i] === target) return pts[i].timeMs;
+
+  const segLen = cum[i] - cum[i - 1];
+  // segLen > 0 here: cum[i-1] < target (bisect) and cum[i] > target (no
+  // exact hit), so the bracketing values differ. Guard anyway.
+  if (segLen <= 0) return pts[i - 1].timeMs;
+  const t = (target - cum[i - 1]) / segLen;
+  return pts[i - 1].timeMs + t * (pts[i].timeMs - pts[i - 1].timeMs);
+}
+
 /** Convert a clip + media-time-in-seconds to a wall-clock timestamp in ms.
  *  Returns null if the clip has no created_at anchor. */
 export function clipWallClockMs(clip: Clip | null, mediaSeconds: number): number | null {

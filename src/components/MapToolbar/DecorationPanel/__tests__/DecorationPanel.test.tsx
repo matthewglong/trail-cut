@@ -1846,3 +1846,177 @@ describe('DecorationPanel — Waypoints + POV HALO sections', () => {
     ).toBeNull();
   });
 });
+
+describe('DecorationPanel — TRANSITION (travel + seam eases)', () => {
+  function toggleButton(ariaLabel: string, text: 'On' | 'Off'): Element {
+    const group = q(`[aria-label="${ariaLabel}"]`);
+    expect(group, `"${ariaLabel}" radio group must exist`).toBeTruthy();
+    const btn = Array.from(group!.querySelectorAll('[role="radio"]')).find(
+      (r) => r.textContent === text,
+    );
+    expect(btn, `"${text}" radio in ${ariaLabel}`).toBeTruthy();
+    return btn!;
+  }
+  function styleModeButton(text: 'Synced' | 'Custom'): Element {
+    const group = q('[aria-label="Traveling playhead style"]');
+    expect(group, 'style radio group must exist').toBeTruthy();
+    const btn = Array.from(group!.querySelectorAll('[role="radio"]')).find(
+      (r) => r.textContent === text,
+    );
+    expect(btn, `"${text}" radio in style picker`).toBeTruthy();
+    return btn!;
+  }
+
+  const settingsWithTravel = (
+    travel: NonNullable<NonNullable<MapSettings['transition']>['travel']>,
+  ): MapSettings => ({ ...DEFAULT_MAP_SETTINGS, transition: { travel } });
+
+  it('renders a TRAVEL section, toggle Off, no sub-sections by default', () => {
+    render(<DecorationPanel {...baseProps({ decoration: 'transition' })} />);
+    const text = document.body.textContent ?? '';
+    expect(/TRAVEL/.test(text)).toBe(true);
+    expect(/PLAYHEAD/.test(text)).toBe(false);
+    expect(/DRAW ROUTE/.test(text)).toBe(false);
+    expect(q('[aria-label="Traveling playhead style"]')).toBeNull();
+  });
+
+  it('toggling On writes {enabled:true}; enabled render shows the sub-sections, Synced by default, no style controls', () => {
+    const onChange = vi.fn();
+    render(<DecorationPanel {...baseProps({ decoration: 'transition', onChange })} />);
+    click(toggleButton('Playhead travel', 'On'));
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.transition).toEqual({ travel: { enabled: true } });
+
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'transition',
+          settings: settingsWithTravel({ enabled: true }),
+        })}
+      />,
+    );
+    const text = document.body.textContent ?? '';
+    expect(/PLAYHEAD/.test(text)).toBe(true);
+    expect(/DRAW ROUTE/.test(text)).toBe(true);
+    const synced = styleModeButton('Synced');
+    expect(synced.getAttribute('aria-checked')).toBe('true');
+    // Synced ⇒ no custom style controls mounted.
+    expect(q('[data-testid="travel-playhead-marker-section"]')).toBeNull();
+  });
+
+  it('switching STYLE to Custom writes sync:false with the playhead seeded from the current POV (one-shot copy)', () => {
+    const onChange = vi.fn();
+    const settings = settingsWithTravel({ enabled: true });
+    render(
+      <DecorationPanel
+        {...baseProps({ decoration: 'transition', settings, onChange })}
+      />,
+    );
+    click(styleModeButton('Custom'));
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.transition?.travel?.sync).toBe(false);
+    // Seeded by copying the current resolved POV — equal value, distinct
+    // references (later edits must not alias the clip playhead config).
+    expect(next.transition?.travel?.playhead).toEqual(DEFAULT_MAP_SETTINGS.pov);
+    expect(next.transition?.travel?.playhead).not.toBe(DEFAULT_MAP_SETTINGS.pov);
+    expect(next.transition?.travel?.playhead?.size).not.toBe(DEFAULT_MAP_SETTINGS.pov.size);
+  });
+
+  it('custom style exposes the full POV control set; marker picks write travel.playhead.marker', () => {
+    const onChange = vi.fn();
+    const settings = settingsWithTravel({
+      enabled: true,
+      sync: false,
+      playhead: { ...DEFAULT_MAP_SETTINGS.pov },
+    });
+    render(
+      <DecorationPanel
+        {...baseProps({ decoration: 'transition', settings, onChange })}
+      />,
+    );
+    // Marker gallery + pulse + size + halo all mount under travel testids.
+    expect(q('[data-testid="travel-playhead-marker-section"]')).toBeTruthy();
+    const text = document.body.textContent ?? '';
+    expect(/PULSE STYLE/.test(text)).toBe(true);
+    expect(/HALO/.test(text)).toBe(true);
+    click(q('[data-testid="travel-playhead-marker-cell-ring"]')!);
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.transition?.travel?.playhead?.marker).toEqual({
+      kind: 'shape',
+      shape: 'ring',
+    });
+    // The rest of the transition blob rides along untouched.
+    expect(next.transition?.travel?.sync).toBe(false);
+    expect(next.transition?.travel?.enabled).toBe(true);
+  });
+
+  it('PLAYHEAD and DRAW ROUTE toggles write show_playhead / draw_route independently', () => {
+    const onChange = vi.fn();
+    const settings = settingsWithTravel({ enabled: true });
+    render(
+      <DecorationPanel
+        {...baseProps({ decoration: 'transition', settings, onChange })}
+      />,
+    );
+    click(toggleButton('Traveling playhead', 'Off'));
+    expect((onChange.mock.calls[0][0] as MapSettings).transition).toEqual({
+      travel: { enabled: true, show_playhead: false },
+    });
+    click(toggleButton('Draw route during travel', 'Off'));
+    expect((onChange.mock.calls[1][0] as MapSettings).transition).toEqual({
+      travel: { enabled: true, draw_route: false },
+    });
+  });
+
+  it('re-syncing keeps the stored custom style; toggling Off keeps the whole config (round trips)', () => {
+    const onChange = vi.fn();
+    const customPlayhead = {
+      ...DEFAULT_MAP_SETTINGS.pov,
+      marker: { kind: 'shape' as const, shape: 'ring' as const },
+    };
+    const settings = settingsWithTravel({
+      enabled: true,
+      sync: false,
+      playhead: customPlayhead,
+    });
+    render(
+      <DecorationPanel
+        {...baseProps({ decoration: 'transition', settings, onChange })}
+      />,
+    );
+    click(styleModeButton('Synced'));
+    const afterSync = (onChange.mock.calls[0][0] as MapSettings).transition!.travel!;
+    expect(afterSync.sync).toBe(true);
+    expect(afterSync.playhead).toEqual(customPlayhead);
+    click(toggleButton('Playhead travel', 'Off'));
+    const afterOff = (onChange.mock.calls[1][0] as MapSettings).transition!.travel!;
+    expect(afterOff.enabled).toBe(false);
+    expect(afterOff.playhead).toEqual(customPlayhead);
+  });
+
+  it('clip scope: transition pill renders when overridden; clear writes the project blob back', () => {
+    const onChange = vi.fn();
+    const projectSettings: MapSettings = settingsWithTravel({ enabled: true });
+    const clipResolved: MapSettings = settingsWithTravel({
+      enabled: true,
+      draw_route: false,
+    });
+    render(
+      <DecorationPanel
+        {...baseProps({
+          decoration: 'transition',
+          settings: clipResolved,
+          onChange,
+          scope: 'clip',
+          overriddenKeys: new Set(['transition']),
+          projectSettings,
+        })}
+      />,
+    );
+    const clear = q('[data-testid="transition-clear-override"]');
+    expect(clear).toBeTruthy();
+    click(clear!);
+    const next = onChange.mock.calls[0][0] as MapSettings;
+    expect(next.transition).toEqual({ travel: { enabled: true } });
+  });
+});

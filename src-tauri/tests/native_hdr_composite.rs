@@ -229,6 +229,7 @@ fn build_request(
         layout: LayoutDescriptor {
             aspect,
             resolution: OutputResolution::default(),
+            magnification: 1.0,
             layout,
             resolved,
         },

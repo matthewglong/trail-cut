@@ -150,6 +150,8 @@ export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
         ...(overrides.pov?.size ?? {}),
       },
     },
+    // Atomic optional blob — present wins whole, absent stays absent.
+    transition: overrides.transition ?? DEFAULT_MAP_SETTINGS.transition,
     marker_images:
       overrides.marker_images ?? DEFAULT_MAP_SETTINGS.marker_images,
   };

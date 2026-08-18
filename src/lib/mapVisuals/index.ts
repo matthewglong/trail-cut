@@ -5,11 +5,16 @@
 
 export {
   buildStyleSpec,
+  buildBasemapSpec,
   resolveStaticPaints,
   haloGroupPolicy,
+  haloCompositesFor,
+  povStyleTuples,
+  routeTrailVisibilityTuples,
   PAINT_REFERENCE_WIDTH,
   SHAPE_CANONICAL_RADIUS,
 } from './styleSpec';
+export type { BasemapSpec, PovStyleTuples } from './styleSpec';
 export {
   BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_HALO_LAYER,
@@ -74,6 +79,13 @@ export { buildStaticSourceData } from './sources';
 export { buildPerFrameState } from './perFrame';
 
 export { pulseAt, pulsePairAt, PULSE_PERIOD_MS, PULSE_RATE_MS } from './animations';
+export {
+  EASE_PHASE_MS,
+  EASE_MAX_PHASE_MS,
+  easeEnvelopeSample,
+  seamEnvelopeAt,
+} from './animations';
+export type { EaseEnvelope, SeamInstant } from './animations';
 
 export type { ResolvedStaticPaints } from './styleSpec';
 

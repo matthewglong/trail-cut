@@ -489,8 +489,11 @@ function resolveCanonical(
  *  Matches the curve used by most UI animation libraries: gentle start,
  *  fast middle, gentle end. The `_feel` parameter is accepted for API
  *  symmetry but unused — feel manifests through `arcDurationMs`'s
- *  multiplier (snappy=0.6, slow=1.5), not the easing curve itself. */
-function easeInOut(x: number, _feel: TransitionFeel): number {
+ *  multiplier (snappy=0.6, slow=1.5), not the easing curve itself.
+ *  Exported for the POV travel trace (`mapVisuals/perFrame.ts`), which
+ *  MUST ride the identical curve so the traveling marker and the camera
+ *  arc accelerate/decelerate together. */
+export function easeInOut(x: number, _feel: TransitionFeel): number {
   return x < 0.5
     ? 4 * x * x * x
     : 1 - Math.pow(-2 * x + 2, 3) / 2;
@@ -1116,7 +1119,7 @@ function findClipSpanAt(spans: ClipSpan[], t: number): ClipSpan | null {
  *  both sides of an adjacent boundary overrun a too-short clip per the
  *  clamping policy), the LATER one wins. Its `toCamera` is more recent and
  *  matches the seam handoff direction. */
-function findTransitionSpanAt(
+export function findTransitionSpanAt(
   spans: TransitionSpan[],
   t: number,
 ): TransitionSpan | null {

@@ -53,10 +53,19 @@ import {
   type MapSettings,
   type MarkerImageRef,
   type OverridePath,
+  type EaseSpeed,
+  type EaseStyle,
   type PovMarker,
   type PovMarkerShape,
   type PovPulseStyle,
   type PovPulseRate,
+  type PovSettings,
+  type SeamEase,
+  type TransitionSettings,
+  type TravelSettings,
+  travelDrawRoute,
+  travelShowPlayhead,
+  travelSync,
   type TriMode,
   type Waypoint,
   type WaypointLabelMode,
@@ -119,7 +128,7 @@ const PULSE_RATE_OPTIONS: { value: PovPulseRate; label: string }[] = [
   { value: 'fast',   label: 'Fast'   },
 ];
 
-export type DecorationKind = 'route' | 'waypoints' | 'pov';
+export type DecorationKind = 'route' | 'waypoints' | 'pov' | 'transition';
 export type DecorationPanelCloseOptions = { restoreFocus?: boolean };
 
 export interface DecorationPanelProps {
@@ -332,9 +341,10 @@ export function DecorationPanel({
   );
 
   const titleByDecoration: Record<DecorationKind, string> = {
-    route:     'ROUTE',
-    waypoints: 'WAYPOINTS',
-    pov:       'POV',
+    route:      'ROUTE',
+    waypoints:  'WAYPOINTS',
+    pov:        'POV',
+    transition: 'TRANSITION',
   };
 
   const panelStyle: CSSProperties = {
@@ -448,6 +458,21 @@ export function DecorationPanel({
 
         {decoration === 'pov' && (
           <PovPanelBody
+            settings={settings}
+            onChange={onChange}
+            scope={scope}
+            overriddenKeys={overriddenKeys}
+            projectSettings={projectSettings}
+            projectDir={projectDir}
+            onMarkerUpload={handleMarkerUpload}
+            markerImporting={markerImporting}
+            markerImportError={markerImportError}
+            onRequestDeleteImage={setPendingDeleteId}
+          />
+        )}
+
+        {decoration === 'transition' && (
+          <TransitionPanelBody
             settings={settings}
             onChange={onChange}
             scope={scope}
@@ -1603,6 +1628,470 @@ function PovPanelBody({
                   })
               : null,
           )}
+        />
+      </Section>
+    </>
+  );
+}
+
+// ---------- Transition panel body -------------------------------------------
+
+const TRAVEL_SYNC_OPTIONS: { value: 'synced' | 'custom'; label: string }[] = [
+  { value: 'synced', label: 'Synced' },
+  { value: 'custom', label: 'Custom' },
+];
+
+/** Ease style roster incl. the 'none' sentinel (absent block). */
+type EaseStyleOption = EaseStyle | 'none';
+const EASE_STYLE_OPTIONS: { value: EaseStyleOption; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'pop',  label: 'Pop'  },
+  { value: 'fade', label: 'Fade' },
+  { value: 'grow', label: 'Grow' },
+];
+const EASE_SPEED_OPTIONS: { value: EaseSpeed; label: string }[] = [
+  { value: 'slow',   label: 'Slow'   },
+  { value: 'medium', label: 'Medium' },
+  { value: 'fast',   label: 'Fast'   },
+];
+
+/** One seam-ease editor (EASE IN / EASE OUT share it): a style strip with
+ *  the None sentinel, plus a speed strip while a style is chosen. Picking
+ *  None removes the block (absent = none). */
+function EaseSection({
+  label,
+  ease,
+  onChange,
+  ariaLabel,
+  caption,
+}: {
+  label: string;
+  ease: SeamEase | undefined;
+  onChange: (next: SeamEase | undefined) => void;
+  ariaLabel: string;
+  caption: string;
+}) {
+  return (
+    <Section label={label}>
+      <SegmentedPicker<EaseStyleOption>
+        value={ease?.style ?? 'none'}
+        options={EASE_STYLE_OPTIONS}
+        onChange={(style) =>
+          onChange(
+            style === 'none'
+              ? undefined
+              : { style, speed: ease?.speed ?? 'medium' },
+          )
+        }
+        title={caption}
+        ariaLabel={ariaLabel}
+      />
+      {ease && (
+        <SegmentedPicker<EaseSpeed>
+          value={ease.speed}
+          options={EASE_SPEED_OPTIONS}
+          onChange={(speed) => onChange({ ...ease, speed })}
+          title="Ease duration"
+          ariaLabel={`${ariaLabel} speed`}
+        />
+      )}
+      <p style={panelStyles.caption}>{caption}</p>
+    </Section>
+  );
+}
+
+/** One-shot deep-enough copy of a POV style block — the seed for a freshly
+ *  unsynced traveling playhead (decoration-linking precedent: copy what the
+ *  user currently sees, then diverge). Object leaves are cloned so later
+ *  edits to the custom style can never alias the source POV config. */
+function clonePovStyle(pov: PovSettings): PovSettings {
+  return {
+    ...pov,
+    size: { ...pov.size },
+    marker: pov.marker ? { ...pov.marker } : undefined,
+    halo: pov.halo ? { ...pov.halo } : undefined,
+  };
+}
+
+/** TRANSITION — everything that happens to the playhead at clip seams
+ *  (`MapSettings.transition`, one atomic per-clip override blob via
+ *  `MapOverrides.transition`). Three stacking layers:
+ *
+ *  - TRAVEL (nested `transition.travel`; the DESTINATION clip's resolved
+ *    value governs the seam INTO it): master on/off, PLAYHEAD show/hide,
+ *    DRAW ROUTE on/off (independent toggles), and the synced/custom STYLE
+ *    picker (custom exposes the full POV control set on
+ *    `travel.playhead`, seeded by copying the current playhead on first
+ *    unsync).
+ *  - EASE IN / EASE OUT (`transition.ease_in` / `.ease_out`): how this
+ *    clip's playhead animates in/out at the seams where it appears and
+ *    leaves — anchored at the cut on jump seams, at the style-swap window
+ *    edges on traveled seams. Independent of the travel toggle. */
+function TransitionPanelBody({
+  settings,
+  onChange,
+  scope,
+  overriddenKeys,
+  projectSettings,
+  projectDir,
+  onMarkerUpload,
+  markerImporting,
+  markerImportError,
+  onRequestDeleteImage,
+}: {
+  settings: MapSettings;
+  onChange: (next: MapSettings) => void;
+  scope: 'project' | 'clip';
+  overriddenKeys: Set<OverridePath> | null;
+  projectSettings: MapSettings | null | undefined;
+  projectDir: string | null | undefined;
+  onMarkerUpload: () => void;
+  markerImporting: boolean;
+  markerImportError: string | null;
+  onRequestDeleteImage: (id: string) => void;
+}) {
+  const transition = settings.transition;
+  const travel = transition?.travel;
+  const enabled = travel?.enabled === true;
+  // A fully-empty blob collapses back to absent so "everything off" and
+  // "never touched" serialize identically (and record no phantom override).
+  const setTransition = (next: TransitionSettings | undefined) => {
+    const collapsed =
+      next &&
+      next.travel === undefined &&
+      next.ease_in === undefined &&
+      next.ease_out === undefined
+        ? undefined
+        : next;
+    onChange({ ...settings, transition: collapsed });
+  };
+  const setTravel = (nextTravel: TravelSettings) =>
+    setTransition({ ...(transition ?? {}), travel: nextTravel });
+  const setEnabled = (next: 'off' | 'on') => {
+    if (next === 'on') {
+      // Flip in place so a previously chosen config (custom style, route
+      // toggle) survives an off→on round trip (halo precedent).
+      setTravel(travel ? { ...travel, enabled: true } : { enabled: true });
+      return;
+    }
+    if (travel?.enabled) setTravel({ ...travel, enabled: false });
+  };
+  const setShowPlayhead = (next: 'off' | 'on') => {
+    if (travel) setTravel({ ...travel, show_playhead: next === 'on' });
+  };
+  const setDrawRoute = (next: 'off' | 'on') => {
+    if (travel) setTravel({ ...travel, draw_route: next === 'on' });
+  };
+  const setStyleMode = (next: 'synced' | 'custom') => {
+    if (!travel) return;
+    if (next === 'synced') {
+      // Keep the stored custom style so re-unsyncing restores it (the
+      // disabled-halo precedent: config survives the off-toggle).
+      setTravel({ ...travel, sync: true });
+      return;
+    }
+    setTravel({
+      ...travel,
+      sync: false,
+      playhead: travel.playhead ?? clonePovStyle(settings.pov),
+    });
+  };
+  const setPlayheadStyle = (nextPov: PovSettings) => {
+    if (travel) setTravel({ ...travel, playhead: nextPov });
+  };
+  const setEaseIn = (next: SeamEase | undefined) =>
+    setTransition({ ...(transition ?? {}), ease_in: next });
+  const setEaseOut = (next: SeamEase | undefined) =>
+    setTransition({ ...(transition ?? {}), ease_out: next });
+
+  const overridden =
+    scope === 'clip' && (overriddenKeys?.has('transition') ?? false);
+  const clearOverride = () =>
+    onChange({
+      ...settings,
+      transition: projectSettings ? projectSettings.transition : undefined,
+    });
+
+  const synced = travel ? travelSync(travel) : true;
+  const customStyle = travel?.playhead ?? clonePovStyle(settings.pov);
+
+  return (
+    <>
+      <Section label="TRAVEL">
+        {overridden && projectSettings && (
+          <div style={sectionStyles.overridePillRow}>
+            <span style={sectionStyles.overridePill}>
+              <span style={sectionStyles.overridePillDot} />
+              Clip · override
+            </span>
+            <button
+              type="button"
+              onClick={clearOverride}
+              style={sectionStyles.clearButton}
+              title="Reset to project"
+              data-testid="transition-clear-override"
+            >
+              × Reset to project
+            </button>
+          </div>
+        )}
+        <SegmentedPicker<'off' | 'on'>
+          value={enabled ? 'on' : 'off'}
+          options={HALO_TOGGLE_OPTIONS}
+          onChange={setEnabled}
+          title="Animate the playhead along the route during the transition into this clip"
+          ariaLabel="Playhead travel"
+        />
+        <p style={panelStyles.caption}>
+          Travels the route between clips instead of jumping at the cut.
+        </p>
+      </Section>
+
+      {enabled && travel && (
+        <>
+          {/* Playhead visibility and route drawing are INDEPENDENT — the
+           *  route can draw along the transition with the marker hidden,
+           *  and vice versa. */}
+          <Section label="PLAYHEAD">
+            <SegmentedPicker<'off' | 'on'>
+              value={travelShowPlayhead(travel) ? 'on' : 'off'}
+              options={HALO_TOGGLE_OPTIONS}
+              onChange={setShowPlayhead}
+              title="Show the traveling playhead marker during the transition"
+              ariaLabel="Traveling playhead"
+            />
+          </Section>
+
+          <Section label="DRAW ROUTE">
+            <SegmentedPicker<'off' | 'on'>
+              value={travelDrawRoute(travel) ? 'on' : 'off'}
+              options={HALO_TOGGLE_OPTIONS}
+              onChange={setDrawRoute}
+              title="Draw the route along with the travel (uses the Route decoration's style)"
+              ariaLabel="Draw route during travel"
+            />
+            <p style={panelStyles.caption}>
+              Draws the visited route along the transition, even while the
+              route decoration is off.
+            </p>
+          </Section>
+
+          <Section label="STYLE">
+            <SegmentedPicker<'synced' | 'custom'>
+              value={synced ? 'synced' : 'custom'}
+              options={TRAVEL_SYNC_OPTIONS}
+              onChange={setStyleMode}
+              title="Synced: matches the destination clip's playhead. Custom: style the traveling playhead independently."
+              ariaLabel="Traveling playhead style"
+            />
+            <p style={panelStyles.caption}>
+              {synced
+                ? 'Matches the destination clip’s playhead exactly.'
+                : 'Fully independent style for the traveling playhead.'}
+            </p>
+          </Section>
+
+          {!synced && (
+            <PovStyleControls
+              pov={customStyle}
+              onPovChange={setPlayheadStyle}
+              markerImages={settings.marker_images}
+              projectDir={projectDir}
+              onMarkerUpload={onMarkerUpload}
+              markerImporting={markerImporting}
+              markerImportError={markerImportError}
+              onRequestDeleteImage={onRequestDeleteImage}
+              ariaPrefix="Traveling playhead"
+              testIdPrefix="travel-playhead"
+            />
+          )}
+        </>
+      )}
+
+      {/* Seam eases — independent of the travel toggle: on jump seams they
+       *  anchor at the cut; on traveled seams they soften the style swaps
+       *  at the window edges. EASE IN plays where this clip's playhead
+       *  appears; EASE OUT where it leaves. */}
+      <EaseSection
+        label="EASE IN"
+        ease={transition?.ease_in}
+        onChange={setEaseIn}
+        ariaLabel="Playhead ease in"
+        caption="Animates the playhead in when this clip arrives."
+      />
+      <EaseSection
+        label="EASE OUT"
+        ease={transition?.ease_out}
+        onChange={setEaseOut}
+        ariaLabel="Playhead ease out"
+        caption="Animates the playhead out as this clip ends."
+      />
+    </>
+  );
+}
+
+/** The full POV-style control set (marker gallery, colors, pulse, sizes,
+ *  halo) bound to ONE PovSettings-shaped value. Used by the Travel panel's
+ *  custom traveling-playhead style; mirrors the POV panel's controls minus
+ *  the per-leaf override pills (a travel style is one atomic blob — the
+ *  TRAVEL section's single pill covers all of it). */
+function PovStyleControls({
+  pov,
+  onPovChange,
+  markerImages,
+  projectDir,
+  onMarkerUpload,
+  markerImporting,
+  markerImportError,
+  onRequestDeleteImage,
+  ariaPrefix,
+  testIdPrefix,
+}: {
+  pov: PovSettings;
+  onPovChange: (next: PovSettings) => void;
+  markerImages: MarkerImageRef[];
+  projectDir: string | null | undefined;
+  onMarkerUpload: () => void;
+  markerImporting: boolean;
+  markerImportError: string | null;
+  onRequestDeleteImage: (id: string) => void;
+  ariaPrefix: string;
+  testIdPrefix: string;
+}) {
+  const marker = povMarkerOf(pov);
+  const markerValue: MarkerValue =
+    marker.kind === 'image' ? imageMarkerValue(marker.image_id) : marker.shape;
+  const isImage = marker.kind === 'image';
+  const isDot = marker.kind === 'shape' && marker.shape === 'dot';
+  const showSecondaryColor =
+    !isImage &&
+    (isDot || shapeHasSecondary(marker.kind === 'shape' ? marker.shape : ''));
+
+  const setMarker = (next: MarkerValue) => {
+    const imageId = imageIdOfMarkerValue(next);
+    const nextMarker: PovMarker = imageId
+      ? { kind: 'image', image_id: imageId }
+      : { kind: 'shape', shape: next as PovMarkerShape };
+    onPovChange({ ...pov, marker: nextMarker });
+  };
+  const setSize = (patch: Partial<PovSettings['size']>) =>
+    onPovChange({ ...pov, size: { ...pov.size, ...patch } });
+
+  return (
+    <>
+      <Section label="MARKER">
+        <MarkerSection
+          domain="pov"
+          value={markerValue}
+          onChange={setMarker}
+          markerImages={markerImages}
+          projectDir={projectDir}
+          onUpload={onMarkerUpload}
+          importing={markerImporting}
+          onDeleteImage={onRequestDeleteImage}
+          uploadError={markerImportError}
+          ariaLabel={`${ariaPrefix} marker`}
+          testIdPrefix={`${testIdPrefix}-marker-cell`}
+          containerTestId={`${testIdPrefix}-marker-section`}
+        />
+      </Section>
+
+      <Section label="COLOR">
+        <ColorSection
+          value={pov.color}
+          onChange={(hex) => onPovChange({ ...pov, color: hex })}
+        />
+        {isImage && (
+          <p style={panelStyles.caption}>
+            With an image marker, color tints the pulse only.
+          </p>
+        )}
+      </Section>
+
+      {showSecondaryColor && (
+        <Section label="SECONDARY COLOR">
+          <ColorSection
+            value={pov.secondary_color}
+            onChange={(hex) => onPovChange({ ...pov, secondary_color: hex })}
+          />
+        </Section>
+      )}
+
+      <Section label="PULSE STYLE">
+        <SegmentedPicker<PovPulseStyle>
+          value={pov.pulse_style}
+          options={PULSE_STYLE_OPTIONS}
+          onChange={(pulse_style) => onPovChange({ ...pov, pulse_style })}
+          title="Pulse animation style"
+          ariaLabel={`${ariaPrefix} pulse animation style`}
+        />
+      </Section>
+
+      <Section label="PULSE RATE">
+        <SegmentedPicker<PovPulseRate>
+          value={pov.pulse_rate}
+          options={PULSE_RATE_OPTIONS}
+          onChange={(pulse_rate) => onPovChange({ ...pov, pulse_rate })}
+          title="Pulse rate"
+          ariaLabel={`${ariaPrefix} pulse rate`}
+        />
+      </Section>
+
+      <Section label="SIZE">
+        {isImage ? (
+          <SizeRow
+            label="Image size"
+            stored={pov.size.image_size}
+            onStoredChange={(v) => setSize({ image_size: v })}
+          />
+        ) : isDot ? (
+          <>
+            <SizeRow
+              label="Dot radius"
+              stored={pov.size.dot_radius}
+              onStoredChange={(v) => setSize({ dot_radius: v })}
+            />
+            <SizeRow
+              label="Dot stroke"
+              stored={pov.size.dot_stroke_width}
+              onStoredChange={(v) => setSize({ dot_stroke_width: v })}
+            />
+          </>
+        ) : (
+          <>
+            <SizeRow
+              label="Marker radius"
+              stored={pov.size.dot_radius}
+              onStoredChange={(v) => setSize({ dot_radius: v })}
+            />
+            <SizeRow
+              label="Outline"
+              stored={pov.size.dot_stroke_width}
+              onStoredChange={(v) => setSize({ dot_stroke_width: v })}
+            />
+          </>
+        )}
+        <SizeRow
+          label="Pulse start r"
+          stored={pov.size.pulse_start_radius}
+          onStoredChange={(v) => setSize({ pulse_start_radius: v })}
+        />
+        <SizeRow
+          label="Pulse end r"
+          stored={pov.size.pulse_end_radius}
+          onStoredChange={(v) => setSize({ pulse_end_radius: v })}
+        />
+      </Section>
+
+      <Section label="HALO">
+        <HaloControls
+          halo={pov.halo}
+          seed={DEFAULT_MARKER_HALO}
+          onChange={(next) => onPovChange({ ...pov, halo: next })}
+          title="Optional glow painted beneath the traveling playhead"
+          ariaLabel={`${ariaPrefix} halo`}
+          colorTestId={`${testIdPrefix}-halo-color`}
+          allowGradient={false}
         />
       </Section>
     </>

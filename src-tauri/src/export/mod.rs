@@ -52,7 +52,7 @@ pub use layout::{
     output_dims, resolve_slots,
     AspectRatio, CanonicalMapViewport, CornerRadiusSlot, LayoutConfig, LayoutDescriptor,
     NormalizedRect, OutputDimensions, PipInsetSource, PixelRect, ProjectLayouts,
-    SlotResolution, SplitSide,
+    SlotResolution, SplitSide, MAX_MAGNIFICATION, MIN_MAGNIFICATION,
 };
 pub use orchestrator::{
     render_map_frames, OrchestratorConfig, RendererBackend, RECYCLE_EVERY_FRAMES,
@@ -190,6 +190,24 @@ fn validate_request(req: &RenderExportRequest) -> Result<ValidatedRequest, Rende
         return Err(RenderExportError::validation(format!(
             "layout descriptor parity check failed: frontend resolved={:?}, rust resolved={:?}",
             req.layout.resolved, recomputed,
+        )));
+    }
+
+    // Map-magnification range. `k` divides the renderer's css viewport, so a
+    // zero, negative, or non-finite value produces a degenerate (or NaN)
+    // viewport deep inside the renderer where the failure reads as a renderer
+    // bug. The bounds are the product range: below 0.5 the map is so wide the
+    // basemap label density collapses, above 2.0 the css viewport is small
+    // enough that MapLibre starts dropping zoom-dependent detail. Rejected
+    // loudly rather than clamped — a project file or IPC payload carrying an
+    // out-of-range `k` is wrong, and silently rendering a different value than
+    // the user set is worse than refusing.
+    // (NaN fails the range test too — `contains` is false for it.)
+    let k = req.layout.magnification;
+    if !(MIN_MAGNIFICATION..=MAX_MAGNIFICATION).contains(&k) {
+        return Err(RenderExportError::validation(format!(
+            "layout.magnification {} out of range [{}, {}]",
+            k, MIN_MAGNIFICATION, MAX_MAGNIFICATION,
         )));
     }
 
@@ -451,6 +469,7 @@ async fn render_export_map_only(
         map_slot,
         req.layout.aspect,
         req.layout.resolution,
+        req.layout.magnification,
         req.fps,
         req.project_state,
     );
@@ -473,39 +492,61 @@ async fn render_export_map_only(
     })
 }
 
-/// Construct a `SetupPayload` from the resolved map slot, export aspect, and
-/// output resolution.
+/// Construct a `SetupPayload` from the resolved map slot, export aspect,
+/// output resolution, and map magnification.
 ///
 /// Computes the renderer-worker's three viewport-shape fields under the
 /// multiplier model (MAP_RENDERING_PLAN.md §"The lever model"), then applies
-/// the SSAA supersample factor on top of the framebuffer/pixelRatio:
+/// the magnification factor and the SSAA supersample factor on top:
 /// - `framebuffer` = map slot pixel dims × `map_supersample_factor` — the
 ///   high-res WebGL buffer the renderer paints into.
 /// - `readback` = map slot pixel dims — the buffer the renderer downsamples
 ///   that framebuffer to ON-GPU and writes back, so supersampling never
 ///   inflates the wire (the readback bytes match `frame_bytes_per_input`).
-/// - `pixel_ratio = multiplier × factor`, where `multiplier =
+/// - `pixel_ratio = multiplier × magnification × factor`, where `multiplier =
 ///   output_dims(aspect, resolution).w / output_dims(aspect, P1080).w` is
 ///   purely a function of (aspect, resolution) (∈ {2/3, 1, 4/3, 2}) and
 ///   `factor` is the SSAA factor (∈ {2, 3} for the exposed exports).
 ///   Multiplying only framebuffer/pixelRatio supersamples without changing
 ///   apparent scale (zoom is interpreted at `css_viewport`).
-/// - `css_viewport = (round(slot_w / multiplier), round(slot_h /
-///   multiplier))`. The CSS viewport aspect matches the **slot** aspect (not
-///   `canonical_map_css_width` on the W axis any more) so MapLibre paints
-///   into the slot shape directly — no render-then-crop.
+/// - `css_viewport = (round(slot_w / (multiplier × magnification)),
+///   round(slot_h / (multiplier × magnification)))`. The CSS viewport aspect
+///   matches the **slot** aspect (not `canonical_map_css_width` on the W axis
+///   any more) so MapLibre paints into the slot shape directly — no
+///   render-then-crop.
+///
+/// The three levers are orthogonal and each moves exactly one thing:
+/// - `multiplier` (resolution) — pixel density only. CSS viewport shrinks and
+///   `pixel_ratio` grows in lockstep, so apparent scale is fixed.
+/// - `magnification` (per-aspect user control, `k`) — apparent scale only. It
+///   rides the SAME reciprocal pair as `multiplier`, so the framebuffer stays
+///   slot-sized while a `k`× smaller CSS viewport renders the same zoom over a
+///   `k`× smaller ground area: everything the map draws lands `k`× larger
+///   relative to the frame. `k` deliberately does NOT feed
+///   `map_supersample_factor` — SSAA is a function of the (unchanged) slot,
+///   not of apparent scale, and letting `k` move it would couple crispness
+///   tiers to a creative control.
+/// - `factor` (SSAA) — render-time sample count only, invisible downstream of
+///   the renderer's on-GPU downsample.
+///
+/// At `magnification == 1.0` every derived value is bit-identical to the
+/// pre-magnification derivation: `x / 1.0` and `x * 1.0` are IEEE-754
+/// identities, so the multiply is a no-op rather than a re-rounding.
 ///
 /// Sanity-checked with an epsilon tolerance: `|css * pixel_ratio - fb| <=
 /// pixel_ratio * 0.5` on each axis. Strict equality would fail because css_w
-/// / css_h are rounded to integers; rounding `slot/multiplier` can land up to
-/// `multiplier/2` off the original on a back-multiply. The renderer page
-/// pads/crops by ≤1 row/col to match (init.ts captureFramebufferIntoBuf), so
-/// this drift is benign — the assert just guards against the bound being
-/// blown by something larger (e.g. a malformed multiplier).
+/// / css_h are rounded to integers; rounding `slot/(multiplier×magnification)`
+/// can land up to `multiplier×magnification/2` off the original on a
+/// back-multiply — which is exactly what the `pixel_ratio * 0.5` bound scales
+/// with, so it generalizes across `k` unchanged. The renderer page pads/crops
+/// by ≤1 row/col to match (init.ts captureFramebufferIntoBuf), so this drift
+/// is benign — the assert just guards against the bound being blown by
+/// something larger (e.g. a malformed multiplier).
 fn build_setup_payload(
     map_slot: PixelRect,
     aspect: AspectRatio,
     resolution: OutputResolution,
+    magnification: f64,
     fps: u32,
     project_state: Value,
 ) -> SetupPayload {
@@ -514,6 +555,15 @@ fn build_setup_payload(
     // TS↔Rust parity tests all share one derivation. See
     // `canonical_map_viewport`'s doc for the contract.
     let canonical = canonical_map_viewport(aspect, map_slot.w, map_slot.h, resolution);
+
+    // Magnification rides on TOP of the canonical viewport rather than inside
+    // it: `canonical_map_viewport` is the shared TS↔Rust parity surface for the
+    // resolution lever (tests/fixtures/layout_parity.json pins its output), and
+    // `k` is an export-only creative control that must not perturb it.
+    let multiplier = canonical.pixel_ratio;
+    let scaled = multiplier * magnification;
+    let css_w = (map_slot.w as f64 / scaled).round() as u32;
+    let css_h = (map_slot.h as f64 / scaled).round() as u32;
 
     // SSAA: render the map into a framebuffer `factor`× the slot, then
     // downsample it back to slot dims ON-GPU in the renderer (see the
@@ -525,7 +575,8 @@ fn build_setup_payload(
     // framebuffer/pixelRatio supersamples without changing apparent scale.
     // `framebuffer = slot * factor` is exact (integer factor), so `css *
     // (pixel_ratio*factor)` tracks it within the same per-axis rounding drift
-    // the renderer page already pads/crops.
+    // the renderer page already pads/crops. `factor` reads the SLOT, not the
+    // magnified css viewport — see the lever contract above.
     let factor = map_supersample_factor(map_slot.w, map_slot.h);
     let framebuffer = Viewport {
         w: map_slot.w * factor,
@@ -535,21 +586,21 @@ fn build_setup_payload(
         w: map_slot.w,
         h: map_slot.h,
     };
-    let pixel_ratio = canonical.pixel_ratio * factor as f64;
+    let pixel_ratio = scaled * factor as f64;
     let drift_bound = pixel_ratio * 0.5 + 1e-9;
     debug_assert!(
-        (canonical.css_w as f64 * pixel_ratio - framebuffer.w as f64).abs() <= drift_bound,
+        (css_w as f64 * pixel_ratio - framebuffer.w as f64).abs() <= drift_bound,
         "cssViewport.w * pixelRatio drifted from framebuffer.w by more than pr/2: css_w={} pr={} fb_w={}",
-        canonical.css_w, pixel_ratio, framebuffer.w,
+        css_w, pixel_ratio, framebuffer.w,
     );
     debug_assert!(
-        (canonical.css_h as f64 * pixel_ratio - framebuffer.h as f64).abs() <= drift_bound,
+        (css_h as f64 * pixel_ratio - framebuffer.h as f64).abs() <= drift_bound,
         "cssViewport.h * pixelRatio drifted from framebuffer.h by more than pr/2: css_h={} pr={} fb_h={}",
-        canonical.css_h, pixel_ratio, framebuffer.h,
+        css_h, pixel_ratio, framebuffer.h,
     );
     let css_viewport = Viewport {
-        w: canonical.css_w,
-        h: canonical.css_h,
+        w: css_w,
+        h: css_h,
     };
     SetupPayload {
         css_viewport,
@@ -929,6 +980,7 @@ async fn render_export_composite(
         map_slot,
         req.layout.aspect,
         req.layout.resolution,
+        req.layout.magnification,
         req.fps,
         req.project_state,
     );
@@ -1097,6 +1149,7 @@ mod tests {
         LayoutDescriptor {
             aspect: AspectRatio::NineSixteen,
             resolution: OutputResolution::default(),
+            magnification: 1.0,
             layout,
             resolved,
         }
@@ -1544,5 +1597,274 @@ mod tests {
             "Auto preference must not surface the strict-Hevc message: {}",
             err.message,
         );
+    }
+
+    // ---- map magnification: the third viewport lever ---------------------
+
+    /// Every (aspect, resolution) pair the app exposes, crossed with a spread
+    /// of slot shapes (full-frame, split halves, PiP inset, odd dims).
+    fn magnification_slot_sweep() -> Vec<(AspectRatio, OutputResolution, PixelRect)> {
+        let mut cases = Vec::new();
+        for aspect in [
+            AspectRatio::NineSixteen,
+            AspectRatio::FourFive,
+            AspectRatio::SixteenNine,
+        ] {
+            for resolution in [
+                OutputResolution::P720,
+                OutputResolution::P1080,
+                OutputResolution::P1440,
+                OutputResolution::P2160,
+            ] {
+                let out = output_dims(aspect, resolution);
+                for slot in [
+                    PixelRect { x: 0, y: 0, w: out.w, h: out.h },
+                    PixelRect { x: 0, y: 0, w: out.w, h: out.h / 2 },
+                    PixelRect { x: 0, y: 0, w: out.w / 2, h: out.h },
+                    PixelRect { x: 0, y: 0, w: out.w / 3, h: out.h / 5 },
+                    PixelRect { x: 0, y: 0, w: out.w - 1, h: out.h - 1 },
+                ] {
+                    cases.push((aspect, resolution, slot));
+                }
+            }
+        }
+        cases
+    }
+
+    #[test]
+    fn magnification_identity_matches_the_pre_magnification_derivation() {
+        // k=1.0 is an IEEE identity on both the divide and the multiply, so
+        // the payload must be BIT-exact with the two-lever derivation
+        // (`canonical_map_viewport` + SSAA) this feature extended. Anything
+        // less would silently re-render every existing project.
+        for (aspect, resolution, slot) in magnification_slot_sweep() {
+            let canonical = canonical_map_viewport(aspect, slot.w, slot.h, resolution);
+            let factor = map_supersample_factor(slot.w, slot.h);
+            let payload = build_setup_payload(
+                slot,
+                aspect,
+                resolution,
+                1.0,
+                30,
+                project_state_with_duration(2000),
+            );
+            let ctx = format!("{:?} {:?} slot {}x{}", aspect, resolution, slot.w, slot.h);
+            assert_eq!(payload.css_viewport.w, canonical.css_w, "css_w {}", ctx);
+            assert_eq!(payload.css_viewport.h, canonical.css_h, "css_h {}", ctx);
+            assert_eq!(payload.framebuffer.w, slot.w * factor, "fb_w {}", ctx);
+            assert_eq!(payload.framebuffer.h, slot.h * factor, "fb_h {}", ctx);
+            assert_eq!(payload.readback.w, slot.w, "readback_w {}", ctx);
+            assert_eq!(payload.readback.h, slot.h, "readback_h {}", ctx);
+            assert_eq!(
+                payload.pixel_ratio,
+                canonical.pixel_ratio * factor as f64,
+                "pixel_ratio {}",
+                ctx,
+            );
+        }
+    }
+
+    #[test]
+    fn magnification_shrinks_css_and_grows_pixel_ratio_leaving_the_frame_fixed() {
+        // Numerical anchor: 9:16 @1080p, split map slot 1080x919 (odd height,
+        // so this also exercises the rounding drift). multiplier=1, k=2 ⇒
+        // css 540x460 (919/2 rounds half-away-from-zero to 460), SSAA factor 3
+        // (1080*3 <= 4320), pixelRatio 6.0. Framebuffer and readback are
+        // k-independent — the frame the sink consumes never changes size.
+        let slot = PixelRect { x: 0, y: 0, w: 1080, h: 919 };
+        let payload = build_setup_payload(
+            slot,
+            AspectRatio::NineSixteen,
+            OutputResolution::P1080,
+            2.0,
+            30,
+            project_state_with_duration(2000),
+        );
+        assert_eq!((payload.css_viewport.w, payload.css_viewport.h), (540, 460));
+        assert_eq!(payload.pixel_ratio, 6.0);
+        assert_eq!((payload.framebuffer.w, payload.framebuffer.h), (3240, 2757));
+        assert_eq!((payload.readback.w, payload.readback.h), (1080, 919));
+        // The drift the renderer page pads/crops away: |460*6 - 2757| = 3,
+        // exactly at the pixel_ratio/2 bound the debug_asserts enforce.
+        let drift = (payload.css_viewport.h as f64 * payload.pixel_ratio
+            - payload.framebuffer.h as f64)
+            .abs();
+        assert!(drift <= payload.pixel_ratio * 0.5, "drift {}", drift);
+    }
+
+    #[test]
+    fn magnification_never_moves_the_ssaa_factor_or_the_frame_size() {
+        // The levers are orthogonal: `k` must not leak into
+        // `map_supersample_factor` (which reads the slot) nor into the
+        // framebuffer/readback dims (which the sink's `frame_bytes_per_input`
+        // validates against).
+        for (aspect, resolution, slot) in magnification_slot_sweep() {
+            let base = build_setup_payload(
+                slot,
+                aspect,
+                resolution,
+                1.0,
+                30,
+                project_state_with_duration(2000),
+            );
+            for k in [MIN_MAGNIFICATION, 0.8, 1.25, MAX_MAGNIFICATION] {
+                let scaled = build_setup_payload(
+                    slot,
+                    aspect,
+                    resolution,
+                    k,
+                    30,
+                    project_state_with_duration(2000),
+                );
+                let ctx = format!("{:?} {:?} slot {}x{} k={}", aspect, resolution, slot.w, slot.h, k);
+                assert_eq!(scaled.framebuffer.w, base.framebuffer.w, "fb_w {}", ctx);
+                assert_eq!(scaled.framebuffer.h, base.framebuffer.h, "fb_h {}", ctx);
+                assert_eq!(scaled.readback.w, base.readback.w, "readback_w {}", ctx);
+                assert_eq!(scaled.readback.h, base.readback.h, "readback_h {}", ctx);
+                assert_eq!(
+                    scaled.pixel_ratio,
+                    base.pixel_ratio * k,
+                    "pixel_ratio {}",
+                    ctx,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn magnification_composes_into_the_resolution_multiplier_like_the_ts_mirror() {
+        // Cross-port composition contract. `canonicalMapViewport` in
+        // src/lib/layout.ts folds `k` INTO the resolution multiplier before the
+        // divide:
+        //
+        //     multiplier = outW(aspect, res) / outW(aspect, 1080p) * k
+        //     css        = round(slot / multiplier)
+        //     pixelRatio = multiplier
+        //
+        // This asserts Rust derives the same `multiplier` with the same
+        // operation ORDER, not merely the same algebra: `(a/b)*k` and `a/(b/k)`
+        // are equal in exact arithmetic but can differ by an ulp in f64, and an
+        // ulp is enough to flip a `.5` rounding and land the css viewport a
+        // whole pixel off the TS port. The shared fixture
+        // (tests/fixtures/layout_parity.json) only pins the k=1 slice, so this
+        // is the guard for everything above it.
+        //
+        // Rust's payload `pixel_ratio` additionally carries the SSAA factor,
+        // which has no TS counterpart here — the preview supersamples via the
+        // browser's devicePixelRatio, not this lever. The comparison scales the
+        // TS multiplier UP by that factor rather than dividing the Rust value
+        // down: `(m*f)/f` is not an f64 identity (0.8*3/3 == 0.8000000000000002)
+        // and would fail on a correct implementation.
+        for (aspect, resolution, slot) in magnification_slot_sweep() {
+            for k in [MIN_MAGNIFICATION, 0.8, 1.0, 1.4, MAX_MAGNIFICATION] {
+                let ts_multiplier = output_dims(aspect, resolution).w as f64
+                    / output_dims(aspect, OutputResolution::P1080).w as f64
+                    * k;
+                let ts_css_w = (slot.w as f64 / ts_multiplier).round() as u32;
+                let ts_css_h = (slot.h as f64 / ts_multiplier).round() as u32;
+
+                let payload = build_setup_payload(
+                    slot,
+                    aspect,
+                    resolution,
+                    k,
+                    30,
+                    project_state_with_duration(2000),
+                );
+                let factor = map_supersample_factor(slot.w, slot.h) as f64;
+                let ctx = format!(
+                    "{:?} {:?} slot {}x{} k={}",
+                    aspect, resolution, slot.w, slot.h, k,
+                );
+                assert_eq!(payload.css_viewport.w, ts_css_w, "css_w {}", ctx);
+                assert_eq!(payload.css_viewport.h, ts_css_h, "css_h {}", ctx);
+                assert_eq!(
+                    payload.pixel_ratio,
+                    ts_multiplier * factor,
+                    "multiplier {}",
+                    ctx,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn magnification_never_reaches_resolve_slots() {
+        // `resolved` must stay k-independent — the frontend's `resolveSlots`
+        // knows nothing about magnification, and `validate_request`'s parity
+        // deep-compare would reject every magnified export if Rust let `k` in.
+        // Pinned on the Rust side to match the TS test that pins it there.
+        for aspect in [
+            AspectRatio::NineSixteen,
+            AspectRatio::FourFive,
+            AspectRatio::SixteenNine,
+        ] {
+            for resolution in [OutputResolution::P1080, OutputResolution::P2160] {
+                let layout = default_split_layout(aspect);
+                let baseline = resolve_slots(&layout, aspect, resolution);
+                for k in [MIN_MAGNIFICATION, 1.0, MAX_MAGNIFICATION] {
+                    let descriptor = LayoutDescriptor {
+                        aspect,
+                        resolution,
+                        magnification: k,
+                        layout: layout.clone(),
+                        resolved: baseline.clone(),
+                    };
+                    assert_eq!(
+                        resolve_slots(&descriptor.layout, descriptor.aspect, descriptor.resolution),
+                        baseline,
+                        "resolved drifted at {:?} {:?} k={}",
+                        aspect,
+                        resolution,
+                        k,
+                    );
+                }
+            }
+        }
+    }
+
+    fn descriptor_with_magnification(k: f64) -> LayoutDescriptor {
+        LayoutDescriptor { magnification: k, ..pip_descriptor() }
+    }
+
+    fn request_with_magnification(k: f64) -> RenderExportRequest {
+        RenderExportRequest {
+            channel: "map_only".to_string(),
+            fps: 30,
+            output_path: "/tmp/x.mov".to_string(),
+            layout: descriptor_with_magnification(k),
+            codec_preference: CodecPreference::default(),
+            audio_bitrate_kbps: 256,
+            delivery_target: DeliveryTarget::Prores,
+            project_state: project_state_with_duration(2000),
+        }
+    }
+
+    #[test]
+    fn validate_request_rejects_out_of_range_magnification() {
+        // Loud, never clamped — an out-of-range `k` is a tampered payload or a
+        // hand-edited project file, and rendering a different value than the
+        // one on record is worse than refusing the job.
+        for k in [0.4, 2.5, f64::NAN, 0.0, -1.0, f64::INFINITY] {
+            let err = validate_request(&request_with_magnification(k))
+                .err()
+                .unwrap_or_else(|| panic!("magnification {} must be rejected", k));
+            assert_eq!(err.stage, "validation");
+            assert!(
+                err.message.contains("layout.magnification")
+                    && err.message.contains("out of range"),
+                "k={} got: {}",
+                k,
+                err.message,
+            );
+        }
+    }
+
+    #[test]
+    fn validate_request_accepts_in_range_magnification() {
+        for k in [MIN_MAGNIFICATION, 1.0, 1.37, MAX_MAGNIFICATION] {
+            validate_request(&request_with_magnification(k))
+                .unwrap_or_else(|e| panic!("magnification {} must pass: {}", k, e.message));
+        }
     }
 }

@@ -78,6 +78,13 @@ interface MapViewProps {
    *  the video element fires its first time-update. */
   playheadMs: number | null;
   mapSettings: MapSettings;
+  /** The UNRESOLVED project-level MapSettings (never a clip resolve).
+   *  `mapSettings` above arrives already resolved for the toolbar's scope
+   *  (project base in project scope, selected-clip resolve in clip scope);
+   *  the POV travel decision instead resolves against the project base +
+   *  the DESTINATION clip of each transition inside `buildPerFrameState`,
+   *  which needs the base available regardless of scope. */
+  projectMapSettings: MapSettings;
   /** The user's persistent selection. Drives the playhead-bootstrap fallback
    *  in `currentProjectMs` (when no playhead has fired yet, the render loop
    *  targets this clip's `canonicalSeekMs`). For waypoint highlighting use
@@ -120,6 +127,17 @@ interface MapViewProps {
    *  whole record keeps this component's derivation identical to the export
    *  pipeline's `resolve_slots` fallback semantics. */
   layouts: ProjectLayouts;
+  /** The CURRENT aspect's map magnification factor `k` (see
+   *  `MapMagnifications` in `lib/layout.ts`) — already resolved by the
+   *  caller, since the preview's aspect fold ('1:1' → 4:5) is the caller's
+   *  business. The export shrinks the renderer's css viewport by `k` and
+   *  raises `pixelRatio` by `k`, magnifying the map render relative to the
+   *  frame; the honest-preview contract (§2.6) says the pane must show that.
+   *  So `k` enters here in exactly two places: the intent viewport
+   *  (`canonicalSlotCss(..., magnification)` — same derivation the renderer
+   *  runs) and the pane's effective scale (`displayScale × k`, threaded
+   *  through mapVisuals as `surfaceScale`). `1` is the identity. */
+  magnification: number;
   /** Project bundle directory — needed to resolve `pov.image`'s
    *  bundle-relative asset path for the custom POV marker. null before a
    *  project is open (the image effect no-ops). */
@@ -136,8 +154,10 @@ export default function MapView({
   route,
   playheadMs,
   mapSettings,
+  projectMapSettings,
   aspect,
   layouts,
+  magnification,
   projectDir,
   onSelectClip,
 }: MapViewProps) {
@@ -190,6 +210,14 @@ export default function MapView({
   // Depends only on (aspect, screen) — never the pane's size — so dragging
   // the pane reveals/crops geography at constant perceived scale.
   const displayScale = previewDisplayScale(aspect, screenDims.w, screenDims.h);
+  // …times the aspect's magnification. Under magnification the export lays
+  // the map out in a css viewport shrunk by k at pixelRatio × k, so every
+  // reference-space unit occupies k× more output pixels; the pane matches
+  // that by showing the reference space at k× the fullscreen-fit factor.
+  // This is the ONE scale the map is rendered at — every surfaceScale /
+  // withDisplayScale consumer below reads it, so nothing can be magnified
+  // without its texture density following along.
+  const effectiveScale = displayScale * magnification;
 
   // Tracks the last route reference we framed via the region-intent jumpTo
   // below. Idempotence guard: we only refit once per unique route.
@@ -200,6 +228,7 @@ export default function MapView({
   // `timeline` changes; everything else flows through refs. Refresh runs in
   // a passive useEffect (post-paint) so worst-case staleness is one frame.
   const mapSettingsRef = useRef(mapSettings);
+  const projectMapSettingsRef = useRef(projectMapSettings);
   const clipsRef = useRef(clips);
   const waypointsRef = useRef(waypoints);
   const routeRef = useRef(route);
@@ -214,9 +243,26 @@ export default function MapView({
     devicePixelRatioRef.current = devicePixelRatio;
   }, [devicePixelRatio]);
   const currentProjectMsRef = useRef<number | null>(null);
+  // Diff cache for the per-frame layouts bucket (`layerId prop` →
+  // JSON-encoded value). Lets the render loop skip redundant
+  // `setLayoutProperty` writes (symbol re-layout isn't free); cleared by
+  // the static-apply effect so a style swap / settings change always
+  // re-asserts. See the apply site in the render loop below.
+  const appliedLayoutRef = useRef(new Map<string, string>());
+  // Same diff-cache treatment for the per-frame POV style PAINT bucket and
+  // the per-frame halo group-composite config (travel-effective style —
+  // see PerFrameState.povPaints / .haloComposites). Paint writes are
+  // cheaper than layout writes but not free at rAF cadence, and the
+  // composite is one engine call per change. Both cleared by the
+  // static-apply effect for the same re-assert reason.
+  const appliedPovPaintRef = useRef(new Map<string, string>());
+  const appliedCompositeRef = useRef<string | null>(null);
   useEffect(() => {
     mapSettingsRef.current = mapSettings;
   }, [mapSettings]);
+  useEffect(() => {
+    projectMapSettingsRef.current = projectMapSettings;
+  }, [projectMapSettings]);
   useEffect(() => {
     clipsRef.current = clips;
   }, [clips]);
@@ -233,10 +279,14 @@ export default function MapView({
   useEffect(() => {
     layoutsRef.current = layouts;
   }, [layouts]);
-  const displayScaleRef = useRef(displayScale);
+  const effectiveScaleRef = useRef(effectiveScale);
   useEffect(() => {
-    displayScaleRef.current = displayScale;
-  }, [displayScale]);
+    effectiveScaleRef.current = effectiveScale;
+  }, [effectiveScale]);
+  const magnificationRef = useRef(magnification);
+  useEffect(() => {
+    magnificationRef.current = magnification;
+  }, [magnification]);
   // `activeClipId` is no longer consumed by the render loop (v7 active-
   // waypoint logic uses `mapSettings.active_waypoint_mode` against the
   // marker's wall-clock instead). The prop is kept on `MapViewProps` for
@@ -592,7 +642,7 @@ export default function MapView({
           // lever model), so this fit lands on the zoom the export band
           // will use. Then re-express the resulting reference-space camera
           // at the pane's fixed display scale.
-          const slot = canonicalSlotCss(layouts[aspect], aspect);
+          const slot = canonicalSlotCss(layouts[aspect], aspect, magnification);
           const slotCssViewport: Viewport = {
             width: slot.w,
             height: slot.h,
@@ -612,7 +662,7 @@ export default function MapView({
               },
               slotCssViewport,
             ),
-            displayScale,
+            effectiveScale,
           );
           map.jumpTo({
             center: [target.center.lng, target.center.lat],
@@ -624,8 +674,19 @@ export default function MapView({
       }
     };
 
+    // `magnification` rides the dep list alongside `aspect`: changing the
+    // factor reframes the map exactly like switching aspect does.
     if (styleReadyRef.current) apply();
-  }, [route, clips, mapSettings, styleVersion, aspect, layouts, displayScale]);
+  }, [
+    route,
+    clips,
+    mapSettings,
+    styleVersion,
+    aspect,
+    layouts,
+    magnification,
+    effectiveScale,
+  ]);
 
   // ---- Apply static layer paints + layouts ----
   // `resolveStaticPaints(mapSettings)` is the single source of truth for
@@ -648,10 +709,19 @@ export default function MapView({
     const map = mapRef.current;
     if (!map) return;
     const apply = () => {
-      // The pane's fixed display scale rides through the resolver — both
-      // surfaces still apply exactly what mapVisuals returns (the renderer
-      // resolves at scale 1); see resolveStaticPaints' surfaceScale doc.
-      const resolved = resolveStaticPaints(mapSettings, displayScale);
+      // Invalidate the per-frame diff caches: this effect re-asserts the
+      // STATIC tuples below (paints, layouts, composites), so the render
+      // loop must re-assert its per-frame values on the next tick (they
+      // may differ mid-travel).
+      appliedLayoutRef.current.clear();
+      appliedPovPaintRef.current.clear();
+      appliedCompositeRef.current = null;
+      // The pane's effective scale (fixed display scale × the aspect's
+      // magnification) rides through the resolver — both surfaces still
+      // apply exactly what mapVisuals returns (the renderer resolves at
+      // scale 1, its magnification living in the css viewport / pixelRatio
+      // pair instead); see resolveStaticPaints' surfaceScale doc.
+      const resolved = resolveStaticPaints(mapSettings, effectiveScale);
       for (const [layerId, prop, value] of resolved.paints) {
         if (!map.getLayer(layerId)) continue;
         map.setPaintProperty(layerId, prop, value);
@@ -681,7 +751,7 @@ export default function MapView({
       (map as GroupCompositeMap).setGroupComposite(resolved.haloComposites);
     };
     if (styleReadyRef.current) apply();
-  }, [styleVersion, mapSettings, displayScale]);
+  }, [styleVersion, mapSettings, effectiveScale]);
 
   // ---- Re-rasterize SDF outline icons on stroke / radius change ----
   // The outline thickness is baked into the secondary SDF icon at rasterize
@@ -750,10 +820,11 @@ export default function MapView({
   // (assets/marker-icon-<hash>.png; legacy pov-icon-<hash>.png) once per
   // file and re-registers every `marker-image-<id>` texture whenever
   // anything that determines density changes: the library itself, the POV
-  // image_size, the waypoint radii, the pane's display scale, the monitor
-  // DPR, or a style swap (which clears the image atlas). The WHOLE library
-  // registers (not just currently-selected images) so tile clicks and
-  // per-clip/per-waypoint override switches are instant. Each texture is
+  // image_size, the waypoint radii, the pane's effective scale (display
+  // scale × magnification), the monitor DPR, or a style swap (which clears
+  // the image atlas). The WHOLE library registers (not just
+  // currently-selected images) so tile clicks and per-clip/per-waypoint
+  // override switches are instant. Each texture is
   // built at the LARGEST size any use can request — POV image_size or the
   // waypoint diameter (2 × circle_radius, active bump included) — so one
   // registration covers every use.
@@ -797,10 +868,13 @@ export default function MapView({
     }
     if (markerImages.length === 0 || !projectDir) return;
 
+    // Magnification is part of the density input, not just the layout: a
+    // magnified pane draws the same marker across k× more css px, and a
+    // texture baked at the unmagnified size would resample up and go soft.
     const displayCssLongest =
       Math.max(povImageSize, 2 * circleRadius, 2 * waypointActiveRadius) *
       PAINT_REFERENCE_WIDTH *
-      displayScale;
+      effectiveScale;
 
     const apply = async () => {
       for (const ref of markerImages) {
@@ -849,7 +923,7 @@ export default function MapView({
     povImageSize,
     circleRadius,
     waypointActiveRadius,
-    displayScale,
+    effectiveScale,
     devicePixelRatio,
     styleVersion,
     projectDir,
@@ -916,7 +990,11 @@ export default function MapView({
       // reveals/crops geography rather than scaling it — the scale depends
       // only on (aspect, screen).
       const currentAspect = aspectRef.current;
-      const slot = canonicalSlotCss(layoutsRef.current[currentAspect], currentAspect);
+      const slot = canonicalSlotCss(
+        layoutsRef.current[currentAspect],
+        currentAspect,
+        magnificationRef.current,
+      );
       const slotCssViewport: Viewport = {
         width: slot.w,
         height: slot.h,
@@ -929,8 +1007,9 @@ export default function MapView({
         clipsRef.current,
         waypointsRef.current,
         mapSettingsRef.current,
+        projectMapSettingsRef.current,
         slotCssViewport,
-        displayScaleRef.current,
+        effectiveScaleRef.current,
       );
 
       map.jumpTo({
@@ -950,6 +1029,32 @@ export default function MapView({
           // Module returns `GeoJSON.GeoJsonObject`; `setData` wants
           // `GeoJSON.GeoJSON`. Runtime-equivalent — cast through unknown.
           if (src) src.setData(data as unknown as GeoJSON.GeoJSON);
+        }
+        // Per-frame POV style paints (travel-effective — see
+        // PerFrameState.povPaints). NOT ad-hoc writes: the tuples come
+        // verbatim from `povStyleTuples`, the same derivation the static
+        // apply uses, and equal the static values outside a travel window
+        // (the diff cache then no-ops every write). Applied BEFORE the
+        // pulse scalars below so the per-frame pulse animation overrides
+        // the style block's pulse-radius seeds.
+        for (const [layerId, prop, value] of state.povPaints) {
+          if (!map.getLayer(layerId)) continue;
+          const cacheKey = `${layerId} ${prop}`;
+          const encoded = JSON.stringify(value);
+          if (appliedPovPaintRef.current.get(cacheKey) === encoded) continue;
+          appliedPovPaintRef.current.set(cacheKey, encoded);
+          map.setPaintProperty(layerId, prop, value);
+        }
+        // Per-frame halo group-composite (the live-marker entry follows the
+        // travel-effective style). Re-asserted only on change — one JSON
+        // compare per frame, one engine call per actual change. Equals the
+        // static-apply value outside a travel window.
+        {
+          const encoded = JSON.stringify(state.haloComposites);
+          if (appliedCompositeRef.current !== encoded) {
+            appliedCompositeRef.current = encoded;
+            (map as GroupCompositeMap).setGroupComposite(state.haloComposites);
+          }
         }
         if (map.getLayer('waypoints-primary')) {
           // Primary slot: tinted by `waypointPrimaryColor` (three-arm case:
@@ -1023,6 +1128,12 @@ export default function MapView({
           // `shapes-pov.md` Part 2 §2.
           map.setPaintProperty('live-marker-dot', 'circle-opacity',
             state.paints.dotOpacity);
+          // The stroke is a SEPARATE opacity channel in MapLibre
+          // (`circle-stroke-opacity`, default 1) — drive it with the same
+          // value or the seam-ease fade / throb dims only the fill and
+          // leaves the ring at full strength. Mirrored in scene.ts.
+          map.setPaintProperty('live-marker-dot', 'circle-stroke-opacity',
+            state.paints.dotOpacity);
         }
         if (map.getLayer('live-marker-image')) {
           // Every alternate POV marker body inherits the dot's opacity
@@ -1040,6 +1151,24 @@ export default function MapView({
         if (map.getLayer('live-marker-shape-secondary')) {
           map.setPaintProperty('live-marker-shape-secondary', 'icon-opacity',
             state.paints.dotOpacity);
+        }
+        // Per-frame POV marker identity (travel-transition swap). NOT an
+        // ad-hoc setLayoutProperty — the tuples come verbatim from the
+        // mapVisuals `layouts` bucket (see PerFrameState.layouts), which
+        // equals resolveStaticPaints' marker tuples outside a travel
+        // window. The diff cache skips redundant writes: layout writes on
+        // symbol layers can trigger re-layout, so per-rAF re-assertion of
+        // unchanged values is not free. The cache is cleared whenever the
+        // static-apply effect runs (style swap / settings change), so a
+        // static re-apply is always followed by a fresh per-frame assert
+        // and the two channels can't fight.
+        for (const [layerId, prop, value] of state.layouts) {
+          if (!map.getLayer(layerId)) continue;
+          const cacheKey = `${layerId}\0${prop}`;
+          const encoded = JSON.stringify(value);
+          if (appliedLayoutRef.current.get(cacheKey) === encoded) continue;
+          appliedLayoutRef.current.set(cacheKey, encoded);
+          map.setLayoutProperty(layerId, prop, value);
         }
       }
 

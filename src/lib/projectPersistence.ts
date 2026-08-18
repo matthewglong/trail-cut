@@ -26,6 +26,7 @@ import type {
   AspectRatio,
   Clip,
   ExportGrid,
+  MapMagnifications,
   MapSettings,
   Project,
   ProjectLayouts,
@@ -34,7 +35,11 @@ import type {
   Waypoint,
 } from '../types';
 import { DEFAULT_MAP_SETTINGS } from '../types';
-import { defaultPipLayout } from './layout';
+import {
+  defaultMagnifications,
+  defaultPipLayout,
+  isDefaultMagnification,
+} from './layout';
 import { seedWaypointsFromClips } from './waypoints';
 
 /** The slice of App-level state that the editor UI owns and mutates. This is
@@ -50,6 +55,7 @@ export interface LiveProjectState {
   mapSettings: MapSettings;
   transitionFeel: TransitionFeel | undefined;
   projectLayouts: ProjectLayouts;
+  mapMagnifications: MapMagnifications;
   selectedExportAspect: AspectRatio;
   lastExportSelection: ExportGrid | null;
   waypoints: Waypoint[];
@@ -98,11 +104,16 @@ export function mergeMapSettings(
       ...incoming.waypoints,
       size: { ...defaults.waypoints.size, ...incoming.waypoints?.size },
     },
+    // Optional atomic blobs (`marker`, `halo`) ride the spread: present on
+    // disk wins whole, absent stays absent (defaults carry none).
     pov: {
       ...defaults.pov,
       ...incoming.pov,
       size: { ...defaults.pov.size, ...incoming.pov?.size },
     },
+    // Top-level atomic blob — present on disk wins whole, absent stays
+    // absent (the defaults carry none; absent = transition off).
+    transition: incoming.transition ?? defaults.transition,
     // The Rust model omits the field entirely while the library is empty
     // (`skip_serializing_if = "Vec::is_empty"`), so backfill the default.
     marker_images: incoming.marker_images ?? defaults.marker_images,
@@ -119,6 +130,9 @@ export function mergeMapSettings(
  *  - `layouts ?? seededLayouts()` / `selected_export_aspect ?? '9_16'` —
  *    edge-case backfills for payloads from older Rust binaries or
  *    hand-edited bundles (the Rust load path normally guarantees both).
+ *  - `map_magnification ?? defaultMagnifications()` — absent is the NORMAL
+ *    case, not an edge case: the field is omitted on disk whenever every
+ *    aspect sits at the identity factor.
  *  - empty `waypoints` are seeded from clips (legacy pre-v7 bundles arrive
  *    with `[]` from Rust's serde default); the first auto-save persists the
  *    seeded list. */
@@ -131,6 +145,9 @@ export function hydrateProjectState(project: Project, fallbackName: string): Liv
     mapSettings: mergeMapSettings(DEFAULT_MAP_SETTINGS, project.map_settings),
     transitionFeel: project.transition_feel,
     projectLayouts: project.layouts ?? seededLayouts(),
+    // Per-key spread, not `??`: a hand-edited bundle carrying only one
+    // aspect's factor still yields a complete record.
+    mapMagnifications: { ...defaultMagnifications(), ...project.map_magnification },
     selectedExportAspect: project.selected_export_aspect ?? '9_16',
     lastExportSelection: project.last_export_selection ?? null,
     waypoints:
@@ -154,17 +171,27 @@ export function hydrateProjectState(project: Project, fallbackName: string): Liv
  *  the hand-maintained third copy of the Project shape that caused the
  *  silent data loss this module exists to fix (ship review §1.4a). */
 export function buildSavePayload(base: Project, live: LiveProjectState): Project {
-  return {
+  const payload: Project = {
     ...base,
     name: live.projectName,
     thumbnail: live.projectThumbnail,
     clips: live.clips,
     route: live.route,
     layouts: live.projectLayouts,
+    map_magnification: live.mapMagnifications,
     selected_export_aspect: live.selectedExportAspect,
     map_settings: live.mapSettings,
     transition_feel: live.transitionFeel,
     last_export_selection: live.lastExportSelection,
     waypoints: live.waypoints,
   };
+  // Identity magnification is written as ABSENCE, not as a record of 1s, so
+  // a project that never touches the knob saves the same bytes it always
+  // did. The delete (rather than simply not overlaying) also matters when
+  // the user dials a factor back to 1: the base spread would otherwise
+  // resurrect the stale value from disk.
+  if (isDefaultMagnification(live.mapMagnifications)) {
+    delete payload.map_magnification;
+  }
+  return payload;
 }

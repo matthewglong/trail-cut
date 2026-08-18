@@ -29,7 +29,11 @@ import type {
   GradientStop,
   HaloSettings,
   MapSettings,
+  MapStyleId,
+  MarkerImageRef,
+  PovMarker,
   PovMarkerShape,
+  PovSettings,
 } from '../../types';
 import { povMarkerOf } from '../../types';
 import { colors } from '../../theme/tokens';
@@ -736,6 +740,47 @@ export function buildStyleSpec(mapSettings: MapSettings): StyleSpecResult {
   };
 }
 
+/** Everything that follows from `camera.map_style`, as ONE value: the style
+ *  itself, its identity, the pitch it implies, and the conditional
+ *  3D-buildings layer. `buildStyleSpec` stays the narrow style+pitch
+ *  accessor; this is the full basemap decision, and it exists so no consumer
+ *  has to re-derive `map_style === '3d'` on its own to decide whether the
+ *  buildings layer goes on. That re-derivation is exactly the kind of
+ *  MapSettings-shaped branch the single-source-of-truth contract forbids
+ *  outside this module.
+ *
+ *  `map_style` is per-clip overridable (`MapOverrides.camera.map_style`), so
+ *  both surfaces call this with the RESOLVED settings for whichever clip is
+ *  active — the preview with the selected clip's, the export renderer with
+ *  the clip `activeClipIdAt(timeline, t)` reports (see `buildFramePayload`
+ *  in the renderer's scene.ts). `styleId` is the comparison key a consumer
+ *  uses to notice a basemap change: `style` is a URL string for
+ *  default/3d — identical for BOTH — so comparing styles would miss a
+ *  default↔3d flip, and comparing whole style objects is neither cheap nor
+ *  reference-stable. */
+export interface BasemapSpec extends StyleSpecResult {
+  /** `camera.map_style` of the settings this was resolved from. */
+  styleId: MapStyleId;
+  add3dBuildings: boolean;
+  /** `BUILDINGS_LAYER_SPEC` when `add3dBuildings`, else null. The consumer
+   *  adds it at style.load (soft-failure: the `openmaptiles` source only
+   *  exists in the liberty style). */
+  buildingsLayer: LayerSpecification | null;
+}
+
+export function buildBasemapSpec(mapSettings: MapSettings): BasemapSpec {
+  const styleId = mapSettings.camera.map_style;
+  const { style, defaultPitch } = buildStyleSpec(mapSettings);
+  const add3dBuildings = styleId === '3d';
+  return {
+    styleId,
+    style,
+    defaultPitch,
+    add3dBuildings,
+    buildingsLayer: add3dBuildings ? BUILDINGS_LAYER_SPEC : null,
+  };
+}
+
 /** Resolved-static-paints descriptor. Pure function of `MapSettings`. Both
  *  renderer and preview consume this same result and apply it identically;
  *  there is no pane-reshape variant.
@@ -829,6 +874,252 @@ export interface ResolvedStaticPaints {
  *  identical between pane and export. Scaling through this resolver — never
  *  ad-hoc in MapView — is what keeps the single-source-of-truth contract:
  *  both surfaces still apply exactly what this function returns. */
+/** The POV marker's layer-swap layout tuples for one marker identity —
+ *  extracted from `resolveStaticPaints` so the per-frame travel path
+ *  (`perFrame.ts`) can emit the SAME tuples for the transition marker.
+ *  `marker` is the EFFECTIVE marker (callers resolve `povMarkerOf`/travel
+ *  fallbacks first); `w` is `PAINT_REFERENCE_WIDTH × surfaceScale`, exactly
+ *  the anchor `resolveStaticPaints` uses.
+ *
+ *  Invariants (load-bearing — see the marker-library docs):
+ *  - ALL FOUR visibilities are emitted in EVERY branch so any marker change
+ *    (project edit, per-clip resolve at a cut, or travel-window entry/exit)
+ *    always restores the layers the new marker doesn't use.
+ *  - `icon-image` ids are only emitted while their marker kind is active so
+ *    no engine ever resolves an id before its texture registers.
+ *  - Defensive fallbacks collapse to the dot (missing library id, unknown
+ *    shape); the export sidecar separately fails loud at setup for
+ *    referenced-but-unregistered ids.
+ *  - Sizing follows the passed `pov.size` (image_size / dot_radius). The
+ *    per-frame travel path passes the travel-EFFECTIVE style block, so the
+ *    traveling playhead's marker, halo, and pulse all size off one
+ *    consistent config (see `povStyleTuples`). */
+export function povMarkerLayoutTuples(
+  marker: PovMarker,
+  pov: PovSettings,
+  markerImages: MarkerImageRef[],
+  w: number,
+): Array<[string, string, number | string | ExpressionSpecification]> {
+  const povShapeNames: readonly PovMarkerShape[] = ['ring', 'square', 'diamond'];
+  const povHidden = (
+    ...visible: Array<'dot' | 'shape' | 'image'>
+  ): Array<[string, string, string]> => {
+    const out: Array<[string, string, string]> = [
+      ['live-marker-dot', 'visibility', visible.includes('dot') ? 'visible' : 'none'],
+      ['live-marker-shape-primary', 'visibility', visible.includes('shape') ? 'visible' : 'none'],
+      ['live-marker-shape-secondary', 'visibility', visible.includes('shape') ? 'visible' : 'none'],
+      ['live-marker-image', 'visibility', visible.includes('image') ? 'visible' : 'none'],
+    ];
+    return out;
+  };
+  if (
+    marker.kind === 'image' &&
+    markerImages.some((m) => m.id === marker.image_id)
+  ) {
+    return [
+      ...povHidden('image'),
+      ['live-marker-image', 'icon-image', markerImageIconId(marker.image_id)],
+      [
+        'live-marker-image',
+        'icon-size',
+        (pov.size.image_size * w) / MARKER_IMAGE_CANONICAL_SIZE,
+      ],
+    ];
+  }
+  if (
+    marker.kind === 'shape' &&
+    (povShapeNames as readonly string[]).includes(marker.shape)
+  ) {
+    const povShapeIconSize = (pov.size.dot_radius * w) / SHAPE_CANONICAL_RADIUS;
+    return [
+      ...povHidden('shape'),
+      ['live-marker-shape-primary', 'icon-image', `pov-${marker.shape}-primary`],
+      ['live-marker-shape-primary', 'icon-size', povShapeIconSize],
+      ['live-marker-shape-secondary', 'icon-image', `pov-${marker.shape}-secondary`],
+      ['live-marker-shape-secondary', 'icon-size', povShapeIconSize],
+    ];
+  }
+  // 'dot', unknown shape names, and image ids absent from the library.
+  return [...povHidden('dot')];
+}
+
+/** The complete tuple set for ONE POV-style block (`MapSettings.pov` or a
+ *  travel `playhead` custom style): marker identity + colors + sizes +
+ *  pulse-seed radii + the full halo pair, plus the live-marker halo's
+ *  group-composite entry. Extracted from `resolveStaticPaints` so the
+ *  per-frame travel path (`buildPerFrameState`) can emit the SAME tuples
+ *  for the travel-effective style — during a travel window the traveling
+ *  playhead wears either the destination clip's resolved POV look (sync)
+ *  or the travel block's custom style, and outside a window this equals
+ *  the static resolution exactly, so consumers restore automatically
+ *  (no entry/exit handshake — the layouts-bucket precedent, extended to
+ *  paints and the composite). `w` is `PAINT_REFERENCE_WIDTH ×
+ *  surfaceScale`. */
+export interface PovStyleTuples {
+  paints: Array<[string, string, unknown]>;
+  layouts: Array<[string, string, number | string | ExpressionSpecification]>;
+  /** The live-marker halo's group-composite entry (fixed member order —
+   *  slots into the fourth position of the `haloComposites` bucket). */
+  haloComposite: HaloCompositeGroup;
+}
+
+export function povStyleTuples(
+  pov: PovSettings,
+  markerImages: MarkerImageRef[],
+  w: number,
+): PovStyleTuples {
+  const marker = povMarkerOf(pov);
+  const markerLayouts = povMarkerLayoutTuples(marker, pov, markerImages, w);
+  // POV halo — a circle layer pair at the bottom of the live-marker stack.
+  // Same parameter model as the route halo. The body radius mirrors the
+  // three-way marker resolve: image markers (with a registered library
+  // entry) display at `image_size` longest-side, so the body radius is
+  // half of it; dot and shape markers render at `dot_radius` (the same
+  // fallback chain as the marker itself, so a missing library id sizes the
+  // halo for the dot it collapses to). Solid color only (POV rule —
+  // `resolveHaloParams` falls back to the first gradient stop defensively).
+  const halo = resolveHaloParams(pov.halo);
+  const policy = haloGroupPolicy(halo.outerOpacity, halo.coreOpacity);
+  const bodyRadius =
+    marker.kind === 'image' &&
+    markerImages.some((m) => m.id === marker.image_id)
+      ? pov.size.image_size / 2
+      : pov.size.dot_radius;
+  const haloRadius = (bodyRadius + halo.spread) * w;
+  const haloCoreRadius =
+    (bodyRadius + halo.spread * HALO_CORE_SPREAD_FRACTION) * w;
+  const haloTranslate = [halo.offsetX * w, halo.offsetY * w];
+  return {
+    paints: [
+      ['live-marker-pulse', 'circle-color', pov.color],
+      ['live-marker-pulse-b', 'circle-color', pov.color],
+      // Dot's stroke color tracks the POV primary; its fill takes the POV
+      // secondary (the field that replaced the pre-refactor white-literal
+      // default).
+      ['live-marker-dot', 'circle-stroke-color', pov.color],
+      ['live-marker-dot', 'circle-color', pov.secondary_color],
+      // POV shape-preset slots follow the waypoint SDF convention: primary
+      // = body tint, secondary = outline tint. Emitted unconditionally —
+      // harmless while the layers are hidden, and it keeps color edits
+      // live the instant a shape marker activates.
+      ['live-marker-shape-primary', 'icon-color', pov.color],
+      ['live-marker-shape-secondary', 'icon-color', pov.secondary_color],
+      // Halo pair. `circle-blur` is dimensionless (1 = only the center at
+      // full opacity), so `fade` maps directly and does NOT ride `w`.
+      // Emitted opacities are the REMAPPED in-FBO values (`policy`), not
+      // the conceptual outer/core opacities — the group composite
+      // (`haloComposite` below) applies the on-line peak once.
+      ['live-marker-halo', 'circle-color', halo.solid],
+      ['live-marker-halo', 'circle-radius', haloRadius],
+      ['live-marker-halo', 'circle-blur', halo.fade],
+      ['live-marker-halo', 'circle-opacity', policy.outerIn],
+      ['live-marker-halo', 'circle-translate', haloTranslate],
+      ['live-marker-halo-core', 'circle-color', halo.solid],
+      ['live-marker-halo-core', 'circle-radius', haloCoreRadius],
+      ['live-marker-halo-core', 'circle-blur', 1],
+      ['live-marker-halo-core', 'circle-opacity', policy.coreIn],
+      ['live-marker-halo-core', 'circle-translate', haloTranslate],
+      ['live-marker-dot', 'circle-radius', pov.size.dot_radius * w],
+      [
+        'live-marker-dot',
+        'circle-stroke-width',
+        pov.size.dot_stroke_width * w,
+      ],
+      // Pulse radii are initial seeds — the per-frame builder overrides
+      // them every frame via `pulsePairAt`, but seeding gives a sensible
+      // value before the first frame is applied.
+      ['live-marker-pulse', 'circle-radius', pov.size.pulse_radius * w],
+      ['live-marker-pulse-b', 'circle-radius', pov.size.pulse_radius * w],
+    ],
+    layouts: [
+      // Halo visibility gates on the halo toggle alone (the live-marker
+      // source already carries the marker's presence); the core twin
+      // additionally requires falloff > 0.
+      ['live-marker-halo', 'visibility', halo.enabled ? 'visible' : 'none'],
+      [
+        'live-marker-halo-core',
+        'visibility',
+        halo.enabled && halo.falloff > 0 ? 'visible' : 'none',
+      ],
+      // Marker identity — three-way visibility swap + per-kind icon wiring.
+      ...markerLayouts,
+    ],
+    haloComposite: {
+      layers: ['live-marker-halo', 'live-marker-halo-core'],
+      opacity: policy.g,
+    },
+  };
+}
+
+/** Visibility tuples for the route-trail layer trio (line + halo pair).
+ *  Extracted from `resolveStaticPaints` so the per-frame travel path can
+ *  emit the SAME tuples with `forceTrail` — travel's `draw_route` forces
+ *  the trail visible during the window even while the route decoration
+ *  mode is 'none' (the drawn route wears the route's own resolved style).
+ *  With `forceTrail` false this is byte-identical to the static emission,
+ *  so consumers restore automatically at window exit. */
+export function routeTrailVisibilityTuples(
+  route: MapSettings['route'],
+  forceTrail: boolean,
+): Array<[string, string, string]> {
+  const show = route.mode === 'visited' || forceTrail;
+  const halo = resolveHaloParams(route.halo);
+  return [
+    ['route-trail-line', 'visibility', show ? 'visible' : 'none'],
+    [
+      'route-trail-halo',
+      'visibility',
+      halo.enabled && show ? 'visible' : 'none',
+    ],
+    [
+      'route-trail-halo-core',
+      'visibility',
+      halo.enabled && halo.falloff > 0 && show ? 'visible' : 'none',
+    ],
+  ];
+}
+
+/** The four halo group-composite entries for a given `MapSettings`, in the
+ *  fixed order [route-full, route-trail, waypoints, live-marker]. Shared by
+ *  `resolveStaticPaints` and the per-frame path (which swaps in the
+ *  travel-effective POV block during a travel window) so the two channels
+ *  can never disagree about group membership or ordering. */
+export function haloCompositesFor(
+  mapSettings: MapSettings,
+): HaloCompositeGroup[] {
+  const route = resolveHaloParams(mapSettings.route.halo);
+  const routePolicy = haloGroupPolicy(route.outerOpacity, route.coreOpacity);
+  const wp = resolveHaloParams(mapSettings.waypoints.halo);
+  const wpPolicy = haloGroupPolicy(wp.outerOpacity, wp.coreOpacity);
+  return [
+    {
+      layers: ['route-full-halo', 'route-full-halo-core'],
+      opacity: routePolicy.g,
+    },
+    {
+      layers: ['route-trail-halo', 'route-trail-halo-core'],
+      opacity: routePolicy.g,
+    },
+    {
+      layers: ['waypoints-halo', 'waypoints-halo-core'],
+      opacity: wpPolicy.g,
+    },
+    povHaloComposite(mapSettings.pov),
+  ];
+}
+
+/** The live-marker halo's composite entry for one POV-style block — the
+ *  same value `povStyleTuples` emits, computable without building the full
+ *  tuple set. */
+function povHaloComposite(pov: PovSettings): HaloCompositeGroup {
+  const halo = resolveHaloParams(pov.halo);
+  const policy = haloGroupPolicy(halo.outerOpacity, halo.coreOpacity);
+  return {
+    layers: ['live-marker-halo', 'live-marker-halo-core'],
+    opacity: policy.g,
+  };
+}
+
 export function resolveStaticPaints(
   mapSettings: MapSettings,
   surfaceScale: number = 1,
@@ -1038,114 +1329,16 @@ export function resolveStaticPaints(
   const defaultImageIconSize =
     (mapSettings.waypoints.size.circle_radius * w) /
     (MARKER_IMAGE_CANONICAL_SIZE / 2);
-  // POV marker (schema v11) — three-way visibility swap between the classic
-  // dot circle layer ('dot' preset — pixel-identical to pre-v11 output),
-  // the SDF shape-preset symbol pair (ring / square / diamond), and the
-  // library-image symbol layer. ALL FOUR visibilities are emitted in EVERY
-  // branch so any marker change (project edit or per-clip resolve at a cut)
-  // always restores the layers the new marker doesn't use. The pulse rings
-  // are independent and unaffected — the pulse applies to every marker
-  // kind. `icon-image` ids are only emitted while their marker kind is
-  // active so no engine ever resolves an id before its texture registers
-  // (the seeds are transparent placeholders). Image `icon-size` bridges the
-  // reference-space size to the registered texture's natural CSS size:
-  // longest-side CSS target ÷ MARKER_IMAGE_CANONICAL_SIZE (see
-  // markerImage.ts); shape `icon-size` uses the waypoint bridge
-  // (dot_radius × w) / SHAPE_CANONICAL_RADIUS.
-  //
-  // Defensive fallbacks collapse to the dot (mirroring safeMarker's circle
-  // fallback): an image marker whose id is missing from the library (e.g.
-  // hand-edited bundle) or an unknown shape name renders the dot in
-  // preview; the export sidecar separately fails LOUD at setup when a
-  // referenced library id can't be registered.
-  const povMarker = povMarkerOf(mapSettings.pov);
-  const povShapeNames: readonly PovMarkerShape[] = ['ring', 'square', 'diamond'];
-  const povHidden = (
-    ...visible: Array<'dot' | 'shape' | 'image'>
-  ): Array<[string, string, string]> => {
-    const out: Array<[string, string, string]> = [
-      ['live-marker-dot', 'visibility', visible.includes('dot') ? 'visible' : 'none'],
-      ['live-marker-shape-primary', 'visibility', visible.includes('shape') ? 'visible' : 'none'],
-      ['live-marker-shape-secondary', 'visibility', visible.includes('shape') ? 'visible' : 'none'],
-      ['live-marker-image', 'visibility', visible.includes('image') ? 'visible' : 'none'],
-    ];
-    return out;
-  };
-  let povMarkerLayouts: Array<
-    [string, string, number | string | ExpressionSpecification]
-  >;
-  if (
-    povMarker.kind === 'image' &&
-    markerImages.some((m) => m.id === povMarker.image_id)
-  ) {
-    povMarkerLayouts = [
-      ...povHidden('image'),
-      ['live-marker-image', 'icon-image', markerImageIconId(povMarker.image_id)],
-      [
-        'live-marker-image',
-        'icon-size',
-        (mapSettings.pov.size.image_size * w) / MARKER_IMAGE_CANONICAL_SIZE,
-      ],
-    ];
-  } else if (
-    povMarker.kind === 'shape' &&
-    (povShapeNames as readonly string[]).includes(povMarker.shape)
-  ) {
-    const povShapeIconSize =
-      (mapSettings.pov.size.dot_radius * w) / SHAPE_CANONICAL_RADIUS;
-    povMarkerLayouts = [
-      ...povHidden('shape'),
-      ['live-marker-shape-primary', 'icon-image', `pov-${povMarker.shape}-primary`],
-      ['live-marker-shape-primary', 'icon-size', povShapeIconSize],
-      ['live-marker-shape-secondary', 'icon-image', `pov-${povMarker.shape}-secondary`],
-      ['live-marker-shape-secondary', 'icon-size', povShapeIconSize],
-    ];
-  } else {
-    // 'dot', unknown shape names, and image ids absent from the library.
-    povMarkerLayouts = [...povHidden('dot')];
-  }
-  // POV halo — a circle layer pair at the bottom of the live-marker stack.
-  // Same parameter model as the route halo. The body radius mirrors the
-  // three-way marker resolve above: image markers (with a registered
-  // library entry) display at `image_size` longest-side, so the body
-  // radius is half of it; dot and shape markers render at `dot_radius`
-  // (the same fallback chain as the marker itself, so a missing library id
-  // sizes the halo for the dot it collapses to). Solid color only (POV
-  // rule — `resolveHaloParams` falls back to the first gradient stop
-  // defensively).
-  const povHalo = resolveHaloParams(mapSettings.pov.halo);
-  const povPolicy = haloGroupPolicy(povHalo.outerOpacity, povHalo.coreOpacity);
-  const povBodyRadius =
-    povMarker.kind === 'image' &&
-    markerImages.some((m) => m.id === povMarker.image_id)
-      ? mapSettings.pov.size.image_size / 2
-      : mapSettings.pov.size.dot_radius;
-  const povHaloRadius = (povBodyRadius + povHalo.spread) * w;
-  const povHaloCoreRadius =
-    (povBodyRadius + povHalo.spread * HALO_CORE_SPREAD_FRACTION) * w;
-  const povHaloTranslate = [povHalo.offsetX * w, povHalo.offsetY * w];
+  // POV — the complete style tuple set (marker identity swap, colors,
+  // sizes, halo pair, composite entry) lives in `povStyleTuples`, shared
+  // verbatim with the per-frame travel path so the traveling playhead's
+  // style resolution can never drift from the static one. See its doc
+  // comment for the marker-swap and halo invariants.
+  const povStyle = povStyleTuples(mapSettings.pov, markerImages, w);
   return {
     paints: [
       ['route-full-line', 'line-color', routeSolid],
       ['route-trail-line', 'line-color', routeSolid],
-      ['live-marker-pulse', 'circle-color', mapSettings.pov.color],
-      ['live-marker-pulse-b', 'circle-color', mapSettings.pov.color],
-      // Dot's stroke color tracks the POV primary (used to be hard-coded
-      // accent); its fill takes the POV secondary, which is the field that
-      // replaces the pre-refactor white-literal default. Both flow through
-      // the static channel — no per-feature variation on the POV marker.
-      ['live-marker-dot', 'circle-stroke-color', mapSettings.pov.color],
-      ['live-marker-dot', 'circle-color', mapSettings.pov.secondary_color],
-      // POV shape-preset slots follow the waypoint SDF convention: primary
-      // = body tint (POV primary color), secondary = outline tint. Emitted
-      // unconditionally — harmless while the layers are hidden, and it
-      // keeps color edits live the instant a shape marker activates.
-      ['live-marker-shape-primary', 'icon-color', mapSettings.pov.color],
-      [
-        'live-marker-shape-secondary',
-        'icon-color',
-        mapSettings.pov.secondary_color,
-      ],
       ['route-full-line', 'line-width', mapSettings.route.size.width * w],
       ['route-trail-line', 'line-width', mapSettings.route.size.width * w],
       // Route halo — see the halo derivation above. Outer band: user-sized
@@ -1192,42 +1385,9 @@ export function resolveStaticPaints(
       ['waypoints-halo-core', 'circle-blur', 1],
       ['waypoints-halo-core', 'circle-opacity', wpPolicy.coreIn],
       ['waypoints-halo-core', 'circle-translate', wpHaloTranslate],
-      // POV halo — see the derivation above.
-      ['live-marker-halo', 'circle-color', povHalo.solid],
-      ['live-marker-halo', 'circle-radius', povHaloRadius],
-      ['live-marker-halo', 'circle-blur', povHalo.fade],
-      // Emitted opacities are the remapped in-FBO values — see the route
-      // halo comment above; same policy, this decoration's own params.
-      ['live-marker-halo', 'circle-opacity', povPolicy.outerIn],
-      ['live-marker-halo', 'circle-translate', povHaloTranslate],
-      ['live-marker-halo-core', 'circle-color', povHalo.solid],
-      ['live-marker-halo-core', 'circle-radius', povHaloCoreRadius],
-      ['live-marker-halo-core', 'circle-blur', 1],
-      ['live-marker-halo-core', 'circle-opacity', povPolicy.coreIn],
-      ['live-marker-halo-core', 'circle-translate', povHaloTranslate],
-      [
-        'live-marker-dot',
-        'circle-radius',
-        mapSettings.pov.size.dot_radius * w,
-      ],
-      [
-        'live-marker-dot',
-        'circle-stroke-width',
-        mapSettings.pov.size.dot_stroke_width * w,
-      ],
-      // live-marker-pulse: initial radius. Per-frame builder overrides this
-      // every frame via `pulseAt`, but seeding it gives a sensible value
-      // before the first frame is applied.
-      [
-        'live-marker-pulse',
-        'circle-radius',
-        mapSettings.pov.size.pulse_radius * w,
-      ],
-      [
-        'live-marker-pulse-b',
-        'circle-radius',
-        mapSettings.pov.size.pulse_radius * w,
-      ],
+      // POV style — colors, halo pair, sizes, pulse seeds (see
+      // `povStyleTuples`).
+      ...povStyle.paints,
     ],
     layouts: [
       // Label text-size / text-field live on the SECONDARY layer because
@@ -1241,7 +1401,6 @@ export function resolveStaticPaints(
       // re-resolves per-frame). Maplibre no-ops same-value writes, so the
       // steady-state cost is one map lookup per frame per tuple.
       ['route-full-line', 'visibility', mapSettings.route.mode === 'full' ? 'visible' : 'none'],
-      ['route-trail-line', 'visibility', mapSettings.route.mode === 'visited' ? 'visible' : 'none'],
       // Halo visibility couples the route mode with the halo toggle — each
       // halo layer shows only when its route layer shows AND the halo is on.
       // The core twins additionally require falloff > 0 (they paint nothing
@@ -1253,24 +1412,16 @@ export function resolveStaticPaints(
         halo.enabled && mapSettings.route.mode === 'full' ? 'visible' : 'none',
       ],
       [
-        'route-trail-halo',
-        'visibility',
-        halo.enabled && mapSettings.route.mode === 'visited' ? 'visible' : 'none',
-      ],
-      [
         'route-full-halo-core',
         'visibility',
         halo.enabled && halo.falloff > 0 && mapSettings.route.mode === 'full'
           ? 'visible'
           : 'none',
       ],
-      [
-        'route-trail-halo-core',
-        'visibility',
-        halo.enabled && halo.falloff > 0 && mapSettings.route.mode === 'visited'
-          ? 'visible'
-          : 'none',
-      ],
+      // Trail trio (line + halo pair) — shared with the per-frame travel
+      // path, which re-emits these with `forceTrail` during a draw-route
+      // travel window. Static emission is always un-forced.
+      ...routeTrailVisibilityTuples(mapSettings.route, false),
       // Marker halo visibility. The waypoints/live-marker sources already
       // carry the decoration-level visibility (mode-filtered collections /
       // per-frame data), so the halo layers gate on the halo toggle alone.
@@ -1283,16 +1434,6 @@ export function resolveStaticPaints(
         'waypoints-halo-core',
         'visibility',
         wpHalo.enabled && wpHalo.falloff > 0 ? 'visible' : 'none',
-      ],
-      [
-        'live-marker-halo',
-        'visibility',
-        povHalo.enabled ? 'visible' : 'none',
-      ],
-      [
-        'live-marker-halo-core',
-        'visibility',
-        povHalo.enabled && povHalo.falloff > 0 ? 'visible' : 'none',
       ],
       // Waypoint icon-image (per slot). MapSettings-derived so a project-
       // default shape edit re-resolves and re-applies to every waypoint
@@ -1315,9 +1456,9 @@ export function resolveStaticPaints(
       ['waypoints-primary', 'icon-size', defaultIconSize],
       ['waypoints-secondary', 'icon-size', defaultIconSize],
       ['waypoints-image', 'icon-size', defaultImageIconSize],
-      // POV marker — three-way visibility swap + per-kind icon wiring (see
-      // the povMarkerLayouts derivation above).
-      ...povMarkerLayouts,
+      // POV style layouts — halo visibilities + the marker's three-way
+      // visibility swap and per-kind icon wiring (see `povStyleTuples`).
+      ...povStyle.layouts,
     ],
     // Route line-gradient. Gradient mode emits an `interpolate` expression
     // on `line-progress`; solid mode emits `null` so the consumer clears
@@ -1343,24 +1484,8 @@ export function resolveStaticPaints(
     // `haloGroupPolicy`. A group whose layers are hidden (halo disabled,
     // wrong route mode, etc.) has no live members and short-circuits
     // in-engine, so there's no need to gate this bucket on `enabled`.
-    haloComposites: [
-      {
-        layers: ['route-full-halo', 'route-full-halo-core'],
-        opacity: routePolicy.g,
-      },
-      {
-        layers: ['route-trail-halo', 'route-trail-halo-core'],
-        opacity: routePolicy.g,
-      },
-      {
-        layers: ['waypoints-halo', 'waypoints-halo-core'],
-        opacity: wpPolicy.g,
-      },
-      {
-        layers: ['live-marker-halo', 'live-marker-halo-core'],
-        opacity: povPolicy.g,
-      },
-    ],
+    // Shared with the per-frame travel path via `haloCompositesFor`.
+    haloComposites: haloCompositesFor(mapSettings),
   };
 }
 

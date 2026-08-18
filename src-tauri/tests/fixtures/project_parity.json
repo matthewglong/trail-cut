@@ -295,6 +295,11 @@
         "corner_radius": 0.02
       }
     },
+    "map_magnification": {
+      "9_16": 1.25,
+      "4_5": 1.5,
+      "16_9": 0.75
+    },
     "selected_export_aspect": "4_5",
     "map_settings": {
       "camera": {

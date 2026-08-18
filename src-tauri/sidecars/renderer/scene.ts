@@ -14,13 +14,13 @@
 // (.spike/native-gl/MECHANICAL_VERDICT.md §3).
 
 import {
-  buildStyleSpec,
+  buildBasemapSpec,
   buildStaticSourceData,
   buildPerFrameState,
   outlineThicknessCanvasPx,
   resolveStaticPaints,
+  type BasemapSpec,
   type HaloCompositeGroup,
-  BUILDINGS_LAYER_SPEC,
   LIVE_MARKER_PULSE_LAYER,
   LIVE_MARKER_PULSE_B_LAYER,
   LIVE_MARKER_DOT_LAYER,
@@ -58,13 +58,17 @@ export interface DecorationLayerSpec {
 }
 
 export interface StaticScene {
-  /** Style spec — either a URL string (DEFAULT_STYLE_URL for default/3d
-   *  modes) or a parsed StyleSpecification object (SATELLITE_STYLE). The
-   *  backend fetches + parses URL styles through the tile cache before
-   *  `map.load`. */
-  style: unknown;
-  add3dBuildings: boolean;
-  buildingsLayer: unknown | null;
+  /** The basemap the PROJECT defaults resolve to — style (a URL string for
+   *  default/3d, an inline StyleSpecification for satellite; the backend
+   *  fetches + parses URL styles through the tile cache before `map.load`),
+   *  its `styleId`, and the conditional 3D-buildings layer.
+   *
+   *  Setup-time seed only. `map_style` is per-clip overridable, so the
+   *  BASEMAP IN FORCE at any given frame is `FramePayload.basemap` (see
+   *  `buildFramePayload`), and a backend that can swap basemaps mid-export
+   *  must follow that, not this. Same seed-vs-per-frame split as
+   *  `staticPaints` / `haloComposites` below. */
+  basemap: BasemapSpec;
   /** Static sources in add order. Data is the init-time seed; the dynamic
    *  sources (route-trail, live-marker) seed empty and are replaced per
    *  frame. `lineMetrics: true` on both route sources is mandatory for the
@@ -125,8 +129,6 @@ export function emptyPointCollection(): Record<string, unknown> {
 }
 
 export function buildStaticScene(payload: SetupCmd): StaticScene {
-  const { style } = buildStyleSpec(payload.mapSettings);
-
   const staticData = buildStaticSourceData({
     route: payload.route,
     waypoints: payload.waypoints,
@@ -200,10 +202,7 @@ export function buildStaticScene(payload: SetupCmd): StaticScene {
   const staticPaintResolution = resolveStaticPaints(payload.mapSettings);
 
   return {
-    style,
-    add3dBuildings: payload.mapSettings.camera.map_style === '3d',
-    buildingsLayer:
-      payload.mapSettings.camera.map_style === '3d' ? BUILDINGS_LAYER_SPEC : null,
+    basemap: buildBasemapSpec(payload.mapSettings),
     staticSources,
     staticLayers,
     staticPaints: staticPaintResolution.paints as Array<[string, string, unknown]>,
@@ -254,6 +253,11 @@ export function buildFramePayload(
     payload.clips,
     payload.waypoints,
     resolvedMapSettings,
+    // Project base (never a clip resolve): the POV travel decision resolves
+    // against this + the DESTINATION clip's overrides inside
+    // buildPerFrameState — the active clip (which flips at the cut) must
+    // not decide whether the marker travels.
+    payload.mapSettings,
     viewport,
   );
 
@@ -266,6 +270,13 @@ export function buildFramePayload(
   const sources: Array<[string, unknown]> = Object.entries(state.sources);
   const paints: Array<[string, string, unknown]> = [
     ...staticResolution.paints,
+    // Per-frame POV style paints (travel-effective: destination-resolved
+    // when synced, the custom travel playhead block when not) — appended
+    // after the statics so they win last-write inside a travel window, and
+    // BEFORE the pulse/dot scalars below so the per-frame pulse animation
+    // still overrides the style block's pulse-radius seeds. Outside a
+    // window this bucket equals the static POV tuples (no-op writes).
+    ...state.povPaints,
     // Primary + secondary `icon-color` flow as data-driven case expressions
     // from buildPerFramePaints (override > active > base for each slot).
     ['waypoints-primary', 'icon-color', state.paints.waypointPrimaryColor],
@@ -283,6 +294,11 @@ export function buildFramePayload(
     // Dot opacity oscillates in `throb`; held at 1.0 in steady / sonar /
     // heartbeat per shapes-pov.md Part 2 §2.
     ['live-marker-dot', 'circle-opacity', state.paints.dotOpacity],
+    // The dot's stroke is a SEPARATE opacity channel in MapLibre
+    // (`circle-stroke-opacity`, default 1) — it must ride `dotOpacity` too
+    // or the seam-ease fade / throb only dims the fill and leaves the ring
+    // at full strength. Mirrors MapView's per-frame tick.
+    ['live-marker-dot', 'circle-stroke-opacity', state.paints.dotOpacity],
     // Every alternate POV marker body inherits the dot's opacity animation
     // — whichever layer is visible IS the marker body (three-way visibility
     // swap via resolveStaticPaints). Mirrors MapView's per-frame tick.
@@ -306,6 +322,13 @@ export function buildFramePayload(
     ['waypoints-primary', 'symbol-sort-key', state.paints.waypointSortKey],
     ['waypoints-secondary', 'symbol-sort-key', state.paints.waypointPlacementKey],
     ['waypoints-image', 'symbol-sort-key', state.paints.waypointSortKey],
+    // Per-frame POV marker identity (travel-transition swap) — appended
+    // LAST so these tuples win last-write over `staticResolution.layouts`'
+    // marker tuples (the backend applies the array sequentially and no-ops
+    // same-value writes). Outside a travel window the bucket equals the
+    // static tuples, so this is a no-op except mid-travel with a differing
+    // transition marker. Mirrors MapView's per-frame layouts apply block.
+    ...state.layouts,
   ];
   // Per-frame line-gradient expressions — today always equal to the static
   // seed (no per-clip route-color overrides exist); the wiring stays
@@ -314,15 +337,40 @@ export function buildFramePayload(
   const gradients: Array<[string, unknown]> =
     staticResolution.gradients as Array<[string, unknown]>;
 
-  // Halo group-opacity composite — re-resolved from the SAME
-  // `staticResolution` as `paints`/`layouts`/`gradients` above, so a per-clip
-  // halo-opacity override (`MapOverrides.route/waypoints/pov.halo`) lands at
-  // the cut exactly like every other overlay-size/color override. `g` can
-  // differ clip-to-clip; the backend re-asserts it only when it changes.
-  const haloComposites = staticResolution.haloComposites;
+  // Halo group-opacity composite — taken from the per-frame state (NOT the
+  // static resolution) so both per-clip halo-opacity overrides AND the
+  // travel-effective POV halo land through one channel: outside a travel
+  // window `state.haloComposites` equals the active clip's static groups,
+  // inside one the live-marker entry reflects the traveling playhead's
+  // halo. `g` can differ frame-to-frame; the backend re-asserts it only
+  // when it changes.
+  const haloComposites = state.haloComposites;
+
+  // The BASEMAP in force at `t`. `camera.map_style` is per-clip overridable
+  // like everything else, so it resolves off `resolvedMapSettings` — i.e.
+  // off the clip `activeClipIdAt` reports, which flips at the transition
+  // span's `cutMs`. That makes the basemap change land on the same frame
+  // the video hard-cuts to the destination clip.
+  //
+  // [DECIDED 2026-08-15] Swap AT THE CUT, no cross-fade between basemaps.
+  // Blending two styles would need two live engines plus an FFmpeg-side
+  // blend of their outputs (out of scope); the camera arc is typically near
+  // its zoomed-out apex at the cut, which is the least jarring instant for
+  // a hard basemap change, and it is the one instant where a discontinuity
+  // is already expected because the picture cuts there too.
+  //
+  // Backends compare `basemap.styleId` against what they have loaded and
+  // rebuild only on a change (nativeBackend's `maybeSwapBasemap`). Note the
+  // pitch asymmetry: `defaultPitch` here is informational for the export
+  // path — export pitch comes from the compiled timeline's per-clip camera
+  // (`anchorIntentForClip` already resolves the clip's own map_style), so
+  // pitch EASES across a 3d↔default seam while the buildings layer pops at
+  // the cut.
+  const basemap = buildBasemapSpec(resolvedMapSettings);
 
   return {
     t,
+    basemap,
     sources,
     paints,
     layouts,

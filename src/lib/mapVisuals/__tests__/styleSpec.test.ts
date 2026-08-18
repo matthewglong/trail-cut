@@ -10,6 +10,7 @@ import {
   buildStyleSpec,
   buildLineGradientExpression,
   resolveStaticPaints,
+  povMarkerLayoutTuples,
   haloGroupPolicy,
   PAINT_REFERENCE_WIDTH,
   SHAPE_CANONICAL_RADIUS,
@@ -651,6 +652,116 @@ describe('live marker layers', () => {
     expect((LIVE_MARKER_DOT_LAYER as { source: string }).source).toBe(
       'live-marker',
     );
+  });
+});
+
+describe('povMarkerLayoutTuples (extracted helper — shared by static + travel paths)', () => {
+  const POV = DEFAULT_MAP_SETTINGS.pov;
+  const LIB = [
+    {
+      id: 'aa11bb22cc33dd44',
+      icon_file: 'assets/marker-icon-aa11bb22cc33dd44.png',
+      source_file: 'assets/marker-source-aa11bb22cc33dd44.png',
+      source_name: 'peak.png',
+      width: 128,
+      height: 128,
+    },
+  ];
+  const VIS_LAYERS = [
+    'live-marker-dot',
+    'live-marker-shape-primary',
+    'live-marker-shape-secondary',
+    'live-marker-image',
+  ];
+
+  function visibilityMap(tuples: Array<[string, string, unknown]>) {
+    const m = new Map<string, unknown>();
+    for (const [layer, prop, val] of tuples) {
+      if (prop === 'visibility') m.set(layer, val);
+    }
+    return m;
+  }
+
+  it('emits all four visibilities in every branch', () => {
+    for (const marker of [
+      { kind: 'shape', shape: 'dot' } as const,
+      { kind: 'shape', shape: 'ring' } as const,
+      { kind: 'image', image_id: 'aa11bb22cc33dd44' } as const,
+      { kind: 'image', image_id: 'not-in-library' } as const,
+    ]) {
+      const vis = visibilityMap(
+        povMarkerLayoutTuples(marker, POV, LIB, PAINT_REFERENCE_WIDTH),
+      );
+      expect([...vis.keys()].sort()).toEqual([...VIS_LAYERS].sort());
+    }
+  });
+
+  it('registered image marker: image layer visible with icon-image + bridged icon-size', () => {
+    const tuples = povMarkerLayoutTuples(
+      { kind: 'image', image_id: 'aa11bb22cc33dd44' },
+      POV,
+      LIB,
+      PAINT_REFERENCE_WIDTH,
+    );
+    const vis = visibilityMap(tuples);
+    expect(vis.get('live-marker-image')).toBe('visible');
+    expect(vis.get('live-marker-dot')).toBe('none');
+    const iconImage = tuples.find(
+      ([l, p]) => l === 'live-marker-image' && p === 'icon-image',
+    );
+    expect(iconImage?.[2]).toBe('marker-image-aa11bb22cc33dd44');
+  });
+
+  it('shape marker: SDF pair visible, tinted icon ids, dot_radius-bridged size', () => {
+    const tuples = povMarkerLayoutTuples(
+      { kind: 'shape', shape: 'diamond' },
+      POV,
+      LIB,
+      PAINT_REFERENCE_WIDTH,
+    );
+    const vis = visibilityMap(tuples);
+    expect(vis.get('live-marker-shape-primary')).toBe('visible');
+    expect(vis.get('live-marker-shape-secondary')).toBe('visible');
+    const primary = tuples.find(
+      ([l, p]) => l === 'live-marker-shape-primary' && p === 'icon-image',
+    );
+    expect(primary?.[2]).toBe('pov-diamond-primary');
+    const size = tuples.find(
+      ([l, p]) => l === 'live-marker-shape-primary' && p === 'icon-size',
+    );
+    expect(size?.[2]).toBeCloseTo(
+      (POV.size.dot_radius * PAINT_REFERENCE_WIDTH) / SHAPE_CANONICAL_RADIUS,
+      10,
+    );
+  });
+
+  it('missing library id collapses to the dot and emits NO icon-image', () => {
+    const tuples = povMarkerLayoutTuples(
+      { kind: 'image', image_id: 'not-in-library' },
+      POV,
+      LIB,
+      PAINT_REFERENCE_WIDTH,
+    );
+    expect(visibilityMap(tuples).get('live-marker-dot')).toBe('visible');
+    expect(tuples.some(([, p]) => p === 'icon-image')).toBe(false);
+  });
+
+  it('matches resolveStaticPaints byte-for-byte for the static marker (extraction is invisible)', () => {
+    const settings: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      pov: { ...POV, marker: { kind: 'shape', shape: 'ring' } },
+      marker_images: LIB,
+    };
+    const staticLayouts = resolveStaticPaints(settings).layouts.filter(([l]) =>
+      VIS_LAYERS.includes(l),
+    );
+    const helperLayouts = povMarkerLayoutTuples(
+      { kind: 'shape', shape: 'ring' },
+      settings.pov,
+      LIB,
+      PAINT_REFERENCE_WIDTH,
+    );
+    expect(staticLayouts).toEqual(helperLayouts);
   });
 });
 

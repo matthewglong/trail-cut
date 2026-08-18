@@ -492,6 +492,221 @@ applied in `src-tauri/sidecars/renderer/{scene,backend,nativeBackend}.ts` (expor
 `src/components/MapView.tsx` (preview). Gates: `scripts/gljs-halo-parity/run.mjs`
 (README has the full parity table) + the untouched native golden gate.
 
+### 2.8 Per-aspect map magnification `k` — the third viewport lever — DECIDED
+
+**Decision (2026-08-12, Matthew's pick after the 9:16 "everything is half size"
+complaint — the "real complaint" §2.6 reserved judgment for).** A per-aspect factor
+`k` (default 1.0, valid **[0.5, 2.0]**, rejected loudly — never clamped — outside it)
+that magnifies the ENTIRE map render relative to the frame: basemap, labels,
+decorations, and world scale together, with correspondingly less geography visible.
+Rationale: the liberty basemap is desktop cartography; §2.1's perceived-scale
+invariance assumed one viewing condition, but phone-native aspects are consumed
+full-bleed at phone size, wanting ~2× the frame-relative symbology of a
+desktop-viewed 16:9. `k` is per-aspect because consumption medium correlates with
+aspect. **§2.1 is hereby scoped: invariance holds at default `k`; a non-default `k`
+is an explicit per-aspect creative choice.**
+
+- **Mechanism** — the css/device-pixel boundary moves; content math never does.
+  Export: `cssViewport = round(slot / (multiplier·k))`, `pixelRatio =
+  multiplier·k·ssaa` — applied INSIDE `build_setup_payload`
+  (`src-tauri/src/export/mod.rs`), the SSAA precedent, so `canonical_map_viewport`
+  stays k-free as the TS↔Rust parity surface (`layout_parity.json` untouched). The
+  framebuffer stays slot×SSAA: nothing downstream of the sidecar changes, and the
+  sidecar itself needed ZERO changes (magnification never crosses the wire — the
+  renderer sees only the derived viewport). The three levers are orthogonal
+  (resolution → density, `k` → apparent scale, SSAA → sample count; `k` must NEVER
+  feed `map_supersample_factor`).
+- **Preview honesty (§2.6 extended)**: `k` enters `MapView` in exactly two forms —
+  intent viewport `canonicalSlotCss(layout, aspect, k)` and `effectiveScale =
+  previewDisplayScale × k` (threaded as `surfaceScale` / `withDisplayScale`, and
+  into marker-texture bake density). The pane keeps showing exactly what the
+  k-magnified export looks like played fullscreen.
+- **Persistence**: `Project.map_magnification` `{"9_16","4_5","16_9"}`, additive —
+  NO schema bump, no migration. Identity is written as ABSENCE (frontend deletes
+  the field when all three are exactly 1.0; Rust `skip_serializing_if` on `None`),
+  so untouched bundles stay byte-identical. Transport rides the typed
+  `LayoutDescriptor.magnification` (serde default 1.0) — never the flattened
+  `project_state` (key-collision trap). Per-export-job by construction: the css
+  viewport is laid out once per job, so `k` is NOT per-clip overridable.
+- **Bounds**: 2.0 is principled — the native binding throws above `pixelRatio 8`
+  (`NATIVE_ADDIMAGE_MAX_PIXEL_RATIO`), and 2160p×k2×SSAA2 lands exactly on 8.
+  Raising the ceiling requires icon re-tiling (the error message names it).
+- **Proven**: `k = 1.0` is bit-exact with the pre-lever pipeline (IEEE ÷1.0/×1.0
+  identities; swept 3 aspects × 4 resolutions × 5 slot shapes), so goldens are
+  untouched and no existing project re-renders differently. Anchor case: 9:16 slot
+  1080×919 @1080p, k=2 → css 540×460, pixelRatio 6.0, framebuffer 3240×2757,
+  rounding drift exactly on the `pixelRatio·0.5` bound.
+
+**Authority**: `build_setup_payload` + `validate_request` in
+`src-tauri/src/export/mod.rs`; `MapMagnifications` / `MAGNIFICATION_*` /
+`canonicalSlotCss` in `src/lib/layout.ts`; `effectiveScale` in
+`src/components/MapView.tsx`; UI in `src/components/MapPositioningModal/`
+(per-tile stepper; tile reset also resets `k` to 1.0).
+
+### 2.9 Transition — playhead travel + seam eases (its own decoration) — DECIDED
+
+**Decision (2026-08-13, Matthew's toggle request; restructured twice same
+day on Matthew's design — first into a first-class decoration, then renamed
+TRAVEL → TRANSITION when the seam eases joined it).** Opt-in TOP-LEVEL
+`MapSettings.transition` (additive `Option<TransitionSettings> { travel?,
+ease_in?, ease_out? }` — NO schema bump, halo precedent; atomic per-clip
+override blob `MapOverrides.transition` diffed by
+`transitionSettingsEquals`; its own TRANSITION toolbar section alongside
+Route/Waypoints/POV). Three optional LAYERS that stack:
+
+- **`travel`** (`TravelSettings { enabled, show_playhead?, sync?, playhead?,
+  draw_route? }`): during the existing inter-clip `TransitionSpan` window
+  the traveling playhead runs ALONG THE ROUTE PATH between the wall-clocks
+  the playhead occupies at the window edges, instead of teleporting at
+  `cutMs`. The optional toggles read absent-as-TRUE (`travelShowPlayhead` /
+  `travelSync` / `travelDrawRoute` normalizers; comparator normalizes too,
+  so `{enabled:true}` equals its spelled-out twin).
+- **`ease_in` / `ease_out`** (`SeamEase { style: pop|fade|grow, speed:
+  slow|medium|fast }`, absent = none = today's hard jump): how a clip's
+  playhead animates in/out at seams — the "sense of place" punctuation for
+  short back-to-back clips that travel smooths away. Pure multiplicative
+  {scale, opacity} ENVELOPE over the whole marker stack (body + pulse +
+  halo; fade dims the live-marker halo composite's `g`), FIXED per-phase
+  duration from speed (650/400/250 ms — deliberately independent of window
+  length so short clips get the same snap), curves in
+  `mapVisuals/animations.ts` (`easeEnvelopeSample` / `seamEnvelopeAt`).
+  Anchors at every marker DISCONTINUITY, one mechanism stacking onto
+  whatever the seam does (verified: no prior style easing existed to
+  duplicate — travel eases position only, style hard-swaps):
+  - non-traveled seam (travel off/bailed/zero window): the teleport at
+    `cutMs` — out-phase = SOURCE clip's `ease_out`, in-phase = DESTINATION
+    clip's `ease_in` (a seam reads TWO clips' resolved blocks; per-clip
+    resolution doing its normal job);
+  - traveled seam: position is continuous but STYLE swaps at the window
+    edges — entry crossfade (clip marker → traveling marker) governed by
+    the source's `ease_out` on both phases, exit crossfade by the
+    destination's `ease_in`;
+  - project start (`t=0`, first clip's `ease_in`) and end
+    (`totalDurationMs`, last clip's `ease_out`).
+  `classifyTravelWindow` is the ONE traveled-or-not predicate shared by
+  `travelTraceAt` and the instant builder (`seamInstantsNear`, horizon
+  prefiltered by `EASE_MAX_PHASE_MS`). Envelope scale folds into the
+  effective POV style block before `povStyleTuples`/`buildPerFramePaints`
+  (all size fields linear; halo spread scales via `halo.size`); a
+  fully-empty transition blob collapses to absent so "everything off"
+  serializes like "never touched".
+
+- **Playhead and route drawing are INDEPENDENT toggles.**
+  `show_playhead: false` hides the whole traveling marker stack for the
+  window by shipping an EMPTY `live-marker` source (every marker-stack
+  layer renders from it — one move, automatic restore). `draw_route: true`
+  (default) drives the visited trail head from the synthesized clock and
+  FORCES the trail trio visible during the window when the route
+  decoration mode is 'none' (`routeTrailVisibilityTuples(route,
+  forceTrail)`, route's own resolved style, on/off only by design);
+  `draw_route: false` keeps the trail on the pre-travel clock (advances
+  with the source clip, holds, snaps at window exit) while only the
+  playhead travels.
+- **Sync = destination owns the LOOK for the whole window.** `sync: true`
+  (default) dresses the traveling playhead in the DESTINATION clip's full
+  resolved POV style — marker, colors, sizes, pulse, halo — end to end (no
+  mid-flight style flip at the cut). `sync: false` consumes
+  `travel.playhead`, a full `PovSettings`-shaped custom style with total
+  POV capability parity (inside it, absent `marker` = the dot — normal
+  PovSettings semantics; there is no "track" state, that intent is sync).
+  The UI seeds the custom block by one-shot-copying the current resolved
+  POV on unsync (decoration-linking precedent) and keeps it across
+  re-sync/off round trips (disabled-halo precedent).
+- **Style flows through per-frame buckets shared with the static resolver**
+  — `povStyleTuples` (extracted from `resolveStaticPaints`) emits the ONE
+  tuple set for a POV-style block; `buildPerFrameState` re-emits it every
+  frame from the travel-effective style into `PerFrameState.povPaints` +
+  `.layouts`, plus `.haloComposites` (fixed four groups via
+  `haloCompositesFor`, live-marker entry travel-effective). Outside a
+  window every bucket equals the static resolution, so restore is
+  automatic — no entry/exit handshake. Export appends povPaints after the
+  static paints and BEFORE the per-frame pulse scalars (last-write-wins);
+  preview applies them with diff caches cleared by the static-apply
+  effect.
+- **Camera untouched** — the Van Wijk arc (`evaluateTransitionSpan`) is
+  unchanged; only the marker/trail travels under it.
+- **Destination clip owns the window** — the transition INTO clip N+1 is
+  governed end-to-end by `resolveMapSettings(project,
+  toClip.map_overrides).transition.travel` (and, under sync, `.pov`); no
+  mid-flight flips at the cut. The SOURCE clip's resolved block contributes
+  exactly one thing to the seam: its `ease_out`.
+- **Zero added frames** — travel rides the existing window;
+  `totalDurationMs` untouched (the FFmpeg concat has no matching gap and
+  would desync — this is why a "real gap" design was rejected).
+- **Endpoints at span edges, not mediaOut/mediaIn** — same convention (and
+  same `easeInOut` curve) as the camera arc, so the marker is continuous at
+  both window edges by construction.
+- **One synthesized wall-clock** — eased distance-parameterized interpolation
+  (`distanceAtWallClock` / `wallClockAtDistance` in `routeLocation.ts`,
+  geodesic space) yields a wall-clock that drives marker position, visited
+  trail head, gradient progress, and waypoint activation through the
+  EXISTING consumers — parity on both engines for free. Waypoint
+  activation always rides the travel clock (marker semantics), even when
+  `draw_route` holds the trail back. Stationary-plateau inversions clamp
+  into the window's wall-clock range; sub-0.5 m windows time-lerp.
+- **Bail-outs reproduce the pre-travel teleport exactly**: project-start
+  transition (null `fromClipId`), zero-duration span, no route, either
+  endpoint off-GPX (never animate between a fallback-GPS position and a
+  route position). Mid-window >60 s GPX holes momentarily show the existing
+  fallback — accepted v1 limitation. An unsynced block with no stored
+  `playhead` falls back to sync behavior defensively.
+- **Known limitation (shared with per-clip POV overrides)**: the POV shape
+  atlas rasterizes its outline band once at setup from project `pov.size`;
+  a custom travel style re-resolves icon-size per frame but does not
+  re-rasterize the outline band mid-export.
+
+**Authority**: `classifyTravelWindow` / `travelTraceAt` /
+`seamInstantsNear` + the per-frame buckets in
+`src/lib/mapVisuals/perFrame.ts`; `easeEnvelopeSample` / `seamEnvelopeAt` /
+`EASE_PHASE_MS` in `src/lib/mapVisuals/animations.ts`; `povStyleTuples` /
+`routeTrailVisibilityTuples` / `haloCompositesFor` in
+`src/lib/mapVisuals/styleSpec.ts`; `distanceAtWallClock` /
+`wallClockAtDistance` in `src/lib/routeLocation.ts`; `TransitionSettings` /
+`SeamEase` / `transitionSettingsEquals` / `travelSettingsEquals` /
+`povStyleEquals` in `src/types.ts` (Rust mirror in `models.rs`); UI = the
+TRANSITION decoration panel (`TransitionPanelBody` + `EaseSection` +
+`PovStyleControls` in `DecorationPanel.tsx`); registration/delete-revert in
+`src/lib/markerLibrary.ts` + `nativeBackend.ts::registerMarkerImages`.
+
+### 2.10 Per-clip basemap (`camera.map_style`) swaps at the CUT — DECIDED (2026-08-15)
+
+- **What**: `map_style` (`default` / `3d` / `satellite`) is per-clip overridable
+  and the export honors it: the sidecar resolves the basemap for the clip
+  `activeClipIdAt(timeline, t)` returns and swaps the loaded style when its id
+  changes — i.e. at the transition span's `cutMs`, the same instant the video
+  hard-cuts and the active clip flips. Not at the transition window's start,
+  not cross-faded.
+- **Why the cut**: a basemap change reads as an edit; aligning it with the
+  picture cut makes it ONE edit rather than two, and the camera arc is usually
+  near its zoomed-out apex there. A style cross-fade would need two engines +
+  an FFmpeg blend (2× frame cost) — deferred, not rejected.
+- **Mechanism**: `buildBasemapSpec(mapSettings)` in `styleSpec.ts` is the whole
+  basemap decision (`styleId`, style, `defaultPitch`, buildings layer) as one
+  value; `buildFramePayload` emits `frame.basemap` per frame; the native
+  backend's `maybeSwapBasemap` compares `styleId` against `loadedStyleId` and
+  on change runs `map.load(style)` + `applyScene()` (sources → layers → images
+  → statics → group composite, MapView-onStyleLoad order). Everything MUST be
+  re-added: `Style::Impl::parse` clears sources, layers AND images
+  (`.mbgl-src/src/mbgl/style/style_impl.cpp`); the camera and group composite
+  survive. `renderStill` already blocks on `rendererFullyLoaded`, so a
+  half-tiled swap frame is impossible. `recycle()` keeps the last frame's
+  basemap (never resets to the project default mid-clip). Pitch was ALREADY
+  per-clip: `cameraIntent.ts` compiles each clip's anchor from the
+  clip-resolved settings, so a `3d` override pitches the arc across the whole
+  transition span while the buildings pop in at the cut — inherent to a
+  continuous camera + a discrete swap.
+- **Preview**: swaps on the SELECTED clip (`MapView` style effect); export on
+  the ACTIVE clip at `t`. Each is right for its surface; both use
+  `buildBasemapSpec`.
+- **Known dead field**: top-level `MapOverrides.map_style` (v7 legacy) is
+  ignored by `resolveMapSettings` (only `overrides.camera.map_style` merges);
+  the UI writes the camera form. Same on both surfaces, so no divergence — a
+  v7-migrated project's per-clip style is inert until re-picked. Open item.
+
+**Authority**: `buildBasemapSpec` (`styleSpec.ts`), `buildFramePayload`
+(`scene.ts`), `maybeSwapBasemap` / `applyScene` (`nativeBackend.ts`), gate
+`__tests__/basemapSwap.test.ts`.
+
 ---
 
 ## 3. Export

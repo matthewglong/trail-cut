@@ -111,6 +111,7 @@ fn build_request(output_path: &str) -> RenderExportRequest {
     let layout_descriptor = LayoutDescriptor {
         aspect,
         resolution: OutputResolution::default(),
+        magnification: 1.0,
         layout,
         resolved,
     };
@@ -322,6 +323,7 @@ fn build_request_with_layout(
     let layout_descriptor = LayoutDescriptor {
         aspect,
         resolution: OutputResolution::default(),
+        magnification: 1.0,
         layout,
         resolved,
     };

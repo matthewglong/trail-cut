@@ -77,6 +77,11 @@ export interface MarkerSectionProps {
   ariaLabel?: string;
   /** Test-id prefix for the cells; defaults to `marker-cell`. */
   testIdPrefix?: string;
+  /** Container test id; defaults to `marker-section`. Panels that mount
+   *  TWO galleries (POV's marker + transition-marker sections) must give
+   *  the second a distinct id or `getByTestId` collides. Also derives the
+   *  clear-override button's id (`<containerTestId>-clear-override`). */
+  containerTestId?: string;
 }
 
 const WAYPOINT_PRESETS: GridPickerOption<MarkerValue>[] = [
@@ -160,6 +165,7 @@ export function MarkerSection({
   overrideIndicator,
   ariaLabel,
   testIdPrefix = 'marker-cell',
+  containerTestId = 'marker-section',
 }: MarkerSectionProps) {
   const presets = domain === 'pov' ? POV_PRESETS : WAYPOINT_PRESETS;
   const imageOptions: GridPickerOption<MarkerValue>[] = markerImages.map(
@@ -186,7 +192,7 @@ export function MarkerSection({
   );
 
   return (
-    <div style={markerSectionStyles.container} data-testid="marker-section">
+    <div style={markerSectionStyles.container} data-testid={containerTestId}>
       {overrideIndicator && (
         <div style={markerSectionStyles.overridePillRow}>
           <span style={markerSectionStyles.overridePill}>
@@ -198,7 +204,7 @@ export function MarkerSection({
             onClick={overrideIndicator.onClear}
             style={markerSectionStyles.clearButton}
             title="Reset to project"
-            data-testid="marker-section-clear-override"
+            data-testid={`${containerTestId}-clear-override`}
           >
             × Reset to project
           </button>

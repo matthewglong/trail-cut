@@ -241,3 +241,98 @@ describe('clip-level waypoints marker overrides (per-clip override expansion)', 
     expect(next.clips[0].map_overrides).toBeNull();
   });
 });
+
+describe('transition traveling-playhead markers', () => {
+  /** A transition block whose custom (unsynced) traveling playhead wears
+   *  image `id`. */
+  const transitionWithImage = (id: string, enabled = true) => ({
+    travel: {
+      enabled,
+      sync: false,
+      playhead: {
+        ...DEFAULT_MAP_SETTINGS.pov,
+        marker: { kind: 'image' as const, image_id: id },
+      },
+    },
+  });
+
+  it('referencedMarkerImageIds collects traveling-playhead markers (project + per-clip, enabled or not)', () => {
+    const mapSettings = settingsWith({
+      marker_images: [IMG_A, IMG_B],
+      // Disabled on purpose — config survives an off-toggle, so the
+      // reference still counts.
+      transition: transitionWithImage(IMG_A.id, false),
+    });
+    const clips = [makeClip('c1', { transition: transitionWithImage(IMG_B.id) })];
+    const ids = referencedMarkerImageIds(mapSettings, clips, []);
+    expect(ids).toEqual(new Set([IMG_A.id, IMG_B.id]));
+  });
+
+  it('removeMarkerImage strips the traveling-playhead marker but keeps the block (toggles + eases + style survive)', () => {
+    const mapSettings = settingsWith({
+      marker_images: [IMG_A],
+      transition: {
+        ...transitionWithImage(IMG_A.id),
+        travel: { ...transitionWithImage(IMG_A.id).travel, draw_route: false },
+        ease_in: { style: 'pop', speed: 'fast' },
+      },
+    });
+    const next = removeMarkerImage(
+      { mapSettings, clips: [], waypoints: [] },
+      IMG_A.id,
+    );
+    const travel = next.mapSettings.transition?.travel;
+    expect(travel?.enabled).toBe(true);
+    expect(travel?.draw_route).toBe(false);
+    expect(travel?.sync).toBe(false);
+    // The custom style survives with its marker reverted to the dot; the
+    // eases ride along untouched.
+    expect(travel?.playhead).toBeDefined();
+    expect(travel?.playhead?.marker).toBeUndefined();
+    expect(next.mapSettings.transition?.ease_in).toEqual({
+      style: 'pop',
+      speed: 'fast',
+    });
+  });
+
+  it('removeMarkerImage strips a clip-level transition override marker; the override survives', () => {
+    const clips = [
+      makeClip('c1', { transition: transitionWithImage(IMG_A.id) }),
+      makeClip('c2', {
+        pov: { marker: { kind: 'image', image_id: IMG_A.id } },
+        transition: transitionWithImage(IMG_A.id, false),
+      }),
+      makeClip('c3', {
+        transition: {
+          travel: {
+            enabled: true,
+            sync: false,
+            playhead: {
+              ...DEFAULT_MAP_SETTINGS.pov,
+              marker: { kind: 'shape', shape: 'ring' },
+            },
+          },
+        },
+      }),
+    ];
+    const mapSettings = settingsWith({ marker_images: [IMG_A] });
+    const next = removeMarkerImage(
+      { mapSettings, clips, waypoints: [] },
+      IMG_A.id,
+    );
+    // c1: transition-only override keeps its (marker-stripped) blob.
+    expect(next.clips[0].map_overrides?.transition?.travel?.enabled).toBe(true);
+    expect(
+      next.clips[0].map_overrides?.transition?.travel?.playhead?.marker,
+    ).toBeUndefined();
+    // c2: both the normal POV marker and the traveling-playhead marker are
+    // stripped; the transition blob itself survives with enabled=false.
+    expect(next.clips[1].map_overrides?.pov).toBeUndefined();
+    expect(next.clips[1].map_overrides?.transition?.travel?.enabled).toBe(false);
+    expect(
+      next.clips[1].map_overrides?.transition?.travel?.playhead?.marker,
+    ).toBeUndefined();
+    // c3: shape travel markers are untouched (identity preserved).
+    expect(next.clips[2]).toBe(clips[2]);
+  });
+});

@@ -85,6 +85,8 @@ import {
   type DecorationLayerSpec,
   type StaticScene,
 } from './scene';
+import type { BasemapSpec } from '../../../src/lib/mapVisuals';
+import type { MapStyleId } from '../../../src/types';
 import {
   buildAllShapeIcons,
   buildShapeIconsFor,
@@ -357,8 +359,37 @@ export class NativeBackend implements RendererBackend {
    *  at the end of every `setup()` (including `recycle()`'s re-setup), so it
    *  never survives stale across a map rebuild. */
   private lastGroupCompositeJson: string | null = null;
+  /** `styleId` of the basemap currently loaded into the engine — the
+   *  comparison key for the mid-export swap (`maybeSwapBasemap`). Null
+   *  before setup and while a setup is in flight, so a failed setup can
+   *  never leave a stale id claiming a style is loaded. */
+  private loadedStyleId: MapStyleId | null = null;
+  /** Basemap of the most recently rendered frame. Exists so `recycle()` —
+   *  the orchestrator's every-60-frames rebuild — comes back on the basemap
+   *  the export is ACTUALLY on rather than the project default, which would
+   *  otherwise force a discarded style load plus a full scene rebuild, then
+   *  an immediate swap back, once per recycle cycle on any style-overriding
+   *  clip. Cleared by a fresh `setup()` (new job → no basemap to carry) and
+   *  by `shutdown()`. */
+  private lastFrameBasemap: BasemapSpec | null = null;
+  /** Parsed style objects, keyed by the style URL for URL styles and by
+   *  `styleId` for inline ones — so 'default' and '3d', which share the
+   *  liberty URL, share one parse. A basemap swap must not re-fetch (the
+   *  tile cache would serve it from disk, but re-parsing the ~MB liberty
+   *  style on every swap is pure waste), and the parsed object is immutable
+   *  as far as the binding is concerned — `NodeMap::Load` stringifies it and
+   *  hands the JSON to `Style::Impl::loadJSON`. Survives `recycle()` for the
+   *  same reason. */
+  private styleObjects = new Map<string, unknown>();
 
-  constructor(private tileCache: TileCache) {}
+  /** `bindingLoader` is a seam for tests: the default resolves and requires
+   *  the staged patched binding, which unit tests can neither ship nor
+   *  meaningfully stub through `require`. Production callers pass one
+   *  argument. */
+  constructor(
+    private tileCache: TileCache,
+    private bindingLoader: () => MbglModule = loadBinding,
+  ) {}
 
   // ---- mbgl request bridge ----
   //
@@ -402,9 +433,33 @@ export class NativeBackend implements RendererBackend {
     return JSON.parse(bytes.toString('utf8'));
   }
 
+  /** Memoized `fetchStyleObject`. */
+  private async styleObjectFor(basemap: BasemapSpec): Promise<unknown> {
+    const key =
+      typeof basemap.style === 'string' ? basemap.style : basemap.styleId;
+    const cached = this.styleObjects.get(key);
+    if (cached !== undefined) return cached;
+    const parsed = await this.fetchStyleObject(basemap.style);
+    this.styleObjects.set(key, parsed);
+    return parsed;
+  }
+
   async setup(payload: SetupCmd): Promise<void> {
+    // A fresh setup is a new export job — nothing to carry over. (`recycle()`
+    // deliberately goes through `setupInternal` instead, keeping
+    // `lastFrameBasemap` so the rebuild lands on the basemap the job is
+    // currently rendering.)
+    this.lastFrameBasemap = null;
+    await this.setupInternal(payload);
+  }
+
+  private async setupInternal(payload: SetupCmd): Promise<void> {
     const t0 = Date.now();
     this.setupPayload = payload;
+    // Nothing is loaded until the new Map has taken a style AND passed the
+    // capability gates below; a throw in between must not leave a styleId
+    // that `maybeSwapBasemap` would trust.
+    this.loadedStyleId = null;
 
     // Port contract 5 precondition: SDF icons rasterize at 128 × pixelRatio
     // texels and the binding's addImage rejects textures over 1024 — check
@@ -418,7 +473,7 @@ export class NativeBackend implements RendererBackend {
       );
     }
 
-    const mbgl = loadBinding();
+    const mbgl = this.bindingLoader();
 
     // Supersampled exports need the binding's readback-downsample support
     // (readback-downsample.patch). Same loud-failure contract as
@@ -444,7 +499,13 @@ export class NativeBackend implements RendererBackend {
 
     const scene = buildStaticScene(payload);
     this.scene = scene;
-    const styleObject = await this.fetchStyleObject(scene.style);
+    // Setup has no frame time to resolve a basemap against, so it loads the
+    // PROJECT default — except on a `recycle()`, where `lastFrameBasemap`
+    // carries the basemap the export is mid-way through. If the job's FIRST
+    // frame sits on a clip that overrides `map_style`, `maybeSwapBasemap`
+    // swaps on that frame: one extra reload at the head of the job.
+    const basemap = this.lastFrameBasemap ?? scene.basemap;
+    const styleObject = await this.styleObjectFor(basemap);
 
     const map = new mbgl.Map({
       // The `ratio` lever — the native analogue of the GL JS `pixelRatio`
@@ -495,27 +556,70 @@ export class NativeBackend implements RendererBackend {
       );
     }
 
+    this.applyScene(map, basemap);
+    this.loadedStyleId = basemap.styleId;
+
+    this.map = map;
+    process.stderr.write(
+      `[renderer] setup done in ${Date.now() - t0}ms (backend=native, style=${
+        basemap.styleId
+      }, verbose=${VERBOSE})\n`,
+    );
+  }
+
+  /** Populate a freshly-loaded style with EVERYTHING this backend owns:
+   *  3D buildings → sources → layers → images → static paints/layouts/
+   *  gradients → halo group composite. That order mirrors the preview's
+   *  MapView `onStyleLoad`, so atlas layout and layer stacking are identical
+   *  to what the user previews.
+   *
+   *  Shared by `setup()` and the mid-export basemap swap because a
+   *  `map.load()` wipes all of it. That is not an inference — mbgl's
+   *  `Style::Impl::parse` (src/mbgl/style/style_impl.cpp, reached from
+   *  `loadJSON`, which is exactly what the binding's `NodeMap::Load` calls)
+   *  runs `sources.clear(); layers.clear(); images = makeMutable<ImageImpls>();`
+   *  before installing the new style's own contents. Every source, layer and
+   *  registered icon we added is gone after a reload and has to go back on.
+   *  (Two things do NOT live on the Style and therefore survive:
+   *  `setGestureInProgress`, which is transform state, and the group
+   *  composite, which lives on `Renderer::Impl` and matches members by layer
+   *  id at render time — we re-assert the composite anyway so
+   *  `lastGroupCompositeJson` can't drift from the engine.)
+   *
+   *  `seedSources` lets the swap path seed the dynamic sources with the
+   *  CURRENT frame's GeoJSON instead of the setup-time placeholder, so the
+   *  swap frame renders the right trail/marker rather than an empty one and
+   *  the `lastSourceJson` dedup stays honest. */
+  private applyScene(
+    map: MbglMap,
+    basemap: BasemapSpec,
+    seedSources?: ReadonlyMap<string, unknown>,
+  ): void {
+    const scene = this.scene;
+    const payload = this.setupPayload;
+    if (!scene || !payload) {
+      throw new Error('native backend: applyScene before setup state exists');
+    }
+
     // 3D buildings (map_style === '3d') — soft-failure semantics (carried
     // over from the pre-cutover renderer): the layer expects the
     // 'openmaptiles' source; not all styles have it.
-    if (scene.add3dBuildings && scene.buildingsLayer) {
+    if (basemap.add3dBuildings && basemap.buildingsLayer) {
       try {
-        map.addLayer(scene.buildingsLayer);
+        map.addLayer(basemap.buildingsLayer);
       } catch {
         verbose('[renderer native] 3d buildings layer add threw (ignored)\n');
       }
     }
 
-    // Sources → layers → images → static paints/layouts/gradients — the
-    // same order as the preview's MapView onStyleLoad, so atlas layout and
-    // layer stacking are identical to what the user previews.
     this.sourceOrder = scene.staticSources.map(([id]) => id);
     this.lastSourceJson.clear();
     for (const [id, spec] of scene.staticSources) {
-      map.addSource(id, nativeSourceSpec(id, spec));
-      // Seed the refresh dedup with the init-time data so frame 0 only
-      // refreshes sources that actually differ.
-      this.lastSourceJson.set(id, JSON.stringify(spec.data));
+      const data = seedSources?.get(id) ?? spec.data;
+      map.addSource(id, nativeSourceSpec(id, { ...spec, data }));
+      // Seed the refresh dedup with the data actually installed, so the
+      // caller's `refreshSources` only touches sources that really differ.
+      this.lastSourceJson.set(id, JSON.stringify(data));
     }
     this.layersBySource.clear();
     for (const layer of scene.staticLayers) {
@@ -525,11 +629,30 @@ export class NativeBackend implements RendererBackend {
       this.layersBySource.set(layer.source, arr);
     }
 
-    // SDF shape icons — the same pure rasterizers the preview runs
-    // (`buildAllShapeIcons` for the waypoint atlas, `buildShapeIconsFor`
-    // for the POV shape presets, plus the two transparent placeholders of
-    // the SDF/raster layer split), executed in-process. Port contract 5:
-    // Buffer + dims-in-options signature.
+    this.registerShapeIcons(map, scene, payload);
+    this.registerMarkerImages(map, payload);
+    this.applyStatics(map, scene);
+
+    // Halo group-opacity composite, seeded from PROJECT defaults (no clip is
+    // "active" at setup, and on a swap the caller's per-frame re-assert runs
+    // immediately after). `renderFrame` re-asserts whenever a frame's
+    // re-resolved value differs from what's applied.
+    // Non-null assertion: `setup`'s capability gate already threw if
+    // `setGroupComposite` were absent, but TS can't see that from here.
+    map.setGroupComposite!(scene.haloComposites);
+    this.lastGroupCompositeJson = JSON.stringify(scene.haloComposites);
+  }
+
+  /** SDF shape icons — the same pure rasterizers the preview runs
+   *  (`buildAllShapeIcons` for the waypoint atlas, `buildShapeIconsFor` for
+   *  the POV shape presets, plus the two transparent placeholders of the
+   *  SDF/raster layer split), executed in-process. Port contract 5: Buffer +
+   *  dims-in-options signature. */
+  private registerShapeIcons(
+    map: MbglMap,
+    scene: StaticScene,
+    payload: SetupCmd,
+  ): void {
     for (const { id, icon, options } of [
       ...buildAllShapeIcons({
         outlineThickness: scene.shapeOutlineThickness,
@@ -554,24 +677,51 @@ export class NativeBackend implements RendererBackend {
         },
       );
     }
+  }
 
-    this.registerMarkerImages(map, payload);
-
-    this.applyStatics(map, scene);
-
-    // Setup-time seed for the halo group-opacity composite — project
-    // defaults, since no clip is "active" yet. `renderFrame` re-asserts
-    // whenever a frame's re-resolved value differs from what's applied.
-    // Non-null assertion: the capability gate above already threw if
-    // `setGroupComposite` were absent, but TS drops the narrowing across the
-    // intervening addSource/addLayer/addImage calls.
-    map.setGroupComposite!(scene.haloComposites);
-    this.lastGroupCompositeJson = JSON.stringify(scene.haloComposites);
-
-    this.map = map;
+  /** Basemap swap AT THE CUT. `camera.map_style` is per-clip overridable, so
+   *  `buildFramePayload` resolves the basemap against the clip
+   *  `activeClipIdAt(timeline, t)` reports — which flips at the transition
+   *  span's `cutMs`, the instant the video hard-cuts. The basemap therefore
+   *  changes on the same frame the picture does. No cross-fade between
+   *  basemaps: blending two styles needs two live engines plus an
+   *  FFmpeg-side blend of their outputs, and the camera arc is typically
+   *  near its zoomed-out apex at the cut anyway. [DECIDED 2026-08-15]
+   *
+   *  Cost model — the swap frame pays, every other frame pays a string
+   *  compare:
+   *   - the style object is parsed once per styleId (`styleObjectFor`) and
+   *     its tiles come from the shared on-disk tile cache;
+   *   - the full scene is re-uploaded (`applyScene`), which is the same work
+   *     `setup()` does;
+   *   - the render call for that frame blocks until the NEW basemap is
+   *     actually drawable: `Map::Impl::onDidFinishRenderingFrame` only
+   *     fulfils a still-image request once `rendererFullyLoaded`
+   *     (src/mbgl/map/map_impl.cpp), so a swap frame cannot be emitted
+   *     half-tiled. No explicit wait is needed here.
+   *
+   *  Returns true when a swap happened. */
+  private async maybeSwapBasemap(
+    map: MbglMap,
+    frame: FramePayload,
+  ): Promise<boolean> {
+    const basemap = frame.basemap;
+    if (this.loadedStyleId === basemap.styleId) return false;
+    const t0 = Date.now();
+    const previous = this.loadedStyleId;
+    const styleObject = await this.styleObjectFor(basemap);
+    // Load first, then repopulate — `loadedStyleId` is cleared across the
+    // gap so a throw mid-rebuild can't leave the engine holding one style
+    // while this backend believes it holds another.
+    this.loadedStyleId = null;
+    map.load(styleObject);
+    this.applyScene(map, basemap, new Map(frame.sources));
+    this.loadedStyleId = basemap.styleId;
     process.stderr.write(
-      `[renderer] setup done in ${Date.now() - t0}ms (backend=native, verbose=${VERBOSE})\n`,
+      `[renderer] basemap swap ${previous ?? 'none'} → ${basemap.styleId} ` +
+      `at t=${frame.t}ms in ${Date.now() - t0}ms\n`,
     );
+    return true;
   }
 
   /** Register every REFERENCED marker-library image (project POV marker,
@@ -607,9 +757,18 @@ export class NativeBackend implements RendererBackend {
     if (settings.pov.marker?.kind === 'image') {
       povIds.add(settings.pov.marker.image_id);
     }
+    // Traveling-playhead markers (Transition decoration) render on the
+    // same POV image layer; their display size is the travel style's own
+    // `image_size`, folded into the POV ceiling below.
+    if (settings.transition?.travel?.playhead?.marker?.kind === 'image') {
+      povIds.add(settings.transition.travel.playhead.marker.image_id);
+    }
     for (const clip of payload.clips) {
       const marker = clip.map_overrides?.pov?.marker;
       if (marker?.kind === 'image') povIds.add(marker.image_id);
+      const travelMarker =
+        clip.map_overrides?.transition?.travel?.playhead?.marker;
+      if (travelMarker?.kind === 'image') povIds.add(travelMarker.image_id);
     }
     const waypointIds = new Set<string>();
     if (settings.waypoints.marker_image_id !== undefined) {
@@ -619,12 +778,24 @@ export class NativeBackend implements RendererBackend {
       if (wp.marker_image_id !== undefined) waypointIds.add(wp.marker_image_id);
     }
 
-    // POV ceiling: project image_size or any per-clip override.
+    // POV ceiling: project image_size, any per-clip override, or a
+    // traveling-playhead style's own image_size (project or per-clip
+    // transition override) — whichever any frame can display largest.
     let povFraction = settings.pov.size.image_size;
+    const travelImageSize =
+      settings.transition?.travel?.playhead?.size.image_size;
+    if (typeof travelImageSize === 'number' && travelImageSize > povFraction) {
+      povFraction = travelImageSize;
+    }
     for (const clip of payload.clips) {
       const override = clip.map_overrides?.pov?.size?.image_size;
       if (typeof override === 'number' && override > povFraction) {
         povFraction = override;
+      }
+      const travelOverride =
+        clip.map_overrides?.transition?.travel?.playhead?.size.image_size;
+      if (typeof travelOverride === 'number' && travelOverride > povFraction) {
+        povFraction = travelOverride;
       }
     }
     // Waypoint ceiling: the DIAMETER at the largest radius any frame can
@@ -797,6 +968,15 @@ export class NativeBackend implements RendererBackend {
     }
     const tStart = Date.now();
 
+    // Basemap first: a swap reloads the style and rebuilds the whole scene
+    // (seeded with THIS frame's source data), so it must happen before the
+    // per-frame source refresh — `refreshSources` removes layers by id and
+    // would throw against a style that no longer has them. After a swap the
+    // refresh finds nothing changed, because `applyScene` seeded
+    // `lastSourceJson` from the same frame.
+    const swapped = await this.maybeSwapBasemap(map, frame);
+    this.lastFrameBasemap = frame.basemap;
+
     const refreshed = this.refreshSources(map, frame);
     // Re-apply paints/layouts/gradients every frame — carries per-clip
     // overrides at cuts AND restores real values on any layers the source
@@ -890,11 +1070,14 @@ export class NativeBackend implements RendererBackend {
     }
     verbose(
       `[renderer native f=${frameIndex}] apply=${applyMs}ms render=${renderMs}ms ` +
-      `down=${downMs}ms rgba=${rgba.length}B refreshed=${refreshed}\n`,
+      `down=${downMs}ms rgba=${rgba.length}B refreshed=${refreshed} ` +
+      `style=${frame.basemap.styleId}${swapped ? ' (swapped)' : ''}\n`,
     );
     return {
       rgba,
-      detail: `apply=${applyMs}ms render=${renderMs}ms down=${downMs}ms refresh=${refreshed}`,
+      detail:
+        `apply=${applyMs}ms render=${renderMs}ms down=${downMs}ms refresh=${refreshed}` +
+        (swapped ? ` styleSwap=${frame.basemap.styleId}` : ''),
     };
   }
 
@@ -908,7 +1091,12 @@ export class NativeBackend implements RendererBackend {
       process.stderr.write('[renderer] recycle without prior setup, ignoring\n');
       return;
     }
-    await this.setup(this.setupPayload);
+    // `setupInternal`, not `setup`: a recycle is a rebuild of the SAME job,
+    // so `lastFrameBasemap` must survive and be the basemap reloaded — the
+    // export may be mid-way through a clip that overrides `map_style`, and
+    // dropping back to the project default here would load and rebuild a
+    // basemap the very next frame throws away.
+    await this.setupInternal(this.setupPayload);
   }
 
   async shutdown(): Promise<void> {
@@ -916,5 +1104,7 @@ export class NativeBackend implements RendererBackend {
       this.map.release();
       this.map = null;
     }
+    this.loadedStyleId = null;
+    this.lastFrameBasemap = null;
   }
 }

@@ -239,6 +239,23 @@ export function pickActiveWaypoint(
  *  decoupled from clips. */
 export function buildPerFrameSourceData(args: {
   markerTrace: WallClockTrace | null;
+  /** Wall-clock anchor for the visited TRAIL head. Defaults to
+   *  `markerTrace` (the normal case — one clock drives everything). The
+   *  travel path passes a DIFFERENT trace when `draw_route` is off: the
+   *  playhead travels on the synthesized clock while the trail keeps the
+   *  pre-travel clock (advances with the source clip until the cut, holds,
+   *  snaps at window exit). */
+  trailTrace?: WallClockTrace | null;
+  /** Force the trail data to build even when the route decoration mode is
+   *  not 'visited' — travel's `draw_route` inside a window with route mode
+   *  'none' (the matching layer-visibility force rides the per-frame
+   *  layouts bucket, `routeTrailVisibilityTuples`). */
+  forceTrail?: boolean;
+  /** Emit an EMPTY live-marker collection — travel's `show_playhead: false`
+   *  hides the whole marker stack (dot/shape/image, pulse rings, halo pair
+   *  all render from the 'live-marker' source) for the window in one move,
+   *  with automatic restore on the next out-of-window frame. */
+  hideMarker?: boolean;
   indexedRoute: IndexedRoute | null;
   clips: Clip[];
   waypoints: Waypoint[];
@@ -248,34 +265,39 @@ export function buildPerFrameSourceData(args: {
 }): Record<string, GeoJSON.GeoJsonObject> {
   const {
     markerTrace,
+    forceTrail = false,
+    hideMarker = false,
     indexedRoute,
     clips,
     waypoints,
     mapSettings,
   } = args;
+  const trailTrace = args.trailTrace === undefined ? markerTrace : args.trailTrace;
 
   // ---- route-trail ----
-  // Empty unless we're in visited mode AND we have a marker AND a route.
-  // `trailUpTo` is the same pure helper the rest of the app uses so the
-  // export gets pixel-identical trail geometry.
+  // Empty unless we're in visited mode (or force-drawn by a travel window)
+  // AND we have a trail anchor AND a route. `trailUpTo` is the same pure
+  // helper the rest of the app uses so the export gets pixel-identical
+  // trail geometry.
   let trailFeature: GeoJSON.Feature<GeoJSON.LineString>;
   if (
-    mapSettings.route.mode === 'visited' &&
-    markerTrace &&
+    (mapSettings.route.mode === 'visited' || forceTrail) &&
+    trailTrace &&
     indexedRoute
   ) {
-    trailFeature = trailUpTo(markerTrace.wallMs, indexedRoute);
+    trailFeature = trailUpTo(trailTrace.wallMs, indexedRoute);
   } else {
     trailFeature = emptyLineFeature();
   }
 
   // ---- live-marker ----
   // Single-point FeatureCollection at the resolved location, or empty when
-  // no marker resolves. Mirrors the DOM-marker fallback chain pre-refactor:
-  // GPX position with the active clip's embedded `gps` as a fallback for
-  // out-of-range / large-gap regions of the route.
+  // no marker resolves (or the travel window hides the playhead). Mirrors
+  // the DOM-marker fallback chain pre-refactor: GPX position with the
+  // active clip's embedded `gps` as a fallback for out-of-range /
+  // large-gap regions of the route.
   let liveMarker: GeoJSON.FeatureCollection<GeoJSON.Point>;
-  if (markerTrace) {
+  if (markerTrace && !hideMarker) {
     const fallbackClip = clips.find((c) => c.id === markerTrace.clipId) ?? null;
     const fallback = fallbackClip?.gps ?? null;
     const resolved = locationAt(markerTrace.wallMs, indexedRoute, fallback);

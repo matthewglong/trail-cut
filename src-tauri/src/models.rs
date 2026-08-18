@@ -362,7 +362,7 @@ pub struct Route {
     pub trackpoints: Vec<TrackPoint>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GradientStop {
     pub fraction: f64,
     pub color: String,
@@ -371,7 +371,7 @@ pub struct GradientStop {
 /// Decoration color (`mode: "solid"` | `mode: "gradient"`). On disk:
 /// `{ "mode": "solid", "solid": "#bced09" }` or
 /// `{ "mode": "gradient", "stops": [{ "fraction": 0, "color": "#..." }, ...] }`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum DecorationColor {
     Solid { solid: String },
@@ -387,7 +387,7 @@ impl Default for DecorationColor {
 /// Optional halo effect behind a decoration — carried by all three
 /// decorations (`route.halo`, `waypoints.halo`, `pov.halo`). Mirrors
 /// `HaloSettings` in `src/types.ts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HaloSettings {
     #[serde(default)]
     pub enabled: bool,
@@ -589,7 +589,7 @@ impl Default for WaypointsSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PovSize {
     #[serde(default = "default_overlay_live_marker_pulse_radius")]
     pub pulse_radius: f64,
@@ -664,7 +664,68 @@ pub enum PovMarker {
     Image { image_id: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One seam-ease config (`TransitionSettings.ease_in` / `ease_out`) — how
+/// the POV marker animates in/out at clip seams. `style` is one of
+/// "pop" | "fade" | "grow"; `speed` one of "slow" | "medium" | "fast"
+/// (validated by the frontend roster, stored as plain strings like every
+/// other style name in this file). Absent ⇒ none (the marker jumps).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SeamEase {
+    pub style: String,
+    pub speed: String,
+}
+
+/// The TRANSITION decoration (a top-level `MapSettings` block): everything
+/// that happens to the playhead at clip seams, as three optional stacking
+/// layers — route travel (`travel`), and the seam eases (`ease_in` /
+/// `ease_out`; per-clip semantics: `travel` + `ease_in` govern the seam
+/// INTO a clip, `ease_out` the seam OUT of it). Absent ⇒ off — additive,
+/// no schema bump (same precedent as the halo blocks). Atomic per-clip
+/// override blob via `MapOverrides.transition`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransitionSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub travel: Option<TravelSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_in: Option<SeamEase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_out: Option<SeamEase>,
+}
+
+/// The travel layer of the Transition decoration: when enabled, the
+/// traveling playhead runs along the route path across the transition
+/// window INTO a clip instead of teleporting at the cut; the route trail
+/// can draw along with it. The DESTINATION clip's resolved value governs
+/// the whole window.
+///
+/// The three optional toggles default to TRUE when absent (mirrors the
+/// `travelShowPlayhead`/`travelSync`/`travelDrawRoute` normalizers in
+/// `src/types.ts`), so a hand-written `{ "enabled": true }` reads as the
+/// full default behavior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TravelSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Show the traveling playhead marker during the window.
+    #[serde(default = "default_true")]
+    pub show_playhead: bool,
+    /// true: the traveling playhead wears the destination clip's full
+    /// resolved POV look for the whole window. false: `playhead` below
+    /// styles it.
+    #[serde(default = "default_true")]
+    pub sync: bool,
+    /// Custom traveling-playhead style (full POV capability), consumed only
+    /// while `sync` is false. Inside this block `marker: None` means the
+    /// default dot — normal `PovSettings` semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playhead: Option<PovSettings>,
+    /// Draw the route trail along with the travel (forced visible during
+    /// the window even when the route decoration mode is 'none').
+    #[serde(default = "default_true")]
+    pub draw_route: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PovSettings {
     #[serde(default = "default_accent_color")]
     pub color: String,
@@ -719,6 +780,10 @@ pub struct MapSettings {
     pub waypoints: WaypointsSettings,
     #[serde(default)]
     pub pov: PovSettings,
+    /// The Transition decoration — travel + seam eases. Absent ⇒ off;
+    /// additive, no schema bump.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<TransitionSettings>,
     /// Shared project-level marker-image library (schema v11). Both the POV
     /// and Waypoints decorations select from this one list. Skipped when
     /// empty so pre-v11 bundles round-trip byte-identically until a first
@@ -975,6 +1040,11 @@ pub struct MapOverrides {
     pub waypoints: Option<WaypointsOverrides>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pov: Option<PovOverrides>,
+    /// Per-clip Transition override — `travel` + `ease_in` govern the seam
+    /// INTO this clip, `ease_out` the seam OUT of it. Atomic blob (halo
+    /// precedent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<TransitionSettings>,
 }
 
 /// Position anchor for a waypoint. Two variants:
@@ -1197,11 +1267,49 @@ impl Default for MapSettings {
             route: RouteSettings::default(),
             waypoints: WaypointsSettings::default(),
             pov: PovSettings::default(),
+            transition: None,
             marker_images: Vec::new(),
         }
     }
 }
 
+
+fn default_magnification() -> f64 {
+    // Identity — the export renders the canonical viewport verbatim.
+    1.0
+}
+
+/// Per-aspect map magnification factor `k`. Magnifies the whole exported map
+/// render: the renderer's css viewport shrinks by `k` while `pixelRatio` grows
+/// by `k`, so the framebuffer stays slot-sized but every element (basemap,
+/// labels, decorations, world scale) lands `k`× larger relative to the frame.
+/// It is the third lever on top of the resolution multiplier and the SSAA
+/// factor — see `build_setup_payload` in `export/mod.rs`.
+///
+/// Unlike [`ProjectLayouts`] there is no "cleared" state: an aspect the user
+/// has never touched is `1.0`, which is also what the pipeline renders, so the
+/// leaves are plain `f64` with a serde default rather than `Option`. The
+/// carrying field on [`Project`] stays `Option` so bundles that never set a
+/// magnification round-trip without gaining the key.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MapMagnifications {
+    #[serde(rename = "9_16", default = "default_magnification")]
+    pub aspect_9_16: f64,
+    #[serde(rename = "4_5", default = "default_magnification")]
+    pub aspect_4_5: f64,
+    #[serde(rename = "16_9", default = "default_magnification")]
+    pub aspect_16_9: f64,
+}
+
+impl Default for MapMagnifications {
+    fn default() -> Self {
+        MapMagnifications {
+            aspect_9_16: default_magnification(),
+            aspect_4_5: default_magnification(),
+            aspect_16_9: default_magnification(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -1237,6 +1345,13 @@ pub struct Project {
     /// loads. See `docs/export/LAYOUT.md` §4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layouts: Option<ProjectLayouts>,
+    /// Per-aspect map magnification. Absent ⇒ every aspect renders at `1.0`
+    /// — additive, no schema bump (same precedent as `RouteSettings.halo` and
+    /// `MapSettings.marker_images`). `buildExportRequest` reads the entry for
+    /// the exported aspect into `LayoutDescriptor.magnification`; nothing else
+    /// consumes it. See [`MapMagnifications`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map_magnification: Option<MapMagnifications>,
     /// Aspect that the export pipeline targets (v4 + 100). Creative-content
     /// state — travels with the project bundle so opening a `.trailcut`
     /// preserves "this video is for Reels (9:16)" vs "for IG feed (4:5)". The
@@ -1302,6 +1417,9 @@ impl Default for Project {
             // starter is no longer "aesthetic imposition" but "the value the
             // configurator opens with."
             layouts: Some(seeded_layouts()),
+            // Not seeded: absent and all-`1.0` are the same render, so a fresh
+            // bundle stays free of the key until the user moves a slider.
+            map_magnification: None,
             selected_export_aspect: default_selected_aspect(),
             map_settings: None,
             transition_feel: None,
@@ -1468,6 +1586,99 @@ mod tests {
         }"#;
         let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
         assert!(parsed.last_export_selection.is_none());
+    }
+
+    #[test]
+    fn map_settings_transition_is_additive() {
+        // A v11 bundle written before the Transition decoration has no
+        // `map_settings.transition` — serde(default) must supply `None`,
+        // and a `None` must not reappear on save (skip_serializing_if), so
+        // untouched projects round-trip byte-identically. No schema bump.
+        let parsed: MapSettings = serde_json::from_str(r#"{}"#).expect("must deserialize");
+        assert!(parsed.transition.is_none());
+        let reserialized = serde_json::to_string(&parsed).unwrap();
+        assert!(
+            !reserialized.contains("transition"),
+            "absent transition must not appear in JSON: {}",
+            reserialized,
+        );
+
+        // A minimal travel `{ "enabled": true }` reads as the full default
+        // behavior: playhead shown, synced, route drawn (default_true on
+        // every optional toggle — mirrors the TS normalizers). Eases stay
+        // absent (= none).
+        let parsed: MapSettings = serde_json::from_str(
+            r#"{ "transition": { "travel": { "enabled": true } } }"#,
+        )
+        .unwrap();
+        let transition = parsed.transition.clone().expect("transition must parse");
+        let travel = transition.travel.clone().expect("travel must parse");
+        assert!(travel.enabled);
+        assert!(travel.show_playhead);
+        assert!(travel.sync);
+        assert!(travel.draw_route);
+        assert!(travel.playhead.is_none());
+        assert!(transition.ease_in.is_none());
+        assert!(transition.ease_out.is_none());
+
+        // A fully-configured block (custom unsynced playhead style + both
+        // seam eases) round-trips whole.
+        let with_style = r##"{
+            "transition": {
+                "travel": {
+                    "enabled": true,
+                    "show_playhead": true,
+                    "sync": false,
+                    "draw_route": false,
+                    "playhead": {
+                        "color": "#ff715b",
+                        "secondary_color": "#ffffff",
+                        "pulse_style": "heartbeat",
+                        "pulse_rate": "fast",
+                        "marker": { "kind": "shape", "shape": "ring" }
+                    }
+                },
+                "ease_in": { "style": "pop", "speed": "fast" },
+                "ease_out": { "style": "fade", "speed": "slow" }
+            }
+        }"##;
+        let parsed: MapSettings = serde_json::from_str(with_style).unwrap();
+        let transition = parsed.transition.clone().expect("transition must parse");
+        let travel = transition.travel.as_ref().expect("travel must parse");
+        assert!(!travel.sync);
+        assert!(!travel.draw_route);
+        let playhead = travel.playhead.as_ref().expect("playhead style must parse");
+        assert_eq!(playhead.pulse_style, "heartbeat");
+        assert_eq!(
+            playhead.marker,
+            Some(PovMarker::Shape { shape: "ring".to_string() }),
+        );
+        assert_eq!(
+            transition.ease_in,
+            Some(SeamEase { style: "pop".to_string(), speed: "fast".to_string() }),
+        );
+        assert_eq!(
+            transition.ease_out,
+            Some(SeamEase { style: "fade".to_string(), speed: "slow".to_string() }),
+        );
+        let round: MapSettings =
+            serde_json::from_str(&serde_json::to_string(&parsed).unwrap()).unwrap();
+        assert_eq!(round.transition, parsed.transition);
+
+        // Same additivity on the per-clip override mirror (top-level
+        // `MapOverrides.transition`, atomic blob).
+        let overrides: MapOverrides = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(overrides.transition.is_none());
+        let overrides: MapOverrides = serde_json::from_str(
+            r#"{ "transition": { "ease_in": { "style": "grow", "speed": "medium" } } }"#,
+        )
+        .unwrap();
+        let t = overrides.transition.expect("override transition must parse");
+        assert!(t.travel.is_none());
+        assert_eq!(
+            t.ease_in,
+            Some(SeamEase { style: "grow".to_string(), speed: "medium".to_string() }),
+        );
     }
 
     #[test]
@@ -1856,5 +2067,83 @@ mod tests {
         // Pipeline still sees SDR (the auto-detected class) until the user
         // confirms — propagation doesn't change the effective class.
         assert_eq!(clip.effective_color_class(), SourceColorClass::SdrBt709);
+    }
+
+    // ---- map_magnification: additive-field persistence contract ----------
+
+    #[test]
+    fn map_magnification_absent_reads_as_none() {
+        let raw = r#"{
+            "schema_version": 11,
+            "version": 1,
+            "name": "No Magnification",
+            "clips": []
+        }"#;
+        let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
+        assert!(parsed.map_magnification.is_none());
+    }
+
+    #[test]
+    fn map_magnification_absent_stays_absent_on_reserialize() {
+        // The additive-field contract: a bundle that never set a magnification
+        // must not gain the key when the app re-saves it. Byte-level, because
+        // an `Option` without `skip_serializing_if` would emit `null` here and
+        // silently rewrite every existing project file.
+        let project = Project::default();
+        assert!(project.map_magnification.is_none());
+        let json = serde_json::to_string(&project).unwrap();
+        assert!(
+            !json.contains("map_magnification"),
+            "absent magnification must not be serialized: {}",
+            json,
+        );
+    }
+
+    #[test]
+    fn map_magnification_round_trips_per_aspect() {
+        let project = Project {
+            map_magnification: Some(MapMagnifications {
+                aspect_9_16: 1.4,
+                aspect_4_5: 0.75,
+                aspect_16_9: 2.0,
+            }),
+            ..Project::default()
+        };
+        let json = serde_json::to_string(&project).unwrap();
+        assert!(json.contains("\"map_magnification\""), "{}", json);
+        // Aspect keys use the same wire names as `ProjectLayouts`.
+        assert!(json.contains("\"9_16\":1.4"), "{}", json);
+        let parsed: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed.map_magnification,
+            Some(MapMagnifications {
+                aspect_9_16: 1.4,
+                aspect_4_5: 0.75,
+                aspect_16_9: 2.0,
+            }),
+        );
+    }
+
+    #[test]
+    fn map_magnification_partial_object_defaults_missing_aspects_to_identity() {
+        // A frontend that only ever wrote the aspect the user touched must not
+        // read back as 0.0 on the other two.
+        let raw = r#"{
+            "schema_version": 11,
+            "version": 1,
+            "name": "Partial",
+            "clips": [],
+            "map_magnification": {"9_16": 1.6}
+        }"#;
+        let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
+        let m = parsed.map_magnification.expect("field present");
+        assert_eq!(m.aspect_9_16, 1.6);
+        assert_eq!(m.aspect_4_5, 1.0);
+        assert_eq!(m.aspect_16_9, 1.0);
+        assert_eq!(MapMagnifications::default(), MapMagnifications {
+            aspect_9_16: 1.0,
+            aspect_4_5: 1.0,
+            aspect_16_9: 1.0,
+        });
     }
 }

@@ -10,11 +10,13 @@ import { compileTimeline, type CompiledTimeline } from './cameraIntent';
 import { indexRoute } from './routeLocation';
 import {
   defaultLayout,
+  defaultMagnifications,
   legalSplitSides,
   resolveSlots,
   type AspectRatio,
   type LayoutConfig,
   type LayoutDescriptor,
+  type MapMagnifications,
   type OutputResolution,
 } from './layout';
 import type {
@@ -81,6 +83,10 @@ export interface ExportRequestInputs {
   /** Per-aspect layout configuration, typically `project.layouts`. When the
    *  entry for `aspect` is absent or null, `defaultLayout(aspect)` is used. */
   layouts?: Project['layouts'];
+  /** Per-aspect map magnification, typically `project.map_magnification`.
+   *  Absent (or missing the entry for `aspect`) means the identity factor 1,
+   *  which is also what pre-magnification bundles carry. */
+  magnifications?: Project['map_magnification'];
   /** Output resolution. Default `'1080p'`. Phase 4 consumes it (canvas
    *  size); Phase 1 only round-trips the value to Rust. */
   resolution?: OutputResolution;
@@ -200,6 +206,16 @@ export function pickLayout(
   return layouts?.[aspect] ?? defaultLayout(aspect);
 }
 
+/** Pick the magnification factor for `aspect`, falling back to the identity.
+ *  Same fallback shape as `pickLayout`: a project that predates the feature
+ *  (or a record missing this aspect) exports exactly as it did before. */
+export function pickMagnification(
+  magnifications: MapMagnifications | undefined,
+  aspect: AspectRatio,
+): number {
+  return magnifications?.[aspect] ?? defaultMagnifications()[aspect];
+}
+
 /** Build the payload for the `render_export` Tauri command. Pure.
  *  Throws on Split-legality violations (task 100): an inverse-orientation
  *  split (`video_side: 'left'` at 9:16 / 4:5; `video_side: 'top'` at 16:9)
@@ -224,6 +240,7 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     resolution,
     layout: layoutCfg,
     resolved,
+    magnification: pickMagnification(inputs.magnifications, inputs.aspect),
   };
 
   const timeline = compileTimeline(
@@ -300,6 +317,10 @@ export interface ExportRequestContext {
   waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   layouts?: Project['layouts'];
+  /** Per-aspect magnification — see `ExportRequestInputs.magnifications`.
+   *  Shared context rather than per-job: the factor is a property of the
+   *  aspect's framing, and every job for an aspect renders it the same. */
+  magnifications?: Project['map_magnification'];
   /** Bundle dir — see `ExportRequestInputs.projectDir`. */
   projectDir?: string | null;
 }
@@ -325,6 +346,7 @@ export function buildJobRequest(
     waypoints: context.waypoints,
     transitionFeel: context.transitionFeel,
     layouts: context.layouts,
+    magnifications: context.magnifications,
     projectDir: context.projectDir,
     resolution: job.quality,
     frameRate: { kind: 'explicit', fps: job.fps },

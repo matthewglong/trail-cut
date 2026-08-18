@@ -34,6 +34,7 @@ import {
   type ExportConfig,
   type ExportFps,
   type ExportGrid as ExportGridModel,
+  type MapMagnifications,
   type MapSettings,
   type OutputResolution,
   type ProjectLayouts,
@@ -81,6 +82,9 @@ export interface ExportModalProps {
   waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
   projectLayouts: ProjectLayouts;
+  /** Per-aspect map magnification. Each queued job picks its own aspect's
+   *  factor via `buildJobRequest` → `LayoutDescriptor.magnification`. */
+  mapMagnifications?: MapMagnifications;
   /** Project bundle directory — `buildExportRequest` resolves the custom
    *  POV image's bundle-relative asset path against it for the renderer
    *  (schema v10). */
@@ -170,6 +174,7 @@ export function ExportModal({
   waypoints,
   transitionFeel,
   projectLayouts,
+  mapMagnifications,
   projectDir,
 }: ExportModalProps) {
   const [view, setView] = useState<View>('select');
@@ -517,6 +522,7 @@ export function ExportModal({
       waypoints,
       transitionFeel,
       layouts: projectLayouts,
+      magnifications: mapMagnifications,
       projectDir,
     };
     const buildRequest = (job: ExportJob): RenderExportRequest =>

@@ -5,9 +5,9 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { AspectRatio, Clip, ExportGrid, Route, MapSettings, Project, ProjectLayouts, TransitionFeel, Waypoint } from './types';
+import type { AspectRatio, Clip, ExportGrid, Route, MapMagnifications, MapSettings, Project, ProjectLayouts, TransitionFeel, Waypoint } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
-import { defaultSplitLayout } from './lib/layout';
+import { defaultMagnifications, defaultSplitLayout } from './lib/layout';
 
 /** First-contact `ProjectLayouts` shape: all three aspects seeded with the
  *  Split default. Used as the initial state and as the defensive fallback
@@ -40,6 +40,8 @@ export default function App() {
   const [mapSettings, setMapSettings] = useState<MapSettings>(DEFAULT_MAP_SETTINGS);
   const [transitionFeel, setTransitionFeel] = useState<TransitionFeel | undefined>(undefined);
   const [projectLayouts, setProjectLayouts] = useState<ProjectLayouts>(makeSeededLayouts);
+  const [mapMagnifications, setMapMagnifications] =
+    useState<MapMagnifications>(defaultMagnifications);
   const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
   const [lastExportSelection, setLastExportSelection] = useState<ExportGrid | null>(null);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
@@ -68,6 +70,7 @@ export default function App() {
     setMapSettings,
     setTransitionFeel,
     setProjectLayouts,
+    setMapMagnifications,
     setSelectedExportAspect,
     setLastExportSelection,
     setWaypoints,
@@ -88,6 +91,7 @@ export default function App() {
     mapSettings,
     transitionFeel,
     projectLayouts,
+    mapMagnifications,
     selectedExportAspect,
     lastExportSelection,
     waypoints,
@@ -159,6 +163,8 @@ export default function App() {
       transitionFeel={transitionFeel}
       projectLayouts={projectLayouts}
       setProjectLayouts={setProjectLayouts}
+      mapMagnifications={mapMagnifications}
+      setMapMagnifications={setMapMagnifications}
       lastExportSelection={lastExportSelection}
       setLastExportSelection={setLastExportSelection}
       waypoints={waypoints}

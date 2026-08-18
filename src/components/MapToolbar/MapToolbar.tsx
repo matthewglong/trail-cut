@@ -13,6 +13,7 @@ import {
   Route as RouteIcon,
   MapPin,
   Crosshair as PovIcon,
+  Footprints as TransitionIcon,
   LocateFixed,
   Layers,
   ZoomIn,
@@ -151,9 +152,15 @@ export default function MapToolbar({
     overriddenKeys?.has(path) ? colors.accent : undefined;
 
   /** Decoration-button override rollup — chartreuse if any path in the
-   *  decoration's domain is overridden. */
-  const decorationOverrideColor = (prefix: 'route' | 'waypoints' | 'pov'): string | undefined => {
+   *  decoration's domain is overridden. Transition is an atomic top-level blob,
+   *  so its "domain" is the exact `'transition'` path rather than a prefix. */
+  const decorationOverrideColor = (
+    prefix: 'route' | 'waypoints' | 'pov' | 'transition',
+  ): string | undefined => {
     if (!overriddenKeys) return undefined;
+    if (prefix === 'transition') {
+      return overriddenKeys.has('transition') ? colors.accent : undefined;
+    }
     for (const p of overriddenKeys) {
       if (p.startsWith(`${prefix}.`)) return colors.accent;
     }
@@ -242,11 +249,13 @@ export default function MapToolbar({
     route: false,
     waypoints: false,
     pov: false,
+    transition: false,
   });
   const [positions, setPositions] = useState<Record<DecorationKind, { x: number; y: number } | null>>({
     route: null,
     waypoints: null,
     pov: null,
+    transition: null,
   });
   const setPositionFor = useCallback(
     (kind: DecorationKind, pos: { x: number; y: number }) =>
@@ -257,6 +266,7 @@ export default function MapToolbar({
     route: null,
     waypoints: null,
     pov: null,
+    transition: null,
   });
   const setPanelSizeFor = useCallback(
     (kind: DecorationKind, next: { w: number; h: number } | null) =>
@@ -267,7 +277,7 @@ export default function MapToolbar({
   // (or a trigger click that opens one) moves that kind to the end.
   // zIndex = BASE_Z + indexOf(kind), so we get monotonic stacking without
   // an ever-growing counter.
-  const [stackOrder, setStackOrder] = useState<DecorationKind[]>(['route', 'waypoints', 'pov']);
+  const [stackOrder, setStackOrder] = useState<DecorationKind[]>(['route', 'waypoints', 'pov', 'transition']);
   const bringToFront = useCallback((kind: DecorationKind) => {
     setStackOrder((cur) => {
       if (cur[cur.length - 1] === kind) return cur;
@@ -280,11 +290,13 @@ export default function MapToolbar({
   const routeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const waypointsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const povTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const transitionTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const triggerRefFor = useCallback(
     (kind: DecorationKind): RefObject<HTMLButtonElement | null> => {
       if (kind === 'route') return routeTriggerRef;
       if (kind === 'waypoints') return waypointsTriggerRef;
+      if (kind === 'transition') return transitionTriggerRef;
       return povTriggerRef;
     },
     [],
@@ -479,6 +491,51 @@ export default function MapToolbar({
               onSizeChange={(next) => setPanelSizeFor('pov', next)}
               zIndex={zIndexFor('pov')}
               onFocus={() => bringToFront('pov')}
+            />
+          )}
+        </DecorationButton>
+      ),
+    },
+    {
+      id: 'transition',
+      menuLabel: 'Transition',
+      node: (
+        <DecorationButton
+          id="transition"
+          icon={<TransitionIcon size={15} strokeWidth={2} />}
+          label="Transition"
+          isOpen={openPanels.transition}
+          overrideColor={decorationOverrideColor('transition')}
+          triggerRef={transitionTriggerRef}
+          onClick={() => toggle('transition')}
+        >
+          {openPanels.transition && (
+            <DecorationPanel
+              decoration="transition"
+              settings={settings}
+              onChange={onChange}
+              scope={scope}
+              overriddenKeys={overriddenKeys}
+              onScopeChange={onScopeChange}
+              onClose={(opts) => closePanelFor('transition', opts)}
+              routeLoaded={routeLoaded}
+              currentClip={currentClip}
+              waypoints={waypoints}
+              onWaypointsChange={onWaypointsChange}
+              onOpenWaypointsPanel={onOpenWaypointsPanel}
+              triggerRef={transitionTriggerRef}
+              currentClipOrdinal={currentClipOrdinal}
+              indexedRoute={indexedRoute}
+              projectDir={projectDir}
+              onMarkerImagesChange={onMarkerImagesChange}
+              onMarkerImageDelete={onMarkerImageDelete}
+              projectSettings={projectSettings}
+              position={positions.transition ?? undefined}
+              onPositionChange={(pos) => setPositionFor('transition', pos)}
+              size={panelSize.transition}
+              onSizeChange={(next) => setPanelSizeFor('transition', next)}
+              zIndex={zIndexFor('transition')}
+              onFocus={() => bringToFront('transition')}
             />
           )}
         </DecorationButton>

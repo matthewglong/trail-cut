@@ -7,6 +7,7 @@
 import type {
   StyleSpecification,
   DataDrivenPropertyValueSpecification,
+  ExpressionSpecification,
 } from 'maplibre-gl';
 import type { ResolvedCamera } from '../cameraIntent';
 
@@ -165,4 +166,28 @@ export interface PerFrameState {
    *  current project-time. */
   sources: Record<string, GeoJSON.GeoJsonObject>;
   paints: PaintUpdates;
+  /** Per-frame layout tuples `[layerId, property, value]` — the POV style
+   *  layouts (marker-layer visibility swap + icon wiring + halo
+   *  visibilities, see `povStyleTuples`) plus the route-trail visibility
+   *  trio (see `routeTrailVisibilityTuples`). ALWAYS emitted; equal to
+   *  `resolveStaticPaints`' tuples except inside an enabled travel window
+   *  (travel-effective POV style; `draw_route`-forced trail). Consumers
+   *  apply these AFTER the static layouts (last-write-wins) and should
+   *  diff before writing — `setLayoutProperty` on symbol layers can
+   *  trigger re-layout, so redundant writes are not free in preview. */
+  layouts: Array<[string, string, number | string | ExpressionSpecification]>;
+  /** Per-frame POV style PAINT tuples (colors, halo pair, dot sizes —
+   *  `povStyleTuples().paints`). Same contract as `layouts`: always
+   *  emitted, equals the static resolution outside a travel window, apply
+   *  AFTER the static paints (last-write-wins). This is what lets the
+   *  traveling playhead wear a different full style during a travel window
+   *  (sync = the destination clip's resolved POV look; custom =
+   *  `travel.playhead`) and restore automatically at window exit. */
+  povPaints: Array<[string, string, unknown]>;
+  /** Per-frame halo group-composite config — the same fixed four groups as
+   *  `ResolvedStaticPaints.haloComposites`, with the live-marker entry
+   *  computed from the travel-effective POV style during a travel window.
+   *  Consumers re-assert via `map.setGroupComposite` when it changes
+   *  (cheap — one uniform per group). */
+  haloComposites: HaloCompositeGroup[];
 }

@@ -12,9 +12,13 @@ import {
   resolveMapSettings,
   computeClipOverrides,
   leafPaths,
+  transitionSettingsEquals,
+  travelSettingsEquals,
   type GradientStop,
   type HaloSettings,
   type MapSettings,
+  type TransitionSettings,
+  type TravelSettings,
 } from './types';
 
 function withRouteColor(color: MapSettings['route']['color']): MapSettings {
@@ -471,5 +475,157 @@ describe('computeClipOverrides — object-valued leaves (deep-equal diff)', () =
         'pov.halo',
       ]),
     );
+  });
+});
+
+describe('travel — comparator, diff, resolve', () => {
+  const TRAVEL_ON: TravelSettings = { enabled: true };
+  const TRAVEL_CUSTOM: TravelSettings = {
+    enabled: true,
+    sync: false,
+    playhead: {
+      ...DEFAULT_MAP_SETTINGS.pov,
+      color: '#ff715b',
+      pulse_style: 'heartbeat',
+      marker: { kind: 'shape', shape: 'ring' },
+    },
+  };
+
+  it('travelSettingsEquals: block absence compares strictly; toggles normalize', () => {
+    expect(travelSettingsEquals(undefined, undefined)).toBe(true);
+    expect(travelSettingsEquals(undefined, TRAVEL_ON)).toBe(false);
+    // Absent optional toggles read as their defaults (all true), so the
+    // minimal blob equals its explicit spelled-out twin — no phantom
+    // override between a hand-written `{enabled:true}` and a UI write.
+    expect(
+      travelSettingsEquals(TRAVEL_ON, {
+        enabled: true,
+        show_playhead: true,
+        sync: true,
+        draw_route: true,
+      }),
+    ).toBe(true);
+    expect(
+      travelSettingsEquals(TRAVEL_ON, { enabled: true, draw_route: false }),
+    ).toBe(false);
+    expect(
+      travelSettingsEquals(TRAVEL_ON, { enabled: true, show_playhead: false }),
+    ).toBe(false);
+  });
+
+  it('travelSettingsEquals: enabled flip, sync flip, and playhead style identity', () => {
+    expect(travelSettingsEquals(TRAVEL_ON, { enabled: false })).toBe(false);
+    expect(travelSettingsEquals(TRAVEL_ON, { enabled: true, sync: false })).toBe(
+      false,
+    );
+    // A stored playhead style compares strictly against none — the config
+    // survives a re-sync round trip, so its presence is meaningful.
+    expect(
+      travelSettingsEquals(TRAVEL_CUSTOM, { ...TRAVEL_CUSTOM, playhead: undefined }),
+    ).toBe(false);
+    // Deep-equal style blocks compare equal across references.
+    expect(
+      travelSettingsEquals(TRAVEL_CUSTOM, {
+        ...TRAVEL_CUSTOM,
+        playhead: { ...TRAVEL_CUSTOM.playhead!, size: { ...TRAVEL_CUSTOM.playhead!.size } },
+      }),
+    ).toBe(true);
+    expect(
+      travelSettingsEquals(TRAVEL_CUSTOM, {
+        ...TRAVEL_CUSTOM,
+        playhead: { ...TRAVEL_CUSTOM.playhead!, color: '#000000' },
+      }),
+    ).toBe(false);
+    // Inside a style block the marker uses normal PovSettings semantics:
+    // absent equals the explicit default dot.
+    expect(
+      travelSettingsEquals(
+        { enabled: true, sync: false, playhead: { ...DEFAULT_MAP_SETTINGS.pov } },
+        {
+          enabled: true,
+          sync: false,
+          playhead: {
+            ...DEFAULT_MAP_SETTINGS.pov,
+            marker: { kind: 'shape', shape: 'dot' },
+          },
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it('transitionSettingsEquals: block absence strict; sub-blocks compare through their comparators', () => {
+    const t: TransitionSettings = {
+      travel: TRAVEL_ON,
+      ease_in: { style: 'pop', speed: 'fast' },
+    };
+    expect(transitionSettingsEquals(undefined, undefined)).toBe(true);
+    expect(transitionSettingsEquals(undefined, t)).toBe(false);
+    // Travel toggles normalize through travelSettingsEquals.
+    expect(
+      transitionSettingsEquals(t, {
+        travel: { enabled: true, sync: true, show_playhead: true, draw_route: true },
+        ease_in: { style: 'pop', speed: 'fast' },
+      }),
+    ).toBe(true);
+    expect(
+      transitionSettingsEquals(t, { ...t, ease_in: { style: 'pop', speed: 'slow' } }),
+    ).toBe(false);
+    expect(
+      transitionSettingsEquals(t, { ...t, ease_out: { style: 'fade', speed: 'medium' } }),
+    ).toBe(false);
+  });
+
+  it('computeClipOverrides records transition atomically at the TOP level; deep-equal drops it', () => {
+    const block: TransitionSettings = {
+      travel: TRAVEL_CUSTOM,
+      ease_out: { style: 'fade', speed: 'slow' },
+    };
+    const next: MapSettings = { ...DEFAULT_MAP_SETTINGS, transition: block };
+    const overrides = computeClipOverrides(next, DEFAULT_MAP_SETTINGS);
+    expect(overrides.transition).toEqual(block);
+    expect(overrides.pov).toBeUndefined();
+    expect(leafPaths(overrides)).toEqual(new Set(['transition']));
+
+    // Same value, different reference: no override.
+    const project: MapSettings = { ...DEFAULT_MAP_SETTINGS, transition: block };
+    const same: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      transition: {
+        ...block,
+        travel: { ...TRAVEL_CUSTOM, playhead: { ...TRAVEL_CUSTOM.playhead! } },
+        ease_out: { style: 'fade', speed: 'slow' },
+      },
+    };
+    expect(computeClipOverrides(same, project).transition).toBeUndefined();
+  });
+
+  it('records a DISABLED clip travel distinct from an absent project transition (config survives off-toggle)', () => {
+    const next: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      transition: { travel: { ...TRAVEL_CUSTOM, enabled: false } },
+    };
+    const overrides = computeClipOverrides(next, DEFAULT_MAP_SETTINGS);
+    expect(overrides.transition).toEqual({
+      travel: { ...TRAVEL_CUSTOM, enabled: false },
+    });
+  });
+
+  it('resolveMapSettings applies the transition override atomically and inherits when absent', () => {
+    const project: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      transition: { travel: TRAVEL_ON },
+    };
+    // Override replaces the whole blob (eases included — atomic).
+    const overridden = resolveMapSettings(project, {
+      transition: { ease_in: { style: 'grow', speed: 'medium' } },
+    });
+    expect(overridden.transition).toEqual({
+      ease_in: { style: 'grow', speed: 'medium' },
+    });
+    // No override → the project blob rides through.
+    const inherited = resolveMapSettings(project, { pov: { color: '#123456' } });
+    expect(inherited.transition).toEqual({ travel: TRAVEL_ON });
+    // Absent everywhere stays absent.
+    expect(resolveMapSettings(DEFAULT_MAP_SETTINGS, {}).transition).toBeUndefined();
   });
 });

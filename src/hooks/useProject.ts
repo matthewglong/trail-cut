@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AspectRatio, Clip, ExportGrid, Project, ProjectLayouts, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
+import type { AspectRatio, Clip, ExportGrid, MapMagnifications, Project, ProjectLayouts, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
 import { effectiveSourceClass } from '../lib/sourceFormat';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 import { hydrateProjectState, seededLayouts } from '../lib/projectPersistence';
+import { defaultMagnifications } from '../lib/layout';
 import {
   appendClipWaypoints,
   removeClipWaypoints,
@@ -34,6 +35,7 @@ interface UseProjectParams {
   setMapSettings: React.Dispatch<React.SetStateAction<MapSettings>>;
   setTransitionFeel: React.Dispatch<React.SetStateAction<TransitionFeel | undefined>>;
   setProjectLayouts: React.Dispatch<React.SetStateAction<ProjectLayouts>>;
+  setMapMagnifications: React.Dispatch<React.SetStateAction<MapMagnifications>>;
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
   setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
@@ -57,6 +59,7 @@ export function useProject({
   setMapSettings,
   setTransitionFeel,
   setProjectLayouts,
+  setMapMagnifications,
   setSelectedExportAspect,
   setLastExportSelection,
   setWaypoints,
@@ -91,6 +94,7 @@ export function useProject({
       setMapSettings(hydrated.mapSettings);
       setTransitionFeel(hydrated.transitionFeel);
       setProjectLayouts(hydrated.projectLayouts);
+      setMapMagnifications(hydrated.mapMagnifications);
       setSelectedExportAspect(hydrated.selectedExportAspect);
       // Hydrating App-level state here is the sole load-time entry point —
       // the Export modal reads from this on open.
@@ -141,6 +145,7 @@ export function useProject({
       setTransitionFeel(undefined);
       // Mirror the Rust-side `Project::default()` seed — task 080 / 100.
       setProjectLayouts(seededLayouts());
+      setMapMagnifications(defaultMagnifications());
       setSelectedExportAspect('9_16');
       setLastExportSelection(null);
       setWaypoints([]);
@@ -183,6 +188,7 @@ export function useProject({
     setMapSettings(DEFAULT_MAP_SETTINGS);
     setTransitionFeel(undefined);
     setProjectLayouts(seededLayouts());
+    setMapMagnifications(defaultMagnifications());
     setSelectedExportAspect('9_16');
     setLastExportSelection(null);
     setWaypoints([]);

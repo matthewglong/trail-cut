@@ -19,7 +19,14 @@ import {
   resolveSlots,
 } from '../layout';
 import type { ExportJob } from '../exportFilenames';
-import type { AspectRatio, Clip, MapSettings, Route, ProjectLayouts } from '../../types';
+import type {
+  AspectRatio,
+  Clip,
+  MapMagnifications,
+  MapSettings,
+  Route,
+  ProjectLayouts,
+} from '../../types';
 import { DEFAULT_MAP_SETTINGS } from '../../types';
 
 function makeClip(): Clip {
@@ -113,6 +120,10 @@ describe('buildExportRequest', () => {
     expect(req).toHaveProperty('route');
     expect(req).toHaveProperty('clips');
     expect(req).toHaveProperty('mapSettings');
+    // Magnification rides the layout descriptor (Rust divides the renderer's
+    // css viewport by it and multiplies pixelRatio by it), so it must be
+    // present on every request — the identity factor included.
+    expect(req.layout).toHaveProperty('magnification', 1);
   });
 
   it('uses defaultLayout when the project layouts are missing', () => {
@@ -557,6 +568,17 @@ describe('buildJobRequest — per-job quality + fps', () => {
     expect(req.delivery_target).toBe('hdr_hlg');
   });
 
+  it('sends each job its OWN aspect\'s magnification', () => {
+    const context: ExportRequestContext = {
+      ...ctx(),
+      magnifications: { '9_16': 1.5, '4_5': 1.0, '16_9': 0.8 },
+    };
+    expect(buildJobRequest(context, job()).layout.magnification).toBe(1.5);
+    expect(
+      buildJobRequest(context, job({ aspect: '16_9' })).layout.magnification,
+    ).toBe(0.8);
+  });
+
   it('honors the context layouts override for the job aspect', () => {
     // `pickLayout` runs against context.layouts; if the project has a stored
     // layout for the job's aspect, it must reach the wire. This pins that
@@ -656,5 +678,48 @@ describe('buildExportRequest — marker library path resolution (schema v11)', (
     expect(req.mapSettings.marker_images[0].path).toBe(
       '/Users/x/Hike.trailcut/assets/pov-icon-0123456789abcdef.png',
     );
+  });
+});
+
+describe('buildExportRequest — per-aspect magnification', () => {
+  it('defaults to the identity factor when the project has no record', () => {
+    // Every bundle that predates the feature is this case: the export must
+    // be byte-identical to what it produced before magnification existed.
+    expect(buildExportRequest(baseInputs()).layout.magnification).toBe(1);
+  });
+
+  it('picks the requested aspect\'s factor, not another aspect\'s', () => {
+    const magnifications = { '9_16': 1.6, '4_5': 1.0, '16_9': 0.7 };
+    expect(
+      buildExportRequest({ ...baseInputs(), magnifications }).layout.magnification,
+    ).toBe(1.6);
+    expect(
+      buildExportRequest({ ...baseInputs(), aspect: '16_9', magnifications })
+        .layout.magnification,
+    ).toBe(0.7);
+  });
+
+  it('falls back to 1 for an aspect missing from a partial record', () => {
+    // Hand-edited bundles only; the UI always writes all three. Rendering
+    // the identity beats rendering `undefined` into the wire payload.
+    const partial = { '9_16': 1.4 } as unknown as MapMagnifications;
+    const req = buildExportRequest({
+      ...baseInputs(),
+      aspect: '4_5',
+      magnifications: partial,
+    });
+    expect(req.layout.magnification).toBe(1);
+  });
+
+  it('leaves the resolved slot pixels alone — magnification is a render lever', () => {
+    // The composite geometry is unchanged: Rust cancels the css-viewport
+    // shrink against the pixelRatio raise, so the slot still fills the same
+    // pixels. Anything else would move the map band inside the frame.
+    const plain = buildExportRequest(baseInputs());
+    const magnified = buildExportRequest({
+      ...baseInputs(),
+      magnifications: { '9_16': 2.0, '4_5': 1.0, '16_9': 1.0 },
+    });
+    expect(magnified.layout.resolved).toEqual(plain.layout.resolved);
   });
 });

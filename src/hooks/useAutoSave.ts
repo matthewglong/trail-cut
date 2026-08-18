@@ -4,6 +4,7 @@ import type {
   AspectRatio,
   Clip,
   ExportGrid,
+  MapMagnifications,
   Route,
   ProjectLayouts,
   MapSettings,
@@ -12,6 +13,7 @@ import type {
   Waypoint,
 } from '../types';
 import { buildSavePayload, seededLayouts } from '../lib/projectPersistence';
+import { defaultMagnifications } from '../lib/layout';
 
 interface AutoSaveParams {
   projectDir: string | null;
@@ -35,6 +37,10 @@ interface AutoSaveParams {
    *  state initializes to the seeded shape (all three aspects via 100) and
    *  the load path backfills missing entries on read. */
   projectLayouts: ProjectLayouts;
+  /** Per-aspect map magnification. Always populated — App-level state
+   *  initializes to the identity record and the load path default-fills a
+   *  bundle that omits the field (the common case). */
+  mapMagnifications: MapMagnifications;
   /** Selected export aspect (task 100). App-level state always supplies a
    *  value; `undefined` here only triggers on a prop-drilling regression and
    *  the defensive backfill below maps it to `'9_16'`. */
@@ -67,6 +73,7 @@ export function useAutoSave({
   mapSettings,
   transitionFeel,
   projectLayouts,
+  mapMagnifications,
   selectedExportAspect,
   lastExportSelection,
   waypoints,
@@ -97,6 +104,7 @@ export function useAutoSave({
         mapSettings,
         transitionFeel,
         projectLayouts: projectLayouts ?? seededLayouts(),
+        mapMagnifications: mapMagnifications ?? defaultMagnifications(),
         selectedExportAspect: selectedExportAspect ?? '9_16',
         lastExportSelection,
         waypoints,
@@ -130,6 +138,7 @@ export function useAutoSave({
     mapSettings,
     transitionFeel,
     projectLayouts,
+    mapMagnifications,
     selectedExportAspect,
     lastExportSelection,
     waypoints,

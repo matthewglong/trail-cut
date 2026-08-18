@@ -2,7 +2,14 @@
 // preview and export agree at any sampled project-time, and so pausing the
 // preview freezes the animation mid-cycle.
 
-import type { MapSettings, PovPulseRate, PovPulseStyle } from '../../types';
+import type {
+  EaseSpeed,
+  EaseStyle,
+  MapSettings,
+  PovPulseRate,
+  PovPulseStyle,
+  SeamEase,
+} from '../../types';
 import { PAINT_REFERENCE_WIDTH } from './styleSpec';
 import type { PulseState, PulseStatePair } from './types';
 
@@ -152,4 +159,118 @@ export function pulsePairAt(projectTimeMs: number, mapSettings: MapSettings): Pu
 /** Back-compat: sample only the A-ring pulse. */
 export function pulseAt(projectTimeMs: number, mapSettings: MapSettings): PulseState {
   return pulsePairAt(projectTimeMs, mapSettings).a;
+}
+
+// -- Seam-ease envelope primitives -------------------------------------------
+//
+// The Transition decoration's ease_in / ease_out play as a pure ENVELOPE —
+// scale and opacity multipliers over the whole POV marker stack (body,
+// pulse, halo) — anchored at the instants where the marker visually jumps
+// or swaps style. `buildPerFrameState` finds the instants (they depend on
+// timeline + per-clip settings); this module owns the per-phase math so the
+// curves live next to the pulse curves and can never fork per engine.
+
+/** Per-phase ease duration (ms) for each speed bucket. FIXED duration —
+ *  deliberately independent of the transition window's length so
+ *  back-to-back short clips get the same snap as long ones (Matthew's
+ *  anchoring pick, 2026-08-13). */
+export const EASE_PHASE_MS: Record<EaseSpeed, number> = {
+  slow: 650,
+  medium: 400,
+  fast: 250,
+};
+
+/** The largest phase duration — the prefilter horizon `buildPerFrameState`
+ *  uses to skip resolving clips whose seams can't affect the current
+ *  frame. */
+export const EASE_MAX_PHASE_MS = EASE_PHASE_MS.slow;
+
+/** Multiplicative envelope over the POV marker stack. Identity =
+ *  `{ scale: 1, opacity: 1 }`. Scale multiplies every size-like POV value
+ *  (dot/stroke/icon/halo/pulse radii); opacity multiplies the body opacity
+ *  channel (`dotOpacity`), the pulse-ring opacities, and the live-marker
+ *  halo composite's group opacity. */
+export interface EaseEnvelope {
+  scale: number;
+  opacity: number;
+}
+
+export const IDENTITY_ENVELOPE: EaseEnvelope = { scale: 1, opacity: 1 };
+
+/** Cubic ease-in-out on [0, 1] — the workhorse smoothing curve for the
+ *  fade/grow styles. (The camera arc's `easeInOut` lives in cameraIntent
+ *  and is parameterized by TransitionFeel; the seam eases deliberately use
+ *  a fixed curve so a project's transition feel doesn't change how markers
+ *  pop.) */
+function easeInOutCubic(p: number): number {
+  return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+}
+
+/** Ease-out-back on [0, 1]: overshoots ~1.1 near the end then settles at 1.
+ *  The classic "pop" arrival. Played in reverse (v: 1 → 0) it reads as a
+ *  small anticipation wind-up before the shrink. */
+function easeOutBack(p: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2);
+}
+
+/** Sample one ease style at target visibility `v ∈ [0, 1]` (0 = fully
+ *  hidden, 1 = fully shown). IN phases sweep v 0 → 1 after the instant;
+ *  OUT phases sweep v 1 → 0 before it — one function serves both
+ *  directions, so enter and exit are exact mirrors by construction. */
+export function easeEnvelopeSample(style: EaseStyle, v: number): EaseEnvelope {
+  const p = v < 0 ? 0 : v > 1 ? 1 : v;
+  switch (style) {
+    case 'fade':
+      return { scale: 1, opacity: easeInOutCubic(p) };
+    case 'grow':
+      return { scale: easeInOutCubic(p), opacity: 1 };
+    case 'pop':
+    default: {
+      const s = easeOutBack(p);
+      return { scale: s < 0 ? 0 : s, opacity: 1 };
+    }
+  }
+}
+
+/** One seam-ease anchor: at project-time `t`, the marker jumps or swaps
+ *  style. `out` governs the OUT phase over `[t − D_out, t)`; `in` governs
+ *  the IN phase over `[t, t + D_in)`. Either side absent ⇒ that side keeps
+ *  today's hard jump. */
+export interface SeamInstant {
+  t: number;
+  out?: SeamEase;
+  in?: SeamEase;
+}
+
+/** Evaluate the combined envelope at `t` against a set of seam instants.
+ *  Overlapping phases (clips shorter than a phase, adjacent seams) combine
+ *  multiplicatively — the layered-composition rule, no special cases. Pure
+ *  function of (t, instants): pause freezes it, export reproduces it. */
+export function seamEnvelopeAt(
+  t: number,
+  instants: readonly SeamInstant[],
+): EaseEnvelope {
+  let scale = 1;
+  let opacity = 1;
+  for (const inst of instants) {
+    if (inst.out) {
+      const d = EASE_PHASE_MS[inst.out.speed];
+      if (t >= inst.t - d && t < inst.t) {
+        const m = easeEnvelopeSample(inst.out.style, (inst.t - t) / d);
+        scale *= m.scale;
+        opacity *= m.opacity;
+      }
+    }
+    if (inst.in) {
+      const d = EASE_PHASE_MS[inst.in.speed];
+      if (t >= inst.t && t < inst.t + d) {
+        const m = easeEnvelopeSample(inst.in.style, (t - inst.t) / d);
+        scale *= m.scale;
+        opacity *= m.opacity;
+      }
+    }
+  }
+  return scale === 1 && opacity === 1 ? IDENTITY_ENVELOPE : { scale, opacity };
 }

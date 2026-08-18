@@ -69,21 +69,35 @@ export function canonicalMapCssWidth(aspect: AspectRatio): number {
   return outputDims(aspect, '1080p').w;
 }
 
-/** Canonical (1080p-class) CSS dims of an aspect's MAP SLOT under a layout.
+/** Canonical (1080p-class) CSS dims of an aspect's MAP SLOT under a layout,
+ *  as magnified by `magnification`.
  *  This is the CSS viewport the export renderer lays the map out at (see
  *  `canonicalMapViewport`: at 1080p the multiplier is 1, so cssW/cssH equal
- *  the 1080p slot dims exactly; other resolutions differ only by ±1 px of
- *  divider rounding). The preview resolves camera intents — region fits in
- *  particular — against THIS viewport, not the full canonical frame and not
- *  the live pane, so a "fit these bounds" intent produces the same zoom the
- *  export band will use. `null` layout falls back to `defaultLayout(aspect)`,
- *  mirroring the export pipeline's fallback for cleared aspects. */
+ *  the 1080p slot dims divided by the magnification exactly; other
+ *  resolutions differ only by ±1 px of divider rounding). The preview
+ *  resolves camera intents — region fits in particular — against THIS
+ *  viewport, not the full canonical frame and not the live pane, so a "fit
+ *  these bounds" intent produces the same zoom the export band will use.
+ *  `null` layout falls back to `defaultLayout(aspect)`, mirroring the export
+ *  pipeline's fallback for cleared aspects.
+ *
+ *  Magnification (see {@link MapMagnifications}) shrinks the CSS viewport by
+ *  `k` while the export raises `pixelRatio` by the same `k`: the slot keeps
+ *  its pixel dims, but the world is laid out in fewer CSS px, so everything
+ *  denominated in the reference space renders `k×` larger against a
+ *  correspondingly narrower window of geography. Rounding is `Math.round`
+ *  here and `f64::round` in `canonical_map_viewport` — they agree for the
+ *  positive values in play. */
 export function canonicalSlotCss(
   layout: LayoutConfig | null,
   aspect: AspectRatio,
+  magnification = 1,
 ): { w: number; h: number } {
   const resolved = resolveSlots(layout ?? defaultLayout(aspect), aspect, '1080p');
-  return { w: resolved.map_slot.w, h: resolved.map_slot.h };
+  return {
+    w: Math.round(resolved.map_slot.w / magnification),
+    h: Math.round(resolved.map_slot.h / magnification),
+  };
 }
 
 /** The preview pane's fixed display scale: how many on-screen CSS pixels one
@@ -127,30 +141,43 @@ export interface CanonicalMapViewport {
  *    — the output resolution lever. 1.0 at 1080p, 4/3 at 1440p, 2.0 at 2160p
  *    (Decision 1: no sub-1080p; 720p deliverables go through 1080p render +
  *    FFmpeg downsample, so `multiplier >= 1` always).
- *  - `cssW = round(mapSlotW / multiplier)` — the CSS-pixel width MapLibre
- *    lays the world out at. The cssViewport's aspect matches the slot's
- *    aspect; the renderer never lays out at the per-aspect canonical width
- *    anymore.
- *  - `cssH = round(mapSlotH / multiplier)` — same on the H axis.
- *  - `pixelRatio = multiplier` — the framebuffer density lever. Crisp at
- *    1080p (1.0), fractional but well-defined at 1440p (4/3), sharper at
- *    2160p (2.0).
+ *  - `cssW = round(mapSlotW / (multiplier * magnification))` — the CSS-pixel
+ *    width MapLibre lays the world out at. The cssViewport's aspect matches
+ *    the slot's aspect; the renderer never lays out at the per-aspect
+ *    canonical width anymore.
+ *  - `cssH = round(mapSlotH / (multiplier * magnification))` — same on the
+ *    H axis.
+ *  - `pixelRatio = multiplier * magnification` — the framebuffer density
+ *    lever. Crisp at 1080p (1.0), fractional but well-defined at 1440p
+ *    (4/3), sharper at 2160p (2.0).
+ *
+ *  Magnification is the third lever and it moves css viewport and pixelRatio
+ *  in OPPOSITE directions by the same factor, so the framebuffer still comes
+ *  out at the slot's pixel dims — the map render is simply blown up relative
+ *  to the frame. `1` (the default) leaves every derivation byte-identical to
+ *  the pre-magnification pipeline.
  *
  *  At fixed `pixelRatio`, fixed MapLibre zoom Z gives fixed meters-per-CSS-
  *  pixel. Same Z across exports = same scale. Resolution change shifts only
  *  `pixelRatio`; cssViewport is identical across resolutions (modulo the
- *  rounding behavior). Mirror of `canonical_map_viewport` in
- *  `src-tauri/src/export/layout.rs`; `build_setup_payload` (in
- *  `src-tauri/src/export/mod.rs`) and the renderer worker both rely on this
- *  single derivation so geographic framing stays identical across export
+ *  rounding behavior). Mirrors the Rust derivation with one asymmetry: Rust's
+ *  `canonical_map_viewport` (`src-tauri/src/export/layout.rs`) stays
+ *  magnification-free because it is the TS↔Rust parity surface pinned by
+ *  `layout_parity.json`; Rust applies `k` on top of it inside
+ *  `build_setup_payload` (`src-tauri/src/export/mod.rs`), the same place the
+ *  SSAA factor rides. This function composes the two steps, so at any given
+ *  `k` it produces exactly the css viewport / pixelRatio the export renders
+ *  with (pre-SSAA), and geographic framing stays identical across export
  *  resolutions. */
 export function canonicalMapViewport(
   aspect: AspectRatio,
   mapSlotW: number,
   mapSlotH: number,
   outputRes: OutputResolution,
+  magnification = 1,
 ): CanonicalMapViewport {
-  const multiplier = outputDims(aspect, outputRes).w / outputDims(aspect, '1080p').w;
+  const multiplier =
+    (outputDims(aspect, outputRes).w / outputDims(aspect, '1080p').w) * magnification;
   const cssW = Math.round(mapSlotW / multiplier);
   const cssH = Math.round(mapSlotH / multiplier);
   return { cssW, cssH, pixelRatio: multiplier };
@@ -199,6 +226,62 @@ export interface ProjectLayouts {
   '16_9': LayoutConfig | null;
 }
 
+/** Per-aspect map magnification factor `k`. `k = 1` is the identity (the map
+ *  renders the whole slot at reference scale); `k > 1` magnifies the map
+ *  render relative to the frame, `k < 1` pulls back. One knob per aspect
+ *  because the framing decision is per-aspect — a route that reads well in a
+ *  16:9 band is usually too small in a 9:16 one.
+ *
+ *  Mechanism (both surfaces, one derivation): the renderer's CSS viewport
+ *  shrinks by `k` (`canonicalSlotCss`) while `pixelRatio` rises by `k`, so
+ *  the slot's pixel dims are unchanged and everything denominated in the
+ *  reference space — zoom, route width, marker sizes — lands `k×` larger.
+ *  The preview honors the same contract by folding `k` into the pane's
+ *  display scale (`previewDisplayScale × k`), so the pane keeps showing
+ *  exactly what the export looks like played fullscreen.
+ *
+ *  Absent from `project.json` ⇒ all three aspects are 1 (see
+ *  `defaultMagnifications`); the save path omits the field entirely while it
+ *  holds the identity so untouched bundles stay byte-identical. */
+export interface MapMagnifications {
+  '9_16': number;
+  '4_5': number;
+  '16_9': number;
+}
+
+/** Legal range for the magnification knob, shared by the configurator's
+ *  stepper and the Rust IPC validator (`validate_request` rejects — never
+ *  clamps — a `layout.magnification` outside `[0.5, 2]`, NaN and 0 included).
+ *  Both ends are inclusive. The load path deliberately does NOT clamp: a
+ *  hand-edited bundle carrying 3× keeps its value in the editor and fails
+ *  loudly at export rather than silently rendering something else. */
+export const MAGNIFICATION_MIN = 0.5;
+export const MAGNIFICATION_MAX = 2.0;
+export const MAGNIFICATION_STEP = 0.1;
+export const MAGNIFICATION_DEFAULT = 1.0;
+
+/** The identity magnification record — every aspect at 1. */
+export function defaultMagnifications(): MapMagnifications {
+  return {
+    '9_16': MAGNIFICATION_DEFAULT,
+    '4_5': MAGNIFICATION_DEFAULT,
+    '16_9': MAGNIFICATION_DEFAULT,
+  };
+}
+
+/** True when every aspect sits at exactly the identity factor. The save path
+ *  keys the "omit `map_magnification` from `project.json`" rule off this, so
+ *  a project that never touches the knob writes the same bytes it always
+ *  did. Exact equality is deliberate: a `0.9999` from a hand-edited bundle is
+ *  a real (if pointless) value and must round-trip. */
+export function isDefaultMagnification(m: MapMagnifications): boolean {
+  return (
+    m['9_16'] === MAGNIFICATION_DEFAULT &&
+    m['4_5'] === MAGNIFICATION_DEFAULT &&
+    m['16_9'] === MAGNIFICATION_DEFAULT
+  );
+}
+
 /** Convenience alias — task 100's helpers and the configurator UI (110) read
  *  from `SplitLayout['video_side']`. Re-exported by name so consumer code
  *  doesn't need to index into the union type. */
@@ -233,6 +316,12 @@ export interface LayoutDescriptor {
   resolution: OutputResolution;
   layout: LayoutConfig;
   resolved: SlotResolution;
+  /** This aspect's map magnification factor (see {@link MapMagnifications}).
+   *  `1` is the identity. Rust divides the renderer's css viewport by it and
+   *  multiplies `pixelRatio` by it, leaving the slot's pixel dims alone —
+   *  the map render is magnified relative to the frame. Always present on
+   *  the wire; the builder defaults it to 1. */
+  magnification: number;
 }
 
 // --- helpers ----------------------------------------------------------------

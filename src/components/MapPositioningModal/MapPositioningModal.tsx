@@ -8,8 +8,10 @@ import { createPortal } from 'react-dom';
 import { semantic } from '../../theme/tokens';
 import {
   defaultLayout,
+  MAGNIFICATION_DEFAULT,
   type AspectRatio,
   type LayoutConfig,
+  type MapMagnifications,
   type ProjectLayouts,
 } from '../../lib/layout';
 import { TriptychTile } from './TriptychTile';
@@ -19,6 +21,12 @@ export interface MapPositioningModalProps {
   onClose: () => void;
   layouts: ProjectLayouts;
   onLayoutChange: (aspect: AspectRatio, next: LayoutConfig) => void;
+  /** Per-aspect magnification factors, and the write channel for the tile
+   *  steppers. Held separately from `layouts` because they persist
+   *  separately (`project.map_magnification` vs `project.layouts`) and the
+   *  export pipeline consumes them on different levers. */
+  magnifications: MapMagnifications;
+  onMagnificationChange: (aspect: AspectRatio, next: number) => void;
 }
 
 interface AspectPaneDef {
@@ -37,6 +45,8 @@ export function MapPositioningModal({
   onClose,
   layouts,
   onLayoutChange,
+  magnifications,
+  onMagnificationChange,
 }: MapPositioningModalProps) {
   const resolveLayout = useCallback(
     (aspect: AspectRatio): LayoutConfig => layouts[aspect] ?? defaultLayout(aspect),
@@ -97,6 +107,8 @@ export function MapPositioningModal({
                 label={label}
                 layout={resolveLayout(aspect)}
                 onChange={(next) => onLayoutChange(aspect, next)}
+                magnification={magnifications[aspect] ?? MAGNIFICATION_DEFAULT}
+                onMagnificationChange={(next) => onMagnificationChange(aspect, next)}
               />
             ))}
           </div>

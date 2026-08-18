@@ -9,6 +9,8 @@ import {
   locationAt,
   trailUpTo,
   progressUpTo,
+  distanceAtWallClock,
+  wallClockAtDistance,
   clipWaypointLocation,
   forwardAzimuth,
   bearingAt,
@@ -785,6 +787,75 @@ describe('progressUpTo', () => {
     })!;
     expect(flat.totalDistMeters).toBe(0);
     expect(progressUpTo(Date.parse('2026-04-04T15:00:00.5Z'), flat)).toBe(0);
+  });
+});
+
+describe('distanceAtWallClock / wallClockAtDistance (travel-transition inversion)', () => {
+  const idx = indexRoute(linearRoute)!;
+  const t0 = Date.parse('2026-04-04T15:00:00Z');
+
+  it('distanceAtWallClock clamps outside the route range', () => {
+    expect(distanceAtWallClock(t0 - 5000, idx)).toBe(0);
+    expect(distanceAtWallClock(t0 + 99_999, idx)).toBe(idx.totalDistMeters);
+  });
+
+  it('distanceAtWallClock lerps time-linearly within a segment', () => {
+    const half = distanceAtWallClock(t0 + 500, idx);
+    expect(half).toBeCloseTo(idx.cumulativeDistMeters[1] / 2, 6);
+    expect(distanceAtWallClock(t0 + 1000, idx)).toBeCloseTo(
+      idx.cumulativeDistMeters[1],
+      6,
+    );
+  });
+
+  it('distanceAtWallClock snaps to the previous point inside an over-gap hole', () => {
+    const gappy = indexRoute(routeWithGap)!;
+    const tHalf = Date.parse('2026-04-04T15:00:45Z');
+    expect(distanceAtWallClock(tHalf, gappy)).toBe(gappy.cumulativeDistMeters[1]);
+  });
+
+  it('round-trips through wallClockAtDistance on a uniformly-moving route', () => {
+    for (const ms of [t0, t0 + 500, t0 + 1000, t0 + 2750, t0 + 4000]) {
+      const d = distanceAtWallClock(ms, idx);
+      expect(wallClockAtDistance(d, idx)).toBeCloseTo(ms, 3);
+    }
+  });
+
+  it('wallClockAtDistance clamps past both ends', () => {
+    expect(wallClockAtDistance(-10, idx)).toBe(idx.minTimeMs);
+    expect(wallClockAtDistance(idx.totalDistMeters + 10, idx)).toBe(
+      idx.maxTimeMs,
+    );
+  });
+
+  it('wallClockAtDistance is monotone non-decreasing in distance', () => {
+    let prev = -Infinity;
+    for (let k = 0; k <= 20; k++) {
+      const t = wallClockAtDistance((idx.totalDistMeters * k) / 20, idx);
+      expect(t).toBeGreaterThanOrEqual(prev);
+      prev = t;
+    }
+  });
+
+  it('returns the EARLIEST time on a stationary plateau', () => {
+    // routeWithStationarySegment: three coincident points at t=0,1,2 then
+    // movement. Distance 0 spans t=0..2 — inversion must pick t=0.
+    const stat = indexRoute(routeWithStationarySegment)!;
+    expect(wallClockAtDistance(0, stat)).toBe(stat.minTimeMs);
+    // Just past the plateau, time jumps to inside the first moving segment
+    // (t=2..3), never into the plateau interior.
+    const eps = stat.totalDistMeters * 0.01;
+    const tEps = wallClockAtDistance(eps, stat);
+    expect(tEps).toBeGreaterThanOrEqual(Date.parse('2026-04-04T15:00:02Z'));
+    expect(tEps).toBeLessThan(Date.parse('2026-04-04T15:00:03Z'));
+  });
+
+  it('handles duplicate (zero-length-segment) points without NaN', () => {
+    const stat = indexRoute(routeWithStationarySegment)!;
+    for (let k = 0; k <= 10; k++) {
+      const t = wallClockAtDistance((stat.totalDistMeters * k) / 10, stat);
+      expect(Number.isFinite(t)).toBe(true);
+    }
   });
 });
 

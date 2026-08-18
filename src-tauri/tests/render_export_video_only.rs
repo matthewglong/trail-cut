@@ -188,6 +188,7 @@ fn build_request(
     let layout_descriptor = LayoutDescriptor {
         aspect,
         resolution: OutputResolution::default(),
+        magnification: 1.0,
         layout,
         resolved,
     };
@@ -468,6 +469,7 @@ fn build_request_with_layout(
     let layout_descriptor = LayoutDescriptor {
         aspect,
         resolution: OutputResolution::default(),
+        magnification: 1.0,
         layout,
         resolved,
     };

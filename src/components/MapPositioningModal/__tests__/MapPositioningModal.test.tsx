@@ -4,10 +4,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MapPositioningModal } from '../MapPositioningModal';
 import {
   defaultLayout,
+  defaultMagnifications,
   defaultPipLayout,
   defaultSplitLayout,
   type AspectRatio,
   type LayoutConfig,
+  type MapMagnifications,
   type ProjectLayouts,
 } from '../../../lib/layout';
 
@@ -93,6 +95,8 @@ function noopProps(open: boolean) {
     onClose: () => {},
     layouts: makeLayouts(),
     onLayoutChange: () => {},
+    magnifications: defaultMagnifications(),
+    onMagnificationChange: () => {},
   };
 }
 
@@ -131,6 +135,8 @@ describe('MapPositioningModal — chrome', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -145,6 +151,8 @@ describe('MapPositioningModal — chrome', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -159,6 +167,8 @@ describe('MapPositioningModal — chrome', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -174,6 +184,8 @@ describe('MapPositioningModal — chrome', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={onLayoutChange}
       />,
     );
@@ -190,6 +202,8 @@ describe('MapPositioningModal — chrome', () => {
         open={false}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -204,6 +218,8 @@ describe('MapPositioningModal — chrome', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -212,6 +228,8 @@ describe('MapPositioningModal — chrome', () => {
         open={false}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -223,6 +241,8 @@ describe('MapPositioningModal — chrome', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -267,6 +287,8 @@ describe('MapPositioningModal — triptych contents', () => {
         open={true}
         onClose={() => {}}
         layouts={layouts}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -284,6 +306,8 @@ describe('MapPositioningModal — live edits', () => {
         open={true}
         onClose={() => {}}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={onLayoutChange}
       />,
     );
@@ -307,6 +331,8 @@ describe('MapPositioningModal — live edits', () => {
         open={true}
         onClose={() => {}}
         layouts={layouts}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={onLayoutChange}
       />,
     );
@@ -332,6 +358,8 @@ describe('MapPositioningModal — live edits', () => {
         open={true}
         onClose={() => {}}
         layouts={layouts}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
@@ -356,10 +384,94 @@ describe('MapPositioningModal — live edits', () => {
         open={true}
         onClose={onClose}
         layouts={makeLayouts()}
+        magnifications={defaultMagnifications()}
+        onMagnificationChange={() => {}}
         onLayoutChange={() => {}}
       />,
     );
     click(findByTestId('tile-16_9-mode-split')!);
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('MapPositioningModal — per-aspect magnification', () => {
+  const aspects: AspectRatio[] = ['16_9', '4_5', '9_16'];
+
+  function magnificationStepper(aspect: AspectRatio): Element {
+    const el = findByTestId(`tile-${aspect}-magnification`);
+    expect(el, `no magnification control on the ${aspect} tile`).not.toBeNull();
+    return el!;
+  }
+
+  function stepUp(aspect: AspectRatio) {
+    click(magnificationStepper(aspect).querySelectorAll('button')[0]);
+  }
+
+  function stepDown(aspect: AspectRatio) {
+    click(magnificationStepper(aspect).querySelectorAll('button')[1]);
+  }
+
+  function render3(magnifications: MapMagnifications, onChange = vi.fn()) {
+    render(
+      <MapPositioningModal
+        open={true}
+        onClose={() => {}}
+        layouts={makeLayouts()}
+        onLayoutChange={() => {}}
+        magnifications={magnifications}
+        onMagnificationChange={onChange}
+      />,
+    );
+    return onChange;
+  }
+
+  it('shows each aspect its OWN factor, formatted to one decimal with a × unit', () => {
+    render3({ '16_9': 1.0, '4_5': 1.5, '9_16': 0.5 });
+    expect(magnificationStepper('16_9').textContent).toContain('1.0×');
+    expect(magnificationStepper('4_5').textContent).toContain('1.5×');
+    expect(magnificationStepper('9_16').textContent).toContain('0.5×');
+  });
+
+  it('steps one aspect at a time, in 0.1 increments', () => {
+    const onChange = render3({ '16_9': 1.0, '4_5': 1.5, '9_16': 0.5 });
+    stepUp('4_5');
+    expect(onChange.mock.calls).toEqual([['4_5', 1.6]]);
+    stepDown('16_9');
+    expect(onChange.mock.calls[1]).toEqual(['16_9', 0.9]);
+  });
+
+  it('clamps at the 0.5 / 2.0 UI bounds (arrows disabled at the ends)', () => {
+    render3({ '16_9': 2.0, '4_5': 0.5, '9_16': 1.0 });
+    const up = magnificationStepper('16_9').querySelectorAll('button')[0];
+    const down = magnificationStepper('4_5').querySelectorAll('button')[1];
+    expect((up as HTMLButtonElement).disabled).toBe(true);
+    expect((down as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('reset restores the identity factor along with the default layout', () => {
+    // Reset is "give me this ratio's framing back" — leaving a 1.8× behind
+    // would read as the button not working.
+    const onLayoutChange = vi.fn();
+    const onMagnificationChange = vi.fn();
+    render(
+      <MapPositioningModal
+        open={true}
+        onClose={() => {}}
+        layouts={makeLayouts()}
+        onLayoutChange={onLayoutChange}
+        magnifications={{ '16_9': 1.8, '4_5': 1.0, '9_16': 1.0 }}
+        onMagnificationChange={onMagnificationChange}
+      />,
+    );
+    click(findByTestId('map-positioning-reset-16_9')!);
+    expect(onLayoutChange.mock.calls).toEqual([['16_9', defaultLayout('16_9')]]);
+    expect(onMagnificationChange.mock.calls).toEqual([['16_9', 1.0]]);
+  });
+
+  it('renders the control on every tile', () => {
+    render3(defaultMagnifications());
+    for (const aspect of aspects) {
+      expect(magnificationStepper(aspect).textContent).toContain('1.0×');
+    }
   });
 });

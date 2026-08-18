@@ -8,6 +8,17 @@ cross-session state. Keep entries terse and dated.
 
 ---
 
+## 2026-08-15 — Transition polish: fade covers dot stroke; per-clip basemap in export
+
+- Seam-ease `fade` only dimmed the POV dot's FILL (`circle-opacity`); the ring
+  is a separate MapLibre channel (`circle-stroke-opacity`). Both consumers
+  (`scene.ts` + `MapView.tsx`) now drive it with `dotOpacity` (also makes the
+  `throb` breath whole-marker). Gate: 4 tests in `povTravel.test.ts`.
+- Per-clip `camera.map_style` was ignored by the export (style loaded once
+  from project settings). Now swaps at the CUT — CANON §2.10. Gate:
+  `basemapSwap.test.ts` (10). Renderer bundle rebuilt; `golden_frame_parity_native`
+  green. Not committed.
+
 ## NEXT ACTION
 
 **1) Re-probe the composite seam — fix C′ eyeball FAILED 2026-07-01 on PQ
@@ -958,3 +969,79 @@ live only inside a historical phase record.
   PQ-encoded space — immaterial today (opaque map; only the corner-arc
   partial-alpha pixels blend) but flag before any future partial-alpha
   overlay compositing. Commit decision remains Matthew's (standing hold).
+- **2026-07-07 — Fable handoff reports (final Fable session): five decision-grade
+  analyses in `docs/ship-review/fable-reports/`** (its README has the
+  recommendations table, cross-report findings, and Matthew's decision queue).
+  Headlines: **01 crawl** — re-eyeball HLG/PQ first (the `1345ded` encoder fix
+  removed the mush that sat on top of the crawl); temporal gate spec'd in §B
+  BUT the red-team correction is mandatory: measure COHERENT σ (σ of the
+  spatial mean), not per-pixel σ. The report's pre-OETF dither fallback was
+  REFUTED by adversarial verification (appended in-file): libx265 crf17
+  zeroes ≤3-code temporal dither while the coherent crawl survives 0.50→0.50
+  — the report had validated dither pre-encode only. If the eyeball fails,
+  surviving levers = higher-bit map wire or acceptance. Diagnosis + citations
+  confirmed; higher SSAA is a no-op on this defect. **02 tone
+  map** — splice at per-clip ingest gated like the ×2.03 anchor (post-composite
+  provably moves map white/decoration hues); operator mobius (zscale has NO
+  tonemap op; libplacebo fails on macOS — probed); oracle-first plan pins
+  today's ≥1.0→253-255 hard clip. Red-team: architecture CONFIRMED (map
+  byte-untouched, clean gbrpf32le float negotiation, no silent scaler,
+  invariants preserved) but TWO BLOCKERS before implementing (appended
+  in-file): the `!is_hdr()` gate also catches ProRes (HLG/PQ→ProRes archival
+  masters would tone-map — exclude it; the "disjoint cells" enumeration
+  missed it), and `peak=6` reintroduces a hard clip (HLG max = linear 10.0
+  at npl=100 → 600–1000 nits plateau at 255, violating the report's own
+  gate) — peak must be content-driven (HLG=10, PQ=MaxCLL). Also fold in:
+  §B numbers are full-range vs production limited-range (r=tv); mixed
+  SDR+HDR timelines seam ~15% at diffuse white; preview convergence can't
+  track a per-export peak (proxies bake once).
+  **03 licensing** — task-130's "LGPL build" premise is WRONG (ffmpeg is a
+  pure subprocess = mere aggregation): bundle full-GPL ffmpeg + comply for
+  that binary; patents are a separate ~$0-but-lawyer-check axis; Mac App
+  Store is GPL-incompatible → distribution channel is decision #1; retire the
+  LGPL wording in CANON §6.2 when accepted. **04 upstream** — post patch 1
+  now, vendor patch 2 with PR drafted, do NOT upstream patch 3's imperative
+  setGroupComposite (upstream shipped declarative `*-layer-opacity` in GL JS
+  + open native request); check whether pinned GL JS 5.22.0 lets the preview
+  halo patch retire. **05 Windows** — 19-row register; port-shaping risk:
+  patches 2+3 are Metal-only vs the OpenGL Windows node binding — halo
+  compositing silently no-ops AND the capability marker is set
+  unconditionally in ensure-binding.mjs (fail-loud hole, independently found
+  by 04 — fix before any Windows work); `HOME` env read (util/fs.rs:9) breaks
+  recents/probe-cache/presets on Windows; inline filtergraph argv vs the 32k
+  CreateProcess ceiling; no CREATE_NO_WINDOW on spawns. Adversarial
+  verification of reports 01/02 ran at end of session — verdicts appended to
+  the report files. Reports are analysis only — no code/CANON changes;
+  decisions recorded back here when Matthew makes them.
+- **2026-08-13 — Travel decoration restructure (feature work, not a
+  ship-review phase; logged for test-baseline continuity):** the same-day
+  `pov.travel {enabled, marker?}` toggle was rebuilt per Matthew's design
+  into a first-class TRAVEL decoration — top-level `MapSettings.travel
+  {enabled, show_playhead?, sync?, playhead?, draw_route?}` + atomic
+  `MapOverrides.travel` blob + its own toolbar panel. Sync dresses the
+  traveling playhead in the DESTINATION clip's full resolved POV look for
+  the whole window; unsync exposes a full custom PovSettings-shaped style;
+  playhead visibility and route drawing are independent toggles
+  (`draw_route` force-shows the trail during the window even at route mode
+  'none'). Mechanism: `povStyleTuples` extracted from `resolveStaticPaints`
+  + new per-frame `PerFrameState.povPaints`/`haloComposites` buckets
+  (equal-statics-outside-window restore contract), both engines. Drive-by
+  fix: `buildPerFramePaints` active-waypoint branch dropped `× surfaceScale`
+  on pulse radii. CANON §2.9 rewritten. Suites green: frontend 1123,
+  renderer 33, cargo 372+36. Renderer bundle rebuilt. Uncommitted.
+- **2026-08-13 — Transition decoration: seam eases join travel (feature
+  work; same-session follow-up to the travel restructure):** Matthew flagged
+  that travel erases the sense-of-place the old teleport communicated on
+  short back-to-back clips; fix = POV seam animations, designed per his
+  layering directive (verified first: NO prior style easing existed — travel
+  eased position only, style hard-swapped at window edges). TRAVEL renamed
+  **TRANSITION** (`MapSettings.transition { travel?, ease_in?, ease_out? }`,
+  atomic `MapOverrides.transition`); eases = `{style: pop|fade|grow, speed}`
+  pure {scale, opacity} envelopes over the whole marker stack (halo
+  composite g included), fixed 650/400/250 ms phases anchored at the cut on
+  jump seams, at the style-swap window EDGES on traveled seams (source's
+  ease_out governs entry, destination's ease_in exit), plus project
+  start/end. One predicate (`classifyTravelWindow`) shared by travelTraceAt
+  and the instant builder; envelope scale folds into the effective POV
+  block (all sizes linear). Suites green: frontend 1130, renderer 33,
+  cargo 372+. Renderer bundle rebuilt. CANON §2.9 rewritten. Uncommitted.

@@ -39,14 +39,40 @@ export function removeMarkerImage(
 ): MarkerLibraryState {
   const { mapSettings, clips, waypoints } = state;
 
+  const povMarkerHit =
+    mapSettings.pov.marker?.kind === 'image' &&
+    mapSettings.pov.marker.image_id === id;
+  // Traveling-playhead marker (Transition decoration): strip only the
+  // custom style block's `marker` field (reverting the traveling playhead
+  // to the default dot — normal PovSettings semantics inside the block);
+  // the transition block itself, its toggles/eases, and the rest of the
+  // custom style all survive.
+  const transitionHit = (t: MapSettings['transition']): boolean =>
+    t?.travel?.playhead?.marker?.kind === 'image' &&
+    t.travel.playhead.marker.image_id === id;
+  const strippedTransition = (
+    t: NonNullable<MapSettings['transition']>,
+  ): NonNullable<MapSettings['transition']> => ({
+    ...t,
+    travel: t.travel
+      ? {
+          ...t.travel,
+          playhead: t.travel.playhead
+            ? { ...t.travel.playhead, marker: undefined }
+            : t.travel.playhead,
+        }
+      : t.travel,
+  });
   const nextSettings: MapSettings = {
     ...mapSettings,
     marker_images: mapSettings.marker_images.filter((m) => m.id !== id),
-    pov:
-      mapSettings.pov.marker?.kind === 'image' &&
-      mapSettings.pov.marker.image_id === id
-        ? { ...mapSettings.pov, marker: undefined }
-        : mapSettings.pov,
+    pov: povMarkerHit
+      ? { ...mapSettings.pov, marker: undefined }
+      : mapSettings.pov,
+    transition:
+      transitionHit(mapSettings.transition) && mapSettings.transition
+        ? strippedTransition(mapSettings.transition)
+        : mapSettings.transition,
     waypoints:
       mapSettings.waypoints.marker_image_id === id
         ? { ...mapSettings.waypoints, marker_image_id: undefined }
@@ -56,9 +82,11 @@ export function removeMarkerImage(
   const nextClips = clips.map((clip) => {
     const pov = clip.map_overrides?.pov;
     const wpOv = clip.map_overrides?.waypoints;
+    const transitionOv = clip.map_overrides?.transition;
     const povHit = pov?.marker?.kind === 'image' && pov.marker.image_id === id;
+    const clipTransitionHit = transitionHit(transitionOv);
     const wpHit = wpOv?.marker?.marker_image_id === id;
-    if (!povHit && !wpHit) return clip;
+    if (!povHit && !clipTransitionHit && !wpHit) return clip;
     // Strip the referencing marker override(s); prune now-empty override
     // objects so a clip that only overrode the marker reads as "no
     // overrides" again (the override pill keys off object presence).
@@ -70,6 +98,13 @@ export function removeMarkerImage(
       } else {
         delete overrides.pov;
       }
+    }
+    // A transition override is an atomic blob: strip only the custom
+    // style's marker, keep everything else — a transition-only override
+    // stays an override (with the traveling playhead reverted to the dot)
+    // rather than collapsing to "no override".
+    if (clipTransitionHit && transitionOv) {
+      overrides.transition = strippedTransition(transitionOv);
     }
     if (wpHit && wpOv) {
       const { marker: _removed, ...restWp } = wpOv;
@@ -111,9 +146,19 @@ export function referencedMarkerImageIds(
   if (mapSettings.pov.marker?.kind === 'image') {
     out.add(mapSettings.pov.marker.image_id);
   }
+  // Traveling-playhead markers count as referenced even while the travel
+  // block is disabled or synced — the config survives both off-toggles,
+  // registration is harmless, and `removeMarkerImage` guarantees no
+  // dangling ids either way.
+  if (mapSettings.transition?.travel?.playhead?.marker?.kind === 'image') {
+    out.add(mapSettings.transition.travel.playhead.marker.image_id);
+  }
   for (const clip of clips) {
     const marker = clip.map_overrides?.pov?.marker;
     if (marker?.kind === 'image') out.add(marker.image_id);
+    const travelMarker =
+      clip.map_overrides?.transition?.travel?.playhead?.marker;
+    if (travelMarker?.kind === 'image') out.add(travelMarker.image_id);
     const wpMarker = clip.map_overrides?.waypoints?.marker;
     if (wpMarker?.marker_image_id !== undefined) {
       out.add(wpMarker.marker_image_id);

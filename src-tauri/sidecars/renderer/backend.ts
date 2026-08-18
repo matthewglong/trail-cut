@@ -15,7 +15,7 @@
 
 import type { CompiledTimeline } from '../../../src/lib/cameraIntent';
 import type { Clip, Route, MapSettings, Waypoint } from '../../../src/types';
-import type { HaloCompositeGroup } from '../../../src/lib/mapVisuals';
+import type { BasemapSpec, HaloCompositeGroup } from '../../../src/lib/mapVisuals';
 
 // ---- Protocol types (wire shapes from the Rust orchestrator) --------------
 
@@ -73,6 +73,15 @@ export interface FramePayload {
    *  every animated value arrives pre-resolved in `paints`. (The retired
    *  chrome backend fed this to maplibregl.setNow as a frozen clock.) */
   t: number;
+  /** The basemap the ACTIVE clip resolves to at `t` — `map_style` is
+   *  per-clip overridable (`MapOverrides.camera.map_style`) and the active
+   *  clip flips at the cut, so this can differ frame to frame. Backends
+   *  compare `basemap.styleId` against the style they currently have loaded
+   *  and reload only on a change; a reload wipes every source, layer and
+   *  registered image, so the whole scene has to go back on (see
+   *  nativeBackend's `applyScene`). Values are module constants from
+   *  `buildBasemapSpec`, so an unchanged basemap costs nothing to carry. */
+  basemap: BasemapSpec;
   /** Per-frame GeoJSON updates, `[sourceId, data]`. */
   sources: Array<[string, unknown]>;
   /** Paint property triplets `[layerId, prop, value]` — includes the
