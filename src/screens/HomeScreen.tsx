@@ -16,6 +16,7 @@ interface HomeScreenProps {
   onOpenProject: () => void;
   onOpenProjectDir: (dir: string) => void;
   onRenameProject: (path: string, name: string) => void;
+  onDuplicateProject: (path: string) => void;
   onDeleteProject: (path: string) => void;
   onDismissError: () => void;
 }
@@ -35,6 +36,7 @@ export default function HomeScreen({
   onOpenProject,
   onOpenProjectDir,
   onRenameProject,
+  onDuplicateProject,
   onDeleteProject,
   onDismissError,
 }: HomeScreenProps) {
@@ -139,6 +141,16 @@ export default function HomeScreen({
                         }}
                       >
                         Rename
+                      </button>
+                      <button
+                        style={styles.dropdownItem}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCardMenuOpen(null);
+                          onDuplicateProject(project.path);
+                        }}
+                      >
+                        Duplicate
                       </button>
                       <button
                         style={{ ...styles.dropdownItem, color: '#ff5555' }}

@@ -868,15 +868,33 @@ export interface TransitionSettings {
   ease_out?: SeamEase;
 }
 
-/** Deep equality for `TransitionSettings` override leaves. Absence strict
- *  at the block level (halo precedent); each sub-block compares through
+/** True when a transition block carries NO layers at all — absent, or an
+ *  object with every layer undefined. Both spell "hard jump, nothing to
+ *  keep": unlike a disabled travel block (whose custom style survives the
+ *  off-toggle), an empty blob has no config worth preserving, so the two
+ *  spellings are interchangeable everywhere. */
+export function transitionSettingsEmpty(
+  t: TransitionSettings | undefined,
+): boolean {
+  return (
+    t === undefined ||
+    (t.travel === undefined && t.ease_in === undefined && t.ease_out === undefined)
+  );
+}
+
+/** Deep equality for `TransitionSettings` override leaves. An absent block
+ *  equals an EMPTY one (`transitionSettingsEmpty` — no config to lose), but
+ *  any block with a layer is distinct from absence (halo precedent: a
+ *  disabled travel keeps its custom style); each sub-block compares through
  *  its own comparator (which normalize their optional toggles, so no
  *  phantom overrides between minimal and spelled-out spellings). */
 export function transitionSettingsEquals(
   a: TransitionSettings | undefined,
   b: TransitionSettings | undefined,
 ): boolean {
-  if (a === undefined || b === undefined) return a === b;
+  if (a === undefined || b === undefined) {
+    return transitionSettingsEmpty(a) && transitionSettingsEmpty(b);
+  }
   return (
     travelSettingsEquals(a.travel, b.travel) &&
     seamEaseEquals(a.ease_in, b.ease_in) &&
@@ -1445,9 +1463,15 @@ export function computeClipOverrides(
 
   // transition (atomic top-level blob — the whole block records or none of
   // it, same as the halos; deep-equal via `transitionSettingsEquals`,
-  // never `!==`)
+  // never `!==`). `next` is a RESOLVED settings object, so an absent block
+  // there means "this clip has no transition" — NOT "inherit". The override
+  // layer reads `undefined` as inherit (`overrides.transition ??
+  // defaults.transition`), so a clip that differs from a project WITH a
+  // transition must record an explicit empty blob `{}` (Rust round-trips it
+  // as `"transition": {}`); otherwise "both eases → None" on a clip would
+  // silently snap back to the project's eases.
   if (!transitionSettingsEquals(next.transition, project.transition)) {
-    out.transition = next.transition;
+    out.transition = next.transition ?? {};
   }
 
   return out;
@@ -1604,6 +1628,9 @@ export interface ClipEntryTransition {
   feel?: TransitionFeel;
 }
 
+/** A contiguous run of ≥2 timeline clips acting as a camera-stop generator (continuous cross-clip glide). Additive persistence, no schema bump; absent ⇔ empty. See docs/CLIP_GROUPS_HANDOFF.md. */
+export interface ClipGroup { id: string; clip_ids: string[] }
+
 export interface Project {
   version: number;
   name: string;
@@ -1653,6 +1680,10 @@ export interface Project {
    *  no waypoints. Legacy bundles arrive with `[]` from Rust; the load path
    *  seeds from clips before first use. */
   waypoints: Waypoint[];
+  /** Clip groups (camera-glide generators). Additive, no schema bump;
+   *  absent ⇔ empty. Normalized on load + before every compile via
+   *  `normalizeClipGroups` in `src/lib/clipGroups.ts`. */
+  clip_groups?: ClipGroup[];
   /** Project-level working color space (schema v9). Omitted on disk when
    *  equal to the default (`'linear_bt2020_full'`); consumers treat
    *  absent/undefined as the default. See {@link WorkingColorSpaceId}. */

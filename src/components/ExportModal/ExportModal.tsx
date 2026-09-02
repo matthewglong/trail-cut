@@ -29,6 +29,7 @@ import {
   type AspectRatio,
   type CellKey,
   type Clip,
+  type ClipGroup,
   type DeliveryTarget,
   type ExportChannel,
   type ExportConfig,
@@ -80,6 +81,10 @@ export interface ExportModalProps {
   /** First-class waypoints (schema v7). Forwarded into every job request via
    *  `buildJobRequest` → `RenderExportRequest.waypoints`. */
   waypoints: Waypoint[];
+  /** Compile-effective clip groups (camera glide). Threaded into every job
+   *  request in Phase C (`docs/CLIP_GROUPS_HANDOFF.md` §5); optional so the
+   *  ProjectView pass-through compiles ahead of that wiring. */
+  clipGroups?: ClipGroup[];
   transitionFeel?: TransitionFeel;
   projectLayouts: ProjectLayouts;
   /** Per-aspect map magnification. Each queued job picks its own aspect's
@@ -172,6 +177,7 @@ export function ExportModal({
   route,
   mapSettings,
   waypoints,
+  clipGroups,
   transitionFeel,
   projectLayouts,
   mapMagnifications,
@@ -520,6 +526,7 @@ export function ExportModal({
       route,
       mapSettings,
       waypoints,
+      clipGroups,
       transitionFeel,
       layouts: projectLayouts,
       magnifications: mapMagnifications,

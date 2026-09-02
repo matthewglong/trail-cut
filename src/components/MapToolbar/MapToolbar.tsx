@@ -106,6 +106,14 @@ interface MapToolbarProps {
    *  clip-scope "Reset to project" write-back source for every override
    *  pill in the decoration panels. */
   projectSettings?: MapSettings | null;
+  /** Id of the clip group containing the current clip, or null. In clip
+   *  scope a member clip's follow pill freezes into the GROUP state — the
+   *  glide owns the camera (docs/CLIP_GROUPS_HANDOFF.md §3). Derived, never
+   *  persisted. */
+  groupIdForCurrentClip?: string | null;
+  /** GROUP pill click — asks the parent to light up / scroll to the group
+   *  bar. Never toggles `follow_playhead`. */
+  onHighlightGroup?: (groupId: string) => void;
 }
 
 const STYLE_OPTIONS: { value: MapStyleId; label: string; short: string }[] = [
@@ -141,6 +149,8 @@ export default function MapToolbar({
   onMarkerImagesChange,
   onMarkerImageDelete,
   projectSettings,
+  groupIdForCurrentClip = null,
+  onHighlightGroup,
 }: MapToolbarProps) {
   const followOn = settings.camera.follow_playhead;
   const bearingAuto = settings.camera.bearing_mode === 'auto';
@@ -191,7 +201,20 @@ export default function MapToolbar({
   const setCamera = (patch: Partial<MapSettings['camera']>) =>
     onChange({ ...settings, camera: { ...settings.camera, ...patch } });
 
-  const followPill = (
+  // Clip scope + member of a clip group → frozen GROUP state: the glide
+  // owns the camera, so the pill never writes `follow_playhead`; clicking
+  // only highlights the group bar in the timeline.
+  const groupLocked = scope === 'clip' && groupIdForCurrentClip != null;
+  const followPill = groupLocked ? (
+    <div
+      onClick={() => onHighlightGroup?.(groupIdForCurrentClip)}
+      style={styles.previewPillLocked}
+      title="Camera is controlled by the clip group — click to show the group"
+    >
+      <span style={styles.previewDotLocked} />
+      <span>GROUP</span>
+    </div>
+  ) : (
     <div
       onClick={() => setCamera({ follow_playhead: !followOn })}
       style={followOn ? styles.previewPillOn : styles.previewPillOff}

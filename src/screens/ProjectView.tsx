@@ -14,13 +14,15 @@ import { useDropdownClose } from '../hooks/useDropdownClose';
 import { indexRoute } from '../lib/routeLocation';
 import { compileTimeline, activeClipIdAt } from '../lib/cameraIntent';
 import { livePlayheadMs } from '../lib/livePlayhead';
-import type { CameraPreset, Clip, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapMagnifications, MapSettings, MarkerImageRef, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
+import type { CameraPreset, Clip, ClipGroup, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapMagnifications, MapSettings, MarkerImageRef, ProjectLayouts, TransitionFeel, ExportGrid, Waypoint, OverridePath } from '../types';
 import {
   resolveMapSettings,
   computeClipOverrides,
   leafPaths,
 } from '../types';
 import { removeMarkerImage } from '../lib/markerLibrary';
+import { normalizeClipGroups } from '../lib/clipGroups';
+import { formatTotalDuration } from '../utils/format';
 import type { AspectRatio } from '../lib/layout';
 import type { PendingImport, ProxyMap, ThumbnailMap } from '../hooks/useMediaImport';
 import SourceFormatConfirmDialog from '../components/SourceFormatConfirmDialog';
@@ -87,6 +89,13 @@ interface ProjectViewProps {
    *  keep clip-sourced entries in sync. */
   waypoints: Waypoint[];
   setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
+  /** Clip groups (camera glide — `docs/CLIP_GROUPS_HANDOFF.md`). Raw
+   *  persisted list owned by App; this view derives the compile-effective
+   *  form via `normalizeClipGroups` and writes group/ungroup gestures back
+   *  through `setClipGroups`. Clip-lifecycle integrity (remove / split /
+   *  import re-sort) lives in useProject / useMediaImport. */
+  clipGroups: ClipGroup[];
+  setClipGroups: React.Dispatch<React.SetStateAction<ClipGroup[]>>;
   playheadMs: number | null;
   setPlayheadMs: React.Dispatch<React.SetStateAction<number | null>>;
   proxies: ProxyMap;
@@ -140,6 +149,8 @@ export default function ProjectView({
   setLastExportSelection,
   waypoints,
   setWaypoints,
+  clipGroups,
+  setClipGroups,
   playheadMs,
   setPlayheadMs,
   proxies,
@@ -170,7 +181,13 @@ export default function ProjectView({
   });
   const [previewAspect, setPreviewAspect] = useState('16:9');
   const [cropPreview, setCropPreview] = useState(false);
-  const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('loop');
+  const [playbackMode, setPlaybackMode] = useState<'loop' | 'continuous'>('continuous');
+  // Project-time position of the playhead for the toolbar readout, or null
+  // when the playhead sits OUTSIDE the selected clip's trim (or the clip has
+  // no span at all — hidden / untimestamped). Deliberately separate from the
+  // `playheadMs` the map consumes: that one is CLAMPED to the span, so it
+  // can't distinguish "parked at the trim edge" from "off the kept region".
+  const [globalPlayheadMs, setGlobalPlayheadMs] = useState<number | null>(null);
   const [autoPlayToken, setAutoPlayToken] = useState(0);
   const [resetPillHover, setResetPillHover] = useState(false);
   const isPlayingRef = useRef(false);
@@ -288,6 +305,40 @@ export default function ProjectView({
     return leafPaths(selectedClip.map_overrides).size > 0;
   }, [selectedClip]);
 
+  // ── Clip groups (docs/CLIP_GROUPS_HANDOFF.md §3/§4).
+  // `clipGroups` / `setClipGroups` are App-owned and persisted (Phase B).
+  // `selectedClipIds` / `selectionAnchorId` are the ephemeral
+  // multi-selection; `selectedClipId` keeps its exact playback/seek
+  // semantics.
+  const [selectedClipIds, setSelectedClipIds] = useState<Set<string>>(() => new Set());
+  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  // Group-bar selection + transient highlight (GROUP pill click / just
+  // created). Both ephemeral — never persisted.
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [highlightedGroupId, setHighlightedGroupId] = useState<string | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+  }, []);
+
+  // Compile-effective groups: the mutation sites already keep raw state
+  // normalized, but deriving here with THE single policy makes the compile
+  // input consistent by construction (e.g. mid-batch renders where the
+  // clip write has landed and the group write hasn't yet).
+  const effectiveClipGroups = useMemo(
+    () => normalizeClipGroups(clipGroups, clips),
+    [clipGroups, clips],
+  );
+  // The selected clip's group, if any — drives the frozen GROUP follow pill
+  // (docs/CLIP_GROUPS_HANDOFF.md §3). Derived, never persisted.
+  const groupIdForCurrentClip = useMemo(
+    () =>
+      selectedClipId
+        ? effectiveClipGroups.find((g) => g.clip_ids.includes(selectedClipId))?.id ?? null
+        : null,
+    [effectiveClipGroups, selectedClipId],
+  );
+
   // Indexed route — consumed by `compileTimeline` for per-clip bearing
   // keyframes and follow-intent construction.
   const indexedRoute = useMemo(() => indexRoute(route), [route]);
@@ -304,8 +355,9 @@ export default function ProjectView({
     () =>
       compileTimeline(clips, indexedRoute, mapSettings, {
         transition_feel: projectTransitionFeel,
+        clip_groups: effectiveClipGroups,
       }),
-    [clips, indexedRoute, mapSettings, projectTransitionFeel],
+    [clips, indexedRoute, mapSettings, projectTransitionFeel, effectiveClipGroups],
   );
 
   // The active clip's compiled span. `null` when the selected clip isn't
@@ -398,6 +450,95 @@ export default function ProjectView({
     if (!wasSame && isPlayingRef.current) setAutoPlayToken((t) => t + 1);
   }, [selectedClipId, setSelectedClipId, setPlayheadMs, timeline]);
 
+  // Timeline card click with modifiers (Phase A group gesture):
+  //   plain     → existing `handleSelectClip` + collapse multi-select to {id}
+  //               + set the range anchor;
+  //   shift     → contiguous index range anchor..id in `clips` order
+  //               (`selectedClipId` untouched); no anchor yet → plain click;
+  //   cmd/ctrl  → toggle membership (`selectedClipId` untouched).
+  const handleCardClick = useCallback((id: string, mods: { shift: boolean; meta: boolean }) => {
+    // Any clip click ends the group selection/highlight.
+    setSelectedGroupId(null);
+    setHighlightedGroupId(null);
+    if (mods.shift && selectionAnchorId) {
+      const a = clips.findIndex((c) => c.id === selectionAnchorId);
+      const b = clips.findIndex((c) => c.id === id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a <= b ? [a, b] : [b, a];
+        setSelectedClipIds(new Set(clips.slice(lo, hi + 1).map((c) => c.id)));
+        return;
+      }
+    }
+    if (mods.meta) {
+      setSelectedClipIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+      setSelectionAnchorId(id);
+      return;
+    }
+    handleSelectClip(id);
+    setSelectedClipIds(new Set([id]));
+    setSelectionAnchorId(id);
+  }, [clips, selectionAnchorId, handleSelectClip]);
+
+  // Transient group highlight — lights the bar and scrolls it into view for
+  // ~1.5 s, or until the next clip/group selection.
+  const handleHighlightGroup = useCallback((groupId: string) => {
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+    setHighlightedGroupId(groupId);
+    highlightTimerRef.current = window.setTimeout(() => {
+      highlightTimerRef.current = null;
+      setHighlightedGroupId((cur) => (cur === groupId ? null : cur));
+    }, 1500);
+  }, []);
+
+  // Group the multi-selection. Timeline only offers the button when the
+  // selection is ≥2, contiguous and ungrouped; `normalizeClipGroups` is the
+  // single policy either way (order, contiguity, dedup, ≥2).
+  const handleGroupSelection = useCallback(() => {
+    const orderedSelection = clips.filter((c) => selectedClipIds.has(c.id)).map((c) => c.id);
+    if (orderedSelection.length < 2) return;
+    const newId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `cg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setClipGroups((prev) =>
+      normalizeClipGroups([...prev, { id: newId, clip_ids: orderedSelection }], clips),
+    );
+    setSelectedClipIds(new Set());
+    setSelectionAnchorId(null);
+    setSelectedGroupId(null);
+    handleHighlightGroup(newId);
+  }, [clips, selectedClipIds, setClipGroups, handleHighlightGroup]);
+
+  // Group-bar selection (`null` = Escape / click-away). Selecting a group
+  // ends any transient highlight; the bar is lit by selection instead.
+  const handleSelectGroup = useCallback((groupId: string | null) => {
+    setSelectedGroupId(groupId);
+    setHighlightedGroupId(null);
+  }, []);
+
+  // Remove one group (clips untouched) — × cap, Delete/Backspace.
+  const handleDeleteGroup = useCallback((groupId: string) => {
+    setClipGroups((prev) => prev.filter((g) => g.id !== groupId));
+    setSelectedGroupId((cur) => (cur === groupId ? null : cur));
+    setHighlightedGroupId((cur) => (cur === groupId ? null : cur));
+  }, [setClipGroups]);
+
+  // End-handle drag commit — `clipIds` already went through
+  // `resizeGroupEdge`, but the single normalization policy runs again here
+  // so the persisted list can never disagree with the compiler's view.
+  const handleResizeGroup = useCallback((groupId: string, clipIds: string[]) => {
+    setClipGroups((prev) =>
+      normalizeClipGroups(
+        prev.map((g) => (g.id === groupId ? { ...g, clip_ids: clipIds } : g)),
+        clips,
+      ),
+    );
+  }, [clips, setClipGroups]);
+
   const handlePlayingChange = useCallback((p: boolean) => {
     isPlayingRef.current = p;
   }, []);
@@ -437,6 +578,7 @@ export default function ProjectView({
   // fallback chain (currentProjectMsRef → canonicalSeekMs) to take over.
   useEffect(() => {
     livePlayheadMs.current = null;
+    setGlobalPlayheadMs(null);
   }, [selectedClipId]);
 
   // Synchronous per-frame bridge: clip-local media-seconds → project-time-ms
@@ -556,6 +698,24 @@ export default function ProjectView({
           )}
         </div>
         <div style={styles.toolbarActions}>
+          {/* Total output length: `timeline.totalDurationMs` is the compiled
+              project-time axis, so trims, hidden clips and per-clip speed are
+              already baked in — same number the export renders. */}
+          <div
+            style={styles.durationChip}
+            title={
+              "Playhead position in the finished video / total output length " +
+              "(trims, hidden clips and speed applied). Position reads \u2013 " +
+              "when the playhead is outside the current clip's trim."
+            }
+            data-testid="timeline-total-duration"
+          >
+            <span style={styles.durationChipPos}>
+              {globalPlayheadMs == null ? '-' : formatTotalDuration(globalPlayheadMs)}
+            </span>
+            <span style={styles.durationChipSep}>/</span>
+            <span>{formatTotalDuration(timeline.totalDurationMs)}</span>
+          </div>
           <div style={styles.importWrapper}>
             <button
               onClick={() => setShowImportMenu(!showImportMenu)}
@@ -666,6 +826,7 @@ export default function ProjectView({
                   playheadSecRef.current = s;
                   if (!selectedClipSpan) {
                     setPlayheadMs(null);
+                    setGlobalPlayheadMs(null);
                     return;
                   }
                   // Translate clip-local media time (seconds, from source
@@ -694,6 +855,13 @@ export default function ProjectView({
                     (clipLocalMs - selectedClipSpan.mediaInMs) /
                       selectedClipSpan.speed;
                   setPlayheadMs(projectMs);
+                  // The toolbar readout wants the UNclamped truth: only a
+                  // playhead genuinely inside the kept region has a place on
+                  // the project-time axis.
+                  const insideTrim =
+                    raw >= selectedClipSpan.mediaInMs &&
+                    raw <= selectedClipSpan.mediaOutMs;
+                  setGlobalPlayheadMs(insideTrim ? projectMs : null);
                 }}
               />
             </div>
@@ -729,6 +897,8 @@ export default function ProjectView({
               onMarkerImagesChange={handleMarkerImagesChange}
               onMarkerImageDelete={handleMarkerImageDelete}
               projectSettings={mapSettings}
+              groupIdForCurrentClip={groupIdForCurrentClip}
+              onHighlightGroup={handleHighlightGroup}
             />
             <div style={{ ...styles.mapPaneContent, position: 'relative' as const }}>
               <MapView
@@ -785,6 +955,15 @@ export default function ProjectView({
             clips={clips}
             activeClipId={activeClipId}
             onSelectClip={handleSelectClip}
+            groups={effectiveClipGroups}
+            selectedClipIds={selectedClipIds}
+            onCardClick={handleCardClick}
+            onGroupSelection={handleGroupSelection}
+            selectedGroupId={selectedGroupId}
+            highlightedGroupId={highlightedGroupId}
+            onSelectGroup={handleSelectGroup}
+            onDeleteGroup={handleDeleteGroup}
+            onResizeGroup={handleResizeGroup}
             thumbnails={thumbnails}
             proxies={proxies}
             onRemoveClip={onRemoveClip}
@@ -827,6 +1006,7 @@ export default function ProjectView({
         route={route}
         mapSettings={mapSettings}
         waypoints={waypoints}
+        clipGroups={effectiveClipGroups}
         transitionFeel={transitionFeel}
         projectLayouts={projectLayouts}
         mapMagnifications={mapMagnifications}
@@ -915,6 +1095,27 @@ const styles: Record<string, React.CSSProperties> = {
   },
   importWrapper: {
     position: 'relative' as const,
+  },
+  durationChip: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: '4px',
+    padding: '5px 10px',
+    fontSize: '12px',
+    fontVariantNumeric: 'tabular-nums',
+    color: '#aaa',
+    backgroundColor: '#1a1a1a',
+    border: '1px solid #333',
+    borderRadius: '4px',
+    userSelect: 'none' as const,
+  },
+  durationChipPos: {
+    color: '#e6e6e6',
+    minWidth: '46px',
+    textAlign: 'right' as const,
+  },
+  durationChipSep: {
+    color: '#555',
   },
   gpxChipWrapper: {
     position: 'relative' as const,

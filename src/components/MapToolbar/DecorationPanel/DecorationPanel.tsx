@@ -1754,7 +1754,11 @@ function TransitionPanelBody({
   const travel = transition?.travel;
   const enabled = travel?.enabled === true;
   // A fully-empty blob collapses back to absent so "everything off" and
-  // "never touched" serialize identically (and record no phantom override).
+  // "never touched" serialize identically. This is only tidiness: the two
+  // spellings are equal under `transitionSettingsEquals`, and at clip scope
+  // `computeClipOverrides` re-materializes an explicit `{}` override
+  // whenever the project block has layers to switch off — an absent
+  // override would mean INHERIT and resurrect the project's eases.
   const setTransition = (next: TransitionSettings | undefined) => {
     const collapsed =
       next &&

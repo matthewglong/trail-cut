@@ -56,6 +56,7 @@ const PROJECT_WIRE_KEYS = {
   last_export_selection: true,
   waypoints: true,
   working_color_space: true,
+  clip_groups: true,
 } as const satisfies Record<keyof Project, true>;
 
 describe('project_parity.json — fixture integrity', () => {
@@ -64,6 +65,18 @@ describe('project_parity.json — fixture integrity', () => {
     expect(fixture.project).toBeTruthy();
     expect(fixture.project.clips.length).toBeGreaterThan(0);
     expect(fixture.project.waypoints.length).toBeGreaterThan(0);
+    // The group must reference ≥2 EXISTING fixture clips in clip order, or
+    // hydrate-normalization rewrites it and the round-trip below fails for
+    // the wrong reason.
+    const clipIds = fixture.project.clips.map((c) => c.id);
+    expect(fixture.project.clip_groups?.length).toBeGreaterThan(0);
+    for (const group of fixture.project.clip_groups ?? []) {
+      expect(group.clip_ids.length).toBeGreaterThanOrEqual(2);
+      expect(group.clip_ids.map((id) => clipIds.indexOf(id))).toEqual(
+        group.clip_ids.map((id) => clipIds.indexOf(id)).sort((a, b) => a - b),
+      );
+      for (const id of group.clip_ids) expect(clipIds).toContain(id);
+    }
   });
 
   it('populates every field of the Project wire shape', () => {
@@ -119,6 +132,9 @@ describe('canonical auto-save payload (hydrateProjectState → buildSavePayload)
     const payload = buildSavePayload(base, live);
     expect(payload.clips).toEqual([]);
     expect(payload.waypoints).toEqual([]);
+    // No clips ⇒ every group dissolves ⇒ the key is omitted (not a stale
+    // copy resurrected from the base spread).
+    expect('clip_groups' in payload).toBe(false);
     expect(payload.start_camera).toEqual(base.start_camera);
     expect(payload.working_color_space).toEqual(base.working_color_space);
   });
@@ -268,5 +284,84 @@ describe('map_magnification — hydrate / save asymmetry', () => {
     const reloaded = hydrateProjectState(payload, 'x');
     expect(reloaded.mapMagnifications).toEqual(set);
     expect(buildSavePayload(payload, reloaded).map_magnification).toEqual(set);
+  });
+});
+
+describe('clip_groups — hydrate / save contract (Phase B, docs/CLIP_GROUPS_HANDOFF.md §1)', () => {
+  // Absent on disk ⇔ empty (additive, no schema bump). Hydration always
+  // yields an array; the save path re-normalizes against the persisted
+  // clips and drops the key when nothing survives — mirroring the Rust
+  // `skip_serializing_if = "Vec::is_empty"` so both writers agree.
+
+  it('populated groups survive hydrate → save verbatim (covered by the full round-trip too)', () => {
+    const base = fixture.project;
+    const live = hydrateProjectState(base, 'x');
+    expect(live.clipGroups).toEqual(base.clip_groups);
+    expect(buildSavePayload(base, live).clip_groups).toEqual(base.clip_groups);
+  });
+
+  it('hydrates a bundle without the key as []', () => {
+    const without = { ...fixture.project };
+    delete without.clip_groups;
+    expect(hydrateProjectState(without, 'x').clipGroups).toEqual([]);
+  });
+
+  it('omits the key from the save payload when there are no groups', () => {
+    const base = fixture.project;
+    const payload = buildSavePayload(base, { ...hydrateProjectState(base, 'x'), clipGroups: [] });
+    expect('clip_groups' in payload).toBe(false);
+  });
+
+  it('drops a stale on-disk group when the user dissolves it', () => {
+    // Same base-spread trap as map_magnification: without the delete the
+    // group the user just ungrouped would come back from the base.
+    const base = fixture.project;
+    expect(base.clip_groups?.length).toBeGreaterThan(0);
+    const payload = buildSavePayload(base, { ...hydrateProjectState(base, 'x'), clipGroups: [] });
+    expect(payload.clip_groups).toBeUndefined();
+  });
+
+  it('hydrate normalizes: a group referencing a missing clip id is repaired, <2 members dissolves', () => {
+    const [first, second] = fixture.project.clips;
+    const stale = {
+      ...fixture.project,
+      clip_groups: [
+        // Ghost member dropped, survivors keep the group.
+        { id: 'g-keep', clip_ids: [first.id, 'clip-ghost', second.id] },
+        // Only one real member → dissolves.
+        { id: 'g-dissolve', clip_ids: ['clip-ghost-2', second.id] },
+      ],
+    } as Project;
+    const live = hydrateProjectState(stale, 'x');
+    expect(live.clipGroups).toEqual([{ id: 'g-keep', clip_ids: [first.id, second.id] }]);
+  });
+
+  it('hydrate KEEPS hidden members (hide is a soft toggle; the compiler filters)', () => {
+    // fixture clip-1 is `visible: false`; the persisted group still lists it.
+    const hidden = fixture.project.clips.find((c) => c.visible === false);
+    expect(hidden).toBeTruthy();
+    const live = hydrateProjectState(fixture.project, 'x');
+    expect(live.clipGroups[0].clip_ids).toContain(hidden!.id);
+  });
+
+  it('save re-normalizes against the persisted clips (a group can never reference a clip not in the file)', () => {
+    const base = fixture.project;
+    const [first, second] = base.clips;
+    const live = {
+      ...hydrateProjectState(base, 'x'),
+      // Live clips lost `second`, but the raw group state still names it.
+      clips: [first],
+      clipGroups: [{ id: 'g', clip_ids: [first.id, second.id] }],
+    };
+    const payload = buildSavePayload(base, live);
+    expect(payload.clips).toEqual([first]);
+    expect('clip_groups' in payload).toBe(false);
+  });
+
+  it('round-trips through a second hydrate → save unchanged (idempotent persisted form)', () => {
+    const base = fixture.project;
+    const payload = buildSavePayload(base, hydrateProjectState(base, 'x'));
+    const again = buildSavePayload(payload, hydrateProjectState(payload, 'x'));
+    expect(again.clip_groups).toEqual(base.clip_groups);
   });
 });

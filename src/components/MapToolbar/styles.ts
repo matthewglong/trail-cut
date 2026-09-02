@@ -3,7 +3,7 @@
 // control styles for the tri-state mode pickers.
 
 import { styles as editStyles } from '../EditToolbar/styles';
-import { colors } from '../../theme/tokens';
+import { colors, semantic } from '../../theme/tokens';
 
 export const styles: Record<string, React.CSSProperties> = {
   ...editStyles,
@@ -17,6 +17,21 @@ export const styles: Record<string, React.CSSProperties> = {
   separator: {
     ...editStyles.separator,
     margin: '0 2px',
+  },
+
+  // Follow pill, frozen GROUP state — the clip's camera is owned by its
+  // clip group. Uses the override accent so it reads as "locked by a
+  // higher authority", not as on/off.
+  previewPillLocked: {
+    ...editStyles.previewPillOn,
+    border: `1px solid ${colors.accent}`,
+    backgroundColor: semantic.accentTint,
+    color: colors.accent,
+    letterSpacing: '0.04em',
+  },
+  previewDotLocked: {
+    ...editStyles.previewDotOn,
+    backgroundColor: colors.accent,
   },
 
   // Bar tints — pre-blended with the base #1a1a1a so the tint is visible

@@ -58,7 +58,9 @@ export const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    padding: '6px 12px',
+    // Extra top padding is headroom for the playhead flag, which sits above
+    // the seek-bar track. Without it the flag would overlay the video.
+    padding: '24px 12px 6px',
     backgroundColor: colors.bg,
     borderTop: '1px solid #333',
   },
@@ -74,13 +76,6 @@ export const styles: Record<string, React.CSSProperties> = {
     borderRadius: '4px',
     cursor: 'pointer',
     fontSize: '14px',
-    flexShrink: 0,
-  },
-  time: {
-    fontSize: '12px',
-    color: '#999',
-    fontVariantNumeric: 'tabular-nums',
-    minWidth: '46px',
     flexShrink: 0,
   },
   seekBarTrack: {
@@ -154,6 +149,44 @@ export const styles: Record<string, React.CSSProperties> = {
     width: '2px',
     backgroundColor: colors.accent2,
     boxShadow: '0 1px 4px rgba(0, 0, 0, 0.4)',
+  },
+  /** Readout flag riding above the playhead. Positioned relative to the
+   *  seek-bar track (not the playhead) so it can be clamped to the track's
+   *  ends in px — see `flagLeft` in VideoPreview. */
+  playheadFlag: {
+    position: 'absolute',
+    top: '-20px',
+    padding: '2px 6px',
+    borderRadius: '3px',
+    backgroundColor: colors.accent2,
+    color: '#111',
+    fontSize: '10px',
+    fontWeight: 600,
+    lineHeight: '12px',
+    whiteSpace: 'nowrap',
+    fontVariantNumeric: 'tabular-nums',
+    pointerEvents: 'none',
+    userSelect: 'none',
+    zIndex: 2,
+    boxShadow: '0 1px 4px rgba(0, 0, 0, 0.4)',
+  },
+  /** Outside the trim the flag reads the raw source axis — muted so the
+   *  two readouts are never confused for each other. */
+  playheadFlagUntrimmed: {
+    backgroundColor: '#4a4a4a',
+    color: '#ddd',
+  },
+  playheadFlagPointer: {
+    position: 'absolute',
+    bottom: '-3px',
+    width: '6px',
+    height: '6px',
+    marginLeft: '-3px',
+    backgroundColor: colors.accent2,
+    transform: 'rotate(45deg)',
+  },
+  playheadFlagPointerUntrimmed: {
+    backgroundColor: '#4a4a4a',
   },
   playheadHoop: {
     position: 'absolute',

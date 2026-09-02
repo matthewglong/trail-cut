@@ -1,5 +1,5 @@
 import type React from 'react';
-import { colors } from '../../theme/tokens';
+import { colors, semantic } from '../../theme/tokens';
 
 export const popoverStyles: Record<string, React.CSSProperties> = {
   container: {
@@ -41,7 +41,96 @@ export const popoverStyles: Record<string, React.CSSProperties> = {
   },
 };
 
+/** Strip top padding reserved for the group bars, px. */
+export const GROUP_GUTTER = 10;
+const GROUP_BAR_HEIGHT = 6;
+
 export const styles: Record<string, React.CSSProperties> = {
+  // ── Clip-group overlay (GroupBar.tsx) — lives INSIDE `strip` so it
+  //    scrolls with the cards. `GROUP_GUTTER` px of strip top padding
+  //    makes room for the bars above the cards' top edge.
+  groupLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: `${GROUP_GUTTER}px`,
+    zIndex: 3,
+    pointerEvents: 'none',
+  },
+  groupBar: {
+    position: 'absolute',
+    top: `${GROUP_GUTTER - GROUP_BAR_HEIGHT}px`,
+    height: `${GROUP_BAR_HEIGHT}px`,
+    borderRadius: `${GROUP_BAR_HEIGHT / 2}px`,
+    backgroundColor: 'rgba(255, 107, 53, 0.45)',
+    cursor: 'pointer',
+    pointerEvents: 'auto',
+    transition: 'background-color 0.15s, box-shadow 0.15s',
+  },
+  groupBarActive: {
+    backgroundColor: '#ff6b35',
+    boxShadow: '0 0 0 1px rgba(255, 107, 53, 0.35), 0 0 6px rgba(255, 107, 53, 0.6)',
+  },
+  // End handles: 10px hit areas straddling each end of the bar.
+  groupHandle: {
+    position: 'absolute',
+    top: '-4px',
+    width: '10px',
+    height: `${GROUP_BAR_HEIGHT + 8}px`,
+    cursor: 'ew-resize',
+    touchAction: 'none',
+    pointerEvents: 'auto',
+  },
+  groupHandleStart: {
+    left: '-4px',
+  },
+  groupHandleEnd: {
+    right: '-4px',
+  },
+  // × cap at the bar's right end, shown only while selected.
+  groupDeleteCap: {
+    position: 'absolute',
+    top: `${GROUP_BAR_HEIGHT / 2 - 8}px`,
+    right: '-20px',
+    width: '16px',
+    height: '16px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '12px',
+    lineHeight: 1,
+    fontWeight: 700,
+    color: '#fff',
+    backgroundColor: '#ff6b35',
+    border: 'none',
+    borderRadius: '50%',
+    padding: 0,
+    cursor: 'pointer',
+    outline: 'none',
+    pointerEvents: 'auto',
+    boxShadow: '0 1px 3px rgba(0, 0, 0, 0.6)',
+  },
+  // "Group (n)" button — floats over the multi-selection, centred on it,
+  // inside the strip so it scrolls with the cards.
+  groupBtn: {
+    position: 'absolute',
+    top: '2px',
+    transform: 'translateX(-50%)',
+    zIndex: 4,
+    fontSize: '11px',
+    fontWeight: 600,
+    color: '#fff',
+    backgroundColor: '#ff6b35',
+    border: 'none',
+    borderRadius: '4px',
+    padding: '3px 8px',
+    cursor: 'pointer',
+    outline: 'none',
+    whiteSpace: 'nowrap',
+    boxShadow: '0 2px 6px rgba(0, 0, 0, 0.5)',
+    pointerEvents: 'auto',
+  },
   container: {
     width: '100%',
     height: '100%',
@@ -51,9 +140,12 @@ export const styles: Record<string, React.CSSProperties> = {
     overflowY: 'hidden',
   },
   strip: {
+    position: 'relative',
+    boxSizing: 'border-box',
     display: 'flex',
     gap: '4px',
-    padding: '0 8px',
+    // Top gutter hosts the group bars (see `groupLayer`).
+    padding: `${GROUP_GUTTER}px 8px 0`,
     minWidth: 'min-content',
     height: '100%',
   },
@@ -70,12 +162,29 @@ export const styles: Record<string, React.CSSProperties> = {
     borderColor: colors.bgElevated,
     borderRadius: '6px',
     overflow: 'hidden',
-    transition: 'border-color 0.15s',
+    // The active (playhead) ring is a 1px outline pulled inside the 2px
+    // border box so neither state changes the card's layout size. Longhands
+    // only: mixing the `outline` shorthand with an `outlineColor` override
+    // leaves outline-color at its initial `currentColor` (white) when the
+    // override is removed, because React never re-applies the unchanged
+    // shorthand.
+    outlineWidth: '1px',
+    outlineStyle: 'solid',
+    outlineColor: 'transparent',
+    outlineOffset: '-2px',
+    transition: 'border-color 0.15s, outline-color 0.15s',
     flexShrink: 0,
   },
+  // Selected (user intent — what edits/grouping act on). Wins over the
+  // active ring; the bottom action bar still shows active independently.
   cardSelected: {
-    borderColor: '#ff6b35',
-    backgroundColor: '#2e1a0f',
+    borderColor: semantic.accentWarm,
+    backgroundColor: semantic.warmTintStrong,
+  },
+  // Active (the clip the playhead is in). Narrow cold ring — a different
+  // channel from selection so "selected" and "playing" never read alike.
+  cardActive: {
+    outlineColor: semantic.accentSoft,
   },
   cardHidden: {
     opacity: 0.5,
@@ -127,6 +236,16 @@ export const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     gap: '2px',
     padding: '4px 2px',
+    transition: 'background-color 0.15s',
+  },
+  // Active clip: the action bar carries the playhead color even when the
+  // card is also selected (selection owns the border, active owns the bar).
+  actionsActive: {
+    backgroundColor: semantic.accentSoft,
+  },
+  // Icons on the active bar: dark on pollen for contrast.
+  actionBtnOnActive: {
+    color: semantic.bg,
   },
   actionBtn: {
     display: 'flex',

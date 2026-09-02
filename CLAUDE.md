@@ -66,7 +66,7 @@ src-tauri/                 # Rust backend
 
 ## Rust backend commands (registered in `lib.rs`)
 - **Import / scan**: `scan_directory`, `import_media` (any mix of files/dirs)
-- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v11 migration chain), `rename_project`, `delete_project`
+- **Project lifecycle**: `create_project`, `save_project` / `load_project` (JSON, with v1→v11 migration chain), `rename_project`, `duplicate_project` (sibling `<Name> copy.trailcut` clone, re-roots the absolute `thumbnail` path, registers in recents), `delete_project`
 - **GPX**: `parse_gpx` (optionally copies into bundle)
 - **Marker-image library**: `import_marker_image` (validates + copies original into `assets/`), `save_marker_icon` (persists the webview-baked render PNG, authoritative dims), `delete_marker_image` (removes both assets; frontend reverts all uses first)
 - **Proxies / thumbnails**: `generate_proxy`, `regenerate_proxy_for_class`, `generate_thumbnail`, `generate_thumbnail_at`

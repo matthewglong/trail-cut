@@ -13,6 +13,7 @@ import {
   computeClipOverrides,
   leafPaths,
   transitionSettingsEquals,
+  transitionSettingsEmpty,
   travelSettingsEquals,
   type GradientStop,
   type HaloSettings,
@@ -573,6 +574,49 @@ describe('travel — comparator, diff, resolve', () => {
     expect(
       transitionSettingsEquals(t, { ...t, ease_out: { style: 'fade', speed: 'medium' } }),
     ).toBe(false);
+  });
+
+  it('transitionSettingsEquals: an EMPTY block equals absence (no config to lose); a layered one does not', () => {
+    expect(transitionSettingsEmpty(undefined)).toBe(true);
+    expect(transitionSettingsEmpty({})).toBe(true);
+    expect(transitionSettingsEmpty({ travel: { enabled: false } })).toBe(false);
+    expect(transitionSettingsEquals({}, undefined)).toBe(true);
+    expect(transitionSettingsEquals(undefined, {})).toBe(true);
+    expect(transitionSettingsEquals({}, {})).toBe(true);
+    // A disabled travel still carries config — distinct from absent/empty.
+    expect(transitionSettingsEquals({ travel: { enabled: false } }, undefined)).toBe(false);
+    expect(transitionSettingsEquals({ ease_in: { style: 'pop', speed: 'fast' } }, {})).toBe(false);
+  });
+
+  it('clip scope: EASE IN → None then EASE OUT → None yields NO eases (regression: absent override meant inherit)', () => {
+    const project: MapSettings = {
+      ...DEFAULT_MAP_SETTINGS,
+      transition: {
+        ease_in: { style: 'pop', speed: 'medium' },
+        ease_out: { style: 'pop', speed: 'medium' },
+      },
+    };
+    // Step 1 — the panel writes the resolved settings with ease_in removed.
+    const step1 = computeClipOverrides(
+      { ...project, transition: { ease_out: { style: 'pop', speed: 'medium' } } },
+      project,
+    );
+    expect(resolveMapSettings(project, step1).transition).toEqual({
+      ease_out: { style: 'pop', speed: 'medium' },
+    });
+    // Step 2 — ease_out removed too; the panel collapses the empty blob to
+    // absent. The override must record an explicit `{}` so the clip does
+    // NOT inherit the project's eases back.
+    const step2 = computeClipOverrides({ ...project, transition: undefined }, project);
+    expect(step2.transition).toEqual({});
+    const resolved = resolveMapSettings(project, step2).transition;
+    expect(resolved?.ease_in).toBeUndefined();
+    expect(resolved?.ease_out).toBeUndefined();
+    expect(resolved?.travel).toBeUndefined();
+    // And the reverse: an empty/absent clip block against an absent project
+    // block records nothing (no phantom override).
+    expect(computeClipOverrides({ ...DEFAULT_MAP_SETTINGS, transition: {} }, DEFAULT_MAP_SETTINGS).transition).toBeUndefined();
+    expect(computeClipOverrides({ ...DEFAULT_MAP_SETTINGS, transition: undefined }, DEFAULT_MAP_SETTINGS).transition).toBeUndefined();
   });
 
   it('computeClipOverrides records transition atomically at the TOP level; deep-equal drops it', () => {

@@ -28,3 +28,19 @@ export function parseMsInput(value: string, fallback: number): number {
   const num = parseFloat(value);
   return isNaN(num) ? fallback : Math.max(0, num * 1000);
 }
+
+/** Format a project-time value to "M:SS.t" / "H:MM:SS.t". Unlike
+ *  `formatDuration`, minutes roll over into an hours field so long projects
+ *  stay readable, and the tenths digit is kept so the global readout resolves
+ *  finer than a whole second. */
+export function formatTotalDuration(ms: number): string {
+  const totalTenths = Math.round(Math.max(0, ms) / 100);
+  const tenth = totalTenths % 10;
+  const totalSec = Math.floor(totalTenths / 10);
+  const hrs = Math.floor(totalSec / 3600);
+  const min = Math.floor((totalSec % 3600) / 60);
+  const sec = (totalSec % 60).toString().padStart(2, '0');
+  const base =
+    hrs > 0 ? `${hrs}:${min.toString().padStart(2, '0')}:${sec}` : `${min}:${sec}`;
+  return `${base}.${tenth}`;
+}

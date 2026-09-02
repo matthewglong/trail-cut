@@ -1,9 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import type { CameraPreset, ClipMetadata, Clip, Route, SourceColorClass, Waypoint } from '../types';
+import type { CameraPreset, ClipMetadata, Clip, ClipGroup, Route, SourceColorClass, Waypoint } from '../types';
 import { mergeClips, newClipFromMetadata } from '../utils/clips';
 import { appendClipWaypoints } from '../lib/waypoints';
+import { normalizeClipGroups } from '../lib/clipGroups';
 import { effectiveSourceClass } from '../lib/sourceFormat';
 
 export type ProxyMap = Record<string, string | 'generating' | null>;
@@ -55,13 +56,30 @@ export function buildPresetOverrides(
 
 interface UseMediaImportParams {
   projectDir: string | null;
+  /** Current clip list — read through a ref (like `projectDir`) so the
+   *  async import paths can compute the post-merge timeline order that
+   *  clip groups are normalized against. */
+  clips: Clip[];
   setClips: React.Dispatch<React.SetStateAction<Clip[]>>;
   setSelectedClipId: React.Dispatch<React.SetStateAction<string | null>>;
   setRoute: React.Dispatch<React.SetStateAction<Route | null>>;
   setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
+  /** Clip groups (camera glide). Every `mergeClips` re-sorts the timeline
+   *  chronologically, so groups are re-normalized against the post-merge
+   *  order — an import that interleaves a group's run splits it per the
+   *  single policy (`normalizeClipGroups`), never silently absorbs it. */
+  setClipGroups: React.Dispatch<React.SetStateAction<ClipGroup[]>>;
 }
 
-export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRoute, setWaypoints }: UseMediaImportParams) {
+export function useMediaImport({
+  projectDir,
+  clips,
+  setClips,
+  setSelectedClipId,
+  setRoute,
+  setWaypoints,
+  setClipGroups,
+}: UseMediaImportParams) {
   const [proxies, setProxies] = useState<ProxyMap>({});
   const [thumbnails, setThumbnails] = useState<ThumbnailMap>({});
   const [loading, setLoading] = useState(false);
@@ -81,6 +99,24 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
   useEffect(() => {
     projectDirRef.current = projectDir;
   }, [projectDir]);
+
+  // Same for clips: the group re-normalization below needs the merged
+  // timeline ORDER, which `mergeClips` (pure) derives from the pre-merge
+  // list + the incoming metadata.
+  const clipsRef = useRef(clips);
+  useEffect(() => {
+    clipsRef.current = clips;
+  }, [clips]);
+
+  /** Merge `incoming` into clip state AND re-normalize clip groups against
+   *  the resulting chronological order — the two writes always travel
+   *  together so a re-sort can never leave a group spanning a non-contiguous
+   *  run (`docs/CLIP_GROUPS_HANDOFF.md` §1, import re-sort). */
+  const mergeClipsAndRegroup = useCallback((incoming: ClipMetadata[]) => {
+    const merged = mergeClips(clipsRef.current, incoming);
+    setClips((prev) => mergeClips(prev, incoming));
+    setClipGroups((prev) => normalizeClipGroups(prev, merged));
+  }, [setClips, setClipGroups]);
 
   const generateProxiesAndThumbnails = useCallback(async (clipList: Clip[], dir: string) => {
     console.log('[import] generateProxiesAndThumbnails start', { count: clipList.length, dir });
@@ -145,7 +181,7 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
       const reimports = result.filter((c) => c.id in proxiesRef.current);
 
       if (reimports.length > 0) {
-        setClips((prev) => mergeClips(prev, reimports));
+        mergeClipsAndRegroup(reimports);
       }
 
       if (newResults.length === 0) {
@@ -217,7 +253,7 @@ export function useMediaImport({ projectDir, setClips, setSelectedClipId, setRou
       return baseClip;
     });
 
-    setClips((prev) => mergeClips(prev, finalisedClips as unknown as ClipMetadata[]));
+    mergeClipsAndRegroup(finalisedClips as unknown as ClipMetadata[]);
     setSelectedClipId((prev) => prev ?? finalisedClips[0]?.id ?? null);
     setWaypoints((prev) => appendClipWaypoints(prev, finalisedClips));
     generateProxiesAndThumbnails(finalisedClips, dir);

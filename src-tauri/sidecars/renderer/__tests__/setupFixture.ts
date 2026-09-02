@@ -22,6 +22,7 @@ import { indexRoute } from '../../../../src/lib/routeLocation';
 import {
   DEFAULT_MAP_SETTINGS,
   type Clip,
+  type ClipGroup,
   type Route,
   type MapSettings,
   type Waypoint,
@@ -53,6 +54,11 @@ export interface SetupFixtureOptions {
    *  requires this list; the orchestrator always sends it (`[]` when none).
    *  Defaults to `[]`. */
   waypoints?: Waypoint[];
+  /** Clip groups (camera glide) passed into `compileTimeline`'s settings —
+   *  the same wire the production builder threads
+   *  (`exportRequest.ts` → `clip_groups`). Absent ⇔ ungrouped; the default
+   *  payload's compile output is unchanged. */
+  clipGroups?: ClipGroup[];
 }
 
 const DEFAULT_CLIP: Clip = {
@@ -157,7 +163,12 @@ export function buildSetupPayload(opts: SetupFixtureOptions = {}) {
   };
 
   const indexedRoute = route ? indexRoute(route) : null;
-  const timeline = compileTimeline(clips, indexedRoute, mapSettings, {});
+  const timeline = compileTimeline(
+    clips,
+    indexedRoute,
+    mapSettings,
+    opts.clipGroups ? { clip_groups: opts.clipGroups } : {},
+  );
 
   return {
     cmd: 'setup' as const,

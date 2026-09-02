@@ -1,7 +1,7 @@
 use crate::export::layout::{default_pip_layout, AspectRatio};
 use crate::models::*;
 use crate::util::fs::{ensure_dir, write_atomic};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Create a new project bundle directory
 #[tauri::command]
@@ -774,6 +774,149 @@ pub fn rename_project(project_dir: String, new_name: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Duplicate a project bundle into a sibling directory and register the
+/// clone in recents. Returns the clone's absolute path.
+///
+/// The clone is a byte-for-byte copy of the bundle (proxies, thumbnails,
+/// marker assets, `route.gpx`) so it is usable immediately with no
+/// regeneration; only `project.json` is rewritten — `name` gets the clone's
+/// display name and the absolute `thumbnail` path (the ONE bundle-internal
+/// absolute path in the schema; proxies/thumbnails are rediscovered by
+/// source-path hash, marker assets are bundle-relative) is re-rooted into
+/// the clone. Source videos are linked, not copied, so nothing outside the
+/// bundle is touched.
+///
+/// Naming: `<Name> copy.trailcut` beside the original, then `copy 2`,
+/// `copy 3`, … (`next_copy_slot`). A partial clone is removed on any
+/// failure so a half-copied bundle never shows up in the gallery.
+#[tauri::command]
+pub fn duplicate_project(project_dir: String) -> Result<String, String> {
+    let src = Path::new(&project_dir);
+    let src_json = src.join("project.json");
+    if !src_json.is_file() {
+        return Err(format!(
+            "Not a TrailCut project bundle: {}",
+            src.display()
+        ));
+    }
+    let content = std::fs::read_to_string(&src_json)
+        .map_err(|e| format!("Failed to read project: {}", e))?;
+    // Untyped rewrite: touch only the two fields we own and leave every
+    // other key — including ones this binary doesn't know about — verbatim,
+    // so duplicating never migrates or drops data. Migration happens on
+    // load, exactly as it would for the original.
+    let mut raw: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse project: {}", e))?;
+    let obj = raw
+        .as_object_mut()
+        .ok_or_else(|| "Failed to parse project: root is not an object".to_string())?;
+
+    let parent = src
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| format!("No parent directory for {}", src.display()))?;
+    let stem = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.trim_end_matches(".trailcut"))
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| format!("Invalid bundle name in {}", src.display()))?;
+    let display_name = obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or(stem)
+        .to_string();
+
+    let (dest, clone_name) = next_copy_slot(parent, stem, &display_name)?;
+
+    // Rewrite in memory first (pure), then copy + write to disk.
+    obj.insert("name".into(), serde_json::Value::String(clone_name));
+    if let Some(thumb) = obj.get("thumbnail").and_then(|v| v.as_str()) {
+        let rerooted = match Path::new(thumb).strip_prefix(src) {
+            Ok(rel) => Some(dest.join(rel).to_string_lossy().into_owned()),
+            // A thumbnail outside the bundle (or already missing) is
+            // dropped; the frontend re-defaults to the first clip's.
+            Err(_) => None,
+        };
+        obj.insert(
+            "thumbnail".into(),
+            rerooted.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    // `last_export_selection.output_dir` is an absolute folder derived from
+    // the ORIGINAL's identity (`~/Movies/TrailCut/<OriginalName>` or a
+    // user pick). Left in place, the clone's exports land in the original's
+    // folder. Null it so the Export modal re-resolves a folder named after
+    // the clone; the grid `cells` (the user's aspect × channel chips) are
+    // worth keeping and stay.
+    if let Some(sel) = obj.get_mut("last_export_selection").and_then(|v| v.as_object_mut()) {
+        sel.insert("output_dir".into(), serde_json::Value::Null);
+    }
+    let json = serde_json::to_string_pretty(&raw)
+        .map_err(|e| format!("Failed to serialize project: {}", e))?;
+
+    let copied = copy_dir_recursive(src, &dest)
+        .and_then(|_| write_atomic(&dest.join("project.json"), json.as_bytes()));
+    if let Err(e) = copied {
+        // Best-effort cleanup; the original error is the one worth surfacing.
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(format!("Failed to duplicate project: {}", e));
+    }
+
+    let dest_str = dest.to_string_lossy().into_owned();
+    super::recent::register_recent_project(dest_str.clone())?;
+    Ok(dest_str)
+}
+
+/// First free `<stem> copy[ N].trailcut` slot under `parent`, paired with
+/// the matching display name `<display> copy[ N]`. The directory name and
+/// the display name share the same suffix so gallery and Finder agree.
+fn next_copy_slot(parent: &Path, stem: &str, display: &str) -> Result<(PathBuf, String), String> {
+    const MAX_AUTO_INDEX: u32 = 1_000;
+    for i in 1..=MAX_AUTO_INDEX {
+        let suffix = if i == 1 { " copy".to_string() } else { format!(" copy {i}") };
+        let dest = parent.join(format!("{stem}{suffix}.trailcut"));
+        if !dest.exists() {
+            return Ok((dest, format!("{display}{suffix}")));
+        }
+    }
+    Err(format!(
+        "Too many copies of {stem} already exist in {}",
+        parent.display()
+    ))
+}
+
+/// Recursive bundle copy. Follows no symlinks (a bundle never contains
+/// any) and skips `write_atomic` temp leftovers (`.*.tmp`) so a crash
+/// residue never gets cloned. `dest` must not exist.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    std::fs::create_dir(dest)
+        .map_err(|e| format!("Failed to create {}: {}", dest.display(), e))?;
+    for entry in std::fs::read_dir(src)
+        .map_err(|e| format!("Failed to read {}: {}", src.display(), e))?
+    {
+        let entry = entry.map_err(|e| format!("Failed to read {}: {}", src.display(), e))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') && name_str.ends_with(".tmp") {
+            continue;
+        }
+        let from = entry.path();
+        let to = dest.join(&name);
+        let ty = entry
+            .file_type()
+            .map_err(|e| format!("Failed to stat {}: {}", from.display(), e))?;
+        if ty.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(&from, &to)
+                .map_err(|e| format!("Failed to copy {}: {}", from.display(), e))?;
+        }
+    }
+    Ok(())
+}
+
 /// Delete a project directory and remove it from recent projects
 #[tauri::command]
 pub fn delete_project(project_dir: String) -> Result<(), String> {
@@ -851,6 +994,217 @@ pub fn resolve_output_dir(base: String, name: String) -> Result<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a minimal on-disk bundle under `root` with the files a real
+    /// bundle carries, so `duplicate_project` is exercised against the
+    /// same shape the app produces.
+    fn seed_bundle(root: &Path, dir_name: &str, display_name: &str) -> PathBuf {
+        let dir = root.join(dir_name);
+        ensure_dir(&dir.join("proxies")).unwrap();
+        ensure_dir(&dir.join("thumbnails")).unwrap();
+        ensure_dir(&dir.join("assets")).unwrap();
+        std::fs::write(dir.join("proxies/abc.mp4"), b"proxy").unwrap();
+        std::fs::write(dir.join("thumbnails/abc_thumb.jpg"), b"thumb").unwrap();
+        std::fs::write(dir.join("assets/marker-icon-0123456789abcdef.png"), b"png").unwrap();
+        std::fs::write(dir.join("route.gpx"), b"<gpx/>").unwrap();
+        // write_atomic crash residue — must NOT be cloned.
+        std::fs::write(dir.join(".project.json.tmp"), b"junk").unwrap();
+        let thumb = dir.join("thumbnails/abc_thumb.jpg");
+        let json = serde_json::json!({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "version": 1,
+            "name": display_name,
+            "thumbnail": thumb.to_string_lossy(),
+            "clips": [],
+            "waypoints": [],
+            "map_settings": { "marker_images": [{
+                "id": "0123456789abcdef",
+                "icon_file": "assets/marker-icon-0123456789abcdef.png",
+                "source_file": "assets/marker-source-0123456789abcdef.png",
+                "source_name": "pin.png", "width": 8, "height": 8
+            }]},
+            "last_export_selection": {
+                "cells": { "9_16-sdr_h264": [] },
+                "output_dir": "/Users/u/Movies/TrailCut/Big Hike"
+            },
+            "unknown_future_field": { "keep": true }
+        });
+        std::fs::write(dir.join("project.json"), serde_json::to_string_pretty(&json).unwrap())
+            .unwrap();
+        dir
+    }
+
+    fn orig_export_dir(bundle: &Path) -> String {
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(bundle.join("project.json")).unwrap())
+                .unwrap();
+        raw["last_export_selection"]["output_dir"].as_str().unwrap().to_string()
+    }
+
+    /// Run `f` with `$HOME` pointed at a scratch dir so the recents
+    /// registry the command writes never touches the developer's real
+    /// `~/.trailcut/recent.json`.
+    fn with_scratch_home<T>(f: impl FnOnce(&Path) -> T) -> T {
+        // `$HOME` is process-global; tests run on parallel threads, so
+        // serialize every swap or two tests would read each other's home.
+        static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+        let out = f(home.path());
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        out
+    }
+
+    #[test]
+    fn duplicate_project_clones_bundle_and_reroots_thumbnail() {
+        with_scratch_home(|home| {
+            let src = seed_bundle(home, "Hike.trailcut", "Big Hike");
+            let out = duplicate_project(src.to_string_lossy().into_owned()).unwrap();
+            let dest = PathBuf::from(&out);
+            assert_eq!(dest, home.join("Hike copy.trailcut"));
+
+            // Bundle contents cloned byte-for-byte; tmp residue skipped.
+            assert_eq!(std::fs::read(dest.join("proxies/abc.mp4")).unwrap(), b"proxy");
+            assert_eq!(std::fs::read(dest.join("thumbnails/abc_thumb.jpg")).unwrap(), b"thumb");
+            assert!(dest.join("assets/marker-icon-0123456789abcdef.png").is_file());
+            assert!(dest.join("route.gpx").is_file());
+            assert!(!dest.join(".project.json.tmp").exists());
+
+            // project.json: name + thumbnail rewritten, everything else verbatim.
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(dest.join("project.json")).unwrap())
+                    .unwrap();
+            assert_eq!(raw["name"], "Big Hike copy");
+            assert_eq!(
+                raw["thumbnail"],
+                dest.join("thumbnails/abc_thumb.jpg").to_string_lossy().as_ref()
+            );
+            assert_eq!(raw["unknown_future_field"]["keep"], true);
+            // Export folder is the original's identity — must reset so the
+            // modal re-resolves one named after the clone; chips survive.
+            assert_eq!(raw["last_export_selection"]["output_dir"], serde_json::Value::Null);
+            assert!(raw["last_export_selection"]["cells"]["9_16-sdr_h264"].is_array());
+            assert_eq!(
+                orig_export_dir(&src),
+                "/Users/u/Movies/TrailCut/Big Hike",
+                "original's export folder must be untouched"
+            );
+            assert_eq!(
+                raw["map_settings"]["marker_images"][0]["icon_file"],
+                "assets/marker-icon-0123456789abcdef.png"
+            );
+            // The clone loads through the normal path and its thumbnail exists.
+            let loaded = load_project(out.clone()).unwrap();
+            assert_eq!(loaded.name, "Big Hike copy");
+            assert!(Path::new(loaded.thumbnail.as_deref().unwrap()).is_file());
+
+            // Original untouched.
+            let orig: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(src.join("project.json")).unwrap())
+                    .unwrap();
+            assert_eq!(orig["name"], "Big Hike");
+            assert_eq!(
+                orig["thumbnail"],
+                src.join("thumbnails/abc_thumb.jpg").to_string_lossy().as_ref()
+            );
+
+            // Registered in recents, at the top, with the clone's identity.
+            let recents = super::super::recent::get_recent_projects().unwrap();
+            assert_eq!(recents[0].path, out);
+            assert_eq!(recents[0].name, "Big Hike copy");
+            assert_eq!(
+                recents[0].thumbnail.as_deref(),
+                Some(dest.join("thumbnails/abc_thumb.jpg").to_string_lossy().as_ref())
+            );
+        });
+    }
+
+    #[test]
+    fn duplicate_project_numbers_successive_copies() {
+        with_scratch_home(|home| {
+            let src = seed_bundle(home, "Hike.trailcut", "Big Hike");
+            let a = duplicate_project(src.to_string_lossy().into_owned()).unwrap();
+            let b = duplicate_project(src.to_string_lossy().into_owned()).unwrap();
+            let c = duplicate_project(a.clone()).unwrap();
+            assert_eq!(PathBuf::from(&a), home.join("Hike copy.trailcut"));
+            assert_eq!(PathBuf::from(&b), home.join("Hike copy 2.trailcut"));
+            // Duplicating a copy stacks the suffix rather than colliding.
+            assert_eq!(PathBuf::from(&c), home.join("Hike copy copy.trailcut"));
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(PathBuf::from(&b).join("project.json")).unwrap())
+                    .unwrap();
+            assert_eq!(raw["name"], "Big Hike copy 2");
+        });
+    }
+
+    #[test]
+    fn duplicate_project_falls_back_to_dir_stem_when_name_empty() {
+        with_scratch_home(|home| {
+            let src = seed_bundle(home, "Ridge Walk.trailcut", "");
+            let out = duplicate_project(src.to_string_lossy().into_owned()).unwrap();
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(PathBuf::from(&out).join("project.json")).unwrap())
+                    .unwrap();
+            assert_eq!(raw["name"], "Ridge Walk copy");
+        });
+    }
+
+    #[test]
+    fn duplicate_project_drops_foreign_thumbnail_and_tolerates_missing_optional_keys() {
+        with_scratch_home(|home| {
+            // Thumbnail pointing OUTSIDE the bundle: cannot be re-rooted, so
+            // it is dropped and the frontend re-defaults to the first clip's.
+            let src = seed_bundle(home, "Hike.trailcut", "Big Hike");
+            let mut raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(src.join("project.json")).unwrap())
+                    .unwrap();
+            raw["thumbnail"] = serde_json::Value::String("/somewhere/else/thumb.jpg".into());
+            std::fs::write(src.join("project.json"), raw.to_string()).unwrap();
+            let out = duplicate_project(src.to_string_lossy().into_owned()).unwrap();
+            let clone: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(PathBuf::from(&out).join("project.json")).unwrap())
+                    .unwrap();
+            assert_eq!(clone["thumbnail"], serde_json::Value::Null);
+
+            // Minimal project.json with no thumbnail / last_export_selection
+            // keys at all (fresh create_project shape) must clone cleanly.
+            let bare = home.join("Bare.trailcut");
+            create_project(bare.to_string_lossy().into_owned()).unwrap();
+            let out = duplicate_project(bare.to_string_lossy().into_owned()).unwrap();
+            assert_eq!(PathBuf::from(&out), home.join("Bare copy.trailcut"));
+            let clone: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(PathBuf::from(&out).join("project.json")).unwrap())
+                    .unwrap();
+            assert_eq!(clone["name"], "Bare copy");
+            assert!(clone["thumbnail"].is_null());
+            assert!(clone["last_export_selection"].is_null());
+            load_project(out).unwrap();
+        });
+    }
+
+    #[test]
+    fn duplicate_project_fails_loud_on_non_bundle_and_leaves_nothing_behind() {
+        with_scratch_home(|home| {
+            let not_a_bundle = home.join("Nope.trailcut");
+            ensure_dir(&not_a_bundle).unwrap();
+            let err = duplicate_project(not_a_bundle.to_string_lossy().into_owned()).unwrap_err();
+            assert!(err.contains("Not a TrailCut project bundle"), "{err}");
+            assert!(!home.join("Nope copy.trailcut").exists());
+
+            // Unparseable project.json: error, no partial clone.
+            let broken = home.join("Broken.trailcut");
+            ensure_dir(&broken).unwrap();
+            std::fs::write(broken.join("project.json"), b"{ not json").unwrap();
+            let err = duplicate_project(broken.to_string_lossy().into_owned()).unwrap_err();
+            assert!(err.contains("Failed to parse project"), "{err}");
+            assert!(!home.join("Broken copy.trailcut").exists());
+        });
+    }
 
     /// A v1 project on disk: no `schema_version`, no `transition_feel`,
     /// `route` field present, legacy `exports` array present.

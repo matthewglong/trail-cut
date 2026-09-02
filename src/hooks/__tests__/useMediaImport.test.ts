@@ -17,7 +17,8 @@ import {
   buildPresetOverrides,
   useMediaImport,
 } from '../useMediaImport';
-import type { CameraPreset, Clip, ClipMetadata, Route, Waypoint } from '../../types';
+import type { CameraPreset, Clip, ClipGroup, ClipMetadata, Route, Waypoint } from '../../types';
+import { newClipFromMetadata } from '../../utils/clips';
 
 const invokeMock = vi.fn();
 
@@ -58,6 +59,7 @@ function metaFixture(over: Partial<ClipMetadata> = {}): ClipMetadata {
 interface HookHarness {
   clips: Clip[];
   waypoints: Waypoint[];
+  clipGroups: ClipGroup[];
   selectedClipId: string | null;
   route: Route | null;
 }
@@ -68,6 +70,7 @@ function harness(projectDir: string | null) {
   const captured: HookHarness = {
     clips: [],
     waypoints: [],
+    clipGroups: [],
     selectedClipId: null,
     route: null,
   };
@@ -77,6 +80,10 @@ function harness(projectDir: string | null) {
   const setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>> = (action) => {
     captured.waypoints =
       typeof action === 'function' ? (action as (prev: Waypoint[]) => Waypoint[])(captured.waypoints) : action;
+  };
+  const setClipGroups: React.Dispatch<React.SetStateAction<ClipGroup[]>> = (action) => {
+    captured.clipGroups =
+      typeof action === 'function' ? (action as (prev: ClipGroup[]) => ClipGroup[])(captured.clipGroups) : action;
   };
   const setSelectedClipId: React.Dispatch<React.SetStateAction<string | null>> = (action) => {
     captured.selectedClipId =
@@ -91,10 +98,14 @@ function harness(projectDir: string | null) {
   const rendered = renderHook(() =>
     useMediaImport({
       projectDir,
+      // Read at render time: tests that seed `captured.clips` must
+      // `rendered.rerender()` so the hook's clips ref picks it up.
+      clips: captured.clips,
       setClips,
       setSelectedClipId,
       setRoute,
       setWaypoints,
+      setClipGroups,
     }),
   );
 
@@ -378,5 +389,53 @@ describe('useMediaImport — dialog gating on suggested_log_class (QA #10)', () 
     });
     const regen = invokeMock.mock.calls.find((args) => args[0] === 'regenerate_proxy_for_class');
     expect((regen![1] as { colorClass: string }).colorClass).toBe('d_log');
+  });
+});
+
+describe('useMediaImport — clip groups re-normalize against the post-merge order', () => {
+  // Phase B integrity (docs/CLIP_GROUPS_HANDOFF.md §1, "Import re-sort"):
+  // `mergeClips` re-sorts chronologically, so a group's run can be
+  // interleaved by an import. The single policy splits/dissolves it — never
+  // silently absorbs the newcomer.
+  function seedGroupedClips(captured: HookHarness) {
+    captured.clips = [
+      newClipFromMetadata(metaFixture({ id: 'a', path: '/tmp/a.mov', created_at: '2026-01-01T00:00:01Z' })),
+      newClipFromMetadata(metaFixture({ id: 'c', path: '/tmp/c.mov', created_at: '2026-01-01T00:00:03Z' })),
+    ];
+    captured.clipGroups = [{ id: 'g1', clip_ids: ['a', 'c'] }];
+  }
+
+  async function importOne(rendered: ReturnType<typeof harness>['rendered'], meta: ClipMetadata) {
+    invokeMock.mockImplementationOnce(async () => [meta]);
+    invokeMock.mockImplementationOnce(async () => []); // presets
+    invokeMock.mockResolvedValue('/tmp/proxies/x.mp4');
+    await act(async () => {
+      const dialogModule = await import('@tauri-apps/plugin-dialog');
+      (dialogModule.open as ReturnType<typeof vi.fn>).mockResolvedValue('/tmp/folder');
+      await rendered.result.current.handleImportFolder();
+    });
+  }
+
+  it('dissolves a group whose run an import interleaves', async () => {
+    const { rendered, captured } = harness('/tmp/proj.trailcut');
+    seedGroupedClips(captured);
+    rendered.rerender();
+
+    await importOne(rendered, metaFixture({ id: 'b', path: '/tmp/b.mov', created_at: '2026-01-01T00:00:02Z' }));
+
+    expect(captured.clips.map((c) => c.id)).toEqual(['a', 'b', 'c']);
+    // a and c are no longer contiguous → two runs of 1 → both dissolve.
+    expect(captured.clipGroups).toEqual([]);
+  });
+
+  it('keeps a group intact when the import lands outside its run', async () => {
+    const { rendered, captured } = harness('/tmp/proj.trailcut');
+    seedGroupedClips(captured);
+    rendered.rerender();
+
+    await importOne(rendered, metaFixture({ id: 'd', path: '/tmp/d.mov', created_at: '2026-01-01T00:00:04Z' }));
+
+    expect(captured.clips.map((c) => c.id)).toEqual(['a', 'c', 'd']);
+    expect(captured.clipGroups).toEqual([{ id: 'g1', clip_ids: ['a', 'c'] }]);
   });
 });

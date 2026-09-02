@@ -21,6 +21,7 @@ import {
 } from './layout';
 import type {
   Clip,
+  ClipGroup,
   DeliveryTarget,
   MapSettings,
   Project,
@@ -80,6 +81,11 @@ export interface ExportRequestInputs {
   mapSettings: MapSettings;
   waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
+  /** Compile-effective clip groups (camera glide). Threaded into
+   *  `compileTimeline` so the export's compiled timeline carries the same
+   *  `groupSpans` / `cameraAuthority` the preview evaluates
+   *  (`docs/CLIP_GROUPS_HANDOFF.md` §5). Absent ⇔ ungrouped. */
+  clipGroups?: ClipGroup[];
   /** Per-aspect layout configuration, typically `project.layouts`. When the
    *  entry for `aspect` is absent or null, `defaultLayout(aspect)` is used. */
   layouts?: Project['layouts'];
@@ -247,7 +253,10 @@ export function buildExportRequest(inputs: ExportRequestInputs): RenderExportReq
     inputs.clips,
     indexRoute(inputs.route),
     inputs.mapSettings,
-    { transition_feel: inputs.transitionFeel ?? 'natural' },
+    {
+      transition_feel: inputs.transitionFeel ?? 'natural',
+      clip_groups: inputs.clipGroups,
+    },
   );
 
   // Phase 2: resolve `inputs.frameRate` (`FrameRateChoice`) to a concrete
@@ -316,6 +325,9 @@ export interface ExportRequestContext {
   mapSettings: MapSettings;
   waypoints: Waypoint[];
   transitionFeel?: TransitionFeel;
+  /** Clip groups — see `ExportRequestInputs.clipGroups`. Shared context:
+   *  the compiled timeline is aspect/channel-independent. */
+  clipGroups?: ClipGroup[];
   layouts?: Project['layouts'];
   /** Per-aspect magnification — see `ExportRequestInputs.magnifications`.
    *  Shared context rather than per-job: the factor is a property of the
@@ -345,6 +357,7 @@ export function buildJobRequest(
     mapSettings: context.mapSettings,
     waypoints: context.waypoints,
     transitionFeel: context.transitionFeel,
+    clipGroups: context.clipGroups,
     layouts: context.layouts,
     magnifications: context.magnifications,
     projectDir: context.projectDir,

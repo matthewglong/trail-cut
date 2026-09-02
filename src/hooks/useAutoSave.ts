@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AspectRatio,
   Clip,
+  ClipGroup,
   ExportGrid,
   MapMagnifications,
   Route,
@@ -55,6 +56,11 @@ interface AutoSaveParams {
    *  initializes to `[]` and the load path seeds from clips when the bundle
    *  lacks the field. */
   waypoints: Waypoint[];
+  /** Clip groups (camera glide). Always populated — App-level state
+   *  initializes to `[]` and the load path normalizes a bundle that omits
+   *  the field (the common case). `buildSavePayload` re-normalizes against
+   *  `clips` and omits the key when empty. */
+  clipGroups: ClipGroup[];
   /** Save-failure channel. Called with a message when `save_project`
    *  rejects (surfaced in the UI error banner — loud failures are a binding
    *  project principle) and with `null` after the next successful save so
@@ -77,14 +83,19 @@ export function useAutoSave({
   selectedExportAspect,
   lastExportSelection,
   waypoints,
+  clipGroups,
   onSaveError,
 }: AutoSaveParams) {
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Ref-read so an unstable callback identity can't churn the debounce
-  // effect below (its deps deliberately track only persisted state).
+  // effect below (its deps deliberately track only persisted state). Synced
+  // in an effect (not during render) — the ref is only read inside the
+  // debounced timeout, which fires long after commit.
   const onSaveErrorRef = useRef(onSaveError);
-  onSaveErrorRef.current = onSaveError;
+  useEffect(() => {
+    onSaveErrorRef.current = onSaveError;
+  });
 
   useEffect(() => {
     // Arm only once the opened project's full wire shape has hydrated into
@@ -108,6 +119,7 @@ export function useAutoSave({
         selectedExportAspect: selectedExportAspect ?? '9_16',
         lastExportSelection,
         waypoints,
+        clipGroups,
       });
       invoke('save_project', { project, projectDir })
         .then(() => onSaveErrorRef.current(null))
@@ -142,5 +154,6 @@ export function useAutoSave({
     selectedExportAspect,
     lastExportSelection,
     waypoints,
+    clipGroups,
   ]);
 }

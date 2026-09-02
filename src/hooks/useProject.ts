@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import type { AspectRatio, Clip, ExportGrid, MapMagnifications, Project, ProjectLayouts, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
+import type { AspectRatio, Clip, ClipGroup, ExportGrid, MapMagnifications, Project, ProjectLayouts, Route, SourceColorClass, TrimRange, FocalPoint, Effects, MapSettings, TransitionFeel, Waypoint } from '../types';
 import { effectiveSourceClass } from '../lib/sourceFormat';
 import { DEFAULT_MAP_SETTINGS } from '../types';
 import { hydrateProjectState, seededLayouts } from '../lib/projectPersistence';
@@ -11,6 +11,11 @@ import {
   removeClipWaypoints,
   syncClipWaypointTrim,
 } from '../lib/waypoints';
+import {
+  insertSplitClipIntoGroups,
+  normalizeClipGroups,
+  removeClipFromGroups,
+} from '../lib/clipGroups';
 
 /** Minimum gap (ms) required between the playhead and either trim edge for a
  *  split to be accepted. Below this the split is a no-op, so we never create
@@ -39,6 +44,10 @@ interface UseProjectParams {
   setSelectedExportAspect: React.Dispatch<React.SetStateAction<AspectRatio>>;
   setLastExportSelection: React.Dispatch<React.SetStateAction<ExportGrid | null>>;
   setWaypoints: React.Dispatch<React.SetStateAction<Waypoint[]>>;
+  /** Clip groups (camera glide). Kept referentially consistent with `clips`
+   *  at every clip-lifecycle mutation here (remove / split) via the single
+   *  policy in `src/lib/clipGroups.ts`; load / new / close reset it. */
+  setClipGroups: React.Dispatch<React.SetStateAction<ClipGroup[]>>;
   generateProxiesAndThumbnails: (clipList: Clip[], dir: string) => Promise<void>;
   setProxies: React.Dispatch<React.SetStateAction<Record<string, string | 'generating' | null>>>;
   setThumbnails: React.Dispatch<React.SetStateAction<Record<string, string>>>;
@@ -63,6 +72,7 @@ export function useProject({
   setSelectedExportAspect,
   setLastExportSelection,
   setWaypoints,
+  setClipGroups,
   generateProxiesAndThumbnails,
   setProxies,
   setThumbnails,
@@ -100,6 +110,7 @@ export function useProject({
       // the Export modal reads from this on open.
       setLastExportSelection(hydrated.lastExportSelection);
       setWaypoints(hydrated.waypoints);
+      setClipGroups(hydrated.clipGroups);
       // Keep the full deserialized Project as the auto-save base: persisted
       // fields the editor doesn't manage (working_color_space, start_camera,
       // default_entry_transition, future schema additions) round-trip to
@@ -149,6 +160,7 @@ export function useProject({
       setSelectedExportAspect('9_16');
       setLastExportSelection(null);
       setWaypoints([]);
+      setClipGroups([]);
       setProxies({});
       setThumbnails({});
       setSelectedClipId(null);
@@ -192,6 +204,7 @@ export function useProject({
     setSelectedExportAspect('9_16');
     setLastExportSelection(null);
     setWaypoints([]);
+    setClipGroups([]);
     setProxies({});
     setThumbnails({});
     setSelectedClipId(null);
@@ -201,11 +214,15 @@ export function useProject({
   }
 
   function handleRemoveClip(clipId: string) {
+    // The POST-removal clip list: groups must be normalized against what
+    // will remain, not the list the removed clip still sits in (a run that
+    // straddled the removed clip stays contiguous by index once it's gone).
+    const remaining = clips.filter((c) => c.id !== clipId);
     setClips((prev) => prev.filter((c) => c.id !== clipId));
     setWaypoints((prev) => removeClipWaypoints(prev, clipId));
+    setClipGroups((prev) => removeClipFromGroups(prev, clipId, remaining));
     setSelectedClipId((prev) => {
       if (prev !== clipId) return prev;
-      const remaining = clips.filter((c) => c.id !== clipId);
       return remaining.length > 0 ? remaining[0].id : null;
     });
   }
@@ -347,6 +364,17 @@ export function useProject({
       next.splice(idx, 1, leftHalf, rightHalf);
       return next;
     });
+    // Splitting a group member keeps BOTH halves grouped: the right half is
+    // inserted right after the original in every group that holds it, then
+    // the list is normalized against the post-split clip order.
+    {
+      const idx = clips.findIndex((c) => c.id === clip.id);
+      const postSplitClips = clips.slice();
+      if (idx !== -1) postSplitClips.splice(idx, 1, leftHalf, rightHalf);
+      setClipGroups((prev) =>
+        normalizeClipGroups(insertSplitClipIntoGroups(prev, clip.id, newId), postSplitClips),
+      );
+    }
     // The right half is a brand-new clip from the waypoint model's
     // perspective: append a waypoint for it. The left half keeps its
     // existing waypoint (its trim.in_ms is unchanged so the anchor is

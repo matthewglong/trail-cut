@@ -11,10 +11,14 @@
             "id": "7e17282afe5f269a",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "docs/CAMERA_MOVEMENT_LESSONS.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "New tab"
+              "title": "CAMERA_MOVEMENT_LESSONS"
             }
           }
         ]
@@ -180,6 +184,22 @@
   },
   "active": "7e17282afe5f269a",
   "lastOpenFiles": [
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/work-products.bin",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/query-cache.bin",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/f5cyzyktdirjt9y4c109htogh.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/f2hg18g22lqee4y5cjk9v1wt1.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/ei5fr0rkj841ladw0w6u841tn.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/ei4gjj6gvb8rr5g8q4ftqpudq.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/eey6ryx5534mh6rvkkbo1kmvy.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/f1ex0z4so4obnlguaj8uk5gri.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/ezme0joke80tdgtvpdx170hxj.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/exlzqvc2fg9m4v06l37uflv83.o",
+    "src-tauri/target/debug/incremental/trail_cut_lib-2mivski9z4fq1/s-hlnkrtgbx4-0yz73xf-cfb7gz0gqxzp07h4kl8q47sxf/exewd5uq7lzt83hspw7ijn0ug.o",
+    "src-tauri/target/release/build/trail-cut-ab11257fc8a05f0a/out/tauri-codegen-assets/e9fa09c38f96dcf7db6c59021f84325594de89f2efa7c1b5db9477918a00ef98.svg",
+    "src-tauri/target/release/build/trail-cut-ab11257fc8a05f0a/out/tauri-codegen-assets/e6818b1ebd8d480f75cd9200678d0dbc4b45690b4cf2963096a17b6a729b9488.svg",
+    "docs/CLIP_GROUPS_HANDOFF.md",
+    "docs/map-decorations/color-gradient.md",
+    "docs/CAMERA_MOVEMENT_LESSONS.md",
     "PIPELINE_DECISIONS.md"
   ]
 }

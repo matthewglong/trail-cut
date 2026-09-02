@@ -22,6 +22,7 @@ import type { ExportJob } from '../exportFilenames';
 import type {
   AspectRatio,
   Clip,
+  ClipGroup,
   MapMagnifications,
   MapSettings,
   Route,
@@ -78,6 +79,44 @@ const baseInputs = () => ({
   mapSettings: DEFAULT_MAP_SETTINGS satisfies MapSettings,
   waypoints: [],
   transitionFeel: 'natural' as const,
+});
+
+// -- Clip-group fixtures (Phase C export threading) --------------------------
+
+const GROUP_T0 = Date.parse('2024-06-01T12:00:00.000-07:00');
+
+/** Three contiguous 2 s clips a/b/c, wall-clock back-to-back. */
+function groupedClips(): Clip[] {
+  return ['clip-a', 'clip-b', 'clip-c'].map((id, i) => ({
+    ...makeClip(),
+    id,
+    path: `/dev/null/${id}.mov`,
+    filename: `${id}.mov`,
+    created_at: new Date(GROUP_T0 + i * 2000).toISOString(),
+    gps: { lat: 37.7749 + i * 0.001, lng: -122.4194 + i * 0.001 },
+  }));
+}
+
+/** 1 Hz route covering the three clips' wall-clock span (0..6 s). */
+function groupedRoute(): Route {
+  const trackpoints = [];
+  for (let s = 0; s <= 6; s++) {
+    trackpoints.push({
+      lat: 37.7749 + s * 0.0005,
+      lng: -122.4194 + s * 0.0005,
+      elevation: 50 + s,
+      timestamp: new Date(GROUP_T0 + s * 1000).toISOString(),
+    });
+  }
+  return { source_path: '/dev/null/route.gpx', format: 'gpx', trackpoints };
+}
+
+const GROUP_ABC: ClipGroup = { id: 'g1', clip_ids: ['clip-a', 'clip-b', 'clip-c'] };
+
+const groupableInputs = () => ({
+  ...baseInputs(),
+  clips: groupedClips(),
+  route: groupedRoute(),
 });
 
 describe('pickLayout', () => {
@@ -213,6 +252,93 @@ describe('buildExportRequest', () => {
     expect(req.clips.length).toBeGreaterThan(0);
     // Timeline is still required (validate_request reads totalDurationMs).
     expect(req.timeline).toHaveProperty('totalDurationMs');
+  });
+});
+
+describe('buildExportRequest — clip groups (Phase C export threading)', () => {
+  // The compiled timeline on the wire must carry the same `groupSpans` /
+  // `cameraAuthority` the preview evaluates; the sidecar reads them through
+  // the shared `cameraAt`. Nothing else about the request may move.
+
+  it('a grouped input compiles ≥1 groupSpan and demotes intra-group seams', () => {
+    const req = buildExportRequest({ ...groupableInputs(), clipGroups: [GROUP_ABC] });
+    expect(req.timeline.groupSpans.length).toBeGreaterThanOrEqual(1);
+    const [g] = req.timeline.groupSpans;
+    expect(g.groupId).toBe('g1');
+    expect(g.memberClipIds).toEqual(['clip-a', 'clip-b', 'clip-c']);
+
+    const members = new Set(g.memberClipIds);
+    const intra = req.timeline.transitionSpans.filter(
+      (s) => s.fromClipId !== null && members.has(s.fromClipId) && members.has(s.toClipId),
+    );
+    // Two intra-group seams (a→b, b→c); both exist but do not drive the camera.
+    expect(intra.map((s) => `${s.fromClipId}→${s.toClipId}`)).toEqual([
+      'clip-a→clip-b',
+      'clip-b→clip-c',
+    ]);
+    for (const s of intra) expect(s.cameraAuthority).toBe(false);
+    // The entry seam (project start → clip-a) keeps camera authority.
+    const entry = req.timeline.transitionSpans.find((s) => s.fromClipId === null);
+    expect(entry?.cameraAuthority).toBe(true);
+  });
+
+  it('an ungrouped input compiles groupSpans: [] with every seam authoritative', () => {
+    const req = buildExportRequest(groupableInputs());
+    expect(req.timeline.groupSpans).toEqual([]);
+    expect(req.timeline.transitionSpans.length).toBeGreaterThan(0);
+    for (const s of req.timeline.transitionSpans) expect(s.cameraAuthority).toBe(true);
+  });
+
+  it('an explicit empty clipGroups list behaves exactly like absent', () => {
+    const absent = buildExportRequest(groupableInputs());
+    const empty = buildExportRequest({ ...groupableInputs(), clipGroups: [] });
+    expect(empty.timeline).toEqual(absent.timeline);
+  });
+
+  it('grouping changes neither totalDurationMs, the clip spans, nor the frame count', () => {
+    const ungrouped = buildExportRequest(groupableInputs());
+    const grouped = buildExportRequest({ ...groupableInputs(), clipGroups: [GROUP_ABC] });
+    expect(grouped.timeline.totalDurationMs).toBe(ungrouped.timeline.totalDurationMs);
+    expect(grouped.timeline.clipSpans).toEqual(ungrouped.timeline.clipSpans);
+    expect(grouped.timeline.startCamera).toEqual(ungrouped.timeline.startCamera);
+    // Zero added frames: same fps × same duration.
+    expect(grouped.fps).toBe(ungrouped.fps);
+    const frames = (r: typeof grouped) =>
+      Math.ceil((r.timeline.totalDurationMs / 1000) * r.fps);
+    expect(frames(grouped)).toBe(frames(ungrouped));
+    // Transition spans keep placement/duration; only `cameraAuthority` may differ.
+    const strip = (r: typeof grouped) =>
+      r.timeline.transitionSpans.map(({ cameraAuthority: _a, ...rest }) => rest);
+    expect(strip(grouped)).toEqual(strip(ungrouped));
+    // The rest of the envelope is untouched by grouping.
+    const { timeline: _t1, ...restGrouped } = grouped;
+    const { timeline: _t2, ...restUngrouped } = ungrouped;
+    expect(restGrouped).toEqual(restUngrouped);
+  });
+
+  it('buildJobRequest forwards context.clipGroups into every job', () => {
+    const context: ExportRequestContext = {
+      clips: groupedClips(),
+      route: groupedRoute(),
+      mapSettings: DEFAULT_MAP_SETTINGS,
+      waypoints: [],
+      transitionFeel: 'natural',
+      clipGroups: [GROUP_ABC],
+    };
+    const job: ExportJob = {
+      channel: 'map_only',
+      aspect: '9_16',
+      outputPath: '/tmp/out.mov',
+      quality: '1080p',
+      fps: 30,
+      deliveryTarget: 'prores',
+    } as ExportJob;
+    const req = buildJobRequest(context, job);
+    expect(req.timeline.groupSpans.map((g) => g.groupId)).toEqual(['g1']);
+    // Same context, no groups → same request minus the glide.
+    const bare = buildJobRequest({ ...context, clipGroups: undefined }, job);
+    expect(bare.timeline.groupSpans).toEqual([]);
+    expect(bare.timeline.totalDurationMs).toBe(req.timeline.totalDurationMs);
   });
 });
 

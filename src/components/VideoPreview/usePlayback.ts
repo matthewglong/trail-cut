@@ -13,6 +13,10 @@ interface UsePlaybackOptions {
   autoPlayToken?: number;
   onPlayingChange?: (playing: boolean) => void;
   onPlayIntent?: () => boolean;
+  /** Duration in seconds already known from the clip's import metadata.
+   *  Seeds `duration` while the proxy's own metadata loads so the seek bar
+   *  never renders a moment of full-width (untrimmed) geometry. */
+  fallbackDurationSec?: number;
   /** Synchronous per-frame callback fired from inside the rAF tick with the
    *  current media-seconds playhead. Bypasses React state so consumers (the
    *  map's render loop) read the freshest value within the same frame
@@ -45,6 +49,7 @@ export function usePlayback({
   autoPlayToken,
   onPlayingChange,
   onPlayIntent,
+  fallbackDurationSec = 0,
   onLivePlayheadSeconds,
 }: UsePlaybackOptions): PlaybackState {
   const pendingAutoPlayRef = useRef(false);
@@ -66,7 +71,7 @@ export function usePlayback({
   }, [autoPlayToken]);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(fallbackDurationSec);
   const [videoNatural, setVideoNatural] = useState<{ w: number; h: number } | null>(null);
 
   const trimInSec = trim ? trim.in_ms / 1000 : 0;
@@ -92,8 +97,10 @@ export function usePlayback({
   if (prevProxyPath !== proxyPath) {
     setPrevProxyPath(proxyPath);
     setPlaying(false);
-    setCurrentTime(0);
-    setDuration(0);
+    // Park the playhead at the start of the KEPT footage, not the start of
+    // the source. A head-trimmed clip opens on the first frame that ships.
+    setCurrentTime(trimInSec);
+    setDuration(fallbackDurationSec);
     setVideoNatural(null);
   }
 
@@ -196,9 +203,9 @@ export function usePlayback({
     if (!video) return;
     setDuration(video.duration);
     setVideoNatural({ w: video.videoWidth, h: video.videoHeight });
+    const inSec = trim ? trim.in_ms / 1000 : 0;
     if (pendingAutoPlayRef.current) {
       pendingAutoPlayRef.current = false;
-      const inSec = trim ? trim.in_ms / 1000 : 0;
       video.currentTime = inSec;
       setCurrentTime(inSec);
       if (speed > 1.0) {
@@ -209,6 +216,15 @@ export function usePlayback({
       }
       startPlayheadLoop();
       setPlaying(true);
+      return;
+    }
+    // Not auto-playing: still seek to the trim-in so the opening frame (and
+    // every consumer of the playhead — map marker, flag readout) reflects the
+    // start of the kept region rather than the discarded head.
+    if (inSec > 0) {
+      video.currentTime = inSec;
+      setCurrentTime(inSec);
+      onLivePlayheadSecondsRef.current?.(inSec);
     }
   }
 

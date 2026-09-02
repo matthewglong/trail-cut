@@ -66,14 +66,22 @@ export function useTrimDrag({
         setCurrentTime(time);
         if (videoRef.current) videoRef.current.currentTime = time;
       } else if (dragging === 'in' && onUpdateTrim && clip?.trim) {
-        const newIn = Math.min(time, trimOutSec - 0.1);
         // Round to whole ms — TrimRange is u64 on the Rust side and a
         // fractional value silently fails save_project's IPC deserialize.
-        onUpdateTrim({ in_ms: Math.max(0, Math.round(newIn * 1000)), out_ms: clip.trim.out_ms });
+        // The playhead then rides the ROUNDED bound, not the raw mouse
+        // position: parking it on the exact committed bound is what keeps
+        // it inside the trim once the drag releases.
+        const inMs = Math.max(0, Math.round(Math.min(time, trimOutSec - 0.1) * 1000));
+        const newIn = inMs / 1000;
+        onUpdateTrim({ in_ms: inMs, out_ms: clip.trim.out_ms });
         if (videoRef.current) { videoRef.current.currentTime = newIn; setCurrentTime(newIn); }
       } else if (dragging === 'out' && onUpdateTrim && clip?.trim) {
-        const newOut = Math.max(time, trimInSec + 0.1);
-        onUpdateTrim({ in_ms: clip.trim.in_ms, out_ms: Math.min(Math.round(newOut * 1000), Math.round(duration * 1000)) });
+        const outMs = Math.min(
+          Math.round(Math.max(time, trimInSec + 0.1) * 1000),
+          Math.round(duration * 1000),
+        );
+        const newOut = outMs / 1000;
+        onUpdateTrim({ in_ms: clip.trim.in_ms, out_ms: outMs });
         if (videoRef.current) { videoRef.current.currentTime = newOut; setCurrentTime(newOut); }
       }
     }

@@ -42,6 +42,16 @@ export function useRecentProjects() {
     setRenamingCard(null);
   }
 
+  async function handleDuplicateProject(projectPath: string) {
+    try {
+      await invoke<string>('duplicate_project', { projectDir: projectPath });
+      const updated = await invoke<RecentProject[]>('get_recent_projects');
+      setRecentProjects(updated);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function handleDeleteProject(projectPath: string) {
     try {
       await invoke('delete_project', { projectDir: projectPath });
@@ -67,6 +77,7 @@ export function useRecentProjects() {
     setError,
     loadRecentProjects,
     handleRenameProject,
+    handleDuplicateProject,
     handleDeleteProject,
   };
 }

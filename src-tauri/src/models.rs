@@ -1114,6 +1114,20 @@ pub struct Waypoint {
     pub marker_image_id: Option<String>,
 }
 
+/// A clip group: a contiguous, timeline-ordered run of ≥2 clip ids that acts
+/// as ONE camera-stop generator — the camera glides continuously across the
+/// member cuts instead of arcing per clip (`docs/CLIP_GROUPS_HANDOFF.md` §1).
+/// No per-group settings in v1; the glide's shape comes entirely from the
+/// members' resolved MapSettings. Referential integrity (dropping ids of
+/// removed clips, re-splitting runs after an import re-sort, dissolving runs
+/// with <2 members) is the frontend's `normalizeClipGroups`
+/// (`src/lib/clipGroups.ts`) — the Rust side only persists the list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClipGroup {
+    pub id: String,
+    pub clip_ids: Vec<String>,
+}
+
 /// Project-level "transition feel" knob. Drives the duration multiplier for
 /// cross-anchor Van Wijk arcs in the live preview and the export render.
 /// Persisted as the lowercase string variant so the on-disk JSON matches the
@@ -1400,6 +1414,13 @@ pub struct Project {
         skip_serializing_if = "is_default_working_color_space"
     )]
     pub working_color_space: WorkingColorSpaceId,
+    /// Clip groups (camera glide). Absent on disk ⇔ empty — additive, no
+    /// schema bump (same precedent as `map_magnification` and
+    /// `MapSettings.marker_images`). Members are clip ids in timeline order;
+    /// hidden members STAY persisted (hide is a soft toggle — the compiler
+    /// re-normalizes per compile). See [`ClipGroup`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clip_groups: Vec<ClipGroup>,
 }
 
 impl Default for Project {
@@ -1428,6 +1449,7 @@ impl Default for Project {
             last_export_selection: None,
             waypoints: Vec::new(),
             working_color_space: WorkingColorSpaceId::LinearBt2020Full,
+            clip_groups: Vec::new(),
         }
     }
 }
@@ -2067,6 +2089,45 @@ mod tests {
         // Pipeline still sees SDR (the auto-detected class) until the user
         // confirms — propagation doesn't change the effective class.
         assert_eq!(clip.effective_color_class(), SourceColorClass::SdrBt709);
+    }
+
+    // ---- clip_groups: additive-field persistence contract ----------------
+
+    #[test]
+    fn clip_groups_absent_reads_as_empty_and_stays_absent_on_reserialize() {
+        // Additive-field contract (same as map_magnification): a bundle that
+        // never grouped anything reads as `[]` and must not gain the key when
+        // the app re-saves it.
+        let raw = r#"{
+            "schema_version": 11,
+            "version": 1,
+            "name": "No Groups",
+            "clips": []
+        }"#;
+        let parsed: Project = serde_json::from_str(raw).expect("must deserialize");
+        assert!(parsed.clip_groups.is_empty());
+        let json = serde_json::to_string(&parsed).unwrap();
+        assert!(
+            !json.contains("clip_groups"),
+            "empty clip_groups must not be serialized: {}",
+            json,
+        );
+        assert!(Project::default().clip_groups.is_empty());
+    }
+
+    #[test]
+    fn clip_groups_round_trip_in_member_order() {
+        let project = Project {
+            clip_groups: vec![ClipGroup {
+                id: "g-1".into(),
+                clip_ids: vec!["clip-b".into(), "clip-c".into(), "clip-d".into()],
+            }],
+            ..Project::default()
+        };
+        let json = serde_json::to_string(&project).unwrap();
+        assert!(json.contains("\"clip_groups\""), "{}", json);
+        let parsed: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.clip_groups, project.clip_groups);
     }
 
     // ---- map_magnification: additive-field persistence contract ----------

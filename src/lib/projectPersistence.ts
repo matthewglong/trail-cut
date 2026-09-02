@@ -25,6 +25,7 @@
 import type {
   AspectRatio,
   Clip,
+  ClipGroup,
   ExportGrid,
   MapMagnifications,
   MapSettings,
@@ -41,6 +42,7 @@ import {
   isDefaultMagnification,
 } from './layout';
 import { seedWaypointsFromClips } from './waypoints';
+import { normalizeClipGroups } from './clipGroups';
 
 /** The slice of App-level state that the editor UI owns and mutates. This is
  *  both the output of `hydrateProjectState` (load) and the overlay input of
@@ -59,6 +61,11 @@ export interface LiveProjectState {
   selectedExportAspect: AspectRatio;
   lastExportSelection: ExportGrid | null;
   waypoints: Waypoint[];
+  /** Clip groups (camera glide — `docs/CLIP_GROUPS_HANDOFF.md` §1). Held
+   *  RAW here (hidden members stay); `normalizeClipGroups` is applied on
+   *  hydrate and again on save so the persisted form is always consistent
+   *  with the persisted clip list. */
+  clipGroups: ClipGroup[];
 }
 
 /** Defensive backfill mirroring the Rust `seeded_layouts()` (task 080 / 100).
@@ -135,7 +142,11 @@ export function mergeMapSettings(
  *    aspect sits at the identity factor.
  *  - empty `waypoints` are seeded from clips (legacy pre-v7 bundles arrive
  *    with `[]` from Rust's serde default); the first auto-save persists the
- *    seeded list. */
+ *    seeded list.
+ *  - `clip_groups ?? []` normalized against `clips` — absent is the normal
+ *    case (the key is omitted while empty); a hand-edited or stale bundle
+ *    whose group references a missing clip id is repaired by THE single
+ *    integrity policy (`normalizeClipGroups`), never trusted verbatim. */
 export function hydrateProjectState(project: Project, fallbackName: string): LiveProjectState {
   return {
     projectName: project.name || fallbackName,
@@ -154,6 +165,7 @@ export function hydrateProjectState(project: Project, fallbackName: string): Liv
       project.waypoints && project.waypoints.length > 0
         ? project.waypoints
         : seedWaypointsFromClips(project.clips),
+    clipGroups: normalizeClipGroups(project.clip_groups ?? [], project.clips),
   };
 }
 
@@ -184,6 +196,10 @@ export function buildSavePayload(base: Project, live: LiveProjectState): Project
     transition_feel: live.transitionFeel,
     last_export_selection: live.lastExportSelection,
     waypoints: live.waypoints,
+    // Normalize against the clips being persisted, so what lands on disk is
+    // consistent by construction (a group can never reference a clip that
+    // isn't in the same file).
+    clip_groups: normalizeClipGroups(live.clipGroups, live.clips),
   };
   // Identity magnification is written as ABSENCE, not as a record of 1s, so
   // a project that never touches the knob saves the same bytes it always
@@ -192,6 +208,12 @@ export function buildSavePayload(base: Project, live: LiveProjectState): Project
   // resurrect the stale value from disk.
   if (isDefaultMagnification(live.mapMagnifications)) {
     delete payload.map_magnification;
+  }
+  // Same absence-is-default treatment: no groups ⇒ no key (the Rust side
+  // `skip_serializing_if = "Vec::is_empty"` agrees), and the delete stops
+  // the base spread resurrecting a group the user dissolved.
+  if (payload.clip_groups !== undefined && payload.clip_groups.length === 0) {
+    delete payload.clip_groups;
   }
   return payload;
 }

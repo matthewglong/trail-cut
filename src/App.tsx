@@ -5,7 +5,7 @@ import { useProject } from './hooks/useProject';
 import { useMediaImport } from './hooks/useMediaImport';
 import { useAutoSave } from './hooks/useAutoSave';
 import { useRecentProjects } from './hooks/useRecentProjects';
-import type { AspectRatio, Clip, ExportGrid, Route, MapMagnifications, MapSettings, Project, ProjectLayouts, TransitionFeel, Waypoint } from './types';
+import type { AspectRatio, Clip, ClipGroup, ExportGrid, Route, MapMagnifications, MapSettings, Project, ProjectLayouts, TransitionFeel, Waypoint } from './types';
 import { DEFAULT_MAP_SETTINGS } from './types';
 import { defaultMagnifications, defaultSplitLayout } from './lib/layout';
 
@@ -45,16 +45,22 @@ export default function App() {
   const [selectedExportAspect, setSelectedExportAspect] = useState<AspectRatio>('9_16');
   const [lastExportSelection, setLastExportSelection] = useState<ExportGrid | null>(null);
   const [waypoints, setWaypoints] = useState<Waypoint[]>([]);
+  // Clip groups (camera glide). Raw persisted list — normalization against
+  // the clip list happens at every mutation site (useProject /
+  // useMediaImport), on hydrate, on save, and per compile in ProjectView.
+  const [clipGroups, setClipGroups] = useState<ClipGroup[]>([]);
   const [playheadMs, setPlayheadMs] = useState<number | null>(null);
 
   const recent = useRecentProjects();
 
   const media = useMediaImport({
     projectDir,
+    clips,
     setClips,
     setSelectedClipId,
     setRoute,
     setWaypoints,
+    setClipGroups,
   });
 
   const project = useProject({
@@ -74,6 +80,7 @@ export default function App() {
     setSelectedExportAspect,
     setLastExportSelection,
     setWaypoints,
+    setClipGroups,
     generateProxiesAndThumbnails: media.generateProxiesAndThumbnails,
     setProxies: media.setProxies,
     setThumbnails: media.setThumbnails,
@@ -95,6 +102,7 @@ export default function App() {
     selectedExportAspect,
     lastExportSelection,
     waypoints,
+    clipGroups,
     onSaveError: setSaveError,
   });
 
@@ -138,6 +146,7 @@ export default function App() {
         onOpenProject={project.handleOpenProject}
         onOpenProjectDir={project.openProjectDir}
         onRenameProject={recent.handleRenameProject}
+        onDuplicateProject={recent.handleDuplicateProject}
         onDeleteProject={recent.handleDeleteProject}
         onDismissError={dismissError}
       />
@@ -169,6 +178,8 @@ export default function App() {
       setLastExportSelection={setLastExportSelection}
       waypoints={waypoints}
       setWaypoints={setWaypoints}
+      clipGroups={clipGroups}
+      setClipGroups={setClipGroups}
       playheadMs={playheadMs}
       setPlayheadMs={setPlayheadMs}
       proxies={media.proxies}

@@ -10,6 +10,22 @@ import { usePlayback } from './usePlayback';
 import { useTrimDrag } from './useTrimDrag';
 import { useFocalDrag } from './useFocalDrag';
 
+/** Half-width of the flag's pointer triangle — how close to the flag's own
+ *  edge the pointer may slide before it stops tracking the playhead. */
+const FLAG_POINTER_INSET = 7;
+
+/** Round seconds to a tenth. `formatTime` floors its tenths digit, so a
+ *  value like 1.9999999 (float subtraction of trim bounds) must be settled
+ *  before formatting or it reads a full tenth low. */
+function roundTenth(sec: number): number {
+  return Math.round(sec * 10) / 10;
+}
+
+/** Trim bounds are quantized to whole milliseconds (TrimRange is u64 ms),
+ *  while the playhead is a float second. Landing exactly ON a bound must
+ *  read as INSIDE the trim, so the in/out test carries one ms of slack. */
+const TRIM_EDGE_TOLERANCE_SEC = 0.001;
+
 interface VideoPreviewProps {
   clip: Clip | null;
   proxyPath: string | null;
@@ -51,7 +67,7 @@ export default function VideoPreview({
   onPlayheadChange,
   onLivePlayheadSeconds,
   onSplitAtPlayhead,
-  playbackMode = 'loop',
+  playbackMode = 'continuous',
   onChangePlaybackMode,
   onClipEnded,
   autoPlayToken,
@@ -94,6 +110,42 @@ export default function VideoPreview({
     resizeObserverRef.current = null;
   }, []);
 
+  // --- Playhead flag geometry -------------------------------------------
+  // The flag reads out the playhead position and is clamped to the seek-bar
+  // track in PIXELS, so it never hangs off either end when the playhead sits
+  // at 0% or 100%. Both widths come from ResizeObservers (which deliver an
+  // initial observation), so nothing is measured from an effect body.
+  const [trackW, setTrackW] = useState(0);
+  const [flagW, setFlagW] = useState(0);
+  const flagRoRef = useRef<ResizeObserver | null>(null);
+
+  useEffect(() => {
+    const el = seekBarRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setTrackW(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+    // The track only mounts once a playable clip is loaded (the early
+    // returns below), so re-attach when that gate flips.
+  }, [clip, proxyPath]);
+
+  const setFlagNode = useCallback((el: HTMLDivElement | null) => {
+    flagRoRef.current?.disconnect();
+    flagRoRef.current = null;
+    if (!el) {
+      setFlagW(0);
+      return;
+    }
+    const ro = new ResizeObserver(() => setFlagW(el.offsetWidth));
+    ro.observe(el);
+    flagRoRef.current = ro;
+  }, []);
+
+  useEffect(() => () => {
+    flagRoRef.current?.disconnect();
+    flagRoRef.current = null;
+  }, []);
+
   const speed = clip?.effects.speed ?? 1.0;
   const focalX = clip?.focal_point.x ?? 0.5;
   const focalY = clip?.focal_point.y ?? 0.5;
@@ -118,6 +170,7 @@ export default function VideoPreview({
     autoPlayToken,
     onPlayingChange,
     onPlayIntent,
+    fallbackDurationSec: clip?.duration_ms ? clip.duration_ms / 1000 : 0,
     onLivePlayheadSeconds,
   });
 
@@ -249,6 +302,42 @@ export default function VideoPreview({
   const outPct = duration ? (trimOutSec / duration) * 100 : 100;
   const playPct = duration ? (currentTime / duration) * 100 : 0;
 
+  // Playhead flag readout. Inside the trimmed region the flag speaks the
+  // KEPT clip's axis (position within the trim / trimmed length) — that's
+  // the footage that actually ships. Outside it, the trim is irrelevant, so
+  // it falls back to the raw source axis (position / full source length).
+  // Values are rounded to a tenth first: `formatTime` floors, so a
+  // subtraction landing on 1.9999999 would otherwise read "0:01.9".
+  //
+  // While a trim handle is being dragged the playhead rides the handle, so
+  // it sits exactly ON a trim bound: the drag writes `currentTime` locally
+  // while the new bound arrives a commit later through `onUpdateTrim`, and
+  // the raw comparison flickers in/out of the trim every frame. A drag is
+  // definitionally about the kept region, so pin the readout to it.
+  const draggingTrim = dragging === 'in' || dragging === 'out';
+  const inTrim = draggingTrim
+    || (duration > 0
+      && currentTime >= trimInSec - TRIM_EDGE_TOLERANCE_SEC
+      && currentTime <= trimOutSec + TRIM_EDGE_TOLERANCE_SEC);
+  // Clamping matters only during a drag, where currentTime can lead or lag
+  // the committed bounds by a frame; inside the trim it's a no-op.
+  const flagPosSec = roundTenth(
+    inTrim ? Math.max(0, Math.min(currentTime, trimOutSec) - trimInSec) : currentTime,
+  );
+  const flagTotalSec = roundTenth(inTrim ? Math.max(0, trimOutSec - trimInSec) : duration);
+  const flagText = `${formatTime(flagPosSec)}/${formatTime(flagTotalSec)}`;
+
+  // Clamp the (centered) flag inside the track; the pointer stays under the
+  // playhead so a clamped flag still reads as belonging to it.
+  const measured = trackW > 0 && flagW > 0;
+  const playX = (playPct / 100) * trackW;
+  const flagLeft = measured
+    ? Math.max(0, Math.min(trackW - flagW, playX - flagW / 2))
+    : 0;
+  const pointerLeft = measured
+    ? Math.max(FLAG_POINTER_INSET, Math.min(flagW - FLAG_POINTER_INSET, playX - flagLeft))
+    : 0;
+
   return (
     <div style={styles.container}>
       {/* Video with crosshair overlay */}
@@ -321,8 +410,6 @@ export default function VideoPreview({
         <button onClick={togglePlay} style={styles.playBtn}>
           {playing ? '\u275A\u275A' : '\u25B6'}
         </button>
-        <span style={styles.time}>{formatTime(currentTime)}</span>
-
         {/* Custom seek bar with trim handles */}
         <div
           ref={seekBarRef}
@@ -354,9 +441,39 @@ export default function VideoPreview({
             <div style={{ ...styles.playheadHoop, top: 0 }} />
             <div style={styles.playheadBar} />
           </div>
+          {/* Paused-only: while playing the numbers churn per frame, which
+              reads as noise rather than a readout. */}
+          {!playing && (
+          <div
+            ref={setFlagNode}
+            style={{
+              ...styles.playheadFlag,
+              ...(inTrim ? {} : styles.playheadFlagUntrimmed),
+              ...(measured
+                ? { left: `${flagLeft}px` }
+                : { left: `${playPct}%`, transform: 'translateX(-50%)' }),
+            }}
+            title={
+              inTrim
+                ? 'Position within the trimmed clip / trimmed length'
+                : 'Outside the trim — position in the raw source / source length'
+            }
+            data-testid="playhead-flag"
+          >
+            {flagText}
+            <div
+              style={{
+                ...styles.playheadFlagPointer,
+                ...(inTrim ? {} : styles.playheadFlagPointerUntrimmed),
+                ...(measured
+                  ? { left: `${pointerLeft}px` }
+                  : { left: '50%' }),
+              }}
+            />
+          </div>
+          )}
         </div>
 
-        <span style={styles.time}>{formatTime(duration)}</span>
         {onChangePlaybackMode && (
           <button
             type="button"
